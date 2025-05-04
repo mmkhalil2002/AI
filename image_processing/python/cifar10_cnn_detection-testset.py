@@ -1,5 +1,6 @@
 
 import torch
+import os
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
@@ -468,33 +469,43 @@ CIFAR10_CLASSES = [
 def detect_objects(model, device, frame, confidence_threshold):
     """Detect objects in the captured image."""
     with open(LOG_FILE, 'a') as f:
-        print("Enter preprocess_frame ", file=f)
-        # Convert tensor to numpy array for visualization
+        print("Enter preprocess_frame", file=f)
+
+        # Step 1: Convert torch.Tensor to NumPy if needed
         if isinstance(frame, torch.Tensor):
             frame_np = frame.squeeze(0).permute(1, 2, 0).cpu().numpy()
             frame_np = (frame_np * 255).astype(np.uint8)
         else:
             frame_np = frame
 
-        # Preprocess and move to device
+        # Step 2: Ensure correct format: RGB → BGR, uint8, contiguous
+        if frame_np.dtype != np.uint8:
+            frame_np = frame_np.astype(np.uint8)
+        if not frame_np.flags['C_CONTIGUOUS']:
+            frame_np = np.ascontiguousarray(frame_np)
+        
+        # Convert to BGR for OpenCV drawing compatibility
+        frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
+
+        # Step 3: Preprocess for model input (e.g., normalization, resizing)
         input_tensor = preprocess_frame(frame_np).to(device)
 
-        # Inference
+        # Step 4: Model inference
         with torch.no_grad():
             outputs = model(input_tensor)
 
-        # Apply softmax to get class probabilities
+        # Step 5: Get class probabilities
         probabilities = F.softmax(outputs[0], dim=0)
 
-        # Print all class confidence scores
+        # Step 6: Log probabilities
         print("\n🧠 Confidence Scores for All CIFAR-10 Classes:")
         for idx, prob in enumerate(probabilities):
             print(f"{CIFAR10_CLASSES[idx]:>10}: {prob.item():.4f}")
 
         detected_objects = []
-        frame_height, frame_width = frame_np.shape[:2]
+        frame_height, frame_width = frame_bgr.shape[:2]
 
-        # Process detections above threshold
+        # Step 7: Generate bounding boxes for confident detections
         for idx, confidence in enumerate(probabilities):
             if confidence.item() > confidence_threshold:
                 label = CIFAR10_CLASSES[idx]
@@ -508,8 +519,9 @@ def detect_objects(model, device, frame, confidence_threshold):
                 detected_objects.append((label, confidence.item(), box))
                 print(f"🟢 Detected {label} with confidence: {confidence.item():.4f}")
 
-        print("Exit detect_object",file=f)
-        return detected_objects
+        print("Exit detect_objects", file=f)
+        return detected_objects, frame_bgr
+
 
 
 
@@ -542,83 +554,81 @@ def get_random_test_image():
 # Initialize TTS engine once globally
 import pyttsx3
 tts_engine = pyttsx3.init()
-
 def draw_detected_objects(frame, detected_objects):
     """
     Draws bounding boxes and labels on detected objects in the frame.
     Announces the object with the highest confidence score using TTS.
     """
-    with open(LOG_FILE, 'a') as f:
-        print("Enter draw_detected_objects", file=f)
+    # Ensure that the input frame is a valid image
+    if not isinstance(frame, np.ndarray):
+        raise ValueError("Frame must be a numpy array.")
+    if frame.dtype != np.uint8:
+        frame = frame.astype(np.uint8)  # Ensure it's in uint8 format
 
-        # Make a copy of the frame to draw on
-        frame_with_boxes = frame.copy()
+    # Sort detected objects by confidence (highest first)
+    detected_objects = sorted(detected_objects, key=lambda x: x[1], reverse=True)
 
-        # Sort detected objects by confidence (highest first)
-        detected_objects = sorted(detected_objects, key=lambda x: x[1], reverse=True)
+    # Announce the highest confidence object (optional)
+    if detected_objects:
+        top_label, top_confidence, _ = detected_objects[0]
+        try:
+            # Form the TTS announcement
+            announcement = f"The detected object is {top_label}"
+            tts_engine.say(announcement)
+            tts_engine.runAndWait()
+        except Exception as e:
+            print(f"TTS error: {e}")
 
-        # Announce only the highest confidence object
-        if detected_objects:
-            top_label, top_confidence, _ = detected_objects[0]
-            try:
-                # Form the TTS announcement
-                announcement = f"The detected object is {top_label}"
-                tts_engine.say(announcement)
-                tts_engine.runAndWait()
-            except Exception as e:
-                print(f"TTS error: {e}", file=f)
+    # Loop through all detected objects to draw bounding boxes and labels
+    for label, confidence, box in detected_objects:
+        x1, y1, x2, y2 = box
 
-        # Loop through all detected objects to draw bounding boxes and labels
-        for label, confidence, box in detected_objects:
-            x1, y1, x2, y2 = box
+        # Draw the bounding box around the detected object
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color=(0, 255, 0), thickness=2)
 
-            # Draw the bounding box around the detected object
-            if draw_boundry == True:
-                 cv2.rectangle(frame_with_boxes, (x1, y1), (x2, y2), color=(0, 255, 0), thickness=2)
+        # Prepare label text with confidence score
+        text = f"{label}: {confidence:.2f}"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.4
+        thickness = 1
 
-            # Prepare label text with confidence score
-            text = f"{label}: {confidence:.2f}"
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.4
-            thickness = 1
+        # Calculate text size and positioning
+        (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+        text_x, text_y = x1, max(y1 - 10, text_height + 2)
 
-            # Calculate text size and positioning
-            (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
-            text_x, text_y = x1, max(y1 - 10, text_height + 2)
+        # Draw semi-transparent background for text
+        bg_top_left = (text_x, text_y - text_height - 4)
+        bg_bottom_right = (text_x + text_width + 4, text_y + baseline)
+        overlay = frame.copy()
+        cv2.rectangle(overlay, bg_top_left, bg_bottom_right, (0, 0, 0), -1)  # Black background
+        alpha = 0.5  # Transparency factor
+        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
 
-            # Draw semi-transparent background for text
-            bg_top_left = (text_x, text_y - text_height - 4)
-            bg_bottom_right = (text_x + text_width + 4, text_y + baseline)
-            overlay = frame_with_boxes.copy()
-            cv2.rectangle(overlay, bg_top_left, bg_bottom_right, (0, 0, 0), -1)  # Black background
-            alpha = 0.5  # Transparency factor
-            cv2.addWeighted(overlay, alpha, frame_with_boxes, 1 - alpha, 0, frame_with_boxes)
+        # Draw the label text
+        cv2.putText(frame, text, (text_x + 2, text_y - 2),
+                    fontFace=font,
+                    fontScale=font_scale,
+                    color=(0, 255, 0),
+                    thickness=1,
+                    lineType=cv2.LINE_AA)
 
-            # Draw the label text
-            if print_label == True:
-                cv2.putText(frame_with_boxes, text, (text_x + 2, text_y - 2),
-                            fontFace=font,
-                            fontScale=font_scale,
-                            color=(0, 255, 0),
-                            thickness=1,
-                            lineType=cv2.LINE_AA)
+    return frame
 
-        print("Exit draw_detected_objects", file=f)
 
-        return frame_with_boxes
+
+
 
 
 # Global threshold value for converting filter values
-# Global threshold value for converting filter values
-filter_threashold = 0.5
+filter_threshold = 0.5
 
 def log_all_learned_filters(model, log_file="learned_filters_log.txt"):
     """
     Logs all learned convolutional filters from all convolutional layers in the model.
     Each filter is printed in 2D format along with a thresholded version.
 
-    The thresholded version is generated by:
-    - If abs(original value) > FILTER_THRESHOLD: 
+    Thresholding logic:
+    - If abs(original value) > filter_threshold: 
         -> 1 if original > 0
         -> -1 if original < 0
     - Else: 0
@@ -629,13 +639,14 @@ def log_all_learned_filters(model, log_file="learned_filters_log.txt"):
     """
     with open(log_file, 'a', encoding='utf-8') as f:
         f.write("\n==================== LEARNED FILTERS LOG ====================\n")
+        f.write(f"Threshold used for binarization: filter_threshold = {filter_threshold:.4f}\n")
 
         # Collect all layers that are instances of torch.nn.Conv2d
         conv_layers = [layer for name, layer in model.named_modules() if isinstance(layer, torch.nn.Conv2d)]
 
         for i, conv in enumerate(conv_layers, start=1):
             f.write("\n" + "=" * 60 + "\n")
-            f.write(f"                CONVOLUTIONAL LAYER {i} (Conv{i})\n")
+            f.write(f"                convolutional layer {i} (conv{i})\n")
             f.write("=" * 60 + "\n")
 
             # Get the filter weights: shape [out_channels, in_channels, kernel_height, kernel_width]
@@ -644,21 +655,21 @@ def log_all_learned_filters(model, log_file="learned_filters_log.txt"):
             # Iterate through each output channel (filter)
             for out_ch in range(weights.shape[0]):
                 for in_ch in range(weights.shape[1]):
-                    f.write(f"\nConv{i} | Filter {out_ch} | InCh {in_ch}:\n")
+                    f.write(f"\nconv{i} | filter {out_ch} | in_ch {in_ch}:\n")
 
                     # Original filter
                     kernel = weights[out_ch, in_ch]
-                    f.write("Original Filter:\n")
+                    f.write("original filter:\n")
                     for row in kernel:
                         row_str = ", ".join(f"{v:.4f}" for v in row)
                         f.write(f"    [{row_str}]\n")
 
                     # Thresholded filter
-                    f.write(f"Thresholded Filter (abs > {filter_threashold:.2f} => +/-1, else 0):\n")
+                    f.write(f"thresholded filter (abs > {filter_threshold:.2f} => ±1, else 0):\n")
                     for row in kernel:
                         thresholded_row = []
                         for v in row:
-                            if abs(v) > filter_threashold:
+                            if abs(v) > filter_threshold:
                                 thresholded_row.append(1 if v > 0 else -1)
                             else:
                                 thresholded_row.append(0)
@@ -670,24 +681,21 @@ def log_all_learned_filters(model, log_file="learned_filters_log.txt"):
 
 
 
-
-import os
-
-# Main function to capture frames, process, and detect objects
 if __name__ == "__main__":
-    # Check if the model exists, if not, train it
+    os.makedirs(MODEL_PATH, exist_ok=True)
     model_filename = os.path.join(MODEL_PATH, MODEL_FILENAME)
+
+    # Ask for number of epochs if model doesn't exist
     if not os.path.exists(model_filename):
         try:
-            num_epochs = int(input("Enter the number of epochs for training (e.g., 10, 20, 50): "))
+            num_epochs = int(input("Enter number of epochs (e.g., 10): "))
             if num_epochs <= 0:
-                print("Invalid number of epochs! Using default (10 epochs).")
-                num_epochs = 10
+                raise ValueError
         except ValueError:
-            print("Invalid input! Using default (10 epochs).")
+            print("Invalid input, using default of 10 epochs.")
             num_epochs = 10
 
-    # Initialize device (CPU or GPU)
+    # Setup device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -695,105 +703,82 @@ if __name__ == "__main__":
     print("Loading training data...")
     train_loader = load_training_data()
 
-    # Create the ObjectDetectionCNN model
+    # Initialize model
     print("Creating the model...")
     model = ObjectDetectionCNN(num_classes=NUM_CLASSES).to(device)
 
-    # Train the model
+    # Train if model doesn't exist
     if not os.path.exists(model_filename):
-        print(f"Training the model for {num_epochs} epochs...")
+        print(f"Training for {num_epochs} epochs...")
         train_model(model, train_loader, device, num_epochs, MODEL_PATH, MODEL_FILENAME)
-        print("Model training completed.")
+        print("Training complete.")
 
-    # Load the trained model and device (CPU or GPU)
-    print("Loading the trained model...")
+    # Load trained model
+    print("Loading model from disk...")
     model, device = load_model(MODEL_PATH, MODEL_FILENAME)
-    print("Trained model loaded.")
+    print("Model loaded.")
 
-    # Get a random test image (both numpy and tensor format) and its label
-    print("Getting a random test image...")
+    # Get a test image (original RGB image and preprocessed tensor)
+    print("Fetching random test image...")
     original_image_np, input_tensor, true_label = get_random_test_image()
-    print("Random test image obtained.")
-
-    # Move the input tensor to the correct device
     input_tensor = input_tensor.to(device)
 
-    # Ask user for confidence threshold
+    # Get confidence threshold from user
     try:
-        confidence_threshold = float(input("Enter confidence threshold (0 to 1, e.g., 0.5): "))
-        if not (0 <= confidence_threshold <= 1):
-            print("Invalid threshold! Using default (0.5).")
-            confidence_threshold = 0.5
+        confidence_threshold = float(input("Enter confidence threshold (0.0 to 1.0): "))
+        if not 0.0 <= confidence_threshold <= 1.0:
+            raise ValueError
     except ValueError:
-        print("Invalid input! Using default (0.5).")
+        print("Invalid threshold, using default (0.5).")
         confidence_threshold = 0.5
 
-    # Detect objects in the input tensor
-    print(f"Detecting objects with confidence threshold {confidence_threshold}...")
-    detected_objects = detect_objects(model, device, input_tensor, confidence_threshold)
+    # Detect objects on the image
+    print("Running object detection...")
+    detected_objects, original_image_bgr = detect_objects(model, device, original_image_np, confidence_threshold)
 
-    # Print detected objects and their confidence
+    # Show detections in terminal
     print("\nDetected Objects:")
-    confidence_list = []
     for label, confidence, box in detected_objects:
-        print(f"Label: {label}, Confidence: {confidence:.4f}, Bounding Box: {box}")
-        confidence_list.append((label, confidence))
+        print(f"Label: {label}, Confidence: {confidence:.4f}, Box: {box}")
 
-    # Print summary of all labels with confidences
-    confidence_list = sorted(confidence_list, key=lambda x: x[1], reverse=True)
-    print("\nSummary of Detected Labels and Confidences:")
-    for idx, (label, confidence) in enumerate(confidence_list):
-        print(f"{idx + 1}. Label: {label} - Confidence: {confidence:.4f}")
-    # Log all learned filters (1D format)
-    print("Logging learned filters to log file...")
+    # Optionally log learned filters
     log_all_learned_filters(model)
 
+    # Annotate image with detections
+    print("Annotating original image...")
+    drawn_image_np = draw_detected_objects(original_image_bgr.copy(), detected_objects)
 
-    # Draw the detected bounding boxes on a copy of the original image
-    print("Drawing detected bounding boxes on the image...")
-    drawn_image_np = draw_detected_objects(original_image_np.copy(), detected_objects)
-
-    # Convert images from RGB to BGR for OpenCV display
-    print("Converting images for OpenCV display...")
-    original_bgr = cv2.cvtColor(original_image_np, cv2.COLOR_RGB2BGR)
-    drawn_bgr = cv2.cvtColor(drawn_image_np, cv2.COLOR_RGB2BGR)
-
-    # Ask the user for a resize factor (e.g., 0.5 to shrink, 2.0 to enlarge)
+    # Ask user for resize factor
     try:
-        resize_factor = float(input("Enter resize factor (e.g., 0.5 for half size, 2.0 for double size): "))
+        resize_factor = float(input("Enter resize factor (e.g., 0.5 for half size): "))
         if resize_factor <= 0:
-            print("Invalid factor! Using default (1.0).")
-            resize_factor = 1.0
+            raise ValueError
     except ValueError:
-        print("Invalid input! Using default (1.0).")
+        print("Invalid resize factor, using default (1.0).")
         resize_factor = 1.0
 
-    # Resize images individually
-    new_size = (
-        int(original_bgr.shape[1] * resize_factor),
-        int(original_bgr.shape[0] * resize_factor)
-    )
-    original_resized = cv2.resize(original_bgr, new_size)
-    drawn_resized = cv2.resize(drawn_bgr, new_size)
+    # Resize original image
+    original_resized = cv2.resize(original_image_bgr, (
+        int(original_image_bgr.shape[1] * resize_factor),
+        int(original_image_bgr.shape[0] * resize_factor)
+    ))
 
-    # Display original image
-    print("Displaying the original image...")
-    cv2.imshow('Original Image', original_resized)
+    # Resize annotated image
+    annotated_resized = cv2.resize(drawn_image_np, (
+        int(drawn_image_np.shape[1] * resize_factor),
+        int(drawn_image_np.shape[0] * resize_factor)
+    ))
 
-    # Display detected image with bounding boxes
-    print("Displaying the detected image...")
-    cv2.imshow('Detected Objects', drawn_resized)
+    # Display both images
+    print("Displaying original and annotated images...")
+    cv2.imshow("Original Image", original_resized)
+    cv2.imshow("Annotated Image", annotated_resized)
 
-    # Wait for key press, allow quitting by pressing 'q'
-    print("\nPress 'q' or 'ESC' to quit.")
+    print("Press 'q' or ESC to quit.")
     while True:
         key = cv2.waitKey(0)
-        if key == ord('q') or key == 27:  # 'q' or ESC
-            print("Exiting the program...")
+        if key == ord('q') or key == 27:  # ESC
             break
 
-    # Close all OpenCV windows
     cv2.destroyAllWindows()
-
-
 
