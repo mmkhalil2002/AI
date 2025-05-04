@@ -1,0 +1,58 @@
+python -m ensurepip --upgrade
+
+ Step 2: Install Python 3.12 (Fully Compatible)
+Download Python 3.12.2 (64-bit Windows Installer)
+https://www.python.org/downloads/windows/
+Launch the installer and do this:
+
+✅ Check: Add Python to PATH
+
+⚙️ Click “Customize installation” → ✅ Enable pip, tcl/tk, and all features
+
+✅ Choose: “Install for all users”
+
+After install, open Command Prompt and check:
+
+python --version
+pip --version
+
+python -m ensurepip --upgrade
+
+
+Step 3: Install VS Code (if not already)
+Download: https://code.visualstudio.com/
+
+Install it with:
+
+✅ Add to PATH
+
+✅ Add context menu integration
+
+✅ Associate .py files
+
+Step 4: Install Python Extension in VS Code
+Open VS Code
+
+Go to Extensions (Ctrl+Shift+X)
+
+Search: Python → Install the one by Microsoft
+
+Step 5: Install Required Python Packages
+Open Command Prompt (or VS Code terminal `Ctrl + ``) and run:
+
+pip install opencv-python
+pip install pillow
+pip install matplotlib
+You can also optionally install:
+
+pip install jupyterlab
+pip install numpy
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+git clone https://github.com/BIDS/BSDS500.git
+
+import cv2
+# Read and display an image
+img = cv2.imread("test.jpg")  # Put a 'test.jpg' in the same folder
+cv2.imshow("Image", img)
+cv2.waitKey(1)
+cv2.destroyAllWindows()
