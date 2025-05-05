@@ -525,7 +525,6 @@ def detect_objects(model, device, frame, confidence_threshold):
 
 
 
-
 def get_random_test_image():
        
     with open(LOG_FILE, 'a') as f:
@@ -550,69 +549,100 @@ def get_random_test_image():
         print("Exit get_random_test_image",file=f)
        
         return image_np, image_tensor.unsqueeze(0), label
+    
+    
 
-# Initialize TTS engine once globally
+# Initialize only once globally
 import pyttsx3
 tts_engine = pyttsx3.init()
-def draw_detected_objects(frame, detected_objects):
+
+# Optional: Set volume and rate
+tts_engine.setProperty('volume', 1.0)       # Max volume
+tts_engine.setProperty('rate', 150)         # Normal speaking rate
+
+
+def draw_detected_objects(frame, detected_objects, draw_boundary=True, print_label=True):
     """
-    Draws bounding boxes and labels on detected objects in the frame.
-    Announces the object with the highest confidence score using TTS.
+    Draws a bounding box and label only for the highest-confidence detected object in the frame.
+    Optionally announces the top object using text-to-speech (TTS), and can toggle text/box display.
+
+    Args:
+        frame (np.ndarray): The input video/image frame (BGR format).
+        detected_objects (List[Tuple[str, float, Tuple[int, int, int, int]]]): Detected objects.
+        draw_boundary (bool): Whether to draw a rectangle around the detected object.
+        print_label (bool): Whether to print the label text on the frame.
+
+    Returns:
+        np.ndarray: Frame with annotations.
     """
-    # Ensure that the input frame is a valid image
+    with open(LOG_FILE, 'a') as f:
+        print("Enter draw_detected_objects", file=f)
+        print(f"draw_boundary={draw_boundary}, print_label={print_label}", file=f)
+
+    # Validate input frame
     if not isinstance(frame, np.ndarray):
         raise ValueError("Frame must be a numpy array.")
     if frame.dtype != np.uint8:
-        frame = frame.astype(np.uint8)  # Ensure it's in uint8 format
+        frame = frame.astype(np.uint8)
 
-    # Sort detected objects by confidence (highest first)
+    # Sort detections by descending confidence
     detected_objects = sorted(detected_objects, key=lambda x: x[1], reverse=True)
 
-    # Announce the highest confidence object (optional)
+    # Process only the top object if any detected
     if detected_objects:
-        top_label, top_confidence, _ = detected_objects[0]
+        top_label, top_confidence, top_box = detected_objects[0]
+
+        # Announce via TTS
         try:
-            # Form the TTS announcement
             announcement = f"The detected object is {top_label}"
             tts_engine.say(announcement)
             tts_engine.runAndWait()
         except Exception as e:
             print(f"TTS error: {e}")
 
-    # Loop through all detected objects to draw bounding boxes and labels
-    for label, confidence, box in detected_objects:
-        x1, y1, x2, y2 = box
+        # Unpack bounding box
+        x1, y1, x2, y2 = top_box
 
-        # Draw the bounding box around the detected object
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color=(0, 255, 0), thickness=2)
+        # Draw bounding box if enabled
+        if draw_boundary:
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color=(0, 255, 0), thickness=2)
 
-        # Prepare label text with confidence score
-        text = f"{label}: {confidence:.2f}"
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.4
-        thickness = 1
+        # Prepare label text
+        text = f"{top_label}: {top_confidence:.2f}"
 
-        # Calculate text size and positioning
-        (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
-        text_x, text_y = x1, max(y1 - 10, text_height + 2)
+        if print_label:
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.08  # Reduced font size (1/5th of original 0.4)
+            thickness = 1
 
-        # Draw semi-transparent background for text
-        bg_top_left = (text_x, text_y - text_height - 4)
-        bg_bottom_right = (text_x + text_width + 4, text_y + baseline)
-        overlay = frame.copy()
-        cv2.rectangle(overlay, bg_top_left, bg_bottom_right, (0, 0, 0), -1)  # Black background
-        alpha = 0.5  # Transparency factor
-        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+            # Get text size for placement
+            (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+            text_x, text_y = x1, max(y1 - 10, text_height + 2)
 
-        # Draw the label text
-        cv2.putText(frame, text, (text_x + 2, text_y - 2),
-                    fontFace=font,
-                    fontScale=font_scale,
-                    color=(0, 255, 0),
-                    thickness=1,
-                    lineType=cv2.LINE_AA)
+            # Define semi-transparent background area
+            bg_top_left = (text_x, text_y - text_height - 4)
+            bg_bottom_right = (text_x + text_width + 4, text_y + baseline)
+
+            # Draw transparent background rectangle
+            overlay = frame.copy()
+            cv2.rectangle(overlay, bg_top_left, bg_bottom_right, (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+
+            # Draw the label text itself
+            cv2.putText(frame, text, (text_x + 2, text_y - 2),
+                        fontFace=font,
+                        fontScale=font_scale,
+                        color=(0, 255, 0),
+                        thickness=1,
+                        lineType=cv2.LINE_AA)
+
+    with open(LOG_FILE, 'a') as f:
+        print("Exit draw_detected_objects", file=f)
 
     return frame
+
+
+
 
 
 
