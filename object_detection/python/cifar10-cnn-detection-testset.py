@@ -23,7 +23,7 @@ from torchvision import datasets, transforms  # <-- Add this line
 # Global Variables
 MODEL_PATH = "../../../"
 MODEL_FILENAME = "cifar10_model_file"
-DATA_PATH = "../../../data"
+DATA_PATH = "../../../cifar10_data"
 IMG_WIDTH, IMG_HEIGHT = 32, 32  # Based on training dataset
 CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence for valid detections
 FILTER_WIDTH = 3
