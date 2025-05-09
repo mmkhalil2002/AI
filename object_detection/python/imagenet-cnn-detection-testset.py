@@ -70,8 +70,31 @@ MAX_CPU = torch.get_num_threads()
 MAX_GPU = torch.cuda.device_count() 
 
 
+# Define IMAGENET class labels
+IMAGENET_CLASSES = [
+        'airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck'
+    ]
+_num_classes = len(IMAGENET_CLASSES)
+
+from torchvision.datasets import ImageFolder
+import os
+
+class FilteredImageFolder(ImageFolder):
+    def find_classes(self, directory):
+        """
+        Overrides the default method to filter classes based on IMAGENET_CLASSES.
+        """
+        classes = [d.name for d in os.scandir(directory) if d.is_dir()]
+        # Filter classes to include only those in IMAGENET_CLASSES
+        classes = [cls for cls in classes if cls in IMAGENET_CLASSES]
+        classes.sort()
+        class_to_idx = {cls_name: idx for idx, cls_name in enumerate(classes)}
+        return classes, class_to_idx
+
+
+
 class ObjectDetectionCNN(nn.Module):
-    def __init__(self, num_classes=NUM_CLASSES, use_static_filters=False):
+    def __init__(self, num_classes=_num_classes, use_static_filters=False):
         super(ObjectDetectionCNN, self).__init__()
 
         # Set the device to GPU if available, otherwise CPU
@@ -251,12 +274,16 @@ class ObjectDetectionCNN(nn.Module):
         print("Exit get_static_filters",file=f)
         return [f[1] for f in filters]  # Only return the kernels, discard names
     
+from torch.utils.data import DataLoader
+from torchvision import transforms
+
 def load_training_data(_batch_size=BATCH_SIZE, _data_dir=MODEL_PATH, _num_workers=MAX_CPU):
     with open(LOG_FILE, 'a') as f:
         print("Enter load_training_data", file=f)
 
         """
-        Function to load a custom training dataset organized in subfolders (ImageFolder format).
+        Function to load a custom training dataset organized in subfolders (ImageFolder format),
+        filtering to include only specified classes.
 
         Args:
             _batch_size (int): Number of images per batch.
@@ -264,18 +291,18 @@ def load_training_data(_batch_size=BATCH_SIZE, _data_dir=MODEL_PATH, _num_worker
             _num_workers (int): Number of parallel processes for loading.
 
         Returns:
-            DataLoader: PyTorch DataLoader for the custom dataset.
+            DataLoader: PyTorch DataLoader for the filtered custom dataset.
         """
 
         # Define transformations for the images
         transform = transforms.Compose([
-            transforms.Resize((32, 32)),              # Resize all images to 32x32
-            transforms.ToTensor(),                    # Convert to tensor
-            transforms.Normalize((0.5,), (0.5,))      # Normalize to [-1, 1]
+            transforms.Resize((IMG_WIDTH, IMG_HEIGHT)),  # Resize all images to IMG_WIDTH x IMG_HEIGHT
+            transforms.ToTensor(),                      # Convert to tensor
+            transforms.Normalize((0.5,), (0.5,))        # Normalize to [-1, 1]
         ])
 
-        # Load dataset using ImageFolder
-        train_dataset = datasets.ImageFolder(root=_data_dir, transform=transform)
+        # Load dataset using the custom FilteredImageFolder
+        train_dataset = FilteredImageFolder(root=_data_dir, transform=transform)
 
         # Optional: print class-to-index mapping
         print("Detected classes:", train_dataset.class_to_idx, file=f)
@@ -291,6 +318,7 @@ def load_training_data(_batch_size=BATCH_SIZE, _data_dir=MODEL_PATH, _num_worker
 
         print("Exit load_training_data", file=f)
         return train_loader
+
 
 
 
@@ -463,10 +491,6 @@ def preprocess_frame(frame):
 
 
 
-# Define CIFAR-10 class labels
-CIFAR10_CLASSES = [
-        'airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck'
-    ]
 
 
 # Function to detect objects in a frame
