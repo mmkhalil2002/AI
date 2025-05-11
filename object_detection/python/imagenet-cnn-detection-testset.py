@@ -40,10 +40,10 @@ custom_data/
  """
 
 # Global Variables
-MODEL_PATH = "../../../"
-MODEL_FILENAME = "cifar10_model_file"
+#MODEL_PATH = "../../../"
+#MODEL_FILENAME = "cifar10_model_file"
 DATA_PATH = "../../../data"
-TEST_PATH = "../../:/TEST"
+TEST_PATH = "../../tiny_imagenet-200"
 IMG_WIDTH, IMG_HEIGHT = 32, 32  # Based on training dataset
 CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence for valid detections
 FILTER_WIDTH = 3
@@ -71,25 +71,56 @@ MAX_GPU = torch.cuda.device_count()
 
 
 # Define IMAGENET class labels
-IMAGENET_CLASSES = [
-        'airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck'
-    ]
+IMAGENET_CLASSES = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
 _num_classes = len(IMAGENET_CLASSES)
 
-from torchvision.datasets import ImageFolder
 import os
+from torchvision.datasets import ImageFolder
+
+# Constants used in the dataset loading and model saving
+MODEL_PATH = "../../../"  # Replace with actual model directory
+MODEL_DIRECTORY_NAME = "tiny-imagenet-200"  # Folder containing the dataset (e.g., 'imagenet_subset')
+MODEL_FILENAME = "model.pth"  # Default model file name
 
 class FilteredImageFolder(ImageFolder):
+    def __init__(self, root=None, transform=None, target_transform=None, loader=None, is_valid_file=None):
+        """
+        Custom ImageFolder class that filters allowed classes and defines a model path.
+        If 'root' is not provided, it defaults to os.path.join(MODEL_PATH, MODEL_DIRECTORY_NAME, 'train').
+        """
+        # Default root directory if not provided (points to the training dataset folder)
+        if root is None:
+            root = os.path.join(MODEL_PATH, MODEL_DIRECTORY_NAME, "train")
+
+        # Initialize the parent ImageFolder with the resolved root
+        super().__init__(root, transform=transform, target_transform=target_transform,
+                         loader=loader, is_valid_file=is_valid_file)
+
+        # Define the full path to the model file using the default model filename
+        self.model_path = os.path.join(MODEL_PATH, MODEL_FILENAME)
+
     def find_classes(self, directory):
         """
         Overrides the default method to filter classes based on IMAGENET_CLASSES.
+        'directory' points to the dataset folder with subdirectories for each class.
         """
+        # List all subdirectories representing class names
         classes = [d.name for d in os.scandir(directory) if d.is_dir()]
-        # Filter classes to include only those in IMAGENET_CLASSES
+
+        # Filter out only the classes we care about
         classes = [cls for cls in classes if cls in IMAGENET_CLASSES]
+
+        # Sort them alphabetically to have consistent indexing
         classes.sort()
+
+        # Create a mapping from class name to numerical label
+        # Example: {"cat": 0, "dog": 1, "horse": 2}
         class_to_idx = {cls_name: idx for idx, cls_name in enumerate(classes)}
+
         return classes, class_to_idx
+
+
+
 
 
 
@@ -321,23 +352,28 @@ def load_training_data(_batch_size=BATCH_SIZE, _data_dir=MODEL_PATH, _num_worker
 
 
 
+import os
+import time
+import torch
+import torch.nn as nn
 
+# Assuming MODEL_FILENAME is defined elsewhere in your code
+#MODEL_FILENAME = "model.pth"  # Default model file name, you can update this as needed
 
-def train_model(model, train_loader, device, epochs, save_dir="trained_model", model_filename="model.pth"):
+def train_model(model, train_loader, device, epochs, save_dir="trained_model", model_filename=MODEL_FILENAME):
+    """
+    Train a CNN model, safely initializing weights while preserving static filters.
+
+    Args:
+        model (nn.Module): The CNN model to train.
+        train_loader (DataLoader): DataLoader for training data.
+        device (torch.device): Training device (CPU/GPU).
+        epochs (int): Number of training epochs.
+        save_dir (str): Directory to save the trained model.
+        model_filename (str): Name of the saved model file.
+    """
     with open(LOG_FILE, 'a') as f:
         print("➡️ Entering training function", file=f)
-
-        """
-        Train a CNN model, safely initializing weights while preserving static filters.
-
-        Args:
-            model (nn.Module): The CNN model to train.
-            train_loader (DataLoader): DataLoader for training data.
-            device (torch.device): Training device (CPU/GPU).
-            epochs (int): Number of training epochs.
-            save_dir (str): Directory to save the trained model.
-            model_filename (str): Name of the saved model file.
-        """
 
         # Define loss function
         criterion = torch.nn.CrossEntropyLoss()
@@ -403,7 +439,7 @@ def train_model(model, train_loader, device, epochs, save_dir="trained_model", m
             os.makedirs(save_dir)
             print(f"✅ Created model directory: {save_dir}")
 
-        save_path = os.path.join(save_dir, model_filename)
+        save_path = os.path.join(save_dir, model_filename)  # Save the model with the given filename
         try:
             torch.save(model.state_dict(), save_path)
             os.chmod(save_path, 0o666)  # rw-rw-rw-
@@ -416,51 +452,72 @@ def train_model(model, train_loader, device, epochs, save_dir="trained_model", m
 
 
 
-def load_model(model_path, model_filename, use_static_filters=True):
-    """Load the trained model from the saved file with error handling and static filter support."""
-    
+def load_model(model_path=MODEL_PATH, model_filename=MODEL_FILENAME, use_static_filters=false):
+    """
+    Load the trained CNN model from a file, preserving static filter setup and handling device compatibility.
+
+    Args:
+        model_path (str): Path to the directory containing the model file (default: MODEL_PATH).
+        model_filename (str): Name of the model file to load (default: MODEL_FILENAME).
+        use_static_filters (bool): Whether to initialize the model with static filters (must match training).
+
+    Returns:
+        model (nn.Module): The loaded model in evaluation mode.
+        device (torch.device): The device the model is mapped to.
+    """
+
+    # Ensure logging file is available
     with open(LOG_FILE, 'a') as f:
-        print("Enter load_model", file=f)
+        print("➡️ Entering load_model()", file=f)
 
-        print("🔄 Initializing model loading...")  # Print message indicating model loading has started
+        print("🔄 Initializing model loading...")
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Choose device based on availability
-        print(f"🖥️  Using device: {device}")  # Print which device (CPU or GPU) will be used
+        # Select device (GPU if available, else CPU)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"🖥️  Using device: {device}")
 
-        # ✅ Initialize the model with or without static filters (must match training setup)
+        # ✅ Initialize the model structure — must match training config
         model = ObjectDetectionCNN(num_classes=NUM_CLASSES, use_static_filters=use_static_filters).to(device)
 
-        # Combine MODEL_PATH and model_filename to get the full model path
+        # Compose full model file path
         full_model_path = os.path.join(model_path, model_filename)
-
-        # Print the model path being used for loading
         print(f"📂 Looking for model file: {full_model_path}")
-        
-        # Check if the model file exists at the specified path
+
+        # Check for model file existence
         if not os.path.exists(full_model_path):
-            print(f"❌ Error: Model file '{full_model_path}' not found!")  # Print error if model file doesn't exist
-            raise FileNotFoundError(f"Model file '{full_model_path}' does not exist.")  # Raise exception to stop execution
+            print(f"❌ Error: Model file '{full_model_path}' not found!")
+            raise FileNotFoundError(f"Model file '{full_model_path}' does not exist.")
 
         try:
-            print("📦 Loading model weights...")  # Print message indicating model weight loading
+            print("📦 Loading model weights...")
 
-            # Load the trained model weights from the specified file
-            model.load_state_dict(torch.load(full_model_path, map_location=device))  # Load weights and map them to the correct device
-            model.eval()  # Set the model to evaluation mode
+            # Load weights from file and map to current device
+            state_dict = torch.load(full_model_path, map_location=device)
 
-            # 🟢 Success decorative message: This is printed when the model is loaded successfully
+            # Load state dict into model (safe even with static layers)
+            missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+
+            # Optional: report if any keys are missing or unexpected
+            if missing_keys:
+                print(f"⚠️ Missing keys during load: {missing_keys}")
+            if unexpected_keys:
+                print(f"⚠️ Unexpected keys during load: {unexpected_keys}")
+
+            model.eval()  # Set model to evaluation mode
+
+            # Success message with static filter state
             print("\033[1;32;40m\n*******************************************************")
             print("✅ Model loaded successfully and set to evaluation mode!")
-            print(f"🔒 Static filters: {'ENABLED' if use_static_filters else 'DISABLED'}")  # Log static filter state
+            print(f"🔒 Static filters: {'ENABLED' if use_static_filters else 'DISABLED'}")
             print("*******************************************************\033[0m")
 
         except Exception as e:
-            print(f"❌ Failed to load the model: {e}")  # Print error message if loading the model fails
-            raise  # Raise the exception to stop further execution
+            print(f"❌ Failed to load the model: {e}")
+            raise
 
-        print("Exit load_model", file=f)
+        print("⬅️ Exiting load_model()", file=f)
 
-        return model, device  # Return the loaded model and the device it's on
+        return model, device
 
 def preprocess_frame(frame):
     """Preprocess a frame for the CNN model."""
@@ -470,16 +527,15 @@ def preprocess_frame(frame):
         # Convert BGR (OpenCV default) to RGB
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Convert to PIL Image for torchvision transforms
+        # Convert NumPy array to PIL Image
         frame = Image.fromarray(frame)
 
-        # Apply same transform as in custom data loader
-        
+        # Use the same transform as used during training/test image load
         transform = transforms.Compose([
             transforms.Resize((IMG_WIDTH, IMG_HEIGHT)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5],
-                                std=[0.5, 0.5, 0.5])
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],   # Match get_random_test_image
+                                 std=[0.229, 0.224, 0.225])
         ])
 
         frame = transform(frame)
@@ -530,7 +586,7 @@ def detect_objects(model, device, frame, confidence_threshold):
         # Step 6: Log probabilities
         print("\n🧠 Confidence Scores for All CIFAR-10 Classes:")
         for idx, prob in enumerate(probabilities):
-            print(f"{CIFAR10_CLASSES[idx]:>10}: {prob.item():.4f}")
+            print(f"{IMAGENET_CLASSES[idx]:>10}: {prob.item():.4f}")
 
         detected_objects = []
         frame_height, frame_width = frame_bgr.shape[:2]
@@ -538,7 +594,7 @@ def detect_objects(model, device, frame, confidence_threshold):
         # Step 7: Generate bounding boxes for confident detections
         for idx, confidence in enumerate(probabilities):
             if confidence.item() > confidence_threshold:
-                label = CIFAR10_CLASSES[idx]
+                label = IMAGENET_CLASSES[idx]
                 slice_width = frame_width // len(probabilities)
                 x1 = idx * slice_width
                 x2 = x1 + slice_width
@@ -561,42 +617,40 @@ from PIL import Image
 import torch
 from torchvision import transforms
 
-def get_random_test_image(data_dir):
-    """Loads a random image from the custom test directory."""
+def get_random_test_image():
+    """Loads a random image from the custom unlabeled test directory."""
     with open(LOG_FILE, 'a') as f:
-        print("Enter get_random_test_image ", file=f)
-        
-        # Get all image files from the directory
-        image_files = [f for f in os.listdir(data_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        
+        print("Enter get_random_test_image", file=f)
+
+        # Define the full path to the test directory
+        test_dir = os.path.join(MODEL_PATH, 'test')
+
+        # Get all image files from the test directory
+        image_files = [f for f in os.listdir(test_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+
         if not image_files:
-            print("No images found in the directory.", file=f)
+            print("❌ No images found in the test directory.", file=f)
             return None, None, None
 
-        # Pick a random image file
-        random_image_path = os.path.join(data_dir, random.choice(image_files))
-        
-        # Open the image using PIL
-        image = Image.open(random_image_path)
-        
-        # Define the transform (resize to 32x32, convert to tensor, normalize)
+        # Select a random image
+        random_image_path = os.path.join(test_dir, random.choice(image_files))
+
+        # Load the image using PIL
+        image = Image.open(random_image_path).convert('RGB')
+
+        # Define preprocessing pipeline
         transform = transforms.Compose([
-            transforms.Resize((IMG_WIDTH, IMG_HEIGHT)),  # Resize the image
+            transforms.Resize((IMG_WIDTH, IMG_HEIGHT)),  # Resize
             transforms.ToTensor(),                       # Convert to tensor
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                 std=[0.229, 0.224, 0.225])  # Normalize
         ])
-        
-        # Apply the transformation to the image
-        image_tensor = transform(image)
-        
-        # Add batch dimension (1, 3, 32, 32)
-        image_tensor = image_tensor.unsqueeze(0)
-        
-        # If you want a label, you could assign it based on directory name (e.g., folder name as label)
-        label = os.path.basename(os.path.dirname(random_image_path))  # Example of using folder name as label
-        
+
+        # Transform image
+        image_tensor = transform(image).unsqueeze(0)  # Add batch dimension
+
         print("Exit get_random_test_image", file=f)
-        return image, image_tensor, label
+        return image, image_tensor, random_image_path  # Return image path instead of label
 
     
     
@@ -782,7 +836,7 @@ if __name__ == "__main__":
 
     # Initialize model
     print("Creating the model...")
-    model = ObjectDetectionCNN(num_classes=NUM_CLASSES).to(device)
+    model = ObjectDetectionCNN(num_classes=_num_classes).to(device)
 
     # Train if model doesn't exist
     if not os.path.exists(model_filename):
