@@ -1,0 +1,97 @@
+python -m ensurepip --upgrade
+
+ Step 2: Install Python 3.12 (Fully Compatible)
+Download Python 3.12.2 (64-bit Windows Installer)
+https://www.python.org/downloads/windows/
+Launch the installer and do this:
+
+✅ Check: Add Python to PATH
+
+⚙️ Click “Customize installation” → ✅ Enable pip, tcl/tk, and all features
+
+✅ Choose: “Install for all users”
+
+After install, open Command Prompt and check:
+
+python --version
+pip --version
+
+
+python -m ensurepip --upgrade
+
+
+Step 3: Install VS Code (if not already)
+Download: https://code.visualstudio.com/
+
+Install it with:
+
+✅ Add to PATH
+
+✅ Add context menu integration
+
+✅ Associate .py files
+
+Fix in VS Code: Select the Correct Python Interpreter
+Open VS Code.
+
+Open VSCode
+Ctrl + Shift + P
+
+Type:     Python: Select Interpreter
+
+Choose:   Python 3.12 located at:  C:\Users\Mohamed\AppData\Local\Programs\Python\Python312\python.exe
+
+
+
+
+
+Step 4: Install Python Extension in VS Code
+Open VS Code
+
+Go to Extensions (Ctrl+Shift+X)
+
+Search: Python → Install the one by Microsoft
+
+Step 5: Install Required Python Packages from VSCode terminal
+Open Command Prompt (or VS Code terminal `Ctrl + ``) and run:
+
+pip install opencv-python
+pip install pillow
+pip install matplotlib
+pip install jupyterlab
+pip install numpy
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+pip install pyttsx3
+
+step 6:  optionally installc
+pip install pydub
+pip install playsound
+pip install soundfile
+pip install sounddevice
+pip install pygame
+pip install pyttsx3
+pip install TTS
+pip install gTTS
+
+
+Step 7: Install the needed package
+
+If you're still seeing issues:
+
+Save all files.
+
+Press Ctrl+Shift+P → type Reload Window → select it.
+
+Or simply close and reopen VS Code.
+
+
+Step8: git clone https://github.com/BIDS/BSDS500.git
+
+
+
+import cv2
+# Read and display an image
+img = cv2.imread("test.jpg")  # Put a 'test.jpg' in the same folder
+cv2.imshow("Image", img)
+cv2.waitKey(1)
+cv2.destroyAllWindows()
