@@ -152,11 +152,11 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # ✅ Cache dictionary
 prompt_cache = {}
 
-
 def fallback_response(prompt):
     """
     Rule-based fallback if GPT is not available or quota is exceeded.
     Covers greetings, booking, canceling, and voicemail intent using common phrases.
+    Also responds to requests mentioning the doctor list.
     """
     prompt_lower = prompt.lower()
 
@@ -172,11 +172,16 @@ def fallback_response(prompt):
     # Voicemail-related keywords
     voicemail_keywords = ["message", "voicemail", "leave", "say something", "record", "note"]
 
+    # 📋 Doctor listing logic
+    if "list of doctors" in prompt_lower or "available doctors" in prompt_lower:
+        doctor_names = ", ".join(googleid_dr_name_map.values())
+        return f"The available doctors are: {doctor_names}. Please say the name of the doctor you'd like to book with."
+
     # Rule-based intent matching
     if any(kw in prompt_lower for kw in greeting_keywords):
-        return "Welcome to Epic Therapist Clinic! Would you like to book an appointment, cancel one, or leave a message?"
+        return "This is an AI Agen Welcome to Epic Therapist Clinic! Would you like to book an appointment, cancel one, or leave a message?"
     elif any(kw in prompt_lower for kw in booking_keywords):
-        return "Sure, I can help you book an appointment. Please tell me your preferred date and time."
+        return "Sure, I can help you book an appointment. Please tell me the doctor name, here is the doctors list."
     elif any(kw in prompt_lower for kw in cancel_keywords):
         return "Okay, I can help cancel your appointment. Can you please tell me your name and appointment time?"
     elif any(kw in prompt_lower for kw in voicemail_keywords):
@@ -584,7 +589,7 @@ def voice():
                 timeout=SPEECH_INPUT_DURATION
             )
 
-            prompt = "Great! Let's schedule your appointment. Please tell me the date and time you'd like."
+            prompt = "list of doctors"
             gather.say(gpt_speak(prompt))
             resp.append(gather)
             return str(resp)
