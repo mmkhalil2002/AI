@@ -620,7 +620,7 @@ def voice():
             # Convert the VoiceResponse object to an XML string and return it to Twilio
             return str(resp)
         
-        elif "cancel" in speech_result.lower():
+        elif "cancel" in lower or "reschedule" in lower or "change" in lower:
             # 🧠 Start a new session for cancellation
             session_data[call_sid] = {
                 "stage": "cancel_appointment",  # Stage to collect doctor's name
