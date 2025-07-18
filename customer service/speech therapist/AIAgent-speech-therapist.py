@@ -567,7 +567,29 @@ def voice():
     elif stage == "intent":
         lower = speech_result.lower()
        # Check if the word "message" appears in the user's spoken input (case-insensitive)
-        if "message" in lower or "voicemail" in lower:
+        # ✅ Booking appointment intent
+        if any(word in lower for word in ["book","booking", "appointment", "schedule", "make", "reserve"]):
+           
+            print(f"will go to booking")
+            session_data[call_sid] = {
+                "stage": "booking",
+                "booking": {},
+                "retry_time": 0
+            }
+
+            gather = Gather(
+                input="speech",
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION
+            )
+
+            prompt = "Great! Let's schedule your appointment. Please tell me the date and time you'd like."
+            gather.say(gpt_speak(prompt))
+            resp.append(gather)
+            return str(resp)
+
+        elif "message" in lower or "voicemail" in lower:
     
             # Update the session stage for this call to "voicemail"
             # This is useful to track that the customer chose to leave a message
@@ -603,7 +625,7 @@ def voice():
             session_data[call_sid] = {
                 "stage": "cancel_appointment",  # Stage to collect doctor's name
                 "cancel": {},             # Holds cancel-related info
-                "retry_doctor": 0         # Retry attempts allowed
+                "retry_booking": 0         # Retry attempts allowed
             }
 
             # 🎤 Ask for the doctor's name
@@ -618,8 +640,13 @@ def voice():
             gather.say(gpt_speak(prompt))
             resp.append(gather)
             return str(resp)
+        # ❓ Fallback: unclear intent
+        else:
+            resp.say(gpt_speak("Sorry, I didn’t catch that. Would you like to book an appointment, cancel one, or leave a message?"))
+            session_data[call_sid]["stage"] = "intent"
+            return str(resp)
 
-        elif stage == "cancel_appointment":
+    elif stage == "cancel_appointment":
             # ----------------------------------------------------------------------
             # 🔄 This stage handles when a user wants to cancel an appointment
             # and just spoke the doctor’s name (e.g., "Dr. Omar", or "cancel with Dr. Alex")
@@ -645,8 +672,8 @@ def voice():
 
             # ❌ Step 3: Still no match → handle retries
             if not matched_id:
-                session_data[call_sid]["retry_doctor"] += 1
-                retries = session_data[call_sid]["retry_doctor"]
+                session_data[call_sid]["retry_booking"]
+                retries = session_data[call_sid]["retry_booking"]
 
                 if retries >= MAX_NUMBER_DR_RETRY:
                     # 🛑 Too many failed attempts → end call
@@ -695,7 +722,7 @@ def voice():
             return str(resp)
 
 
-        elif stage == "cancel_appt_by_phone_number":
+    elif stage == "cancel_appt_by_phone_number":
             # ----------------------------------------------------------------------
             # 📞 Step 1: Extract the phone number from the caller's spoken response
             # ----------------------------------------------------------------------
@@ -770,7 +797,7 @@ def voice():
             # ----------------------------------------------------------------------
             return str(resp)
 
-    elif stage == "ask_doctor":
+    elif stage == "booking":
         # ----------------------------------------------------------------------
         # 📍 Booking flow: the caller has just been asked to name a doctor.
         # Our task here is to identify which doctor they said and, if successful,
@@ -808,8 +835,8 @@ def voice():
         # ------------------------------------------------------------------
         if matched_id is None:
             # Increment retry counter for this call
-            session_data[call_sid]["retry_doctor"] += 1
-            retries = session_data[call_sid]["retry_doctor"]
+            session_data[call_sid]["retry_booking"] += 1
+            retries = session_data[call_sid]["retry_booking"]
 
             if retries >= 3:
                 # 🚫 Too many attempts — politely end the call
