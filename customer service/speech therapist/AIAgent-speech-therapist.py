@@ -343,7 +343,7 @@ def cancel_event_by_phone(
         • Delete simply the FIRST future event whose phone matches,
           regardless of date or time.
 
-    Parameters
+    Parameters    
     ----------
     calendar_id : str
         The Google Calendar ID for the doctor.
