@@ -243,43 +243,51 @@ def gpt_speak(prompt):
 
     Performance: You still keep the quick dictionary check first; GPT is only called if the easy path fails.
 """
+from openai import OpenAI, APIConnectionError, AuthenticationError, RateLimitError
+
+# Initialize the OpenAI client (using the environment variable OPENAI_API_KEY)
+client = OpenAI()
 
 def extract_doctor_name(speech_text):
     """
-    Use ChatGPT (GPT-4) to extract the doctor's name from the caller's spoken input.
+    Use ChatGPT (GPT-3.5) to extract the doctor's name from the caller's spoken input.
 
     Parameters:
         speech_text (str): The full transcribed sentence spoken by the user.
 
     Returns:
         str: The extracted doctor name as interpreted by the GPT model.
+             If GPT is unavailable, return the original input as fallback.
     """
 
     # Step 1: Construct the user prompt for ChatGPT.
     # We're explicitly telling the model to extract only the doctor's name from the full sentence.
-    # Example: If speech_text = "I want to cancel my appointment with Dr. Sarah tomorrow",
-    # then the prompt becomes: "Extract the doctor name from this sentence: 'I want to cancel my appointment with Dr. Sarah tomorrow'. Only return the name."
     prompt = f"Extract the doctor name from this sentence: '{speech_text}'. Only return the name."
 
-    # Step 2: Call the OpenAI ChatCompletion endpoint (GPT-4) to analyze the prompt.
-    # The model receives a conversation-style history consisting of:
-    # - A system role message explaining what the assistant's job is ("You extract doctor names...")
-    # - A user message with the prompt we just created
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[
-            # The system message defines the assistant's task and tone for this session.
-            {"role": "system", "content": "You extract doctor names from user speech."},
+    try:
+        # Step 2: Call the ChatGPT API using the OpenAI SDK (v1) with gpt-3.5-turbo
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You extract doctor names from user speech."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0  # Deterministic output
+        )
 
-            # The user message provides the actual sentence to analyze.
-            {"role": "user", "content": prompt}
-        ]
-    )
+        # Step 3: Return the model's reply (the extracted name)
+        return response.choices[0].message.content.strip()
 
-    # Step 3: Extract the assistant's reply content from the API response.
-    # `.choices[0].message["content"]` gives us the model's reply.
-    # `.strip()` removes any surrounding whitespace or newlines.
-    return response.choices[0].message["content"].strip()
+    except (APIConnectionError, AuthenticationError, RateLimitError) as e:
+        # Step 4: If GPT API call fails, return the input as a fallback
+        print(f"⚠️ GPT fallback in extract_doctor_name: {type(e).__name__}: {e}")
+        return speech_text.strip()
+
+    except Exception as e:
+        # General fallback for unexpected issues
+        print(f"⚠️ Unexpected error in extract_doctor_name: {e}")
+        return speech_text.strip()
+
 
 import re
 
