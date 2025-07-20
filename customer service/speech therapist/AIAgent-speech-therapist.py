@@ -2,6 +2,7 @@ import os
 import json
 #import openai
 import pickle
+import dateparser
 from flask import Flask, request
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from google.oauth2 import service_account
@@ -854,32 +855,32 @@ def voice():
             session_data[call_sid]["retry_booking"] += 1
             retries = session_data[call_sid]["retry_booking"]
 
-        if retries >= 3:
-            # 🚫 Too many attempts — politely end the call
-            resp.say(gpt_speak(
-                "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
-                "Please call us again when convenient. Goodbye."
-            ))
-            resp.hangup()
-            session_data.pop(call_sid, None)          # Clean up session
-            return str(resp)
+            if retries >= 3:
+                # 🚫 Too many attempts — politely end the call
+                resp.say(gpt_speak(
+                        "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
+                    "Please call us again when convenient. Goodbye."
+                 ))
+                resp.hangup()
+                session_data.pop(call_sid, None)          # Clean up session
+                return str(resp)
 
-        # 🔁 Re-prompt with the list of available doctors
-        gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-        doctor_list = ", ".join(googleid_dr_name_map.values())
-        retry_prompt = (
-            f"I didn't recognize that name. Available doctors are: {doctor_list}. "
-            "Please say the doctor's name again."
-        )
-        gather.say(gpt_speak(retry_prompt))
-        resp.append(gather)
-        return str(resp)
+            # 🔁 Re-prompt with the list of available doctors
+            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+            doctor_list = ", ".join(googleid_dr_name_map.values())
+            retry_prompt = (
+                        f"I didn't recognize that name. Available doctors are: {doctor_list}. "
+                        "Please say the doctor's name again."
+                    )
+            gather.say(gpt_speak(retry_prompt))
+            resp.append(gather)
+            return str(resp)
 
         # ------------------------------------------------------------------
         # ✅ 5) MATCH SUCCESS  → store doctor info and move to "ask_time"
         # ------------------------------------------------------------------
         session_data[call_sid]["doctor_id"] = matched_id                # Store calendar ID
-        session_data[call_sid]["stage"] = "ask_time"                    # Next stage in flow
+        session_data[call_sid]["stage"] = "ask_time_date"                    # Next stage in flow
 
         # 📅 Prompt the caller for their preferred appointment time
         gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
@@ -889,67 +890,59 @@ def voice():
         resp.append(gather)
         return str(resp)
 
-    
-    elif stage == "ask_time":
+   
+    elif stage == "ask_time_date":
         # 🆔 Retrieve the previously selected doctor's calendar ID from session
         doctor_id = session_data[call_sid]["doctor_id"]
 
-        # 🕒 Try to parse the user's spoken time into a proper datetime object
-        try:
-            # ✨ Example expected formats: "2 PM", "10 am", etc.
-            requested_time = datetime.strptime(speech_result, "%I %p")  # Format = hour + AM/PM
-        except ValueError:
-            # ⚠️ If parsing fails (invalid format), ask the caller to re-say the time
-            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-            gather.say(gpt_speak("Please say a time like 2 PM or 10 AM."))
-            resp.append(gather)
-            return str(resp)
+        # 🕒 Try to parse the user's spoken time and date using dateparser
+        requested_dt = dateparser.parse(speech_result)
 
-        # 🕘 Prepare the event start and end times for checking availability
-        now = datetime.utcnow()
+        if not requested_dt:
+            # ⚠️ If parsing fails, prompt the user again
+             gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+             gather.say(gpt_speak("Please say something like 'Tomorrow at 2 PM' or 'Next Monday at 10 AM'."))
+             resp.append(gather)
+             return str(resp)
 
-        # ⏰ Replace the hour in the current datetime to match the spoken time (round to hour)
-        event_start = now.replace(hour=requested_time.hour, minute=0, second=0, microsecond=0)
-
-        # 📅 Define a 30-minute window for the appointment
+        # ⏰ Round to the top of the hour
+        event_start = requested_dt.replace(minute=0, second=0, microsecond=0)
         event_end = event_start + timedelta(minutes=30)
 
-        # 📆 Connect to Google Calendar API to check availability
+        # 📆 Connect to Google Calendar API
         calendar = build("calendar", "v3", credentials=creds)
 
-        # 🔍 Query the Google Calendar for existing events within that time window
+        # 🔍 Check for conflicts in Google Calendar
         events = calendar.events().list(
-            calendarId=doctor_id,                     # Calendar ID for the doctor
-            timeMin=event_start.isoformat() + "Z",    # Start time
-            timeMax=event_end.isoformat() + "Z",      # End time
-            singleEvents=True                         # Do not expand recurring events
+                calendarId=doctor_id,
+                timeMin=event_start.isoformat() + "Z",
+                timeMax=event_end.isoformat() + "Z",
+                singleEvents=True
         ).execute()
 
-        # ❌ If there's already an event at that time — reject and ask for another time
         if events["items"]:
+            # ❌ Time slot is already taken
             gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-            gather.say(gpt_speak("This time is not available. Please choose another time."))
+            gather.say(gpt_speak("This time is not available. Please choose another day and time."))
             resp.append(gather)
             return str(resp)
 
-        # ✅ Time is available — proceed to book the appointment
-        session_data[call_sid]["stage"] = "confirmed"  # Move to final stage
+        # ✅ Time slot is available — book it
+        session_data[call_sid]["stage"] = "confirmed"
 
-        # 📋 Create the appointment entry
         event = {
-            "summary": f"Appointment for {call_sid}",   # Can include phone/name if collected
+            "summary": f"Appointment for {call_sid}",
             "start": {"dateTime": event_start.isoformat(), "timeZone": "UTC"},
             "end": {"dateTime": event_end.isoformat(), "timeZone": "UTC"},
         }
 
-        # 📥 Insert the new event into the doctor's Google Calendar
         calendar.events().insert(calendarId=doctor_id, body=event).execute()
 
-        # 🔊 Confirm the appointment via voice
-        say_msg = f"Your appointment with {googleid_dr_name_map[doctor_id]} is confirmed at {requested_time.strftime('%I %p')}. Thank you!"
-        resp.say(gpt_speak(say_msg))
+        # 🔊 Confirm with user
+        friendly_time = event_start.strftime("%A at %I %p")
+        friendly_name = googleid_dr_name_map[doctor_id]
+        resp.say(gpt_speak(f"Your appointment with {friendly_name} is confirmed on {friendly_time}. Thank you!"))
 
-        # 🎯 Return the response to Twilio
         return str(resp)
 
     elif stage == "confirmed":
