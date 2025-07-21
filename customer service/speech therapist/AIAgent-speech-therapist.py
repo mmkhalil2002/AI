@@ -606,8 +606,8 @@ def voice():
         # Check if the word "book" or related terms appear in the user's spoken input
         if any(word in lower for word in ["book", "booking", "appointment", "schedule", "make", "reserve", "meet"]):
 
-             print(f"will go to booking")
-             session_data[call_sid] = {
+            print(f"will go to booking")
+            session_data[call_sid] = {
                 "stage": "booking",
                 "booking": {},
                 "retry_booking": 0,
