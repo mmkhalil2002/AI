@@ -8,7 +8,7 @@ from twilio.twiml.voice_response import VoiceResponse, Gather
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from datetime import datetime, timedelta
-import Re
+#import Re
 from dotenv import load_dotenv
 # ---------------- Project Structure -----------------
 # speech_AI_agent/
@@ -616,10 +616,13 @@ def voice():
 
             gather = Gather(
                 input="speech",
-                 action="/voice",
-                 method="POST",
-                timeout=SPEECH_INPUT_DURATION
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION,
+                speech_model="phone_call",  # Optimize recognition for calls
+                hints=", ".join(googleid_dr_name_map.values())  # List of doctor names
                 )
+
 
             # Prompt with the list of available doctors
             doctor_list = ", ".join(googleid_dr_name_map.values())
@@ -950,47 +953,80 @@ def voice():
 
 
 
-   
     elif stage == "ask_time_date":
+        # ----------------------------------------------------------------------
+        # 📍 Time & Date Collection Stage:
+        # This stage is reached *after* a doctor has already been selected.
+        # Our task here is to collect the desired appointment date & time,
+        # check for availability, and either confirm or re-prompt.
+        # ----------------------------------------------------------------------
+
         # 🆔 Retrieve the previously selected doctor's calendar ID from session
         doctor_id = session_data[call_sid]["doctor_id"]
 
         # 🕒 Try to parse the user's spoken time and date using dateparser
         requested_dt = dateparser.parse(speech_result)
-        print ("spoken date and time {requested_dt}")
+        print(f"spoken date and time: {requested_dt}")
 
         if not requested_dt:
-            # ⚠️ If parsing fails, prompt the user again
-             gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-             gather.say(gpt_speak("Please say something like 'Tomorrow at 2 PM' or 'Next Monday at 10 AM'."))
-             resp.append(gather)
-             return str(resp)
+            # ⚠️ If parsing fails, prompt the user again (no need to list doctors again)
+            gather = Gather(
+                   input="speech",
+                   action="/voice",
+                   method="POST",
+                   timeout=SPEECH_INPUT_DURATION,
+                   speech_model="phone_call",  # 📞 Improve transcription for phone calls
+                   hints=(
+                            "August 5th at 10 AM, July 30 at 3 PM, next Monday at 4 PM, "
+                            "Tuesday August 13th at 2 PM, Friday at 9 in the morning, "
+                            "September 1st at 11 AM"
+                        )  # 🧠 Help Twilio expect full date/time expressions
+                    )
 
-        # ⏰ Round to the top of the hour
+
+            # 🗣️ Improved voice prompt for clearer instructions
+            gather.say(gpt_speak(
+                 "Please say the appointment date and time. You can say things like "
+                 "'August fifth at ten A M', 'July thirtieth at three P M', or 'Monday August twelfth at four in the afternoon'."
+                ))
+            
+            
+            resp.append(gather)
+            return str(resp)
+
+        # ⏰ Round down to the top of the hour (for 30-minute slots)
         event_start = requested_dt.replace(minute=0, second=0, microsecond=0)
         event_end = event_start + timedelta(minutes=30)
 
         # 📆 Connect to Google Calendar API
         calendar = build("calendar", "v3", credentials=creds)
 
-        # 🔍 Check for conflicts in Google Calendar
+        # 🔍 Check for any existing events that overlap with this time
         events = calendar.events().list(
-                calendarId=doctor_id,
-                timeMin=event_start.isoformat() + "Z",
-                timeMax=event_end.isoformat() + "Z",
-                singleEvents=True
+            calendarId=doctor_id,
+            timeMin=event_start.isoformat() + "Z",
+            timeMax=event_end.isoformat() + "Z",
+            singleEvents=True
         ).execute()
 
         if events["items"]:
-            # ❌ Time slot is already taken
-            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+            # ❌ Time slot is already taken — ask again (no need to repeat doctor)
+            gather = Gather(
+                input="speech",
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION,
+                speech_model="phone_call",
+                hints="2 PM, 10 AM, next Tuesday"
+            )
             gather.say(gpt_speak("This time is not available. Please choose another day and time."))
             resp.append(gather)
             return str(resp)
 
-        # ✅ Time slot is available — book it
+        # ✅ No conflict — save and confirm booking
         session_data[call_sid]["stage"] = "confirmed"
 
+        # 📋 Create the calendar event
         event = {
             "summary": f"Appointment for {call_sid}",
             "start": {"dateTime": event_start.isoformat(), "timeZone": "UTC"},
@@ -999,7 +1035,7 @@ def voice():
 
         calendar.events().insert(calendarId=doctor_id, body=event).execute()
 
-        # 🔊 Confirm with user
+        # 🔊 Confirm the appointment to the caller
         friendly_time = event_start.strftime("%A at %I %p")
         friendly_name = googleid_dr_name_map[doctor_id]
         resp.say(gpt_speak(f"Your appointment with {friendly_name} is confirmed on {friendly_time}. Thank you!"))
