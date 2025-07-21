@@ -624,8 +624,8 @@ def voice():
             # Prompt with the list of available doctors
             doctor_list = ", ".join(googleid_dr_name_map.values())
             prompt = f"Great! Let's schedule your appointment. Here is the list of doctors: {doctor_list}. Please say the name of the doctor you want to book with."
-             gather.say(gpt_speak(prompt))
-             resp.append(gather)
+            gather.say(gpt_speak(prompt))
+            resp.append(gather)
             return str(resp)
 
         elif "message" in lower or "voicemail" in lower:
