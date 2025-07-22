@@ -151,32 +151,27 @@ from openai import APIConnectionError, AuthenticationError, RateLimitError
 
 def smart_parse_time(text):
     import re
+    from dateparser import parse
 
     original = text
     text = text.strip().lower()
 
-    # 🔧 Normalize "3 of July" → "July 3"
-    text = re.sub(r"\b(\d{1,2})\s+of\s+(january|february|march|april|may|june|july|august|september|october|november|december)", r"\2 \1", text)
+    # 🔁 Normalize "3 of July" → "July 3"
+    text = re.sub(r"\b(\d{1,2})\s+of\s+(january|february|march|april|may|june|july|august|september|october|november|december)",
+                  r"\2 \1", text)
 
-    # 🔧 Fix comma-separated time: "2, 3 0" → "2:30"
-    text = re.sub(r"(\d)\s*,\s*(\d)\s+0", r"\1:\2" + "0", text)  # e.g. "2, 3 0" → "2:30"
-    text = re.sub(r"(\d{1,2})\s*,\s*(\d{1,2})", r"\1:\2", text)  # e.g. "2, 30" → "2:30"
+    # 🧼 Fix separated digit times like "2, 3 0" or "2 3 0"
+    text = re.sub(r"(\d{1,2})\s*,\s*(\d{1,2})", r"\1:\2", text)  # "2, 30" → "2:30"
+    text = re.sub(r"(\d{1,2})\s+(\d{2})", r"\1:\2", text)        # "2 30" → "2:30"
 
-    # 🔧 Fix space-separated time digits: "2 3 0" → "2:30"
-    if re.fullmatch(r"\d\s+\d\s*0", text):
-        parts = re.findall(r"\d+", text)
-        if len(parts) == 3:
-            text = f"{parts[0]}:{parts[1]}{parts[2]}"
-
-    # 🔧 Fix "230" or "1430" → "2:30" or "14:30"
-    if re.fullmatch(r"\d{3,4}", text):
-        if len(text) == 3:
-            text = f"{text[0]}:{text[1:]}"
-        elif len(text) == 4:
-            text = f"{text[:2]}:{text[2:]}"
+    # 🧼 Fix "230" or "1430" → "2:30" or "14:30"
+    if re.fullmatch(r"\d{3}", text):
+        text = f"{text[0]}:{text[1:]}"
+    elif re.fullmatch(r"\d{4}", text):
+        text = f"{text[:2]}:{text[2:]}"
 
     print(f"🧽 Cleaned time input: {text} (original was: {original})")
-    return dateparser.parse(text)
+    return parse(text)
 
 
 
