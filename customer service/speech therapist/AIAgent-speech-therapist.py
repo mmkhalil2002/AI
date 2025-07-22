@@ -670,58 +670,80 @@ def voice():
                 "Sorry, I didn’t catch that. Would you like to book an appointment, cancel one, or leave a message?"
             ))
             return str(resp)
-
-    if stage == "booking":
+    elif stage == "booking":
         # ----------------------------------------------------------------------
-        # 📍 Booking flow: identify which doctor the user said
+        # 📍 Booking flow: the caller has just been asked to name a doctor.
+        # Our task here is to identify which doctor they said and, if successful,
+        # proceed to ask what time they’d like to book.
         # ----------------------------------------------------------------------
 
         if "retry_booking" not in session_data[call_sid]:
             session_data[call_sid]["retry_booking"] = 0
 
-        spoken_text = speech_result.lower().strip() if speech_result else ""
-        print(f"📢 booking :speech_result: {spoken_text.strip()}")
+        import string
 
-        # ❌ Silently ignore junk like "hello" or silence
-        junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
-        if not spoken_text or spoken_text in junk_inputs:
-            print(f"⏩ Skipping junk doctor input: '{spoken_text}' — re-prompting without retry")
-            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+        # 📻 Clean and normalize speech input
+        spoken_text = speech_result.lower().strip() if speech_result else ""
+        spoken_clean = spoken_text.translate(str.maketrans('', '', string.punctuation)).strip()
+        print(f"📻 booking :speech_result: {spoken_clean}")
+
+        # 🚫 Block common junk phrases often returned by Twilio hallucination
+        junk_inputs = {
+            "hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test",
+            "1", "yes", "no", "i know", "huh", "what", "okay", "ok", "bye", "goodbye", ""
+        }
+
+        if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
+            print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
+            doctor_list_str = ", ".join(googleid_dr_name_map.values())
+            gather = Gather(
+                input="speech",
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION,
+                hints=doctor_list_str
+            )
             gather.say(gpt_speak("Please say the full name of the doctor you'd like to book with."))
             resp.append(gather)
             return str(resp)
 
         matched_id = None
-        spoken_text_clean = spoken_text.replace("dr", "").replace(".", "").strip()
 
         # ------------------------------------------------------------------
-        # 🔍 1. Try fuzzy matching if input is short like "al"
+        # 🔍 1. Partial or exact substring match
         # ------------------------------------------------------------------
-        import difflib
-        possible_names = {v.lower(): k for k, v in googleid_dr_name_map.items()}
-        closest = difflib.get_close_matches(spoken_text_clean, possible_names.keys(), n=1, cutoff=0.7)
-        if closest:
-            friendly = closest[0]
-            matched_id = possible_names[friendly]
-            print(f"✅ Fuzzy match with: {friendly}")
+        partial_matches = []
+        for doc_id, friendly in googleid_dr_name_map.items():
+            friendly_clean = friendly.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+            if spoken_clean in friendly_clean or friendly_clean in spoken_clean:
+                partial_matches.append((doc_id, friendly))
+
+        if len(partial_matches) == 1:
+            matched_id = partial_matches[0][0]
+            print(f"✅ Partial match with: {partial_matches[0][1]}")
 
         # ------------------------------------------------------------------
-        # 🧠 2. GPT fallback (only if 2+ words)
+        # 🤖 2. GPT fallback (only if 2+ words)
         # ------------------------------------------------------------------
-        if matched_id is None and len(spoken_text.split()) >= 2:
-            extracted = extract_doctor_name(speech_result)
-            if extracted:
-                extracted_lower = extracted.lower()
-                for doc_id, friendly in googleid_dr_name_map.items():
-                    if extracted_lower in friendly.lower() or friendly.lower() in extracted_lower:
-                        matched_id = doc_id
-                        break
+        if matched_id is None and len(spoken_clean.split()) >= 2:
+            try:
+                extracted = extract_doctor_name(spoken_text)
+                if extracted:
+                    extracted_clean = extracted.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+                    for doc_id, friendly in googleid_dr_name_map.items():
+                        friendly_clean = friendly.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+                        if extracted_clean in friendly_clean or friendly_clean in extracted_clean:
+                            matched_id = doc_id
+                            print(f"✅ Matched via GPT fallback: {friendly}")
+                            break
+            except Exception as e:
+                print(f"⚠️ GPT fallback failed: {e}")
 
         # ------------------------------------------------------------------
-        # ❌ 3. Still no match → count as retry
+        # ❌ 3. Still no match → Retry logic
         # ------------------------------------------------------------------
         if matched_id is None:
-            print(f"❌ No doctor match for: '{spoken_text}'")
+            print(f"❌ No doctor match for: '{spoken_clean}'")
             session_data[call_sid]["retry_booking"] += 1
             retries = session_data[call_sid]["retry_booking"]
 
@@ -734,10 +756,16 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-            doctor_list = ", ".join(googleid_dr_name_map.values())
+            doctor_list_str = ", ".join(googleid_dr_name_map.values())
+            gather = Gather(
+                input="speech",
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION,
+                hints=doctor_list_str
+            )
             retry_prompt = (
-                f"I couldn't match that to a doctor. Available doctors are: {doctor_list}. "
+                f"I couldn't match that to a doctor. Available doctors are: {doctor_list_str}. "
                 "Please say the full name again."
             )
             gather.say(gpt_speak(retry_prompt))
@@ -745,16 +773,107 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # ✅ 4. Success → Proceed to ask for time
+        # ✅ 4. Success → Ask for time
         # ------------------------------------------------------------------
         session_data[call_sid]["doctor_id"] = matched_id
         session_data[call_sid]["stage"] = "ask_time_date"
 
-        gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
         friendly_name = googleid_dr_name_map[matched_id]
         time_prompt = f"What time would you like to book with {friendly_name}?"
+
+        gather = Gather(
+            input="speech",
+            action="/voice",
+            method="POST",
+            timeout=SPEECH_INPUT_DURATION
+        )
         gather.say(gpt_speak(time_prompt))
         resp.append(gather)
+        return str(resp)
+
+    elif stage == "ask_time_date":
+        # ----------------------------------------------------------------------
+        # 📍 Time & Date Collection Stage:
+        # This stage is reached *after* a doctor has already been selected.
+        # Our task here is to collect the desired appointment date & time,
+        # check for availability, and either confirm or re-prompt.
+        # ----------------------------------------------------------------------
+
+        from datetime import timedelta
+
+        # 🆔 Retrieve the previously selected doctor's calendar ID from session
+        doctor_id = session_data[call_sid]["doctor_id"]
+
+        # 🕒 Try to parse the user's spoken time and date using dateparser
+        requested_dt = dateparser.parse(speech_result)
+        print(f"spoken date and time: {requested_dt}")
+
+        if not requested_dt:
+            # ⚠️ If parsing fails, prompt the user again (no need to list doctors again)
+            gather = Gather(
+                input="speech",
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION,
+                speech_model="phone_call",  # 📞 Improve call transcription
+                hints="tomorrow at 2 PM, next Monday at 10 AM, Friday at 1 PM"  # 🧠 Help Twilio parse time
+            )
+            gather.say(gpt_speak("Please say the appointment date and time, like 'Tomorrow at 2 PM' or 'Friday at 11 in the morning'."))
+            resp.append(gather)
+            return str(resp)
+
+        # ⏰ Round down to the top of the hour (for 30-minute slots)
+        event_start = requested_dt.replace(minute=0, second=0, microsecond=0)
+        event_end = event_start + timedelta(minutes=30)
+
+        # 📆 Connect to Google Calendar API
+        calendar = build("calendar", "v3", credentials=creds)
+
+        # 🔍 Check for any existing events that overlap with this time
+        events = calendar.events().list(
+            calendarId=doctor_id,
+            timeMin=event_start.isoformat() + "+00:00",
+            timeMax=event_end.isoformat() + "+00:00",
+            singleEvents=True
+        ).execute()
+
+        if events["items"]:
+            # ❌ Time slot is already taken — ask again (no need to repeat doctor)
+            gather = Gather(
+                input="speech",
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION,
+                speech_model="phone_call",
+                hints="2 PM, 10 AM, next Tuesday"
+            )
+            gather.say(gpt_speak("This time is not available. Please choose another day and time."))
+            resp.append(gather)
+            return str(resp)
+
+        # ✅ No conflict — save and confirm booking
+        session_data[call_sid]["stage"] = "confirmed"
+
+        # 📋 Create the calendar event
+        event = {
+            "summary": f"Appointment for {call_sid}",
+            "start": {
+                "dateTime": event_start.isoformat() + "+00:00",
+                "timeZone": "UTC"
+            },
+            "end": {
+                "dateTime": event_end.isoformat() + "+00:00",
+                "timeZone": "UTC"
+            },
+        }
+
+        calendar.events().insert(calendarId=doctor_id, body=event).execute()
+
+        # 🔊 Confirm the appointment to the caller
+        friendly_time = event_start.strftime("%A at %I %p")
+        friendly_name = googleid_dr_name_map[doctor_id]
+        resp.say(gpt_speak(f"Your appointment with {friendly_name} is confirmed on {friendly_time}. Thank you!"))
+
         return str(resp)
 
 
