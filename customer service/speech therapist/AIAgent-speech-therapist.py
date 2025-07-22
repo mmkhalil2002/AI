@@ -160,23 +160,31 @@ def smart_parse_time(text):
     text = re.sub(r"\b(\d{1,2})\s+of\s+(january|february|march|april|may|june|july|august|september|october|november|december)",
                   r"\2 \1", text)
 
-    # 🔁 Fix time spoken as split digits (e.g., "1, 3 0" or "1 3 0") → "1:30"
-    if re.search(r"\d{1,2}\s*[, ]\s*\d\s*0", text):
-        parts = re.findall(r"\d+", text)
-        if len(parts) >= 3:
-            text = re.sub(r"(\d{1,2})\s*[, ]\s*(\d)\s*0", f"{parts[0]}:{parts[1]}0", text)
+    # 🔁 Also normalize "of July 2 30" → "July 2 at 2:30"
+    text = re.sub(r"of\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})",
+                  r"\1 \2", text)
 
-    # 🧼 Remove extra spaces, collapse multiple spaces
-    text = re.sub(r"\s+", " ", text)
+    # 🔁 Fix "2 30" → "2:30"
+    text = re.sub(r"\b(\d{1,2})\s+(\d{2})\b", r"\1:\2", text)
 
-    # 🧼 Fix 3-digit/4-digit compact numbers
+    # 🔁 If only time is spoken (like "230"), fix that
     if re.fullmatch(r"\d{3}", text):
         text = f"{text[0]}:{text[1:]}"
     elif re.fullmatch(r"\d{4}", text):
         text = f"{text[:2]}:{text[2:]}"
 
+    # 🧽 Remove excess spacing and symbols
+    text = re.sub(r"[^\w\s:]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # 🧠 Ensure proper format with "at" if date and time are both present
+    if re.search(r"\d{1,2}:\d{2}", text) and not re.search(r"\bat\b", text):
+        # Insert 'at' before time
+        text = re.sub(r"(\d{1,2}:\d{2})", r"at \1", text)
+
     print(f"🧽 Cleaned time input: {text} (original was: {original})")
     return parse(text)
+
 
 
 
