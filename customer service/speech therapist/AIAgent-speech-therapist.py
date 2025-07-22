@@ -1,3 +1,4 @@
+# update  07/22/25 8:00 am
 import os
 import json
 #import openai
@@ -157,40 +158,11 @@ prompt_cache = {}
 def fallback_response(prompt):
     """
     Rule-based fallback if GPT is not available or quota is exceeded.
-    Covers greetings, booking, canceling, and voicemail intent using common phrases.
-    Also responds to requests mentioning the doctor list.
+    If you want to customize this further in the future, you can re-enable
+    rule-based matching (e.g., for greetings, booking, etc).
+    For now, this just returns the original input prompt as-is.
     """
-    prompt_lower = prompt.lower()
-
-    # Greeting-related keywords
-    greeting_keywords = ["hello", "hi", "good morning", "good afternoon", "good evening", "hey", "greetings", "salaam", "marhaba"]
-
-    # Booking-related keywords
-    booking_keywords = ["book", "make", "schedule", "appointment", "visit", "slot", "reserve"]
-
-    # Canceling-related keywords
-    cancel_keywords = ["cancel", "reschedule", "change", "remove", "delete"]
-
-    # Voicemail-related keywords
-    voicemail_keywords = ["message", "voicemail", "leave", "say something", "record", "note"]
-
-    # 📋 Doctor listing logic
-    if "list of doctors" in prompt_lower or "available doctors" in prompt_lower:
-        doctor_names = ", ".join(googleid_dr_name_map.values())
-        return f"The available doctors are: {doctor_names}. Please say the name of the doctor you'd like to book with."
-
-    # Rule-based intent matching
-    if any(kw in prompt_lower for kw in greeting_keywords):
-        return "This is an AI Agen Welcome to Epic Therapist Clinic! Would you like to book an appointment, cancel one, or leave a message?"
-    elif any(kw in prompt_lower for kw in booking_keywords):
-        return "Sure, I can help you book an appointment. Please tell me the doctor name, here is the doctors list."
-    elif any(kw in prompt_lower for kw in cancel_keywords):
-        return "Okay, I can help cancel your appointment. Can you please tell me your name and appointment time?"
-    elif any(kw in prompt_lower for kw in voicemail_keywords):
-        return "Alright, please leave your message after the beep."
-    else:
-        #return "Sorry, I didn’t understand. Would you like to book, cancel, or leave a message?"
-        return prompt
+    return prompt
 
 def gpt_speak(prompt):
     """
@@ -601,11 +573,10 @@ def voice():
 
         lower = speech_result.lower()
 
-        # 👋 Detect if the user only said a greeting (e.g., "hello")
-        # We'll re-prompt politely without advancing or treating this as an intent
-        greeting_words = ["hello", "hi", "hey", "good morning", "good afternoon", "good evening"]
-        if lower in greeting_words:
-            print(f"👋 Greeting detected: '{lower}', re-prompting intent question")
+        # 🚫 Fully ignore 'hello' and similar junk — no response, no retry, no stage change
+        junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
+        if not lower.strip() or lower.strip() in junk_inputs:
+            print(f"⛔ Ignored junk input: '{lower}' — re-prompting without response")
             gather = Gather(
                 input="speech",
                 action="/voice",
@@ -619,7 +590,6 @@ def voice():
             return str(resp)
 
         # ✅ Booking appointment intent
-        # Check if booking-related keywords appear in the speech
         if any(word in lower for word in ["book", "booking", "appointment", "schedule", "make", "reserve", "meet"]):
             print(f"📅 Intent to book recognized → advancing to 'booking' stage")
 
@@ -695,13 +665,135 @@ def voice():
             print(f"❓ Unclear intent: '{lower}' → re-prompting for intent choice")
             session_data[call_sid]["stage"] = "intent"
 
-            # Ask the user again what they want to do
             resp.say(gpt_speak(
                 "Sorry, I didn’t catch that. Would you like to book an appointment, cancel one, or leave a message?"
             ))
             return str(resp)
 
+    elif stage == "booking":
+        # ----------------------------------------------------------------------
+        # 📍 Booking flow: the caller has just been asked to name a doctor.
+        # Our task here is to identify which doctor they said and, if successful,
+        # proceed to ask what time they’d like to book.
+        # ----------------------------------------------------------------------
 
+        if "retry_booking" not in session_data[call_sid]:
+            session_data[call_sid]["retry_booking"] = 0
+
+        spoken_text = speech_result.lower().strip() if speech_result else ""
+        print(f"dr name raw: {spoken_text}")
+
+        # 🚫 Silently ignore junk like "hello", "hi", or silence
+        junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
+        if not spoken_text or spoken_text in junk_inputs:
+            print(f"⏩ Skipping junk doctor input: '{spoken_text}' — re-prompting without retry")
+            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+            gather.say(gpt_speak("Please say the full name of the doctor you'd like to book with."))
+            resp.append(gather)
+            return str(resp)
+
+        matched_id = None
+        spoken_text_clean = spoken_text.replace("dr", "").replace(".", "").strip()
+
+        # ------------------------------------------------------------------
+        # 🔍 1. Partial substring match (allow partials like "al", "alaa")
+        # ------------------------------------------------------------------
+        partial_matches = []
+        for doc_id, friendly in googleid_dr_name_map.items():
+            friendly_lower = friendly.lower()
+            if spoken_text_clean in friendly_lower or friendly_lower in spoken_text_clean:
+                partial_matches.append((doc_id, friendly))
+
+        if len(partial_matches) == 1:
+            matched_id = partial_matches[0][0]
+            print(f"✅ Partial match with: {partial_matches[0][1]}")
+
+        # ------------------------------------------------------------------
+        # 🤖 2. GPT fallback (only if 2+ words)
+        # ------------------------------------------------------------------
+        if matched_id is None and len(spoken_text.split()) >= 2:
+            extracted = extract_doctor_name(speech_result)
+            if extracted:
+                extracted_lower = extracted.lower()
+                for doc_id, friendly in googleid_dr_name_map.items():
+                    if extracted_lower in friendly.lower() or friendly.lower() in extracted_lower:
+                        matched_id = doc_id
+                        break
+
+        # ------------------------------------------------------------------
+        # ❌ 3. Still no match → count as retry
+        # ------------------------------------------------------------------
+        if matched_id is None:
+            print(f"❌ No doctor match for: '{spoken_text}'")
+            session_data[call_sid]["retry_booking"] += 1
+            retries = session_data[call_sid]["retry_booking"]
+
+            if retries >= 3:
+                resp.say(gpt_speak(
+                    "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
+                    "Please call us again when convenient. Goodbye."
+                ))
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+            doctor_list = ", ".join(googleid_dr_name_map.values())
+            retry_prompt = (
+                f"I couldn't match that to a doctor. Available doctors are: {doctor_list}. "
+                "Please say the full name again."
+            )
+            gather.say(gpt_speak(retry_prompt))
+            resp.append(gather)
+            return str(resp)
+
+        # ------------------------------------------------------------------
+        # ✅ 4. Success → Proceed to ask for time
+        # ------------------------------------------------------------------
+        session_data[call_sid]["doctor_id"] = matched_id
+        session_data[call_sid]["stage"] = "ask_time_date"
+
+        gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+        friendly_name = googleid_dr_name_map[matched_id]
+        time_prompt = f"What time would you like to book with {friendly_name}?"
+        gather.say(gpt_speak(time_prompt))
+        resp.append(gather)
+        return str(resp)
+
+    elif stage == "confirmed":
+            # ------------------------------------------------------------
+            # 📍 We're in the final stage of booking: "confirmed"
+            # At this point, we already have:
+            #   - the selected doctor ID (calendar ID)
+            #   - the chosen time (from previous step)
+            #   - possibly other metadata like name or phone (optional)
+            # So now we simply finalize the confirmation
+            # ------------------------------------------------------------
+
+            # 🆔 Get the doctor calendar ID from session
+            doctor_id = session_data[call_sid].get("doctor_id")
+
+            # 🧾 (Optional) Extract previously stored event start time if you saved it,
+            # but here we'll just tell the user the confirmation message again.
+            # You could store event_start in session if needed for more precision.
+
+            # 🧑‍⚕️ Get the friendly doctor name to include in voice prompt
+            doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
+
+            # 🎤 Compose a confirmation message using GPT for a friendly tone
+            confirmation_message = f"Your appointment with {doctor_name} has been successfully booked. We look forward to seeing you. Goodbye!"
+
+            # 🗣️ Say the confirmation message to the caller
+            resp.say(gpt_speak(confirmation_message))
+
+            # 📞 End the call politely
+            resp.hangup()
+
+            # 🧹 Clear the session data so this call session doesn’t persist in memory
+            session_data.pop(call_sid, None)
+
+            # 📤 Return the TwiML <Response> to Twilio to execute the hangup and message
+            return str(resp)
     elif stage == "cancel_appointment":
             # ----------------------------------------------------------------------
             # 🔄 This stage handles when a user wants to cancel an appointment
@@ -852,249 +944,7 @@ def voice():
             # 📤 Step 9: Return TwiML to Twilio to speak the result
             # ----------------------------------------------------------------------
             return str(resp)
-
-
-    
-   
-
-    elif stage == "booking":
-        # ----------------------------------------------------------------------
-        # 📍 Booking flow: the caller has just been asked to name a doctor.
-        # Our task here is to identify which doctor they said and, if successful,
-        # proceed to ask what time they’d like to book.
-        # ----------------------------------------------------------------------
-
-        # ✅ Initialize retry counter for booking stage if not already present
-        # This prevents KeyError when incrementing retries below.
-        if "retry_booking" not in session_data[call_sid]:
-            session_data[call_sid]["retry_booking"] = 0  # 🔁 Used to limit failed attempts
-
-        # 🗣️ 1) Capture and clean the caller’s speech input
-        # 🎤 Step 1: Capture the doctor's name as spoken by the caller.
-        # Convert the input to lowercase for consistent comparison (case-insensitive matching).
-        spoken_text = speech_result.lower().strip() if speech_result else ""
-        print(f"dr name raw: {spoken_text}")
-
-        # 🚫 Skip processing if no valid input was received or it's likely a system fallback
-        if not spoken_text or spoken_text in {"hello", "hi", "hey"} or len(spoken_text.split()) <= 1:
-            # Re-prompt the caller — don't treat this as a doctor name
-            session_data[call_sid]["retry_booking"] += 1
-            retries = session_data[call_sid]["retry_booking"]
-
-            if retries >= 3:
-                # 🚫 Too many attempts — politely end the call
-                resp.say(gpt_speak(
-                    "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
-                    "Please call us again when convenient. Goodbye."
-                ))
-                resp.hangup()
-                session_data.pop(call_sid, None)  # Clean up session
-                return str(resp)
-
-            # 🔁 Re-prompt with the list of available doctors
-            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-            doctor_list = ", ".join(googleid_dr_name_map.values())
-            retry_prompt = (
-                f"I didn't recognize that name. Available doctors are: {doctor_list}. "
-                "Please say the doctor's name again."
-            )
-            gather.say(gpt_speak(retry_prompt))
-            resp.append(gather)
-            return str(resp)
-
-        matched_id = None  # Will hold the Google-calendar ID once we find a match
-
-        # ------------------------------------------------------------------
-        # 🔍 2) FAST MATCH: Try simple substring matching first (cheap & quick)
-        # ------------------------------------------------------------------
-        for doc_id, friendly in googleid_dr_name_map.items():
-            # Match if full stored name is in the spoken text OR
-            # spoken text is a subset of stored name (e.g., user says "Alaa" for "Dr. Alaa Khalil")
-            if friendly.lower() in spoken_text or spoken_text in friendly.lower():
-                matched_id = doc_id     # ✅ Found a match
-                break
-
-        # ------------------------------------------------------------------
-        # 🤖 3) FALLBACK: If no match was found, use GPT to extract the doctor name
-        # ------------------------------------------------------------------
-        if matched_id is None:
-            extracted = extract_doctor_name(speech_result)  # e.g., returns "Dr. Ahmed"
-            if extracted:
-                extracted_lower = extracted.lower()
-                for doc_id, friendly in googleid_dr_name_map.items():
-                    # 🔁 Match if extracted name is a subset or equal to stored name
-                    if extracted_lower in friendly.lower() or friendly.lower() in extracted_lower:
-                        matched_id = doc_id
-                        break
-
-        # ------------------------------------------------------------------
-        # ❌ 4) STILL NO MATCH  → handle retries (up to three attempts)
-        # ------------------------------------------------------------------
-        if matched_id is None:
-            # Increment retry counter for this call
-            session_data[call_sid]["retry_booking"] += 1
-            retries = session_data[call_sid]["retry_booking"]
-
-            if retries >= 3:
-                # 🚫 Too many attempts — politely end the call
-                resp.say(gpt_speak(
-                    "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
-                    "Please call us again when convenient. Goodbye."
-                ))
-                resp.hangup()
-                session_data.pop(call_sid, None)          # Clean up session
-                return str(resp)
-
-            # 🔁 Re-prompt with the list of available doctors
-            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-            doctor_list = ", ".join(googleid_dr_name_map.values())
-            retry_prompt = (
-                f"I didn't recognize that name. Available doctors are: {doctor_list}. "
-                "Please say the doctor's name again."
-            )
-            gather.say(gpt_speak(retry_prompt))
-            resp.append(gather)
-            return str(resp)
-
-        # ------------------------------------------------------------------
-        # ✅ 5) MATCH SUCCESS  → store doctor info and move to "ask_time_date"
-        # ------------------------------------------------------------------
-        session_data[call_sid]["doctor_id"] = matched_id                # Store calendar ID
-        session_data[call_sid]["stage"] = "ask_time_date"               # ✅ Next stage in flow
-
-        # 📅 Prompt the caller for their preferred appointment time
-        gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-        friendly_name = googleid_dr_name_map[matched_id]
-        time_prompt = f"What time would you like to book with {friendly_name}?"
-        gather.say(gpt_speak(time_prompt))
-        resp.append(gather)
-        return str(resp)
-
-
-
-    elif stage == "ask_time_date":
-        # ----------------------------------------------------------------------
-        # 📍 Time & Date Collection Stage:
-        # This stage is reached *after* a doctor has already been selected.
-        # Our task here is to collect the desired appointment date & time,
-        # check for availability, and either confirm or re-prompt.
-        # ----------------------------------------------------------------------
-
-        # 🆔 Retrieve the previously selected doctor's calendar ID from session
-        doctor_id = session_data[call_sid]["doctor_id"]
-
-        # 🕒 Try to parse the user's spoken time and date using dateparser
-        requested_dt = dateparser.parse(speech_result)
-        print(f"spoken date and time: {requested_dt}")
-
-        if not requested_dt:
-            # ⚠️ If parsing fails, prompt the user again (no need to list doctors again)
-            gather = Gather(
-                   input="speech",
-                   action="/voice",
-                   method="POST",
-                   timeout=SPEECH_INPUT_DURATION,
-                   speech_model="phone_call",  # 📞 Improve transcription for phone calls
-                   hints=(
-                            "August 5th at 10 AM, July 30 at 3 PM, next Monday at 4 PM, "
-                            "Tuesday August 13th at 2 PM, Friday at 9 in the morning, "
-                            "September 1st at 11 AM"
-                        )  # 🧠 Help Twilio expect full date/time expressions
-                    )
-
-
-            # 🗣️ Improved voice prompt for clearer instructions
-            gather.say(gpt_speak(
-                 "Please say the appointment date and time. You can say things like "
-                 "'August fifth at ten A M', 'July thirtieth at three P M', or 'Monday August twelfth at four in the afternoon'."
-                ))
-            
-            
-            resp.append(gather)
-            return str(resp)
-
-        # ⏰ Round down to the top of the hour (for 30-minute slots)
-        event_start = requested_dt.replace(minute=0, second=0, microsecond=0)
-        event_end = event_start + timedelta(minutes=30)
-
-        # 📆 Connect to Google Calendar API
-        calendar = build("calendar", "v3", credentials=creds)
-
-        # 🔍 Check for any existing events that overlap with this time
-        events = calendar.events().list(
-            calendarId=doctor_id,
-            timeMin=event_start.isoformat() + "Z",
-            timeMax=event_end.isoformat() + "Z",
-            singleEvents=True
-        ).execute()
-
-        if events["items"]:
-            # ❌ Time slot is already taken — ask again (no need to repeat doctor)
-            gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",
-                hints="2 PM, 10 AM, next Tuesday"
-            )
-            gather.say(gpt_speak("This time is not available. Please choose another day and time."))
-            resp.append(gather)
-            return str(resp)
-
-        # ✅ No conflict — save and confirm booking
-        session_data[call_sid]["stage"] = "confirmed"
-
-        # 📋 Create the calendar event
-        event = {
-            "summary": f"Appointment for {call_sid}",
-            "start": {"dateTime": event_start.isoformat(), "timeZone": "UTC"},
-            "end": {"dateTime": event_end.isoformat(), "timeZone": "UTC"},
-        }
-
-        calendar.events().insert(calendarId=doctor_id, body=event).execute()
-
-        # 🔊 Confirm the appointment to the caller
-        friendly_time = event_start.strftime("%A at %I %p")
-        friendly_name = googleid_dr_name_map[doctor_id]
-        resp.say(gpt_speak(f"Your appointment with {friendly_name} is confirmed on {friendly_time}. Thank you!"))
-
-        return str(resp)
-
-    elif stage == "confirmed":
-        # ------------------------------------------------------------
-        # 📍 We're in the final stage of booking: "confirmed"
-        # At this point, we already have:
-        #   - the selected doctor ID (calendar ID)
-        #   - the chosen time (from previous step)
-        #   - possibly other metadata like name or phone (optional)
-        # So now we simply finalize the confirmation
-        # ------------------------------------------------------------
-
-        # 🆔 Get the doctor calendar ID from session
-        doctor_id = session_data[call_sid].get("doctor_id")
-
-        # 🧾 (Optional) Extract previously stored event start time if you saved it,
-        # but here we'll just tell the user the confirmation message again.
-        # You could store event_start in session if needed for more precision.
-
-        # 🧑‍⚕️ Get the friendly doctor name to include in voice prompt
-        doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
-
-        # 🎤 Compose a confirmation message using GPT for a friendly tone
-        confirmation_message = f"Your appointment with {doctor_name} has been successfully booked. We look forward to seeing you. Goodbye!"
-
-        # 🗣️ Say the confirmation message to the caller
-        resp.say(gpt_speak(confirmation_message))
-
-        # 📞 End the call politely
-        resp.hangup()
-
-        # 🧹 Clear the session data so this call session doesn’t persist in memory
-        session_data.pop(call_sid, None)
-
-        # 📤 Return the TwiML <Response> to Twilio to execute the hangup and message
-        return str(resp)
+      
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
