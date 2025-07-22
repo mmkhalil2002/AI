@@ -840,26 +840,24 @@ def voice():
     elif stage == "ask_time_date":
         # ----------------------------------------------------------------------
         # 📍 Time & Date Collection Stage:
-        # After a doctor has been selected, we ask for desired date & time,
-        # check availability, and if free, move to collect name/phone/address.
+        # User has selected a doctor. Ask for preferred time, check availability.
+        # If slot is available, proceed to collect name, phone, and address.
         # ----------------------------------------------------------------------
 
         from datetime import timedelta
-        import re
 
-        # 🔧 Global setting for appointment duration (change as needed)
-        APPOINTMENT_DURATION_MINUTES = 30  # or 15 or 60
+        # 🔧 Global setting (set this at top of your script if needed)
+        APPOINTMENT_DURATION_MINUTES = 30
 
-        # 🆔 Doctor ID from previous stage
+        # 🆔 Doctor ID from session
         doctor_id = session_data[call_sid]["doctor_id"]
 
-       
-        # 🧠 Parse the spoken result into datetime
+        # 🔍 Try parsing user's input using the global smart_parse_time()
         requested_dt = smart_parse_time(speech_result)
         print(f"spoken date and time: {requested_dt}")
 
         if not requested_dt:
-            # 🗣 Re-prompt if parsing failed
+            # ⚠️ Couldn't understand time — prompt again
             gather = Gather(
                 input="speech",
                 action="/voice",
@@ -872,14 +870,14 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ⏰ Round down to the hour, create time slot
+        # ⏰ Round to top of hour and calculate end time
         event_start = requested_dt.replace(minute=0, second=0, microsecond=0)
         event_end = event_start + timedelta(minutes=APPOINTMENT_DURATION_MINUTES)
 
         # 📅 Connect to Google Calendar
         calendar = build("calendar", "v3", credentials=creds)
 
-        # 🔍 Check for conflicts
+        # 🔍 Check for overlapping events
         events = calendar.events().list(
             calendarId=doctor_id,
             timeMin=event_start.isoformat() + "+00:00",
@@ -888,7 +886,7 @@ def voice():
         ).execute()
 
         if events["items"]:
-            # ❌ Time is taken — prompt again
+            # ❌ Time slot is taken
             gather = Gather(
                 input="speech",
                 action="/voice",
@@ -900,7 +898,7 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ✅ Available — move to name collection
+        # ✅ No conflict — save time and ask for caller's name
         session_data[call_sid]["stage"] = "collect_name"
         session_data[call_sid]["appointment_time"] = {
             "start": event_start.isoformat() + "+00:00",
@@ -909,17 +907,17 @@ def voice():
 
         friendly_name = googleid_dr_name_map[doctor_id]
         friendly_time = event_start.strftime("%A at %I:%M %p")
+
         gather = Gather(
             input="speech",
             action="/voice",
             method="POST",
             timeout=SPEECH_INPUT_DURATION
         )
-        gather.say(gpt_speak(
-            f"Your appointment with {friendly_name} is available on {friendly_time}. What is your full name, please?"
-        ))
+        gather.say(gpt_speak(f"Your appointment with {friendly_name} is available on {friendly_time}. What is your full name, please?"))
         resp.append(gather)
         return str(resp)
+
 
 
 
