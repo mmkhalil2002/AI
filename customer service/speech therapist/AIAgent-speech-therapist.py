@@ -1,4 +1,4 @@
-# update  07/22/25 8:30 am
+# update  07/22/25 8:45 am
 import os
 import json
 #import openai
@@ -501,6 +501,7 @@ def normalize(text):
 def voice():
     # Create a new TwiML VoiceResponse object to build the voice reply to the caller
     resp = VoiceResponse()
+    print(f"📢 voice :speech_result: {resp}")
 
     # Extract the unique call ID (SID) from the request parameters to track the session
     call_sid = request.values.get("CallSid", "")
@@ -540,7 +541,7 @@ def voice():
            )
 
        # Define a friendly prompt to ask the customer what they want to do
-       prompt = "would you lke  to book an appointment, cancel an appointment  or leave a message."
+       prompt = "would you like  to book an appointment, cancel an appointment  or leave a message."
 
        # Use GPT to generate a dynamic and friendly greeting based on the prompt
        gather.say(gpt_speak(prompt))  # This adds spoken text to the <Gather> block
@@ -573,7 +574,7 @@ def voice():
         # ----------------------------------------------------------------------
 
         lower = speech_result.lower()
-        print ("intent: speech text {lower}")
+        print(f"📢 intent :speech_result: {lower}")
         # 🚫 Fully ignore 'hello' and similar junk — no response, no retry, no stage change
         junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
         if not lower.strip() or lower.strip() in junk_inputs:
@@ -682,7 +683,7 @@ def voice():
             session_data[call_sid]["retry_booking"] = 0
 
         spoken_text = speech_result.lower().strip() if speech_result else ""
-        print(f"dr name raw: {spoken_text}")
+        print(f"📢 booking :speech_result: {spoken_text}")
 
         # 🚫 Silently ignore junk like "hello", "hi", or silence
         junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
