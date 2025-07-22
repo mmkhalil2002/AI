@@ -160,11 +160,16 @@ def smart_parse_time(text):
     text = re.sub(r"\b(\d{1,2})\s+of\s+(january|february|march|april|may|june|july|august|september|october|november|december)",
                   r"\2 \1", text)
 
-    # 🧼 Fix separated digit times like "2, 3 0" or "2 3 0"
-    text = re.sub(r"(\d{1,2})\s*,\s*(\d{1,2})", r"\1:\2", text)  # "2, 30" → "2:30"
-    text = re.sub(r"(\d{1,2})\s+(\d{2})", r"\1:\2", text)        # "2 30" → "2:30"
+    # 🔁 Fix time spoken as split digits (e.g., "1, 3 0" or "1 3 0") → "1:30"
+    if re.search(r"\d{1,2}\s*[, ]\s*\d\s*0", text):
+        parts = re.findall(r"\d+", text)
+        if len(parts) >= 3:
+            text = re.sub(r"(\d{1,2})\s*[, ]\s*(\d)\s*0", f"{parts[0]}:{parts[1]}0", text)
 
-    # 🧼 Fix "230" or "1430" → "2:30" or "14:30"
+    # 🧼 Remove extra spaces, collapse multiple spaces
+    text = re.sub(r"\s+", " ", text)
+
+    # 🧼 Fix 3-digit/4-digit compact numbers
     if re.fullmatch(r"\d{3}", text):
         text = f"{text[0]}:{text[1:]}"
     elif re.fullmatch(r"\d{4}", text):
@@ -172,6 +177,7 @@ def smart_parse_time(text):
 
     print(f"🧽 Cleaned time input: {text} (original was: {original})")
     return parse(text)
+
 
 
 
