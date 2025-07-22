@@ -574,7 +574,7 @@ def voice():
         # ----------------------------------------------------------------------
 
         lower = speech_result.lower()
-        print(f"📢 intent :speech_result: {lower}")
+        print(f"📢 intent :speech_result: {lower.strip()}")
         # 🚫 Fully ignore 'hello' and similar junk — no response, no retry, no stage change
         junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
         if not lower.strip() or lower.strip() in junk_inputs:
