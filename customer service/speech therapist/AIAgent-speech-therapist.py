@@ -856,77 +856,83 @@ def voice():
         if "retry_booking" not in session_data[call_sid]:
             session_data[call_sid]["retry_booking"] = 0  # 🔁 Used to limit failed attempts
 
-        # 🗣️ 1) Capture the caller’s speech and normalize to lowercase
-        spoken_text = speech_result.lower()
-        print(f"dr name {spoken_text}")
-        spoken_norm = normalize(spoken_text)  # 🧽 Cleaned version for matching
-        matched_id = None  # Will hold the Google Calendar ID if matched
+        # 🗣️ 1) Capture and clean the caller’s speech input
+        # 🎤 Step 1: Capture the doctor's name as spoken by the caller.
+        # Convert the input to lowercase for consistent comparison (case-insensitive matching).
+        spoken_text = speech_result.lower().strip() if speech_result else ""
+        print(f"dr name raw: {spoken_text}")
 
-        # ------------------------------------------------------------------
-        # 🔍 2) FAST MATCH: Try direct or substring match first
-        # ------------------------------------------------------------------
-        for doc_id, friendly in googleid_dr_name_map.items():
-            friendly_norm = normalize(friendly)
-            # ✅ Match if full name in speech OR speech in full name
-            if friendly_norm in spoken_norm or spoken_norm in friendly_norm:
-                matched_id = doc_id
-                break
-
-        # ------------------------------------------------------------------
-        # 🔁 2b) TOKEN MATCH: Try token-level match if above fails
-        # ------------------------------------------------------------------
-        if matched_id is None:
-            for doc_id, friendly in googleid_dr_name_map.items():
-                friendly_norm = normalize(friendly)
-                for token in spoken_norm.split():
-                    if token in friendly_norm:
-                        matched_id = doc_id
-                        break
-                if matched_id:
-                    break
-
-        # ------------------------------------------------------------------
-        # 🤖 3) FALLBACK: Use GPT to extract doctor name if still unmatched
-        # ------------------------------------------------------------------
-        if matched_id is None:
-            extracted = extract_doctor_name(speech_result)  # e.g., returns "Dr. Alaa"
-            if extracted:
-                extracted_norm = normalize(extracted)
-                for doc_id, friendly in googleid_dr_name_map.items():
-                    friendly_norm = normalize(friendly)
-                    # ✅ Match if overlap between extracted name and stored name
-                    if extracted_norm in friendly_norm or friendly_norm in extracted_norm:
-                        matched_id = doc_id
-                        break
-                if matched_id is None:
-                    # Try token match on extracted name
-                    for doc_id, friendly in googleid_dr_name_map.items():
-                        friendly_norm = normalize(friendly)
-                        for token in extracted_norm.split():
-                            if token in friendly_norm:
-                                matched_id = doc_id
-                                break
-                        if matched_id:
-                            break
-
-        # ------------------------------------------------------------------
-        # ❌ 4) STILL NO MATCH  → handle retries (up to three attempts)
-        # ------------------------------------------------------------------
-        if matched_id is None:
+        # 🚫 Skip processing if no valid input was received or it's likely a system fallback
+        if not spoken_text or spoken_text in {"hello", "hi", "hey"} or len(spoken_text.split()) <= 1:
+            # Re-prompt the caller — don't treat this as a doctor name
             session_data[call_sid]["retry_booking"] += 1
             retries = session_data[call_sid]["retry_booking"]
 
             if retries >= 3:
-                # 🚫 Too many failed attempts — end the call
+                # 🚫 Too many attempts — politely end the call
                 resp.say(gpt_speak(
                     "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
                     "Please call us again when convenient. Goodbye."
                 ))
                 resp.hangup()
-                session_data.pop(call_sid, None)
+                session_data.pop(call_sid, None)  # Clean up session
                 return str(resp)
 
-            # 🔁 Prompt user again with available doctor names
+            # 🔁 Re-prompt with the list of available doctors
+            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+            doctor_list = ", ".join(googleid_dr_name_map.values())
+            retry_prompt = (
+                f"I didn't recognize that name. Available doctors are: {doctor_list}. "
+                "Please say the doctor's name again."
+            )
+            gather.say(gpt_speak(retry_prompt))
+            resp.append(gather)
+            return str(resp)
+
+        matched_id = None  # Will hold the Google-calendar ID once we find a match
+
+        # ------------------------------------------------------------------
+        # 🔍 2) FAST MATCH: Try simple substring matching first (cheap & quick)
+        # ------------------------------------------------------------------
+        for doc_id, friendly in googleid_dr_name_map.items():
+            # Match if full stored name is in the spoken text OR
+            # spoken text is a subset of stored name (e.g., user says "Alaa" for "Dr. Alaa Khalil")
+            if friendly.lower() in spoken_text or spoken_text in friendly.lower():
+                matched_id = doc_id     # ✅ Found a match
+                break
+
+        # ------------------------------------------------------------------
+        # 🤖 3) FALLBACK: If no match was found, use GPT to extract the doctor name
+        # ------------------------------------------------------------------
+        if matched_id is None:
+            extracted = extract_doctor_name(speech_result)  # e.g., returns "Dr. Ahmed"
+            if extracted:
+                extracted_lower = extracted.lower()
+                for doc_id, friendly in googleid_dr_name_map.items():
+                    # 🔁 Match if extracted name is a subset or equal to stored name
+                    if extracted_lower in friendly.lower() or friendly.lower() in extracted_lower:
+                        matched_id = doc_id
+                        break
+
+        # ------------------------------------------------------------------
+        # ❌ 4) STILL NO MATCH  → handle retries (up to three attempts)
+        # ------------------------------------------------------------------
+        if matched_id is None:
+            # Increment retry counter for this call
+            session_data[call_sid]["retry_booking"] += 1
+            retries = session_data[call_sid]["retry_booking"]
+
+            if retries >= 3:
+                # 🚫 Too many attempts — politely end the call
+                resp.say(gpt_speak(
+                    "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
+                    "Please call us again when convenient. Goodbye."
+                ))
+                resp.hangup()
+                session_data.pop(call_sid, None)          # Clean up session
+                return str(resp)
+
+            # 🔁 Re-prompt with the list of available doctors
             gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
             doctor_list = ", ".join(googleid_dr_name_map.values())
             retry_prompt = (
@@ -938,13 +944,12 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # ✅ 5) MATCH SUCCESS → store doctor info and proceed to ask time
+        # ✅ 5) MATCH SUCCESS  → store doctor info and move to "ask_time_date"
         # ------------------------------------------------------------------
-        print ("doctor found matched id {matched_id} go to time and date")
-        session_data[call_sid]["doctor_id"] = matched_id
-        session_data[call_sid]["stage"] = "ask_time_date"  # ⏭️ Next stage: ask for time
+        session_data[call_sid]["doctor_id"] = matched_id                # Store calendar ID
+        session_data[call_sid]["stage"] = "ask_time_date"               # ✅ Next stage in flow
 
-        # 🗓️ Prompt the user for preferred appointment time
+        # 📅 Prompt the caller for their preferred appointment time
         gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
         friendly_name = googleid_dr_name_map[matched_id]
         time_prompt = f"What time would you like to book with {friendly_name}?"
