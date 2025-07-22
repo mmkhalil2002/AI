@@ -501,7 +501,7 @@ def normalize(text):
 def voice():
     # Create a new TwiML VoiceResponse object to build the voice reply to the caller
     resp = VoiceResponse()
-    print(f"📢 voice :speech_result: {resp}")
+    print(f"📢 voice :speech_result: {resp.strip()}")
 
     # Extract the unique call ID (SID) from the request parameters to track the session
     call_sid = request.values.get("CallSid", "")
@@ -683,7 +683,7 @@ def voice():
             session_data[call_sid]["retry_booking"] = 0
 
         spoken_text = speech_result.lower().strip() if speech_result else ""
-        print(f"📢 booking :speech_result: {spoken_text}")
+        print(f"📢 booking :speech_result: {spoken_text.strip()}")
 
         # 🚫 Silently ignore junk like "hello", "hi", or silence
         junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
