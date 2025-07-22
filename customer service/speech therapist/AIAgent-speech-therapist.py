@@ -508,8 +508,7 @@ def voice():
 
     # Retrieve the customer's speech input (transcribed by Twilio's Speech-to-Text)
     speech_result = request.values.get("SpeechResult", "").strip()
-    print ("intro:  speech result from customer {speech_result}")
-
+    print(f"📢 voice :speech_result: {speech_result}")
     # Determine the current interaction stage (default to "intro" if not previously set)
     stage = session_data.get(call_sid, {}).get("stage", "intro")
     """
