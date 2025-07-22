@@ -1,4 +1,4 @@
-# update  07/22/25 8:00 am
+# update  07/22/25 8:30 am
 import os
 import json
 #import openai
@@ -507,6 +507,7 @@ def voice():
 
     # Retrieve the customer's speech input (transcribed by Twilio's Speech-to-Text)
     speech_result = request.values.get("SpeechResult", "").strip()
+    print ("intro:  speech result from customer {speech_result}")
 
     # Determine the current interaction stage (default to "intro" if not previously set)
     stage = session_data.get(call_sid, {}).get("stage", "intro")
@@ -539,7 +540,7 @@ def voice():
            )
 
        # Define a friendly prompt to ask the customer what they want to do
-       prompt = "Greet the customer cheerfully and ask if they want to book an appointment, cancel an appointment  or leave a message."
+       prompt = "would you lke  to book an appointment, cancel an appointment  or leave a message."
 
        # Use GPT to generate a dynamic and friendly greeting based on the prompt
        gather.say(gpt_speak(prompt))  # This adds spoken text to the <Gather> block
@@ -572,7 +573,7 @@ def voice():
         # ----------------------------------------------------------------------
 
         lower = speech_result.lower()
-
+        print ("intent: speech text {lower}")
         # 🚫 Fully ignore 'hello' and similar junk — no response, no retry, no stage change
         junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
         if not lower.strip() or lower.strip() in junk_inputs:
