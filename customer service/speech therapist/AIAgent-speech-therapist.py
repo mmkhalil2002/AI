@@ -1,4 +1,4 @@
-# update  07/22/25 8:45 am
+# update  07/22/25 2:45 pm
 import os
 import json
 #import openai
@@ -794,42 +794,44 @@ def voice():
     elif stage == "ask_time_date":
         # ----------------------------------------------------------------------
         # 📍 Time & Date Collection Stage:
-        # This stage is reached *after* a doctor has already been selected.
-        # Our task here is to collect the desired appointment date & time,
-        # check for availability, and either confirm or re-prompt.
+        # User has selected a doctor, now we collect date & time and confirm availability.
+        # If available, we proceed to collect the customer's name, phone, and address.
         # ----------------------------------------------------------------------
 
         from datetime import timedelta
 
-        # 🆔 Retrieve the previously selected doctor's calendar ID from session
+        # 🕓 Global setting for appointment length (e.g. 15, 30, or 60 minutes)
+        APPOINTMENT_DURATION_MINUTES = 30
+
+        # 🆔 Previously selected doctor
         doctor_id = session_data[call_sid]["doctor_id"]
 
-        # 🕒 Try to parse the user's spoken time and date using dateparser
+        # 🗣 Parse spoken datetime
         requested_dt = dateparser.parse(speech_result)
         print(f"spoken date and time: {requested_dt}")
 
         if not requested_dt:
-            # ⚠️ If parsing fails, prompt the user again (no need to list doctors again)
+            # 🗓️ Retry if parsing failed
             gather = Gather(
                 input="speech",
                 action="/voice",
                 method="POST",
                 timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",  # 📞 Improve call transcription
-                hints="tomorrow at 2 PM, next Monday at 10 AM, Friday at 1 PM"  # 🧠 Help Twilio parse time
+                speech_model="phone_call",
+                hints="tomorrow at 2 PM, next Monday at 10 AM"
             )
             gather.say(gpt_speak("Please say the appointment date and time, like 'Tomorrow at 2 PM' or 'Friday at 11 in the morning'."))
             resp.append(gather)
             return str(resp)
 
-        # ⏰ Round down to the top of the hour (for 30-minute slots)
+        # ⏰ Round to top of hour and calculate end time based on config
         event_start = requested_dt.replace(minute=0, second=0, microsecond=0)
-        event_end = event_start + timedelta(minutes=30)
+        event_end = event_start + timedelta(minutes=APPOINTMENT_DURATION_MINUTES)
 
-        # 📆 Connect to Google Calendar API
+        # 🔗 Google Calendar API
         calendar = build("calendar", "v3", credentials=creds)
 
-        # 🔍 Check for any existing events that overlap with this time
+        # 🔍 Check availability
         events = calendar.events().list(
             calendarId=doctor_id,
             timeMin=event_start.isoformat() + "+00:00",
@@ -838,44 +840,125 @@ def voice():
         ).execute()
 
         if events["items"]:
-            # ❌ Time slot is already taken — ask again (no need to repeat doctor)
+            # ❌ Slot not available
             gather = Gather(
                 input="speech",
                 action="/voice",
                 method="POST",
                 timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",
-                hints="2 PM, 10 AM, next Tuesday"
+                speech_model="phone_call"
             )
             gather.say(gpt_speak("This time is not available. Please choose another day and time."))
             resp.append(gather)
             return str(resp)
 
-        # ✅ No conflict — save and confirm booking
+        # ✅ Slot is available, ask for caller name
+        session_data[call_sid]["stage"] = "collect_name"
+        session_data[call_sid]["appointment_time"] = {
+            "start": event_start.isoformat() + "+00:00",
+            "end": event_end.isoformat() + "+00:00"
+        }
+
+        friendly_name = googleid_dr_name_map[doctor_id]
+        friendly_time = event_start.strftime("%A at %I %p")
+        gather = Gather(
+            input="speech",
+            action="/voice",
+            method="POST",
+            timeout=SPEECH_INPUT_DURATION
+        )
+        gather.say(gpt_speak(
+            f"Your appointment with {friendly_name} is available on {friendly_time}. What is your full name, please?"
+        ))
+        resp.append(gather)
+        return str(resp)
+    elif stage == "collect_name":
+        # ----------------------------------------------------------------------
+        # 🧍 Collect Customer Name
+        # ----------------------------------------------------------------------
+        name = speech_result.strip()
+        print(f"📛 collect_name : Collected name: {name}")
+
+        if not name or len(name.split()) < 2:
+            # ⚠️ Retry if too short or unclear
+            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+            gather.say(gpt_speak("I didn't catch your full name. Please say your full name again."))
+            resp.append(gather)
+            return str(resp)
+
+        # ✅ Store name and move to phone number
+        session_data[call_sid]["customer"] = {"name": name}
+        session_data[call_sid]["stage"] = "collect_phone"
+
+        gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+        gather.say(gpt_speak("Thanks. What is your phone number, please?"))
+        resp.append(gather)
+        return str(resp)
+
+    elif stage == "collect_phone":
+        # ----------------------------------------------------------------------
+        # 📞 Collect Phone Number
+        # ----------------------------------------------------------------------
+        phone = speech_result.strip()
+        print(f"📱 collect_phone: Collected phone: {phone}")
+
+        if not phone or not any(char.isdigit() for char in phone):
+            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+            gather.say(gpt_speak("I didn’t understand your phone number. Please say it again clearly."))
+            resp.append(gather)
+            return str(resp)
+
+        # ✅ Store phone and move to address
+        session_data[call_sid]["customer"]["phone"] = phone
+        session_data[call_sid]["stage"] = "collect_address"
+
+        gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+        gather.say(gpt_speak("Got it. Now, can you please tell me your full address?"))
+        resp.append(gather)
+        return str(resp)
+
+    elif stage == "collect_address":
+        # ----------------------------------------------------------------------
+        # 🏠 Collect Address and Confirm Appointment
+        # ----------------------------------------------------------------------
+        address = speech_result.strip()
+        print(f"📬 collect_address: Collected address: {address}")
+
+        if not address or len(address.split()) < 3:
+            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+            gather.say(gpt_speak("Please say your full address again."))
+            resp.append(gather)
+            return str(resp)
+
+        # ✅ Store address
+        session_data[call_sid]["customer"]["address"] = address
         session_data[call_sid]["stage"] = "confirmed"
 
-        # 📋 Create the calendar event
+        # 📆 Create appointment in calendar
+        doctor_id = session_data[call_sid]["doctor_id"]
+        start = session_data[call_sid]["appointment_time"]["start"]
+        end = session_data[call_sid]["appointment_time"]["end"]
+        customer = session_data[call_sid]["customer"]
+
+        calendar = build("calendar", "v3", credentials=creds)
         event = {
-            "summary": f"Appointment for {call_sid}",
-            "start": {
-                "dateTime": event_start.isoformat() + "+00:00",
-                "timeZone": "UTC"
-            },
-            "end": {
-                "dateTime": event_end.isoformat() + "+00:00",
-                "timeZone": "UTC"
-            },
+            "summary": f"Appointment for {customer['name']}",
+            "description": f"Phone: {customer['phone']}\nAddress: {customer['address']}",
+            "start": {"dateTime": start, "timeZone": "UTC"},
+            "end": {"dateTime": end, "timeZone": "UTC"},
         }
 
         calendar.events().insert(calendarId=doctor_id, body=event).execute()
 
-        # 🔊 Confirm the appointment to the caller
-        friendly_time = event_start.strftime("%A at %I %p")
+        # 🗣 Confirm to caller
         friendly_name = googleid_dr_name_map[doctor_id]
-        resp.say(gpt_speak(f"Your appointment with {friendly_name} is confirmed on {friendly_time}. Thank you!"))
+        event_dt = dateparser.parse(start)
+        friendly_time = event_dt.strftime("%A at %I:%M %p")
+        resp.say(gpt_speak(f"Thank you, {customer['name']}. Your appointment with {friendly_name} is confirmed on {friendly_time}. Goodbye!"))
 
+        # ✅ Clean up session
+        session_data.pop(call_sid, None)
         return str(resp)
-
 
 
     elif stage == "confirmed":
