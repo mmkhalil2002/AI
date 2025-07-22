@@ -501,7 +501,7 @@ def normalize(text):
 def voice():
     # Create a new TwiML VoiceResponse object to build the voice reply to the caller
     resp = VoiceResponse()
-    print(f"📢 voice :speech_result: {resp.strip()}")
+    
 
     # Extract the unique call ID (SID) from the request parameters to track the session
     call_sid = request.values.get("CallSid", "")
