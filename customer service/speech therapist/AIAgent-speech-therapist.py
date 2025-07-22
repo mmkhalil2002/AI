@@ -940,6 +940,7 @@ def voice():
         # ------------------------------------------------------------------
         # ✅ 5) MATCH SUCCESS → store doctor info and proceed to ask time
         # ------------------------------------------------------------------
+        print ("doctor found matched id {matched_id} go to time and date")
         session_data[call_sid]["doctor_id"] = matched_id
         session_data[call_sid]["stage"] = "ask_time_date"  # ⏭️ Next stage: ask for time
 
