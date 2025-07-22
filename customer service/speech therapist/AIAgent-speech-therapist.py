@@ -592,102 +592,115 @@ def voice():
        return str(resp)
 
     elif stage == "intent":
+        # ----------------------------------------------------------------------
+        # 🎯 Intent detection stage: figure out if the caller wants to:
+        #  1. Book an appointment
+        #  2. Cancel an appointment
+        #  3. Leave a voicemail
+        # ----------------------------------------------------------------------
+
         lower = speech_result.lower()
-       # Check if the word "message" appears in the user's spoken input (case-insensitive)
-        # ✅ Booking appointment intent
-        # 👋 Avoid mistaking greetings for intent
+
+        # 👋 Detect if the user only said a greeting (e.g., "hello")
+        # We'll re-prompt politely without advancing or treating this as an intent
         greeting_words = ["hello", "hi", "hey", "good morning", "good afternoon", "good evening"]
         if lower in greeting_words:
-            resp.say(gpt_speak("Would you like to book an appointment, cancel one, or leave a message?"))
-            session_data[call_sid]["stage"] = "intent"
+            print(f"👋 Greeting detected: '{lower}', re-prompting intent question")
+            gather = Gather(
+                input="speech",
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION
+            )
+            gather.say(gpt_speak(
+                "Please tell me if you'd like to book an appointment, cancel one, or leave a message."
+            ))
+            resp.append(gather)
             return str(resp)
 
         # ✅ Booking appointment intent
-        # Check if the word "book" or related terms appear in the user's spoken input
+        # Check if booking-related keywords appear in the speech
         if any(word in lower for word in ["book", "booking", "appointment", "schedule", "make", "reserve", "meet"]):
+            print(f"📅 Intent to book recognized → advancing to 'booking' stage")
 
-            print(f"will go to booking")
+            # Start a fresh booking session
             session_data[call_sid] = {
                 "stage": "booking",
-                "booking": {},
-                "retry_booking": 0,
-                "retry_time": 0
-                }
+                "booking": {},            # Dictionary to store booking info
+                "retry_booking": 0,       # Retry counter for doctor name
+                "retry_time": 0           # Retry counter for time/date
+            }
 
             gather = Gather(
                 input="speech",
                 action="/voice",
                 method="POST",
                 timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",  # Optimize recognition for calls
-                hints=", ".join(googleid_dr_name_map.values())  # List of doctor names
-                )
+                speech_model="phone_call",  # Optimize STT for phone input
+                hints=", ".join(googleid_dr_name_map.values())  # Doctor name hints to improve accuracy
+            )
 
-
-            # Prompt with the list of available doctors
+            # Prompt user with the list of available doctors
             doctor_list = ", ".join(googleid_dr_name_map.values())
-            prompt = f"Great! Let's schedule your appointment. Here is the list of doctors: {doctor_list}. Please say the name of the doctor you want to book with."
+            prompt = (
+                f"Great! Let's schedule your appointment. Here is the list of doctors: {doctor_list}. "
+                "Please say the name of the doctor you want to book with."
+            )
             gather.say(gpt_speak(prompt))
             resp.append(gather)
             return str(resp)
 
+        # ✅ Voicemail intent
         elif "message" in lower or "voicemail" in lower:
+            print("📩 Intent to leave a message detected → recording voicemail")
 
-            # Update the session stage for this call to "voicemail"
-            # This is useful to track that the customer chose to leave a message
             session_data[call_sid]["stage"] = "voicemail"
 
-            # Add a spoken prompt to the response telling the customer what to do
+            # Prompt user to leave a voicemail with details
             resp.say(gpt_speak("Please leave your name, phone number, and message after the beep."))
-            """
-             📞 The caller leaves a voice message.
 
-             🔊 Twilio records the audio.
-
-             🧠 Twilio uses speech-to-text to transcribe what was said.
-
-             📬 It then sends a POST request to your /transcription endpoint with this transcription.
-            """
-            # Start recording the caller's voice message
-            # - max_length=60 means the recording will stop after 60 seconds
-            # - transcribe=True enables automatic transcription by Twilio
-            # - transcribe_callback sets the URL that Twilio will call with the transcribed text
+            # Start recording with transcription enabled
             resp.record(
                 max_length=MAX_RECORD_TIME,
-                action="/voice",  # After recording, Twilio will call this route
+                action="/voice",              # After recording, return here
                 transcribe=True,
-                transcribe_callback="/transcription"
-             )
-
-            # Convert the VoiceResponse object to an XML string and return it to Twilio
+                transcribe_callback="/transcription"  # Twilio will POST transcript to this endpoint
+            )
             return str(resp)
 
+        # ✅ Cancellation intent
         elif "cancel" in lower or "reschedule" in lower or "change" in lower:
-            # 🧠 Start a new session for cancellation
-            session_data[call_sid] = {
-                "stage": "cancel_appointment",  # Stage to collect doctor's name
-                "cancel": {},             # Holds cancel-related info
-                "retry_booking": 0         # Retry attempts allowed
-                }
+            print("❌ Intent to cancel appointment detected → entering cancellation flow")
 
-            # 🎤 Ask for the doctor's name
+            session_data[call_sid] = {
+                "stage": "cancel_appointment",  # Start cancel flow
+                "cancel": {},                   # Store cancel-related info
+                "retry_booking": 0              # Counter to retry if input is unclear
+            }
+
             gather = Gather(
-                    input="speech",
-                    action="/voice",
-                    method="POST",
-                    timeout=SPEECH_INPUT_DURATION
-                )
+                input="speech",
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION
+            )
 
             prompt = "Sure, I can help you cancel your appointment. Please say the name of the doctor you had booked with."
             gather.say(gpt_speak(prompt))
             resp.append(gather)
             return str(resp)
 
-        # ❓ Fallback: unclear intent
+        # ❓ Fallback: unclear or unsupported intent
         else:
-            resp.say(gpt_speak("Sorry, I didn’t catch that. Would you like to book an appointment, cancel one, or leave a message?"))
+            print(f"❓ Unclear intent: '{lower}' → re-prompting for intent choice")
             session_data[call_sid]["stage"] = "intent"
+
+            # Ask the user again what they want to do
+            resp.say(gpt_speak(
+                "Sorry, I didn’t catch that. Would you like to book an appointment, cancel one, or leave a message?"
+            ))
             return str(resp)
+
 
     elif stage == "cancel_appointment":
             # ----------------------------------------------------------------------
