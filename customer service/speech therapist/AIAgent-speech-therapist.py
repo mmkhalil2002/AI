@@ -681,24 +681,23 @@ def voice():
         if "retry_booking" not in session_data[call_sid]:
             session_data[call_sid]["retry_booking"] = 0
 
+        # 🗣️ Normalize the speech input
         spoken_text = speech_result.lower().strip() if speech_result else ""
-        print(f"📢 booking :speech_result: {spoken_text.strip()}")
+        spoken_text_clean = spoken_text.replace("dr", "").replace(".", "").strip()
+        print(f"📢 booking :speech_result: {spoken_text_clean}")
 
         # 🚫 Silently ignore junk like "hello", "hi", or silence
         junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
-        if not spoken_text or spoken_text in junk_inputs:
-            print(f"⏩ Skipping junk doctor input: '{spoken_text}' — re-prompting without retry")
+        if spoken_text_clean in junk_inputs or not spoken_text_clean:
+            print(f"⏩ Skipping junk doctor input: '{spoken_text_clean}' — re-prompting without retry")
             gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
             gather.say(gpt_speak("Please say the full name of the doctor you'd like to book with."))
             resp.append(gather)
             return str(resp)
 
         matched_id = None
-        spoken_text_clean = spoken_text.replace("dr", "").replace(".", "").strip()
 
-        # ------------------------------------------------------------------
-        # 🔍 1. Partial substring match (allow partials like "al", "alaa")
-        # ------------------------------------------------------------------
+        # 🔍 1. Partial match on stored doctor names
         partial_matches = []
         for doc_id, friendly in googleid_dr_name_map.items():
             friendly_lower = friendly.lower()
@@ -709,9 +708,7 @@ def voice():
             matched_id = partial_matches[0][0]
             print(f"✅ Partial match with: {partial_matches[0][1]}")
 
-        # ------------------------------------------------------------------
-        # 🤖 2. GPT fallback (only if 2+ words)
-        # ------------------------------------------------------------------
+        # 🤖 2. Fallback to GPT (only if multiple words)
         if matched_id is None and len(spoken_text.split()) >= 2:
             extracted = extract_doctor_name(speech_result)
             if extracted:
@@ -721,11 +718,9 @@ def voice():
                         matched_id = doc_id
                         break
 
-        # ------------------------------------------------------------------
-        # ❌ 3. Still no match → count as retry
-        # ------------------------------------------------------------------
+        # ❌ 3. Still no match — retry
         if matched_id is None:
-            print(f"❌ No doctor match for: '{spoken_text}'")
+            print(f"❌ No doctor match for: '{spoken_text_clean}'")
             session_data[call_sid]["retry_booking"] += 1
             retries = session_data[call_sid]["retry_booking"]
 
@@ -748,9 +743,7 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ------------------------------------------------------------------
-        # ✅ 4. Success → Proceed to ask for time
-        # ------------------------------------------------------------------
+        # ✅ 4. Success — proceed to time selection
         session_data[call_sid]["doctor_id"] = matched_id
         session_data[call_sid]["stage"] = "ask_time_date"
 
@@ -760,6 +753,7 @@ def voice():
         gather.say(gpt_speak(time_prompt))
         resp.append(gather)
         return str(resp)
+
 
     elif stage == "confirmed":
             # ------------------------------------------------------------
