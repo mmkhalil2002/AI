@@ -791,47 +791,58 @@ def voice():
         resp.append(gather)
         return str(resp)
 
+    
     elif stage == "ask_time_date":
         # ----------------------------------------------------------------------
         # 📍 Time & Date Collection Stage:
-        # User has selected a doctor, now we collect date & time and confirm availability.
-        # If available, we proceed to collect the customer's name, phone, and address.
+        # After a doctor has been selected, we ask for desired date & time,
+        # check availability, and if free, move to collect name/phone/address.
         # ----------------------------------------------------------------------
 
         from datetime import timedelta
+        import re
 
-        # 🕓 Global setting for appointment length (e.g. 15, 30, or 60 minutes)
-        APPOINTMENT_DURATION_MINUTES = 30
+        # 🔧 Global setting for appointment duration (change as needed)
+        APPOINTMENT_DURATION_MINUTES = 30  # or 15 or 60
 
-        # 🆔 Previously selected doctor
+        # 🆔 Doctor ID from previous stage
         doctor_id = session_data[call_sid]["doctor_id"]
 
-        # 🗣 Parse spoken datetime
-        requested_dt = dateparser.parse(speech_result)
+        # 🧠 Preprocess time strings like "430" → "4:30" to help dateparser
+        def smart_parse_time(text):
+            text = text.strip()
+            if re.fullmatch(r"\d{3}", text):         # e.g. "430"
+                text = f"{text[0]}:{text[1:]}"
+            elif re.fullmatch(r"\d{4}", text):       # e.g. "1230"
+                text = f"{text[:2]}:{text[2:]}"
+            return dateparser.parse(text)
+
+        # 🧠 Parse the spoken result into datetime
+        requested_dt = smart_parse_time(speech_result)
         print(f"spoken date and time: {requested_dt}")
 
         if not requested_dt:
-            # 🗓️ Retry if parsing failed
+            # 🗣 Re-prompt if parsing failed
             gather = Gather(
                 input="speech",
                 action="/voice",
                 method="POST",
                 timeout=SPEECH_INPUT_DURATION,
                 speech_model="phone_call",
-                hints="tomorrow at 2 PM, next Monday at 10 AM"
+                hints="tomorrow at 2 PM, next Monday at 10 AM, Friday at 1 PM"
             )
             gather.say(gpt_speak("Please say the appointment date and time, like 'Tomorrow at 2 PM' or 'Friday at 11 in the morning'."))
             resp.append(gather)
             return str(resp)
 
-        # ⏰ Round to top of hour and calculate end time based on config
+        # ⏰ Round down to the hour, create time slot
         event_start = requested_dt.replace(minute=0, second=0, microsecond=0)
         event_end = event_start + timedelta(minutes=APPOINTMENT_DURATION_MINUTES)
 
-        # 🔗 Google Calendar API
+        # 📅 Connect to Google Calendar
         calendar = build("calendar", "v3", credentials=creds)
 
-        # 🔍 Check availability
+        # 🔍 Check for conflicts
         events = calendar.events().list(
             calendarId=doctor_id,
             timeMin=event_start.isoformat() + "+00:00",
@@ -840,7 +851,7 @@ def voice():
         ).execute()
 
         if events["items"]:
-            # ❌ Slot not available
+            # ❌ Time is taken — prompt again
             gather = Gather(
                 input="speech",
                 action="/voice",
@@ -852,7 +863,7 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ✅ Slot is available, ask for caller name
+        # ✅ Available — move to name collection
         session_data[call_sid]["stage"] = "collect_name"
         session_data[call_sid]["appointment_time"] = {
             "start": event_start.isoformat() + "+00:00",
@@ -860,7 +871,7 @@ def voice():
         }
 
         friendly_name = googleid_dr_name_map[doctor_id]
-        friendly_time = event_start.strftime("%A at %I %p")
+        friendly_time = event_start.strftime("%A at %I:%M %p")
         gather = Gather(
             input="speech",
             action="/voice",
@@ -872,6 +883,10 @@ def voice():
         ))
         resp.append(gather)
         return str(resp)
+
+
+
+
     elif stage == "collect_name":
         # ----------------------------------------------------------------------
         # 🧍 Collect Customer Name
