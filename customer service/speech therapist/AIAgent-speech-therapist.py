@@ -671,44 +671,43 @@ def voice():
             ))
             return str(resp)
 
-    elif stage == "booking":
+    if stage == "booking":
         # ----------------------------------------------------------------------
-        # 📍 Booking flow: the caller has just been asked to name a doctor.
-        # Our task here is to identify which doctor they said and, if successful,
-        # proceed to ask what time they’d like to book.
+        # 📍 Booking flow: identify which doctor the user said
         # ----------------------------------------------------------------------
 
         if "retry_booking" not in session_data[call_sid]:
             session_data[call_sid]["retry_booking"] = 0
 
-        # 🗣️ Normalize the speech input
         spoken_text = speech_result.lower().strip() if speech_result else ""
-        spoken_text_clean = spoken_text.replace("dr", "").replace(".", "").strip()
-        print(f"📢 booking :speech_result: {spoken_text_clean}")
+        print(f"📢 booking :speech_result: {spoken_text.strip()}")
 
-        # 🚫 Silently ignore junk like "hello", "hi", or silence
+        # ❌ Silently ignore junk like "hello" or silence
         junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
-        if spoken_text_clean in junk_inputs or not spoken_text_clean:
-            print(f"⏩ Skipping junk doctor input: '{spoken_text_clean}' — re-prompting without retry")
+        if not spoken_text or spoken_text in junk_inputs:
+            print(f"⏩ Skipping junk doctor input: '{spoken_text}' — re-prompting without retry")
             gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
             gather.say(gpt_speak("Please say the full name of the doctor you'd like to book with."))
             resp.append(gather)
             return str(resp)
 
         matched_id = None
+        spoken_text_clean = spoken_text.replace("dr", "").replace(".", "").strip()
 
-        # 🔍 1. Partial match on stored doctor names
-        partial_matches = []
-        for doc_id, friendly in googleid_dr_name_map.items():
-            friendly_lower = friendly.lower()
-            if spoken_text_clean in friendly_lower or friendly_lower in spoken_text_clean:
-                partial_matches.append((doc_id, friendly))
+        # ------------------------------------------------------------------
+        # 🔍 1. Try fuzzy matching if input is short like "al"
+        # ------------------------------------------------------------------
+        import difflib
+        possible_names = {v.lower(): k for k, v in googleid_dr_name_map.items()}
+        closest = difflib.get_close_matches(spoken_text_clean, possible_names.keys(), n=1, cutoff=0.7)
+        if closest:
+            friendly = closest[0]
+            matched_id = possible_names[friendly]
+            print(f"✅ Fuzzy match with: {friendly}")
 
-        if len(partial_matches) == 1:
-            matched_id = partial_matches[0][0]
-            print(f"✅ Partial match with: {partial_matches[0][1]}")
-
-        # 🤖 2. Fallback to GPT (only if multiple words)
+        # ------------------------------------------------------------------
+        # 🧠 2. GPT fallback (only if 2+ words)
+        # ------------------------------------------------------------------
         if matched_id is None and len(spoken_text.split()) >= 2:
             extracted = extract_doctor_name(speech_result)
             if extracted:
@@ -718,9 +717,11 @@ def voice():
                         matched_id = doc_id
                         break
 
-        # ❌ 3. Still no match — retry
+        # ------------------------------------------------------------------
+        # ❌ 3. Still no match → count as retry
+        # ------------------------------------------------------------------
         if matched_id is None:
-            print(f"❌ No doctor match for: '{spoken_text_clean}'")
+            print(f"❌ No doctor match for: '{spoken_text}'")
             session_data[call_sid]["retry_booking"] += 1
             retries = session_data[call_sid]["retry_booking"]
 
@@ -743,7 +744,9 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ✅ 4. Success — proceed to time selection
+        # ------------------------------------------------------------------
+        # ✅ 4. Success → Proceed to ask for time
+        # ------------------------------------------------------------------
         session_data[call_sid]["doctor_id"] = matched_id
         session_data[call_sid]["stage"] = "ask_time_date"
 
@@ -753,6 +756,7 @@ def voice():
         gather.say(gpt_speak(time_prompt))
         resp.append(gather)
         return str(resp)
+
 
 
     elif stage == "confirmed":
