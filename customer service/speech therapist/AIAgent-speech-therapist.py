@@ -223,7 +223,7 @@ def gpt_speak(prompt):
     print(f"🔑 Using API Key (first 8 chars): {OPENAI_API_KEY[:8] if OPENAI_API_KEY else 'Not set'}")
     if USE_GPT == False:
         fallback_response (prompt)
-    else
+    else:
         # Use cached response if available
         if prompt in prompt_cache:
             print("🔁 Returning cached GPT response.")
