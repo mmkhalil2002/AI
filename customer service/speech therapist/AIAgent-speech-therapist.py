@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 #import Re
 from dotenv import load_dotenv
 from datetime import timedelta
+# At the top of AIAgent-speech-therapist.py
+from googleapiclient.discovery import build
 
 # ---------------- Project Structure -----------------
 # speech_AI_agent/
