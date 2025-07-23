@@ -42,6 +42,7 @@ MAX_NUMBER_DR_RETRY = int(os.getenv("MAX_NUMBER_DR_RETRY", 3))
 MAX_APPT_RETRIEVED_FROM_CALNDER = int(os.getenv("MAX_APPT_RETRIEVED_FROM_CALENDER", 50))
 # 🔧 Appointment duration in minutes (can be 15, 30, 60)
 APPOINTMENT_DURATION_MINUTES = 30
+USE_GPT = False
 # Load admin numbers and doctor mapping
 with open("admin_numbers.txt") as f:
     admin_numbers = [line.strip() for line in f.readlines() if line.strip()]
@@ -220,33 +221,35 @@ def gpt_speak(prompt):
     """
     print(f"📨 Prompt: {prompt}")
     print(f"🔑 Using API Key (first 8 chars): {OPENAI_API_KEY[:8] if OPENAI_API_KEY else 'Not set'}")
+    if USE_GPT == False:
+        fallback_response (prompt)
+    else
+        # Use cached response if available
+        if prompt in prompt_cache:
+            print("🔁 Returning cached GPT response.")
+            return prompt_cache[prompt]
 
-    # Use cached response if available
-    if prompt in prompt_cache:
-        print("🔁 Returning cached GPT response.")
-        return prompt_cache[prompt]
+        try:
+            # Send request to OpenAI ChatGPT API
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a helpful and friendly assistant for a therapy clinic."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
 
-    try:
-        # Send request to OpenAI ChatGPT API
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful and friendly assistant for a therapy clinic."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7
-        )
+            # Extract and store response
+            message = response.choices[0].message.content.strip()
+            prompt_cache[prompt] = message
+            print(f"✅ GPT response: {message}")
+            return message
 
-        # Extract and store response
-        message = response.choices[0].message.content.strip()
-        prompt_cache[prompt] = message
-        print(f"✅ GPT response: {message}")
-        return message
-
-    except Exception as e:
-        print(f"❌ GPT error: {e}")
-        print("↪️ Falling back to rule-based logic.")
-        return fallback_response(prompt)
+        except Exception as e:
+            print(f"❌ GPT error: {e}")
+            print("↪️ Falling back to rule-based logic.")
+            return fallback_response(prompt)
 
 
 
