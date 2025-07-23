@@ -819,7 +819,7 @@ def voice():
             )
             retry_prompt = (
                 f"I couldn't match that to a doctor. Available doctors are: {doctor_list_str}. "
-                "Please say the full name again."
+                "Please say your first name again."
             )
             gather.say(gpt_speak(retry_prompt),VOICE)
             resp.append(gather)
