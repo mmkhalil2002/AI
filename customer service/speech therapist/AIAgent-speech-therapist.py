@@ -826,11 +826,11 @@ def voice():
         return str(resp)
 
     
-    from datetime import timedelta
-    from twilio.twiml.voice_response import VoiceResponse, Gather
+from datetime import timedelta
+from twilio.twiml.voice_response import VoiceResponse, Gather
 
     # 🔧 Appointment duration in minutes (can be 15, 30, 60)
-    APPOINTMENT_DURATION_MINUTES = 30
+APPOINTMENT_DURATION_MINUTES = 30
 
     # ----------------------------------------------------------------------
     # 📍 Stage: ask_time_date
