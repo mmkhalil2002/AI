@@ -840,16 +840,7 @@ def voice():
     #  3. If available, confirms and moves to collect name/phone/address
     # ----------------------------------------------------------------------
 
-    elif stage == "ask_time_date":
-        from datetime import timedelta
-        from googleapiclient.discovery import build
-
-        # 🔧 Global setting: appointment duration (e.g. 15, 30, 60 minutes)
-        APPOINTMENT_DURATION_MINUTES = 30
-
-        
-        resp.append(gather)
-        return str(resp)
+    
 
 
 
