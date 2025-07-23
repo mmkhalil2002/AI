@@ -756,7 +756,7 @@ def voice():
                 timeout=SPEECH_INPUT_DURATION,
                 hints=doctor_list_str
             )
-            gather.say(gpt_speak("Please say the full name of the doctor you'd like to book with."),VOICE)
+            gather.say(gpt_speak("Please say your first name of the doctor you'd like to book with."),VOICE)
             resp.append(gather)
             return str(resp)
 
@@ -959,28 +959,40 @@ def voice():
         resp.append(gather)
         return str(resp)
 
-    elif stage == "collect_last_name":
-        # ----------------------------------------------------------------------
-        # 🧍 Stage: Collect Last Name
-        # ----------------------------------------------------------------------
-        last_name = speech_result.strip()
-        print(f"📛 collect_last_name : Collected last name: {last_name}")
+    elif stage == "collect_first_name":
+    first = speech_result.strip()
+    print(f"👤 collect_first_name: {first}")
+    if not first:
+        gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+        gather.say(gpt_speak("Sorry, I didn't hear your first name. Please say it again."), VOICE)
+        resp.append(gather)
+        return str(resp)
 
-        if not last_name or len(last_name.split()) > 2:
-            # ⚠️ If unclear or too long, ask again
+    session_data[call_sid]["customer"] = {"first_name": first}
+    session_data[call_sid]["stage"] = "collect_last_name"
+
+    gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+    gather.say(gpt_speak("Thanks. And what's your last name?"), VOICE)
+    resp.append(gather)
+    return str(resp)
+
+    elif stage == "collect_last_name":
+        last = speech_result.strip()
+        print(f"👤 collect_last_name: {last}")
+        if not last:
             gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-            gather.say(gpt_speak("Sorry, please say your last name again."), VOICE)
+            gather.say(gpt_speak("Sorry, I didn't catch your last name. Please repeat it."), VOICE)
             resp.append(gather)
             return str(resp)
 
-        # ✅ Save last name, and move to phone number
-        session_data[call_sid]["customer"]["last_name"] = last_name
+        session_data[call_sid]["customer"]["last_name"] = last
         session_data[call_sid]["stage"] = "collect_phone"
 
         gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-        gather.say(gpt_speak("Thanks. What is your phone number, please?"), VOICE)
+        gather.say(gpt_speak("Got it. What is your phone number, please?"), VOICE)
         resp.append(gather)
         return str(resp)
+
 
     elif stage == "collect_phone":
         # ----------------------------------------------------------------------
@@ -1006,46 +1018,39 @@ def voice():
 
     elif stage == "collect_address":
         # ----------------------------------------------------------------------
-        # 🏠 Collect Address and Confirm Appointment
+        # 🏠 Collect Customer Address and Finalize Appointment
         # ----------------------------------------------------------------------
         address = speech_result.strip()
         print(f"📬 collect_address: Collected address: {address}")
 
-        if not address or len(address.split()) < 3:
-            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-            gather.say(gpt_speak("Please say your full address again."),VOICE)
-            resp.append(gather)
-            return str(resp)
-
-        # ✅ Store address
         session_data[call_sid]["customer"]["address"] = address
-        session_data[call_sid]["stage"] = "confirmed"
+        session_data[call_sid]["stage"] = "completed"
 
-        # 📆 Create appointment in calendar
-        doctor_id = session_data[call_sid]["doctor_id"]
-        start = session_data[call_sid]["appointment_time"]["start"]
-        end = session_data[call_sid]["appointment_time"]["end"]
         customer = session_data[call_sid]["customer"]
+        appointment = session_data[call_sid]["appointment_time"]
+        doctor_id = session_data[call_sid]["doctor_id"]
 
+        # 🧩 Safely assemble full name from first + last name
+        full_name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
+
+        # 🛠️ Store full name for backward compatibility (optional)
+        session_data[call_sid]["customer"]["name"] = full_name
+
+        # 📅 Create appointment in Google Calendar
         calendar = build("calendar", "v3", credentials=creds)
         event = {
-            "summary": f"Appointment for {customer['name']}",
-            "description": f"Phone: {customer['phone']}\nAddress: {customer['address']}",
-            "start": {"dateTime": start, "timeZone": "UTC"},
-            "end": {"dateTime": end, "timeZone": "UTC"},
+            "summary": f"Appointment for {full_name}",
+            "description": f"Name: {full_name}\nPhone: {customer.get('phone')}\nAddress: {address}",
+            "start": {"dateTime": appointment["start"], "timeZone": "America/Chicago"},
+            "end": {"dateTime": appointment["end"], "timeZone": "America/Chicago"},
         }
 
         calendar.events().insert(calendarId=doctor_id, body=event).execute()
 
-        # 🗣 Confirm to caller
-        friendly_name = googleid_dr_name_map[doctor_id]
-        event_dt = dateparser.parse(start)
-        friendly_time = event_dt.strftime("%A at %I:%M %p")
-        resp.say(gpt_speak(f"Thank you, {customer['name']}. Your appointment with {friendly_name} is confirmed on {friendly_time}. Goodbye!"),VOICE)
-
-        # ✅ Clean up session
-        session_data.pop(call_sid, None)
+        # ✅ Confirm to user
+        resp.say(gpt_speak(f"Thanks {full_name}. Your appointment has been confirmed. Goodbye!"), VOICE)
         return str(resp)
+
 
 
     elif stage == "confirmed":
