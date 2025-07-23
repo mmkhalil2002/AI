@@ -156,27 +156,38 @@ from openai import APIConnectionError, AuthenticationError, RateLimitError
 def smart_parse_time(text):
     import dateparser
     import re
+    from datetime import datetime
 
     if not text:
         return None
 
     original_text = text
-    # 🧽 Normalize "2 30", "2, 30", "2 3 0", etc. → "2:30"
+
+    # 🧽 Normalize things like "2 30" or "2, 30" → "2:30"
     text = re.sub(r"\b(\d{1,2})[,\s]+(\d{2})\b", r"\1:\2", text)
 
-    # 🧽 Remove ordinal suffixes (e.g. 3rd → 3)
+    # 🧽 Remove ordinal suffixes like "3rd", "22nd" → "3", "22"
     text = re.sub(r"(\d+)(st|nd|rd|th)", r"\1", text, flags=re.IGNORECASE)
 
-    # 🧼 Clean multiple spaces and add "at" if missing
+    # 🧼 Trim and fix format if it’s just a time
     text = re.sub(r"\s+", " ", text.strip())
     if re.match(r"\d{1,2}:\d{2}$", text):  # e.g. "2:30"
         text = "at " + text
 
     print(f"🧽 Cleaned time input: {text} (original was: {original_text})")
 
+    # 🧠 Parse using dateparser (default is future)
     dt = dateparser.parse(text, settings={"PREFER_DATES_FROM": "future"})
-    return dt
 
+    # ✅ Override the year to be the current year if parsed
+    if dt:
+        now = datetime.now()
+
+        # If the spoken text includes a **month name**, we assume user meant *this year*
+        if re.search(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b", text, re.IGNORECASE):
+            dt = dt.replace(year=now.year)
+
+    return dt
 
 
 
