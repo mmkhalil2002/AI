@@ -960,21 +960,21 @@ def voice():
         return str(resp)
 
     elif stage == "collect_first_name":
-    first = speech_result.strip()
-    print(f"👤 collect_first_name: {first}")
-    if not first:
+        first = speech_result.strip()
+        print(f"👤 collect_first_name: {first}")
+        if not first:
+            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+            gather.say(gpt_speak("Sorry, I didn't hear your first name. Please say it again."), VOICE)
+            resp.append(gather)
+            return str(resp)
+
+        session_data[call_sid]["customer"] = {"first_name": first}
+        session_data[call_sid]["stage"] = "collect_last_name"
+
         gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-        gather.say(gpt_speak("Sorry, I didn't hear your first name. Please say it again."), VOICE)
+        gather.say(gpt_speak("Thanks. And what's your last name?"), VOICE)
         resp.append(gather)
         return str(resp)
-
-    session_data[call_sid]["customer"] = {"first_name": first}
-    session_data[call_sid]["stage"] = "collect_last_name"
-
-    gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-    gather.say(gpt_speak("Thanks. And what's your last name?"), VOICE)
-    resp.append(gather)
-    return str(resp)
 
     elif stage == "collect_last_name":
         last = speech_result.strip()
