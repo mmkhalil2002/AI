@@ -840,18 +840,22 @@ def voice():
     #  3. If available, confirms and moves to collect name/phone/address
     # ----------------------------------------------------------------------
 
-    def ask_time_date(speech_result, session_data, call_sid, creds, resp, googleid_dr_name_map):
+    elif stage == "ask_time_date":
+        from datetime import timedelta
         from googleapiclient.discovery import build
 
-        # 🆔 Retrieve selected doctor ID from session
+        # 🔧 Global setting: appointment duration (e.g. 15, 30, 60 minutes)
+        APPOINTMENT_DURATION_MINUTES = 30
+
+        # 🆔 The doctor was already selected in previous stage
         doctor_id = session_data[call_sid]["doctor_id"]
 
-        # 🧠 Parse voice result into a datetime object using your cleaned function
+        # 🧠 Clean and parse voice input using smart_parse_time (defined outside)
         requested_dt = smart_parse_time(speech_result)
         print(f"spoken date and time: {requested_dt}")
 
         if not requested_dt:
-            # ⚠️ Failed to parse — ask again with speech hints
+            # ⚠️ Re-prompt if the time was not understood
             gather = Gather(
                 input="speech",
                 action="/voice",
@@ -860,20 +864,19 @@ def voice():
                 speech_model="phone_call",
                 hints="tomorrow at 2 PM, next Monday at 10 AM, Friday at 12:30"
             )
-            gather.say(gpt_speak("Please say the appointment date and time, like 'Tomorrow at 2 PM' or 'Friday at 12:30 in the afternoon'."))
+            gather.say(gpt_speak(
+                "Please say the appointment date and time, like 'Tomorrow at 2 PM' or 'Friday at 12:30 in the afternoon'."
+            ))
             resp.append(gather)
             return str(resp)
 
-        # ✅ Strip seconds & microseconds, preserve hour & minutes
+        # ✅ Strip seconds and preserve hour:minute for accurate reservation
         event_start = requested_dt.replace(second=0, microsecond=0)
         event_end = event_start + timedelta(minutes=APPOINTMENT_DURATION_MINUTES)
+        print(f"📅 Checking slot: {event_start} to {event_end}")
 
-        print(f"📆 Booking time window: {event_start} to {event_end}")
-
-        # 📅 Connect to Google Calendar API
+        # 📆 Query Google Calendar for this doctor
         calendar = build("calendar", "v3", credentials=creds)
-
-        # 🔍 Check for conflicts during this slot
         events = calendar.events().list(
             calendarId=doctor_id,
             timeMin=event_start.isoformat() + "+00:00",
@@ -882,7 +885,7 @@ def voice():
         ).execute()
 
         if events["items"]:
-            # ❌ Time conflict — re-prompt
+            # ❌ Slot is taken — re-prompt
             gather = Gather(
                 input="speech",
                 action="/voice",
@@ -894,17 +897,18 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ✅ No conflict — save time and move to name collection
+        # ✅ Slot is free — store it and proceed to collect name
         session_data[call_sid]["stage"] = "collect_name"
         session_data[call_sid]["appointment_time"] = {
             "start": event_start.isoformat() + "+00:00",
             "end": event_end.isoformat() + "+00:00"
         }
 
-        # 🎤 Ask for caller’s name
+        # 🗓️ Format confirmation time
         friendly_name = googleid_dr_name_map[doctor_id]
-        friendly_time = event_start.strftime("%A at %I:%M %p")  # e.g. "Thursday at 12:30 PM"
+        friendly_time = event_start.strftime("%A at %I:%M %p")  # e.g., Thursday at 12:30 PM
 
+        # 🎤 Ask user for name
         gather = Gather(
             input="speech",
             action="/voice",
@@ -916,6 +920,7 @@ def voice():
         ))
         resp.append(gather)
         return str(resp)
+
 
 
 
