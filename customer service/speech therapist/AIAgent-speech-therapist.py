@@ -12,8 +12,7 @@ from datetime import datetime, timedelta
 #import Re
 from dotenv import load_dotenv
 from datetime import timedelta
-# At the top of AIAgent-speech-therapist.py
-from googleapiclient.discovery import build
+
 
 # ---------------- Project Structure -----------------
 # speech_AI_agent/
@@ -339,7 +338,7 @@ def extract_phone_number(speech_text):
 
 import re  # Import the regular expression module
 from datetime import datetime, timedelta
-from googleapiclient.discovery import build
+#from googleapiclient.discovery import build
 
 
 from typing import Optional
@@ -841,7 +840,7 @@ def voice():
 
     elif stage == "ask_time_date":
         from datetime import timedelta
-        from googleapiclient.discovery import build
+        #from googleapiclient.discovery import build
 
         # 🔧 Global setting: appointment duration (e.g. 15, 30, 60 minutes)
         APPOINTMENT_DURATION_MINUTES = 30
