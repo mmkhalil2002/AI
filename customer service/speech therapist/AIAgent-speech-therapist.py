@@ -825,7 +825,129 @@ def voice():
         resp.append(gather)
         return str(resp)
 
-    
+    elif stage == "collect_name":
+        # ----------------------------------------------------------------------
+        # 🧍 Collect Customer Name
+        # ----------------------------------------------------------------------
+        name = speech_result.strip()
+        print(f"📛 collect_name : Collected name: {name}")
+
+        if not name or len(name.split()) < 2:
+            # ⚠️ Retry if too short or unclear
+            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+            gather.say(gpt_speak("I didn't catch your full name. Please say your full name again."))
+            resp.append(gather)
+            return str(resp)
+
+        # ✅ Store name and move to phone number
+        session_data[call_sid]["customer"] = {"name": name}
+        session_data[call_sid]["stage"] = "collect_phone"
+
+        gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+        gather.say(gpt_speak("Thanks. What is your phone number, please?"))
+        resp.append(gather)
+        return str(resp)
+
+    elif stage == "collect_phone":
+        # ----------------------------------------------------------------------
+        # 📞 Collect Phone Number
+        # ----------------------------------------------------------------------
+        phone = speech_result.strip()
+        print(f"📱 collect_phone: Collected phone: {phone}")
+
+        if not phone or not any(char.isdigit() for char in phone):
+            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+            gather.say(gpt_speak("I didn’t understand your phone number. Please say it again clearly."))
+            resp.append(gather)
+            return str(resp)
+
+        # ✅ Store phone and move to address
+        session_data[call_sid]["customer"]["phone"] = phone
+        session_data[call_sid]["stage"] = "collect_address"
+
+        gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+        gather.say(gpt_speak("Got it. Now, can you please tell me your full address?"))
+        resp.append(gather)
+        return str(resp)
+
+    elif stage == "collect_address":
+        # ----------------------------------------------------------------------
+        # 🏠 Collect Address and Confirm Appointment
+        # ----------------------------------------------------------------------
+        address = speech_result.strip()
+        print(f"📬 collect_address: Collected address: {address}")
+
+        if not address or len(address.split()) < 3:
+            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+            gather.say(gpt_speak("Please say your full address again."))
+            resp.append(gather)
+            return str(resp)
+
+        # ✅ Store address
+        session_data[call_sid]["customer"]["address"] = address
+        session_data[call_sid]["stage"] = "confirmed"
+
+        # 📆 Create appointment in calendar
+        doctor_id = session_data[call_sid]["doctor_id"]
+        start = session_data[call_sid]["appointment_time"]["start"]
+        end = session_data[call_sid]["appointment_time"]["end"]
+        customer = session_data[call_sid]["customer"]
+
+        calendar = build("calendar", "v3", credentials=creds)
+        event = {
+            "summary": f"Appointment for {customer['name']}",
+            "description": f"Phone: {customer['phone']}\nAddress: {customer['address']}",
+            "start": {"dateTime": start, "timeZone": "UTC"},
+            "end": {"dateTime": end, "timeZone": "UTC"},
+        }
+
+        calendar.events().insert(calendarId=doctor_id, body=event).execute()
+
+        # 🗣 Confirm to caller
+        friendly_name = googleid_dr_name_map[doctor_id]
+        event_dt = dateparser.parse(start)
+        friendly_time = event_dt.strftime("%A at %I:%M %p")
+        resp.say(gpt_speak(f"Thank you, {customer['name']}. Your appointment with {friendly_name} is confirmed on {friendly_time}. Goodbye!"))
+
+        # ✅ Clean up session
+        session_data.pop(call_sid, None)
+        return str(resp)
+
+
+    elif stage == "confirmed":
+            # ------------------------------------------------------------
+            # 📍 We're in the final stage of booking: "confirmed"
+            # At this point, we already have:
+            #   - the selected doctor ID (calendar ID)
+            #   - the chosen time (from previous step)
+            #   - possibly other metadata like name or phone (optional)
+            # So now we simply finalize the confirmation
+            # ------------------------------------------------------------
+
+            # 🆔 Get the doctor calendar ID from session
+            doctor_id = session_data[call_sid].get("doctor_id")
+
+            # 🧾 (Optional) Extract previously stored event start time if you saved it,
+            # but here we'll just tell the user the confirmation message again.
+            # You could store event_start in session if needed for more precision.
+
+            # 🧑‍⚕️ Get the friendly doctor name to include in voice prompt
+            doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
+
+            # 🎤 Compose a confirmation message using GPT for a friendly tone
+            confirmation_message = f"Your appointment with {doctor_name} has been successfully booked. We look forward to seeing you. Goodbye!"
+
+            # 🗣️ Say the confirmation message to the caller
+            resp.say(gpt_speak(confirmation_message))
+
+            # 📞 End the call politely
+            resp.hangup()
+
+            # 🧹 Clear the session data so this call session doesn’t persist in memory
+            session_data.pop(call_sid, None)
+
+            # 📤 Return the TwiML <Response> to Twilio to execute the hangup and message
+            return str(resp)
 
 
 if __name__ == "__main__":
