@@ -43,7 +43,7 @@ MAX_APPT_RETRIEVED_FROM_CALNDER = int(os.getenv("MAX_APPT_RETRIEVED_FROM_CALENDE
 # 🔧 Appointment duration in minutes (can be 15, 30, 60)
 APPOINTMENT_DURATION_MINUTES = 30
 USE_GPT = False
-VOICE = "Polly.Kendra"
+VOICE = "Polly.Ruth"
 # Load admin numbers and doctor mapping
 with open("admin_numbers.txt") as f:
     admin_numbers = [line.strip() for line in f.readlines() if line.strip()]
