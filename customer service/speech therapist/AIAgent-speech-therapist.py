@@ -839,45 +839,48 @@ def voice():
     
     elif stage == "ask_time_date":
         # ----------------------------------------------------------------------
-        # 📍 Time & Date Collection Stage:
-        # User has selected a doctor. Ask for preferred time, check availability.
-        # If slot is available, proceed to collect name, phone, and address.
+        # 📍 Stage: ask_time_date
+        # This is reached after the caller selected a doctor.
+        # The assistant must now:
+        #   1. Parse the user's spoken date/time
+        #   2. Check Google Calendar for availability
+        #   3. If the slot is free, ask for user's name and move to next stage
         # ----------------------------------------------------------------------
 
         from datetime import timedelta
 
-        # 🔧 Global setting (set this at top of your script if needed)
+        # 🔧 Appointment duration setting (can be 15, 30, 60) — set globally
         APPOINTMENT_DURATION_MINUTES = 30
 
-        # 🆔 Doctor ID from session
+        # 🆔 The doctor was already selected in the booking stage
         doctor_id = session_data[call_sid]["doctor_id"]
 
-        # 🔍 Try parsing user's input using the global smart_parse_time()
+        # 🧠 Use smart_parse_time to clean and parse messy voice inputs like "2 30", "July 3rd 12:30"
         requested_dt = smart_parse_time(speech_result)
         print(f"spoken date and time: {requested_dt}")
 
         if not requested_dt:
-            # ⚠️ Couldn't understand time — prompt again
+            # ⚠️ If we can't parse the input, re-prompt the user
             gather = Gather(
                 input="speech",
                 action="/voice",
                 method="POST",
                 timeout=SPEECH_INPUT_DURATION,
                 speech_model="phone_call",
-                hints="tomorrow at 2 PM, next Monday at 10 AM, Friday at 1 PM"
+                hints="tomorrow at 2 PM, next Monday at 10 AM, Friday at 12:30"
             )
-            gather.say(gpt_speak("Please say the appointment date and time, like 'Tomorrow at 2 PM' or 'Friday at 11 in the morning'."))
+            gather.say(gpt_speak("Please say the appointment date and time, like 'Tomorrow at 2 PM' or 'Friday at 12:30 in the afternoon'."))
             resp.append(gather)
             return str(resp)
 
-        # ⏰ Round to top of hour and calculate end time
-        event_start = requested_dt.replace(minute=0, second=0, microsecond=0)
+        # ✅ Strip seconds/microseconds (keep hour + minutes exactly)
+        event_start = requested_dt.replace(second=0, microsecond=0)
         event_end = event_start + timedelta(minutes=APPOINTMENT_DURATION_MINUTES)
 
-        # 📅 Connect to Google Calendar
+        # 📆 Connect to Google Calendar API
         calendar = build("calendar", "v3", credentials=creds)
 
-        # 🔍 Check for overlapping events
+        # 🔍 Check if this time is already booked
         events = calendar.events().list(
             calendarId=doctor_id,
             timeMin=event_start.isoformat() + "+00:00",
@@ -886,7 +889,7 @@ def voice():
         ).execute()
 
         if events["items"]:
-            # ❌ Time slot is taken
+            # ❌ Conflict found — prompt again (keep same doctor)
             gather = Gather(
                 input="speech",
                 action="/voice",
@@ -898,23 +901,25 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ✅ No conflict — save time and ask for caller's name
+        # ✅ No conflict — store in session and proceed to name collection
         session_data[call_sid]["stage"] = "collect_name"
         session_data[call_sid]["appointment_time"] = {
             "start": event_start.isoformat() + "+00:00",
             "end": event_end.isoformat() + "+00:00"
         }
 
+        # 🔊 Confirm availability and ask for name
         friendly_name = googleid_dr_name_map[doctor_id]
         friendly_time = event_start.strftime("%A at %I:%M %p")
-
         gather = Gather(
             input="speech",
             action="/voice",
             method="POST",
             timeout=SPEECH_INPUT_DURATION
         )
-        gather.say(gpt_speak(f"Your appointment with {friendly_name} is available on {friendly_time}. What is your full name, please?"))
+        gather.say(gpt_speak(
+            f"Your appointment with {friendly_name} is available on {friendly_time}. What is your full name, please?"
+        ))
         resp.append(gather)
         return str(resp)
 
