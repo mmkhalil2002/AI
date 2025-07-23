@@ -11,6 +11,8 @@ from googleapiclient.discovery import build
 from datetime import datetime, timedelta
 #import Re
 from dotenv import load_dotenv
+from datetime import timedelta
+
 # ---------------- Project Structure -----------------
 # speech_AI_agent/
 # speech_ai_agent.py
@@ -37,7 +39,8 @@ SPEECH_INPUT_DURATION = int(os.getenv("SPEECH_INPUT_DURATION", 15))
 MAX_RECORD_TIME = int(os.getenv("MAX_RECORD_TIME", 60))
 MAX_NUMBER_DR_RETRY = int(os.getenv("MAX_NUMBER_DR_RETRY", 3))
 MAX_APPT_RETRIEVED_FROM_CALNDER = int(os.getenv("MAX_APPT_RETRIEVED_FROM_CALENDER", 50))
-
+# 🔧 Appointment duration in minutes (can be 15, 30, 60)
+APPOINTMENT_DURATION_MINUTES = 30
 # Load admin numbers and doctor mapping
 with open("admin_numbers.txt") as f:
     admin_numbers = [line.strip() for line in f.readlines() if line.strip()]
@@ -951,11 +954,6 @@ def voice():
     
     
     
-    from datetime import timedelta
-    from twilio.twiml.voice_response import VoiceResponse, Gather
-
-    # 🔧 Appointment duration in minutes (can be 15, 30, 60)
-    APPOINTMENT_DURATION_MINUTES = 30
 
     # ----------------------------------------------------------------------
     # 📍 Stage: ask_time_date
