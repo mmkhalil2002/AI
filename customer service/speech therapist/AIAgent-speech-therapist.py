@@ -911,7 +911,7 @@ def voice():
             return str(resp)
 
         # ✅ Slot is free — store it and proceed to collect name
-        session_data[call_sid]["stage"] = "collect_name"
+        session_data[call_sid]["stage"] = "collect_first_name"
         session_data[call_sid]["appointment_time"] = {
             "start": event_start.isoformat() + "+00:00",
             "end": event_end.isoformat() + "+00:00"
@@ -936,28 +936,51 @@ def voice():
 
 
 
-    elif stage == "collect_name":
-        # ----------------------------------------------------------------------
-        # 🧍 Collect Customer Name
-        # ----------------------------------------------------------------------
-        name = speech_result.strip()
-        print(f"📛 collect_name : Collected name: {name}")
+    elif stage == "collect_first_name":
+    # ----------------------------------------------------------------------
+    # 🧍 Stage: Collect First Name
+    # ----------------------------------------------------------------------
+    first_name = speech_result.strip()
+    print(f"📛 collect_first_name : Collected first name: {first_name}")
 
-        if not name or len(name.split()) < 2:
-            # ⚠️ Retry if too short or unclear
-            gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-            gather.say(gpt_speak("I didn't catch your full name. Please say your full name again."),VOICE)
-            resp.append(gather)
-            return str(resp)
-
-        # ✅ Store name and move to phone number
-        session_data[call_sid]["customer"] = {"name": name}
-        session_data[call_sid]["stage"] = "collect_phone"
-
+    if not first_name or len(first_name.split()) > 2:
+        # ⚠️ If unclear or too long, ask again
         gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-        gather.say(gpt_speak("Thanks. What is your phone number, please?"),VOICE)
+        gather.say(gpt_speak("I didn't catch that clearly. Please say your first name again."), VOICE)
         resp.append(gather)
         return str(resp)
+
+    # ✅ Save and move to last name
+    session_data[call_sid]["customer"] = {"first_name": first_name}
+    session_data[call_sid]["stage"] = "collect_last_name"
+
+    gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+    gather.say(gpt_speak("Thank you. Now, what is your last name?"), VOICE)
+    resp.append(gather)
+    return str(resp)
+
+elif stage == "collect_last_name":
+    # ----------------------------------------------------------------------
+    # 🧍 Stage: Collect Last Name
+    # ----------------------------------------------------------------------
+    last_name = speech_result.strip()
+    print(f"📛 collect_last_name : Collected last name: {last_name}")
+
+    if not last_name or len(last_name.split()) > 2:
+        # ⚠️ If unclear or too long, ask again
+        gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+        gather.say(gpt_speak("Sorry, please say your last name again."), VOICE)
+        resp.append(gather)
+        return str(resp)
+
+    # ✅ Save last name, and move to phone number
+    session_data[call_sid]["customer"]["last_name"] = last_name
+    session_data[call_sid]["stage"] = "collect_phone"
+
+    gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
+    gather.say(gpt_speak("Thanks. What is your phone number, please?"), VOICE)
+    resp.append(gather)
+    return str(resp)
 
     elif stage == "collect_phone":
         # ----------------------------------------------------------------------
