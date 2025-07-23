@@ -42,7 +42,8 @@ MAX_NUMBER_DR_RETRY = int(os.getenv("MAX_NUMBER_DR_RETRY", 3))
 MAX_APPT_RETRIEVED_FROM_CALNDER = int(os.getenv("MAX_APPT_RETRIEVED_FROM_CALENDER", 50))
 # 🔧 Appointment duration in minutes (can be 15, 30, 60)
 APPOINTMENT_DURATION_MINUTES = 30
-USE_GPT = True
+USE_GPT = False
+VOICE = Polly.Kendra
 # Load admin numbers and doctor mapping
 with open("admin_numbers.txt") as f:
     admin_numbers = [line.strip() for line in f.readlines() if line.strip()]
@@ -222,7 +223,7 @@ def gpt_speak(prompt):
     print(f"📨 Prompt: {prompt}")
     print(f"🔑 Using API Key (first 8 chars): {OPENAI_API_KEY[:8] if OPENAI_API_KEY else 'Not set'}")
     if USE_GPT == False:
-        fallback_response (prompt)
+        return fallback_response (prompt)
     else:
         # Use cached response if available
         if prompt in prompt_cache:
@@ -595,7 +596,7 @@ def voice():
        prompt = "would you like  to book an appointment, cancel an appointment  or leave a message."
 
        # Use GPT to generate a dynamic and friendly greeting based on the prompt
-       gather.say(gpt_speak(prompt))  # This adds spoken text to the <Gather> block
+       gather.say(gpt_speak(prompt),VOICE)  # This adds spoken text to the <Gather> block
        """
        Speaks the message inside <Say>
 
@@ -669,7 +670,7 @@ def voice():
                 f"Great! Let's schedule your appointment. Here is the list of doctors: {doctor_list}. "
                 "Please say the name of the doctor you want to book with."
             )
-            gather.say(gpt_speak(prompt))
+            gather.say(gpt_speak(prompt),VOICE)
             resp.append(gather)
             return str(resp)
 
@@ -680,7 +681,7 @@ def voice():
             session_data[call_sid]["stage"] = "voicemail"
 
             # Prompt user to leave a voicemail with details
-            resp.say(gpt_speak("Please leave your name, phone number, and message after the beep."))
+            resp.say(gpt_speak("Please leave your name, phone number, and message after the beep."),VOICE)
 
             # Start recording with transcription enabled
             resp.record(
@@ -709,7 +710,7 @@ def voice():
             )
 
             prompt = "Sure, I can help you cancel your appointment. Please say the name of the doctor you had booked with."
-            gather.say(gpt_speak(prompt))
+            gather.say(gpt_speak(prompt),VOICE)
             resp.append(gather)
             return str(resp)
 
@@ -720,7 +721,7 @@ def voice():
 
             resp.say(gpt_speak(
                 "Sorry, I didn’t catch that. Would you like to book an appointment, cancel one, or leave a message?"
-            ))
+            ),VOICE)
             return str(resp)
     elif stage == "booking":
         # ----------------------------------------------------------------------
@@ -755,7 +756,7 @@ def voice():
                 timeout=SPEECH_INPUT_DURATION,
                 hints=doctor_list_str
             )
-            gather.say(gpt_speak("Please say the full name of the doctor you'd like to book with."))
+            gather.say(gpt_speak("Please say the full name of the doctor you'd like to book with."),VOICE)
             resp.append(gather)
             return str(resp)
 
@@ -803,7 +804,7 @@ def voice():
                 resp.say(gpt_speak(
                     "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
                     "Please call us again when convenient. Goodbye."
-                ))
+                ),VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
@@ -820,7 +821,7 @@ def voice():
                 f"I couldn't match that to a doctor. Available doctors are: {doctor_list_str}. "
                 "Please say the full name again."
             )
-            gather.say(gpt_speak(retry_prompt))
+            gather.say(gpt_speak(retry_prompt),VOICE)
             resp.append(gather)
             return str(resp)
 
@@ -839,7 +840,7 @@ def voice():
             method="POST",
             timeout=SPEECH_INPUT_DURATION
         )
-        gather.say(gpt_speak(time_prompt))
+        gather.say(gpt_speak(time_prompt),VOICE)
         resp.append(gather)
         return str(resp)
 
@@ -878,7 +879,7 @@ def voice():
             )
             gather.say(gpt_speak(
                 "Please say the appointment date and time, like 'Tomorrow at 2 PM' or 'Friday at 12:30 in the afternoon'."
-            ))
+            ),VOICE)
             resp.append(gather)
             return str(resp)
 
@@ -929,7 +930,7 @@ def voice():
         )
         gather.say(gpt_speak(
             f"Your appointment with {friendly_name} is available on {friendly_time}. What is your full name, please?"
-        ))
+        ),VOICE)
         resp.append(gather)
         return str(resp)
 
@@ -945,7 +946,7 @@ def voice():
         if not name or len(name.split()) < 2:
             # ⚠️ Retry if too short or unclear
             gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-            gather.say(gpt_speak("I didn't catch your full name. Please say your full name again."))
+            gather.say(gpt_speak("I didn't catch your full name. Please say your full name again."),VOICE)
             resp.append(gather)
             return str(resp)
 
@@ -954,7 +955,7 @@ def voice():
         session_data[call_sid]["stage"] = "collect_phone"
 
         gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-        gather.say(gpt_speak("Thanks. What is your phone number, please?"))
+        gather.say(gpt_speak("Thanks. What is your phone number, please?"),VOICE)
         resp.append(gather)
         return str(resp)
 
@@ -967,7 +968,7 @@ def voice():
 
         if not phone or not any(char.isdigit() for char in phone):
             gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-            gather.say(gpt_speak("I didn’t understand your phone number. Please say it again clearly."))
+            gather.say(gpt_speak("I didn’t understand your phone number. Please say it again clearly."),VOICE)
             resp.append(gather)
             return str(resp)
 
@@ -976,7 +977,7 @@ def voice():
         session_data[call_sid]["stage"] = "collect_address"
 
         gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-        gather.say(gpt_speak("Got it. Now, can you please tell me your full address?"))
+        gather.say(gpt_speak("Got it. Now, can you please tell me your full address?"),VOICE)
         resp.append(gather)
         return str(resp)
 
@@ -989,7 +990,7 @@ def voice():
 
         if not address or len(address.split()) < 3:
             gather = Gather(input="speech", action="/voice", method="POST", timeout=SPEECH_INPUT_DURATION)
-            gather.say(gpt_speak("Please say your full address again."))
+            gather.say(gpt_speak("Please say your full address again."),VOICE)
             resp.append(gather)
             return str(resp)
 
@@ -1017,7 +1018,7 @@ def voice():
         friendly_name = googleid_dr_name_map[doctor_id]
         event_dt = dateparser.parse(start)
         friendly_time = event_dt.strftime("%A at %I:%M %p")
-        resp.say(gpt_speak(f"Thank you, {customer['name']}. Your appointment with {friendly_name} is confirmed on {friendly_time}. Goodbye!"))
+        resp.say(gpt_speak(f"Thank you, {customer['name']}. Your appointment with {friendly_name} is confirmed on {friendly_time}. Goodbye!"),VOICE)
 
         # ✅ Clean up session
         session_data.pop(call_sid, None)
@@ -1048,7 +1049,7 @@ def voice():
             confirmation_message = f"Your appointment with {doctor_name} has been successfully booked. We look forward to seeing you. Goodbye!"
 
             # 🗣️ Say the confirmation message to the caller
-            resp.say(gpt_speak(confirmation_message))
+            resp.say(gpt_speak(confirmation_message),VOICE)
 
             # 📞 End the call politely
             resp.hangup()
