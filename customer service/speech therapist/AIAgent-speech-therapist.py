@@ -750,7 +750,7 @@ def voice():
             ),VOICE)
             return str(resp)
 
-            
+
     elif stage == "booking":
         # ----------------------------------------------------------------------
         # 📍 Booking flow: the caller has just been asked to name a doctor.
@@ -1231,79 +1231,86 @@ def voice():
 
 
     elif stage == "cancel_appt_by_phone_number":
-            # ----------------------------------------------------------------------
-            # 📞 Step 1: Extract the phone number from the caller's spoken response
-            # ----------------------------------------------------------------------
-            # speech_result is deined in voice procedure
-            phone = extract_phone_number(speech_result)  # e.g., "01012345678"
+        # ----------------------------------------------------------------------
+        # 📞 Step 1: Extract the phone number from the caller's spoken response
+        # ----------------------------------------------------------------------
+        phone = extract_phone_number(speech_result)  # e.g., "01012345678"
+        print(f"📱 cancel_appt_by_phone_number: Extracted phone → {phone}")
 
-            # ----------------------------------------------------------------------
-            # 🧠 Step 2: Retrieve the doctor’s name previously saved in session
-            # This was stored during the "cancel_phone" stage
-            # ----------------------------------------------------------------------
-            doctor = session_data[call_sid]["cancel"].get("doctor")
+        # ----------------------------------------------------------------------
+        # 🧠 Step 2: Retrieve the doctor’s name previously saved in session
+        # This was stored during the "cancel_appointment" stage
+        # ----------------------------------------------------------------------
+        doctor = session_data[call_sid]["cancel"].get("doctor")
+        print(f"🧑‍⚕️ cancel_appt_by_phone_number: Retrieved doctor name → {doctor}")
 
-            # ----------------------------------------------------------------------
-            # 🔍 Step 3: Map the doctor name to the corresponding Google Calendar ID
-            # This allows us to locate the correct calendar for the cancellation
-            # ----------------------------------------------------------------------
-            calendar_id = googleid_dr_name_map.get(doctor.lower())
+        # ----------------------------------------------------------------------
+        # 🔍 Step 3: Reverse-map the doctor name to the corresponding calendar ID
+        # (googleid_dr_name_map is from ID → name, so we loop to find a match)
+        # ----------------------------------------------------------------------
+        calendar_id = None
+        for doc_id, friendly_name in googleid_dr_name_map.items():
+            if friendly_name.lower() == doctor.lower():
+                calendar_id = doc_id
+                break
 
-            # ----------------------------------------------------------------------
-            # 📅 Step 4: Optionally retrieve day/time spoken earlier (if collected)
-            # These can help disambiguate which appointment to cancel
-            # ----------------------------------------------------------------------
-            spoken_day  = session_data[call_sid]["cancel"].get("day")      # e.g., "Monday" or "July 14"
-            spoken_time = session_data[call_sid]["cancel"].get("time")     # e.g., "2 PM" or "14 00"
+        # ----------------------------------------------------------------------
+        # 📅 Step 4: Optionally retrieve day/time spoken earlier (if collected)
+        # These can help disambiguate which appointment to cancel
+        # ----------------------------------------------------------------------
+        spoken_day  = session_data[call_sid]["cancel"].get("day")      # e.g., "Monday" or "July 14"
+        spoken_time = session_data[call_sid]["cancel"].get("time")     # e.g., "2 PM" or "14 00"
 
-            # ----------------------------------------------------------------------
-            # ❌ Step 5: Safety check – in case doctor was not matched properly
-            # This usually shouldn't happen, but we fail gracefully
-            # ----------------------------------------------------------------------
-            if not calendar_id:
-                resp.say(gpt_speak(
-                    "Sorry, I couldn't find that doctor in our clinic system. "
-                    "Please start over and try again."
-                ))
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            # ----------------------------------------------------------------------
-            # ✅ Step 6: Attempt to cancel the appointment by phone (and optionally day/time)
-            # This uses our backend helper cancel_event_by_phone()
-            # ----------------------------------------------------------------------
-            success = cancel_event_by_phone(
-                calendar_id=calendar_id,
-                phone=phone,
-                spoken_day=spoken_day,
-                spoken_time=spoken_time,
-                creds=creds
-            )
-
-            # ----------------------------------------------------------------------
-            # 🎉 Step 7: Respond to user based on result
-            # ----------------------------------------------------------------------
-            if success:
-                # 📢 Success message
-                resp.say(gpt_speak(
-                    f"Your appointment with {doctor} has been cancelled. Thank you for calling!"
-                ))
-            else:
-                # ⚠️ Failure message — no matching appointment found
-                resp.say(gpt_speak(
-                    "I'm sorry, I couldn't find any appointment under that phone number. "
-                    "Please contact the clinic directly for help."
-                ))
-
-            # ----------------------------------------------------------------------
-            # 🧹 Step 8: Clear session data after processing
-            # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # ❌ Step 5: Safety check – in case doctor was not matched properly
+        # This usually shouldn't happen, but we fail gracefully
+        # ----------------------------------------------------------------------
+        if not calendar_id:
+            resp.say(gpt_speak(
+                "Sorry, I couldn't find that doctor in our clinic system. "
+                "Please start over and try again."
+            ))
+            resp.hangup()
             session_data.pop(call_sid, None)
-
-            # ----------------------------------------------------------------------
-            # 📤 Step 9: Return TwiML to Twilio to speak the result
-            # ----------------------------------------------------------------------
             return str(resp)
+
+        # ----------------------------------------------------------------------
+        # ✅ Step 6: Attempt to cancel the appointment by phone (and optionally day/time)
+        # This uses our backend helper cancel_event_by_phone()
+        # ----------------------------------------------------------------------
+        success = cancel_event_by_phone(
+            calendar_id=calendar_id,
+            phone=phone,
+            spoken_day=spoken_day,
+            spoken_time=spoken_time,
+            creds=creds
+        )
+
+        # ----------------------------------------------------------------------
+        # 🎉 Step 7: Respond to user based on result
+        # ----------------------------------------------------------------------
+        if success:
+            # 📢 Success message
+            resp.say(gpt_speak(
+                f"Your appointment with {doctor} has been cancelled. Thank you for calling!"
+            ))
+        else:
+            # ⚠️ Failure message — no matching appointment found
+            resp.say(gpt_speak(
+                "I'm sorry, I couldn't find any appointment under that phone number. "
+                "Please contact the clinic directly for help."
+            ))
+
+        # ----------------------------------------------------------------------
+        # 🧹 Step 8: Clear session data after processing
+        # ----------------------------------------------------------------------
+        session_data.pop(call_sid, None)
+
+        # ----------------------------------------------------------------------
+        # 📤 Step 9: Return TwiML to Twilio to speak the result
+        # ----------------------------------------------------------------------
+        return str(resp)
+
       
     
 
