@@ -602,7 +602,7 @@ def voice():
            )
 
        # Define a friendly prompt to ask the customer what they want to do
-       prompt = "would you like  to book an appointment, cancel an appointment  or leave a message."
+       prompt = "would you like  to book an appointment, cancel an appointment, reschedulle an appointment  or leave a message."
 
        # Use GPT to generate a dynamic and friendly greeting based on the prompt
        gather.say(gpt_speak(prompt),VOICE)  # This adds spoken text to the <Gather> block
@@ -631,7 +631,8 @@ def voice():
         # 🎯 Intent detection stage: figure out if the caller wants to:
         #  1. Book an appointment
         #  2. Cancel an appointment
-        #  3. Leave a voicemail
+        #  3. Reschedule an appointment
+        #  4. Leave a voicemail
         # ----------------------------------------------------------------------
 
         lower = speech_result.lower()
@@ -647,7 +648,7 @@ def voice():
                 timeout=SPEECH_INPUT_DURATION
             )
             gather.say(gpt_speak(
-                "Please tell me if you'd like to book an appointment, cancel one, or leave a message."
+                "Please tell me if you'd like to book an appointment, cancel one, reschedule, or leave a message."
             ))
             resp.append(gather)
             return str(resp)
@@ -659,9 +660,9 @@ def voice():
             # Start a fresh booking session
             session_data[call_sid] = {
                 "stage": "booking",
-                "booking": {},            # Dictionary to store booking info
-                "retry_booking": 0,       # Retry counter for doctor name
-                "retry_time": 0           # Retry counter for time/date
+                "booking": {},
+                "retry_booking": 0,
+                "retry_time": 0
             }
 
             gather = Gather(
@@ -669,11 +670,10 @@ def voice():
                 action="/voice",
                 method="POST",
                 timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",  # Optimize STT for phone input
-                hints=", ".join(googleid_dr_name_map.values())  # Doctor name hints to improve accuracy
+                speech_model="phone_call",
+                hints=", ".join(googleid_dr_name_map.values())
             )
 
-            # Prompt user with the list of available doctors
             doctor_list = ", ".join(googleid_dr_name_map.values())
             prompt = (
                 f"Great! Let's schedule your appointment. Here is the list of doctors: {doctor_list}. "
@@ -689,66 +689,94 @@ def voice():
 
             session_data[call_sid]["stage"] = "voicemail"
 
-            # Prompt user to leave a voicemail with details
             resp.say(gpt_speak("Please leave your name, phone number, and message after the beep."),VOICE)
 
-            # Start recording with transcription enabled
             resp.record(
                 max_length=MAX_RECORD_TIME,
-                action="/voice",              # After recording, return here
+                action="/voice",
                 transcribe=True,
-                transcribe_callback="/transcription"  # Twilio will POST transcript to this endpoint
+                transcribe_callback="/transcription"
             )
             return str(resp)
 
         # ✅ Cancellation intent
-        elif "cancel" in lower or "reschedule" in lower or "change" in lower:
+        elif "cancel" in lower or "delete" in lower:
             print("❌ Intent to cancel appointment detected → entering cancellation flow")
 
-
-            # 🧠 Start the cancellation flow stage in session
             session_data[call_sid] = {
-                "stage": "cancel_appointment",  # Start cancel flow
-                "cancel": {},                   # Placeholder to collect cancel info
-                "retry_booking": 0              # Counter to retry if input is unclear
+                "stage": "cancel_appointment",
+                "cancel": {},
+                "retry_booking": 0
             }
 
-            # 📋 List available doctor names from your mapping
             doctor_names = list(googleid_dr_name_map.values())
-            if len(doctor_names) > 1:
-                doctor_list = ", ".join(doctor_names[:-1]) + ", or " + doctor_names[-1]
-            else:
-                doctor_list = doctor_names[0]
+            doctor_list = ", ".join(doctor_names[:-1]) + ", or " + doctor_names[-1] if len(doctor_names) > 1 else doctor_names[0]
 
-            # 🎤 Compose a friendly spoken prompt
             prompt = (
                 f"Sure, I can help you cancel your appointment. "
                 f"We currently have appointments available with {doctor_list}. "
                 f"Please say the name of the doctor you had booked with."
             )
 
-            # 🎙️ Gather speech input from caller
             gather = Gather(
                 input="speech",
                 action="/voice",
                 method="POST",
                 timeout=SPEECH_INPUT_DURATION,
                 speech_model="phone_call",
-                hints=", ".join(doctor_names)  # Help recognizer with names
+                hints=", ".join(doctor_names)
             )
             gather.say(gpt_speak(prompt), VOICE)
             resp.append(gather)
             return str(resp)
 
-        # ❓ Fallback: unclear or unsupported intent
-        else:
-            print(f"❓ Unclear intent: '{lower}' → re-prompting for intent choice")
-            session_data[call_sid]["stage"] = "intent"
+        # 🔄 Rescheduling intent (cancel + rebook)
+        elif "reschedule" in lower or "change" in lower or "move" in lower:
+            print("🔁 Intent to reschedule detected → will cancel then rebook")
 
-            resp.say(gpt_speak(
-                "Sorry, I didn’t catch that. Would you like to book an appointment, cancel one, or leave a message?"
-            ),VOICE)
+            # 🔁 Start rescheduling flow: first cancel, then proceed to booking
+            session_data[call_sid] = {
+                "stage": "cancel_appointment",  # Start by cancelling the old appointment
+                "cancel": {},
+                "retry_booking": 0,
+                "reschedule_after_cancel": True  # 🔁 This flag tells the flow to return to booking afterward
+            }
+
+            # List doctors again for cancellation flow
+            doctor_names = list(googleid_dr_name_map.values())
+            if len(doctor_names) > 1:
+                doctor_list = ", ".join(doctor_names[:-1]) + ", or " + doctor_names[-1]
+            else:
+                doctor_list = doctor_names[0]
+
+            # Ask caller for the doctor they previously booked with
+            prompt = (
+                f"Sure, let's reschedule your appointment. "
+                f"We first need to cancel your current appointment. "
+                f"Available doctors include: {doctor_list}. Please say the name of the doctor you had booked with."
+            )
+
+            gather = Gather(
+                input="speech",
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION,
+                hints=", ".join(doctor_names)
+            )
+            gather.say(gpt_speak(prompt), VOICE)
+            resp.append(gather)
             return str(resp)
+
+            # ❓ Fallback: unclear or unsupported intent
+            else:
+                print(f"❓ Unclear intent: '{lower}' → re-prompting for intent choice")
+                session_data[call_sid]["stage"] = "intent"
+
+                resp.say(gpt_speak(
+                    "Sorry, I didn’t catch that. Would you like to book an appointment, cancel one, reschedule, or leave a message?"
+                ),VOICE)
+                return str(resp)
+
 
 
     elif stage == "booking":
@@ -1287,13 +1315,47 @@ def voice():
         )
 
         # ----------------------------------------------------------------------
-        # 🎉 Step 7: Respond to user based on result
+        # 🔁 Step 7: Handle reschedule flow — if flag was set, go directly to booking
         # ----------------------------------------------------------------------
         if success:
-            # 📢 Success message
-            resp.say(gpt_speak(
-                f"Your appointment with {doctor} has been cancelled. Thank you for calling!"
-            ))
+            # 🧽 Clear only cancel-related data but keep the reschedule flag
+            reschedule = session_data[call_sid].get("reschedule_after_cancel")
+
+            if reschedule:
+                print("🔁 Reschedule flag detected — switching to booking flow after cancellation")
+
+                # ✅ Begin new booking session
+                session_data[call_sid] = {
+                    "stage": "booking",
+                    "booking": {},
+                    "retry_booking": 0,
+                    "retry_time": 0
+                }
+
+                # 🗣️ Prompt user to begin booking again
+                gather = Gather(
+                    input="speech",
+                    action="/voice",
+                    method="POST",
+                    timeout=SPEECH_INPUT_DURATION,
+                    speech_model="phone_call",  # Optional: optimize for call audio
+                    hints=", ".join(googleid_dr_name_map.values())  # Improve doctor name recognition
+                )
+
+                doctor_list = ", ".join(googleid_dr_name_map.values())
+                prompt = (
+                    f"Okay, your previous appointment has been cancelled. "
+                    f"We currently have {doctor_list}. Please say the name of the doctor you'd like to book with."
+                )
+                gather.say(gpt_speak(prompt), VOICE)
+                resp.append(gather)
+                return str(resp)
+
+            else:
+                # 🟢 Normal success message (no reschedule)
+                resp.say(gpt_speak(
+                    f"Your appointment with {doctor} has been cancelled. Thank you for calling!"
+                ))
         else:
             # ⚠️ Failure message — no matching appointment found
             resp.say(gpt_speak(
@@ -1310,6 +1372,7 @@ def voice():
         # 📤 Step 9: Return TwiML to Twilio to speak the result
         # ----------------------------------------------------------------------
         return str(resp)
+
 
       
     
