@@ -43,6 +43,15 @@ MAX_APPT_RETRIEVED_FROM_CALNDER = int(os.getenv("MAX_APPT_RETRIEVED_FROM_CALENDE
 # 🔧 Appointment duration in minutes (can be 15, 30, 60)
 APPOINTMENT_DURATION_MINUTES = 30
 USE_GPT = False
+
+#################################################
+# Voice	          Description
+# Polly.Joanna	Friendly US female
+# Polly.Matthew	Warm US male
+# Polly.Kendra	Soft, natural US female
+# Polly.Ruth	Cheerful female (for casual tones)
+######################################################
+
 VOICE = "Polly.Joanna"
 # Load admin numbers and doctor mapping
 with open("admin_numbers.txt") as f:
@@ -819,7 +828,7 @@ def voice():
             )
             retry_prompt = (
                 f"I couldn't match that to a doctor. Available doctors are: {doctor_list_str}. "
-                "Please say your first name again."
+                "Please say the doctor name again."
             )
             gather.say(gpt_speak(retry_prompt),VOICE)
             resp.append(gather)
@@ -929,7 +938,7 @@ def voice():
             timeout=SPEECH_INPUT_DURATION
         )
         gather.say(gpt_speak(
-            f"Your appointment with {friendly_name} is available on {friendly_time}. What is your full name, please?"
+            f"Your appointment with {friendly_name} is available on {friendly_time}. What is your first name, please?"
         ),VOICE)
         resp.append(gather)
         return str(resp)
