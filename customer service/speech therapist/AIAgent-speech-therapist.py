@@ -1054,40 +1054,76 @@ def voice():
 
 
     elif stage == "confirmed":
-            # ------------------------------------------------------------
-            # 📍 We're in the final stage of booking: "confirmed"
-            # At this point, we already have:
-            #   - the selected doctor ID (calendar ID)
-            #   - the chosen time (from previous step)
-            #   - possibly other metadata like name or phone (optional)
-            # So now we simply finalize the confirmation
-            # ------------------------------------------------------------
+        # ------------------------------------------------------------
+        # 📍 We're in the final stage of booking: "confirmed"
+        # At this point, we already have:
+        #   - the selected doctor ID (calendar ID)
+        #   - the chosen time (from previous step)
+        #   - possibly other metadata like name or phone (optional)
+        # So now we simply finalize the confirmation
+        # ------------------------------------------------------------
 
-            # 🆔 Get the doctor calendar ID from session
-            doctor_id = session_data[call_sid].get("doctor_id")
+        # 🆔 Get the doctor calendar ID from session
+        doctor_id = session_data[call_sid].get("doctor_id")
 
-            # 🧾 (Optional) Extract previously stored event start time if you saved it,
-            # but here we'll just tell the user the confirmation message again.
-            # You could store event_start in session if needed for more precision.
+        # 🧑‍⚕️ Get the friendly doctor name to include in voice prompt
+        doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
 
-            # 🧑‍⚕️ Get the friendly doctor name to include in voice prompt
-            doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
+        # 🕐 Get the appointment start time from session to include in SMS/text
+        appointment_time = session_data[call_sid].get("appointment_time", {}).get("start")
+        formatted_time = ""
+        if appointment_time:
+            from datetime import datetime
+            try:
+                dt = datetime.fromisoformat(appointment_time.replace("Z", "").replace("+00:00", ""))
+                formatted_time = dt.strftime("%A, %B %d at %I:%M %p")
+            except Exception as e:
+                print("⚠️ Failed to parse appointment time for SMS:", e)
 
-            # 🎤 Compose a confirmation message using GPT for a friendly tone
-            confirmation_message = f"Your appointment with {doctor_name} has been successfully booked. We look forward to seeing you. Goodbye!"
+        # 🧾 (Optional) Extract customer info if available
+        customer = session_data[call_sid].get("customer", {})
+        customer_name = customer.get("name", "")
+        customer_phone = customer.get("phone")
 
-            # 🗣️ Say the confirmation message to the caller
-            resp.say(gpt_speak(confirmation_message),VOICE)
+        # 🎤 Compose a confirmation message using GPT for a friendly tone
+        confirmation_message = f"Your appointment with {doctor_name} has been successfully booked. We look forward to seeing you. Goodbye!"
 
-            # 📞 End the call politely
-            resp.hangup()
+        # 🗣️ Say the confirmation message to the caller
+        resp.say(gpt_speak(confirmation_message), VOICE)
 
-            # 🧹 Clear the session data so this call session doesn’t persist in memory
-            session_data.pop(call_sid, None)
+        # ------------------------------------------------------------
+        # 📤 SMS confirmation message to the customer (optional but helpful)
+        # ------------------------------------------------------------
+        if customer_phone:
+            sms_text = f"Hi {customer_name}, your appointment with {doctor_name} is confirmed"
+            if formatted_time:
+                sms_text += f" on {formatted_time}"
+            sms_text += ". Thank you for choosing Epic Therapist Clinic."
 
-            # 📤 Return the TwiML <Response> to Twilio to execute the hangup and message
-            return str(resp)
-    
+            try:
+                message = client.messages.create(
+                    body=sms_text,
+                    from_=TWILIO_PHONE_NUMBER,
+                    to=customer_phone
+                )
+                print("📩 SMS sent to customer:", customer_phone)
+                print("📤 Twilio SMS SID:", message.sid)
+                print("📤 Twilio SMS status:", message.status)
+            except Exception as e:
+                print("❌ SMS sending failed:", e)
+
+        else:
+            print("⚠️ No phone number to send SMS confirmation.")
+
+        # 📞 End the call politely
+        resp.hangup()
+
+        # 🧹 Clear the session data so this call session doesn’t persist in memory
+        session_data.pop(call_sid, None)
+
+        # 📤 Return the TwiML <Response> to Twilio to execute the hangup and message
+        return str(resp)
+
     
     
 
