@@ -1133,7 +1133,7 @@ def voice():
 
         # ✅ Store phone and move to address
         session_data[call_sid]["customer"]["phone"] = phone
-        session_data[call_sid]["stage"] = "ask_time_date"
+        session_data[call_sid]["stage"] = "collect_address"
 
         gather = Gather(
             input="speech",
@@ -1146,6 +1146,8 @@ def voice():
         gather.say(gpt_speak("Got it. Now, please say the date and time you’d like to book, for example, July 3rd at 9 AM."), VOICE)
         resp.append(gather)
         return str(resp)
+
+
 
     elif stage == "collect_address":
         # ----------------------------------------------------------------------
