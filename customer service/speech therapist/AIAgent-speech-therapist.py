@@ -976,7 +976,25 @@ def voice():
     #  2. Checks Google Calendar for availability
     #  3. If available, confirms and moves to collect name/phone/address
     # ----------------------------------------------------------------------
-    
+    def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, creds) -> bool:
+    """
+    Check if the given time range is free on the doctor's calendar.
+    Returns True if available, False if already booked.
+    """
+    from googleapiclient.discovery import build
+
+    service = build("calendar", "v3", credentials=creds)
+    events_result = service.events().list(
+        calendarId=calendar_id,
+        timeMin=start_time,
+        timeMax=end_time,
+        singleEvents=True,
+        orderBy="startTime"
+    ).execute()
+
+    events = events_result.get("items", [])
+    return len(events) == 0  # True if no conflicts
+
     elif stage == "ask_time_date":
         # 📅 Step 1: Try to extract the date and time from the user's response
         time_info = smart_parse_time(speech_result)
