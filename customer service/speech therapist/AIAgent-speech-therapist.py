@@ -1339,122 +1339,93 @@ def voice():
         return str(resp)
 
 
-
     elif stage == "cancel_appt_by_phone_number":
         # ----------------------------------------------------------------------
-        # 📞 Step 1: Extract the phone number from the caller's spoken response
+        # 📞 Step 1: Extract the phone number and store it
         # ----------------------------------------------------------------------
-        phone = extract_phone_number(speech_result)  # e.g., "01012345678"
-        print(f"📱 cancel_appt_by_phone_number: Extracted phone → {phone}")
+        phone = extract_phone_number(speech_result)
+        print(f"📱 Extracted phone → {phone}")
+        session_data[call_sid]["cancel"]["phone"] = phone
 
         # ----------------------------------------------------------------------
-        # 🧠 Step 2: Retrieve the doctor’s name previously saved in session
-        # This was stored during the "cancel_appointment" stage
+        # 🗣️ Step 2: Prompt user to now provide the date and time
         # ----------------------------------------------------------------------
+        session_data[call_sid]["stage"] = "cancel_appt_get_date"
+        
+        gather = Gather(
+            input="speech",
+            action="/voice",
+            method="POST",
+            timeout=SPEECH_INPUT_DURATION,
+            speech_model="phone_call",
+            bargeIn=True
+        )
+        gather.say(gpt_speak("Thanks. Now, please tell me the date and time of the appointment you want to cancel. For example, say July 3rd at 9 AM."), VOICE)
+        resp.append(gather)
+        return str(resp)
+
+
+    elif stage == "cancel_appt_get_date":
+        # ----------------------------------------------------------------------
+        # 🧠 Extract spoken date and time
+        # ----------------------------------------------------------------------
+        spoken_day, spoken_time = smart_parse_time(speech_result)
+        print(f"📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
+        session_data[call_sid]["cancel"]["day"] = spoken_day
+        session_data[call_sid]["cancel"]["time"] = spoken_time
+
+        # ----------------------------------------------------------------------
+        # 🔄 Get stored phone and doctor from session
+        # ----------------------------------------------------------------------
+        phone = session_data[call_sid]["cancel"].get("phone")
         doctor = session_data[call_sid]["cancel"].get("doctor")
-        print(f"🧑‍⚕️ cancel_appt_by_phone_number: Retrieved doctor name → {doctor}")
+        print(f"📱 Using phone → {phone}")
+        print(f"👨‍⚕️ Using doctor → {doctor}")
 
         # ----------------------------------------------------------------------
-        # 🔍 Step 3: Reverse-map the doctor name to the corresponding calendar ID
-        # (googleid_dr_name_map is from ID → name, so we loop to find a match)
+        # Map doctor name to calendar ID
         # ----------------------------------------------------------------------
         calendar_id = None
-        for doc_id, friendly_name in googleid_dr_name_map.items():
-            if friendly_name.lower() == doctor.lower():
+        for doc_id, friendly in googleid_dr_name_map.items():
+            if friendly.lower() == doctor.lower():
                 calendar_id = doc_id
                 break
 
-        # ----------------------------------------------------------------------
-        # 📅 Step 4: Optionally retrieve day/time spoken earlier (if collected)
-        # These can help disambiguate which appointment to cancel
-        # ----------------------------------------------------------------------
-        spoken_day  = session_data[call_sid]["cancel"].get("day")      # e.g., "Monday" or "July 14"
-        spoken_time = session_data[call_sid]["cancel"].get("time")     # e.g., "2 PM" or "14 00"
-
-        # ----------------------------------------------------------------------
-        # ❌ Step 5: Safety check – in case doctor was not matched properly
-        # This usually shouldn't happen, but we fail gracefully
-        # ----------------------------------------------------------------------
         if not calendar_id:
-            resp.say(gpt_speak(
-                "Sorry, I couldn't find that doctor in our clinic system. "
-                "Please start over and try again."
-            ))
+            resp.say(gpt_speak("Sorry, I couldn't find the doctor in our system. Please try again later."))
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ Step 6: Attempt to cancel the appointment by phone (and optionally day/time)
-        # This uses our backend helper cancel_event_by_phone()
+        # 🔍 Try to cancel using all info (with detailed return)
         # ----------------------------------------------------------------------
-        success = cancel_event_by_phone(
+        canceled_event = cancel_event_by_phone(
             calendar_id=calendar_id,
             phone=phone,
             spoken_day=spoken_day,
             spoken_time=spoken_time,
-            creds=creds
+            creds=creds,
+            return_details=True
         )
 
-        # ----------------------------------------------------------------------
-        # 🔁 Step 7: Handle reschedule flow — if flag was set, go directly to booking
-        # ----------------------------------------------------------------------
-        if success:
-            # 🧽 Clear only cancel-related data but keep the reschedule flag
-            reschedule = session_data[call_sid].get("reschedule_after_cancel")
+        if canceled_event:
+            from dateutil import parser
+            try:
+                dt = parser.parse(canceled_event.get("start", ""))
+                spoken_time_str = dt.strftime("%B %-d at %-I:%M %p")
+            except:
+                spoken_time_str = spoken_time or "the specified time"
 
-            if reschedule:
-                print("🔁 Reschedule flag detected — switching to booking flow after cancellation")
+            msg = f"Your appointment with {doctor} on {spoken_time_str} has been cancelled. Thank you!"
+            resp.say(gpt_speak(msg), VOICE)
 
-                # ✅ Begin new booking session
-                session_data[call_sid] = {
-                    "stage": "booking",
-                    "booking": {},
-                    "retry_booking": 0,
-                    "retry_time": 0
-                }
-
-                # 🗣️ Prompt user to begin booking again
-                gather = Gather(
-                                  input="speech",
-                                  action="/voice",
-                                  method="POST",
-                                  timeout=SPEECH_INPUT_DURATION,
-                                  speech_model="phone_call",  # Optional: optimize for call audio
-                                  bargeIn=True, 
-                                  hints=", ".join(googleid_dr_name_map.values())  # Improve doctor name recognition
-                                )
-
-                doctor_list = ", ".join(googleid_dr_name_map.values())
-                prompt = (
-                    f"Okay, your previous appointment has been cancelled. "
-                    f"We currently have {doctor_list}. Please say the name of the doctor you'd like to book with."
-                )
-                gather.say(gpt_speak(prompt), VOICE)
-                resp.append(gather)
-                return str(resp)
-
-            else:
-                # 🟢 Normal success message (no reschedule)
-                resp.say(gpt_speak(
-                    f"Your appointment with {doctor} has been cancelled. Thank you for calling!"
-                ))
         else:
-            # ⚠️ Failure message — no matching appointment found
-            resp.say(gpt_speak(
-                "I'm sorry, I couldn't find any appointment under that phone number. "
-                "Please contact the clinic directly for help."
-            ))
+            resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time."), VOICE)
 
-        # ----------------------------------------------------------------------
-        # 🧹 Step 8: Clear session data after processing
-        # ----------------------------------------------------------------------
         session_data.pop(call_sid, None)
-
-        # ----------------------------------------------------------------------
-        # 📤 Step 9: Return TwiML to Twilio to speak the result
-        # ----------------------------------------------------------------------
         return str(resp)
+
 
 
       
