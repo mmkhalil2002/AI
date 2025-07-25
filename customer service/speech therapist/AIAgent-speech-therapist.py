@@ -831,7 +831,7 @@ def voice():
                             timeout=SPEECH_INPUT_DURATION,
                             hints=doctor_list_str
                         )
-            gather.say(gpt_speak("Please say your first name of the doctor you'd like to book with."),VOICE)
+            gather.say(gpt_speak("Please say the name of the doctor you'd like to book with."),VOICE)
             resp.append(gather)
             return str(resp)
 
