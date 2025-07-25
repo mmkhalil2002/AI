@@ -971,8 +971,6 @@ def voice():
         session_data[call_sid]["spoken_day"] = spoken_day
         session_data[call_sid]["spoken_time"] = spoken_time
 
-        # 🧠 Convert spoken time to datetime range (start/end ISO) using utility
-        from utils.time_tools import build_timeslot_range
         try:
             appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
             session_data[call_sid]["appointment_time"] = {
