@@ -202,7 +202,7 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
     # Combine and return cleaned format
     return f"{day} {spoken_time}".strip()
 
-dfrom datetime import datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Tuple
 
 def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
