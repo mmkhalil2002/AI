@@ -628,7 +628,7 @@ def voice():
         lower = speech_result.lower()
         print(f"📢 intent :speech_result: {lower.strip()}")
 
-        # 🚫 Ignore junk
+        # 🚫 Ignore junk or greeting phrases commonly returned by Twilio
         junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
         if not lower.strip() or lower.strip() in junk_inputs:
             print(f"⛔ Ignored junk input: '{lower}' — re-prompting without response")
@@ -684,7 +684,7 @@ def voice():
             doctor_list = ", ".join(doctor_names[:-1]) + ", or " + doctor_names[-1] if len(doctor_names) > 1 else doctor_names[0]
             prompt = (
                 f"Sure, I can help you cancel your appointment. "
-                f"We currently have the following doctors {doctor_list}. "
+                f"We currently have the following doctors: {doctor_list}. "
                 f"Please say the name of the doctor you had booked with."
             )
             gather = Gather(
@@ -700,15 +700,19 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ✅ Booking intent (checked **after** cancel/reschedule to avoid false triggers)
+        # ✅ Booking intent (placed **after** cancel/reschedule to avoid false positives)
         elif any(word in lower for word in ["book", "booking", "schedule", "make", "reserve", "meet"]):
             print(f"📅 Intent to book recognized → advancing to 'booking' stage")
-            session_data[call_sid] = {
+
+            # ✅ Fix: Use update instead of overwrite to preserve previous session info
+            session_data.setdefault(call_sid, {})
+            session_data[call_sid].update({
                 "stage": "booking",
                 "booking": {},
                 "retry_booking": 0,
                 "retry_time": 0
-            }
+            })
+
             doctor_list = ", ".join(googleid_dr_name_map.values())
             prompt = (
                 f"Great! Let's schedule your appointment. Here is the list of doctors: {doctor_list}. "
