@@ -202,6 +202,9 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
     # Combine and return cleaned format
     return f"{day} {spoken_time}".strip()
 
+dfrom datetime import datetime, timedelta
+from typing import Tuple
+
 def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     """
     Converts spoken day/time into ISO 8601 datetime range (30 minutes).
@@ -210,20 +213,24 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
         - "3rd of July", "8:30"
         - "Thursday, July 3", "8:30"
     """
-    combined = normalize_date_time(spoken_day, spoken_time)
+    current_year = datetime.now().year
+    combined = normalize_date_time(spoken_day, spoken_time)  # Must return a clean string like "July 3 8:30 AM"
+
     formats = [
-        "%B %d %I:%M %p",     # July 3 8:30 AM
-        "%B %d %H:%M",        # July 3 08:30
-        "%A %B %d %I:%M %p",  # Thursday July 3 8:30 AM
-        "%A %B %d %H:%M",     # Thursday July 3 08:30
+        "%B %d %I:%M %p",      # July 3 8:30 AM
+        "%B %d %H:%M",         # July 3 08:30
+        "%A %B %d %I:%M %p",   # Thursday July 3 8:30 AM
+        "%A %B %d %H:%M",      # Thursday July 3 08:30
     ]
 
+    dt = None
     for fmt in formats:
         try:
-            dt = datetime.strptime(combined, fmt)
+            parsed = datetime.strptime(combined, fmt)
+            dt = parsed.replace(year=current_year)  # 🔧 Force correct year
             break
         except ValueError:
-            dt = None
+            continue
 
     if not dt:
         raise ValueError(f"Failed to parse time from: '{combined}'")
@@ -231,6 +238,7 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     start = dt.isoformat()
     end = (dt + timedelta(minutes=30)).isoformat()
     return start, end
+
 
 
 
