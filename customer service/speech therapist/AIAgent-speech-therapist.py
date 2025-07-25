@@ -644,13 +644,13 @@ def voice():
         if not lower.strip() or lower.strip() in junk_inputs:
             print(f"⛔ Ignored junk input: '{lower}' — re-prompting without response")
             gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                speech_model="phone_call",  # 🎯 Optimized for voice calls
-                bargeIn=True,  
-                timeout=SPEECH_INPUT_DURATION
-            )
+                            input="speech",
+                            action="/voice",
+                            method="POST",
+                            speech_model="phone_call",  # 🎯 Optimized for voice calls
+                            bargeIn=True,  
+                            timeout=SPEECH_INPUT_DURATION
+                            )
             gather.say(gpt_speak(
                 "Please tell me if you'd like to book an appointment, cancel one, reschedule, or leave a message."
             ))
@@ -670,14 +670,14 @@ def voice():
             }
 
             gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",
-                bargeIn=True, 
-                hints=", ".join(googleid_dr_name_map.values())
-            )
+                            input="speech",
+                            action="/voice",
+                            method="POST",
+                            timeout=SPEECH_INPUT_DURATION,
+                            speech_model="phone_call",
+                            bargeIn=True, 
+                            hints=", ".join(googleid_dr_name_map.values())
+                            )
 
             doctor_list = ", ".join(googleid_dr_name_map.values())
             prompt = (
@@ -724,14 +724,14 @@ def voice():
             )
 
             gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",
-                bargeIn=True,
-                hints=", ".join(doctor_names)
-            )
+                              input="speech",
+                              action="/voice",
+                              method="POST",
+                              timeout=SPEECH_INPUT_DURATION,
+                              speech_model="phone_call",
+                              bargeIn=True,
+                              hints=", ".join(doctor_names)
+                            )
             gather.say(gpt_speak(prompt), VOICE)
             resp.append(gather)
             return str(resp)
@@ -763,20 +763,20 @@ def voice():
             )
 
             gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",  # 🎯 Optimized for voice calls
-                bargeIn=True, 
-                hints=", ".join(doctor_names)
-            )
+                            input="speech",
+                            action="/voice",
+                            method="POST",
+                            timeout=SPEECH_INPUT_DURATION,
+                            speech_model="phone_call",  # 🎯 Optimized for voice calls
+                            bargeIn=True, 
+                            hints=", ".join(doctor_names)
+                        )
             gather.say(gpt_speak(prompt), VOICE)
             resp.append(gather)
             return str(resp)
 
             # ❓ Fallback: unclear or unsupported intent
-            else:
+        else:
                 print(f"❓ Unclear intent: '{lower}' → re-prompting for intent choice")
                 session_data[call_sid]["stage"] = "intent"
 
@@ -814,14 +814,14 @@ def voice():
             print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
             gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                speech_model="phone_call",  # 🎯 Optimized for voice calls
-                bargeIn=True, 
-                timeout=SPEECH_INPUT_DURATION,
-                hints=doctor_list_str
-            )
+                            input="speech",
+                            action="/voice",
+                            method="POST",
+                            speech_model="phone_call",  # 🎯 Optimized for voice calls
+                            bargeIn=True, 
+                            timeout=SPEECH_INPUT_DURATION,
+                            hints=doctor_list_str
+                        )
             gather.say(gpt_speak("Please say your first name of the doctor you'd like to book with."),VOICE)
             resp.append(gather)
             return str(resp)
@@ -877,14 +877,14 @@ def voice():
 
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
             gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                speech_model="phone_call",  # 🎯 Optimized for voice calls
-                bargeIn=True, 
-                timeout=SPEECH_INPUT_DURATION,
-                hints=doctor_list_str
-            )
+                                input="speech",
+                                action="/voice",
+                                method="POST",
+                                speech_model="phone_call",  # 🎯 Optimized for voice calls
+                                bargeIn=True, 
+                                timeout=SPEECH_INPUT_DURATION,
+                                hints=doctor_list_str
+                        )
             retry_prompt = (
                 f"I couldn't match that to a doctor. Available doctors are: {doctor_list_str}. "
                 "Please say the doctor name again."
@@ -903,13 +903,13 @@ def voice():
         time_prompt = f"What time would you like to book with {friendly_name}?"
 
         gather = Gather(
-            input="speech",
-            action="/voice",
-            method="POST",
-            speech_model="phone_call",  # 🎯 Optimized for voice calls
-            bargeIn=True, 
-            timeout=SPEECH_INPUT_DURATION
-        )
+                         input="speech",
+                         action="/voice",
+                         method="POST",
+                         speech_model="phone_call",  # 🎯 Optimized for voice calls
+                         bargeIn=True, 
+                         timeout=SPEECH_INPUT_DURATION
+                      )
         gather.say(gpt_speak(time_prompt),VOICE)
         resp.append(gather)
         return str(resp)
@@ -940,14 +940,14 @@ def voice():
         if not requested_dt:
             # ⚠️ Re-prompt if the time was not understood
             gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",  # 🎯 Optimized for voice calls
-                bargeIn=True, 
-                hints="tomorrow at 2 PM, next Monday at 10 AM, Friday at 12:30"
-            )
+                              input="speech",
+                              action="/voice",
+                              method="POST",
+                              timeout=SPEECH_INPUT_DURATION,
+                              speech_model="phone_call",  # 🎯 Optimized for voice calls
+                              bargeIn=True, 
+                              hints="tomorrow at 2 PM, next Monday at 10 AM, Friday at 12:30"
+                            )
             gather.say(gpt_speak(
                 "Please say the appointment date and time, like 'Tomorrow at 2 PM' or 'Friday at 12:30 in the afternoon'."
             ),VOICE)
@@ -971,14 +971,14 @@ def voice():
         if events["items"]:
             # ❌ Slot is taken — re-prompt
             gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                speech_model="phone_call",
-                bargeIn=True,
-                timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call"
-            )
+                              input="speech",
+                              action="/voice",
+                              method="POST",
+                              speech_model="phone_call",
+                              bargeIn=True,
+                              timeout=SPEECH_INPUT_DURATION,
+                             speech_model="phone_call"
+                        )
             gather.say(gpt_speak("This time is not available. Please choose another day and time."))
             resp.append(gather)
             return str(resp)
@@ -996,13 +996,13 @@ def voice():
 
         # 🎤 Ask user for name
         gather = Gather(
-            input="speech",
-            action="/voice",
-            method="POST",
-            speech_model="phone_call",
-            bargeIn=True,
-            timeout=SPEECH_INPUT_DURATION
-        )
+                         input="speech",
+                         action="/voice",
+                         method="POST",
+                         speech_model="phone_call",
+                         bargeIn=True,
+                         timeout=SPEECH_INPUT_DURATION
+                     )
         gather.say(gpt_speak(
             f"Your appointment with {friendly_name} is available on {friendly_time}. What is your first name, please?"
         ),VOICE)
@@ -1135,7 +1135,7 @@ def voice():
                              speech_model="phone_call",
                              bargeIn=True, 
                              timeout=SPEECH_INPUT_DURATION
-                          )
+                        )
         gather.say(gpt_speak("Got it. Now, can you please tell me your full address?"),VOICE)
         resp.append(gather)
         return str(resp)
