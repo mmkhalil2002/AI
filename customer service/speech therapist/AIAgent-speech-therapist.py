@@ -158,7 +158,7 @@ Role	    Meaning
 """
 
 from datetime import datetime, timedelta
-from typing import Tuple  # ✅ Add this for Python 3.8 compatibility
+from typing import Tuple  # ✅ For Python 3.8 compatibility
 
 def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     """
@@ -171,11 +171,12 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
         dt = datetime.strptime(combined, "%B %d %I:%M %p")  # e.g., "July 3 9:00 AM"
     except ValueError:
         # Try alternate formats (e.g. without AM/PM)
-        dt = datetime.strptime(f"{spoken_day} {spoken_time}", "%B %d %H:%M")
+        dt = datetime.strptime(combined, "%B %d %H:%M")
 
     start = dt.isoformat()
     end = (dt + timedelta(minutes=30)).isoformat()
     return start, end
+
 
 
 
