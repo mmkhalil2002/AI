@@ -976,8 +976,7 @@ def voice():
                               method="POST",
                               speech_model="phone_call",
                               bargeIn=True,
-                              timeout=SPEECH_INPUT_DURATION,
-                             speech_model="phone_call"
+                              timeout=SPEECH_INPUT_DURATION
                         )
             gather.say(gpt_speak("This time is not available. Please choose another day and time."))
             resp.append(gather)
