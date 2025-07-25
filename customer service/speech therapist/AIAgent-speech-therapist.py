@@ -755,12 +755,38 @@ def voice():
         # ❓ Fallback
         else:
             print(f"❓ Unclear intent: '{lower}' → re-prompting for intent choice")
+
+            # Initialize or increment retry counter
+            if "retry_intent" not in session_data[call_sid]:
+                session_data[call_sid]["retry_intent"] = 1
+            else:
+                session_data[call_sid]["retry_intent"] += 1
+
+            retry_count = session_data[call_sid]["retry_intent"]
+
+            if retry_count >= 3:
+                # Too many failed attempts — exit gracefully
+                print("⚠️ Too many unclear responses — ending call")
+                resp.say(gpt_speak("I'm sorry, I still didn't catch that. Please call us again when convenient. Goodbye."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)  # Clear session
+                return str(resp)
+
+            # Otherwise, re-prompt for intent
             session_data[call_sid]["stage"] = "intent"
-            resp.say(gpt_speak(
+            gather = Gather(
+                input="speech",
+                action="/voice",
+                method="POST",
+                speech_model="phone_call",
+                bargeIn=True,
+                timeout=SPEECH_INPUT_DURATION
+            )
+            gather.say(gpt_speak(
                 "Sorry, I didn’t catch that. Would you like to book an appointment, cancel one, reschedule, or leave a message?"
             ), VOICE)
+            resp.append(gather)
             return str(resp)
-
 
 
 
