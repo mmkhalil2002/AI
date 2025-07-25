@@ -164,7 +164,7 @@ from openai import OpenAI
 from openai import APIConnectionError, AuthenticationError, RateLimitError
 
 
-ddef smart_parse_time(text):
+def smart_parse_time(text):
     import dateparser
     import re
     from datetime import datetime
