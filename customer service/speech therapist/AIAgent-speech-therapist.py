@@ -205,6 +205,9 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
 from datetime import datetime, timedelta
 from typing import Tuple
 
+from datetime import datetime, timedelta, timezone
+from typing import Tuple
+
 def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     """
     Converts spoken day/time into ISO 8601 datetime range (30 minutes).
@@ -213,30 +216,30 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
         - "3rd of July", "8:30"
         - "Thursday, July 3", "8:30"
     """
-    current_year = datetime.now().year
-    combined = normalize_date_time(spoken_day, spoken_time)  # Must return a clean string like "July 3 8:30 AM"
+    combined = normalize_date_time(spoken_day, spoken_time)
 
     formats = [
-        "%B %d %I:%M %p",      # July 3 8:30 AM
-        "%B %d %H:%M",         # July 3 08:30
-        "%A %B %d %I:%M %p",   # Thursday July 3 8:30 AM
-        "%A %B %d %H:%M",      # Thursday July 3 08:30
+        "%B %d %I:%M %p",
+        "%B %d %H:%M",
+        "%A %B %d %I:%M %p",
+        "%A %B %d %H:%M",
     ]
 
-    dt = None
     for fmt in formats:
         try:
-            parsed = datetime.strptime(combined, fmt)
-            dt = parsed.replace(year=current_year)  # 🔧 Force correct year
+            dt = datetime.strptime(combined, fmt)
+            dt = dt.replace(year=datetime.now().year)  # Ensure year is set
+            dt = dt.replace(tzinfo=timezone.utc)       # 👈 Add UTC timezone
             break
         except ValueError:
-            continue
+            dt = None
 
     if not dt:
         raise ValueError(f"Failed to parse time from: '{combined}'")
 
-    start = dt.isoformat()
+    start = dt.isoformat()          # RFC3339 format with timezone
     end = (dt + timedelta(minutes=30)).isoformat()
+
     return start, end
 
 
