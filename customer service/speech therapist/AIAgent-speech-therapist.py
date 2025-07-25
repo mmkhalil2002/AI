@@ -917,7 +917,7 @@ def voice():
     #  2. Checks Google Calendar for availability
     #  3. If available, confirms and moves to collect name/phone/address
     # ----------------------------------------------------------------------
-
+    
     elif stage == "ask_time_date":
         # ----------------------------------------------------------------------
         # 📅 Step 1: Try to extract the date and time from the user's response
@@ -949,6 +949,24 @@ def voice():
         spoken_day, spoken_time = time_info
         session_data[call_sid]["spoken_day"] = spoken_day
         session_data[call_sid]["spoken_time"] = spoken_time
+
+        # 🧠 Convert spoken time to datetime range (start/end ISO) using utility
+        from utils.time_tools import build_timeslot_range
+        try:
+            appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
+            session_data[call_sid]["appointment_time"] = {
+                "start": appointment_start,
+                "end": appointment_end
+            }
+            print(f"📆 Appointment scheduled → Start: {appointment_start}, End: {appointment_end}")
+        except Exception as e:
+            print(f"❌ Failed to build appointment time range: {e}")
+            resp.say(gpt_speak("Sorry, I couldn’t understand the time you mentioned. Let’s try again later."), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
+
+        # Proceed to collect first name
         session_data[call_sid]["stage"] = "collect_first_name"
 
         # ----------------------------------------------------------------------
@@ -965,7 +983,6 @@ def voice():
         gather.say(gpt_speak("Thanks. What is your first name?"), VOICE)
         resp.append(gather)
         return str(resp)
-
 
 
 
