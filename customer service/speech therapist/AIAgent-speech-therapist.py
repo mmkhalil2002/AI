@@ -1179,6 +1179,45 @@ def voice():
             session_data.pop(call_sid, None)
             return str(resp)
 
+    elif stage == "collect_phone":
+        # ----------------------------------------------------------------------
+        # ☎️ Stage: Collect Phone Number
+        # ----------------------------------------------------------------------
+        phone = speech_result.strip()
+        print(f"📱 collect_phone: {phone}")
+
+        # Simple validation (adjust if you need stricter checking)
+        digits_only = ''.join(filter(str.isdigit, phone))
+        if len(digits_only) < 7:
+            # Not enough digits to be a real phone number, ask again
+            gather = Gather(
+                input="speech",
+                action="/voice",
+                method="POST",
+                speech_model="phone_call",
+                bargeIn=True,
+                timeout=SPEECH_INPUT_DURATION
+            )
+            gather.say(gpt_speak("Sorry, I didn't catch your phone number clearly. Please say it again."), VOICE)
+            resp.append(gather)
+            return str(resp)
+
+        # ✅ Save the phone number
+        session_data[call_sid]["customer"]["phone"] = digits_only
+        session_data[call_sid]["stage"] = "collect_address"
+
+        # Prompt for address
+        gather = Gather(
+            input="speech",
+            action="/voice",
+            method="POST",
+            speech_model="phone_call",
+            bargeIn=True,
+            timeout=SPEECH_INPUT_DURATION
+        )
+        gather.say(gpt_speak("Thank you. What is your address, please?"), VOICE)
+        resp.append(gather)
+        return str(resp)
 
 
     elif stage == "collect_address":
