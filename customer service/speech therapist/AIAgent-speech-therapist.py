@@ -1145,7 +1145,7 @@ def voice():
             bargeIn=True,
             timeout=SPEECH_INPUT_DURATION
         )
-        gather.say(gpt_speak("Got it. Now, please say the date and time you’d like to book, for example, July 3rd at 9 AM."), VOICE)
+        gather.say(gpt_speak("Got it. tell me your full address"), VOICE)
         resp.append(gather)
         return str(resp)
 
