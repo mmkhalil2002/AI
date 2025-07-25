@@ -285,7 +285,7 @@ from openai import OpenAI, APIConnectionError, AuthenticationError, RateLimitErr
 # Initialize the OpenAI client (using the environment variable OPENAI_API_KEY)
 client = OpenAI()
 
-dfrom openai import OpenAIError  # Add this import at the top
+from openai import OpenAIError  # Add this import at the top
 
 def extract_doctor_name(speech_text):
     """
