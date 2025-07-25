@@ -161,36 +161,47 @@ from datetime import datetime, timedelta
 from typing import Tuple
 import re
 
+def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
+    """
+    Normalize spoken input like "3rd of July" → "July 3"
+    Removes ordinal suffixes and rearranges if needed.
+    """
+    # Remove ordinal suffixes (e.g., 1st → 1, 2nd → 2, 3rd → 3, etc.)
+    day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day.strip(), flags=re.IGNORECASE)
+
+    # Handle "3 of July", "3rd of July" → "July 3"
+    match = re.match(r"(\d+)\s+of\s+([A-Za-z]+)", day, flags=re.IGNORECASE)
+    if match:
+        day = f"{match.group(2)} {match.group(1)}"
+
+    # Remove commas or prepositions
+    day = day.replace(",", "").replace("of", "").strip()
+
+    # Combine and return cleaned format
+    return f"{day} {spoken_time}".strip()
+
 def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     """
-    Given spoken day and time strings (e.g. 'July 3rd', '9:00 AM'),
-    return a tuple of ISO 8601 start and end datetime strings (30-minute slot).
+    Converts spoken day/time into ISO 8601 datetime range (30 minutes).
+    Accepts various formats like:
+        - "July 3", "8:30 AM"
+        - "3rd of July", "8:30"
+        - "Thursday, July 3", "8:30"
     """
-
-    # 🧹 Clean up ordinal suffixes like 'st', 'nd', 'rd', 'th'
-    spoken_day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day, flags=re.IGNORECASE)
-
-    # 🧹 Remove stray dots or extra punctuation
-    spoken_day = spoken_day.replace(".", "").strip()
-    spoken_time = spoken_time.replace(".", "").strip()
-
-    combined = f"{spoken_day} {spoken_time}"
-
-    # Try common formats
-    formats_to_try = [
-        "%B %d %I:%M %p",  # e.g. July 3 8:30 AM
-        "%B %d %H:%M",     # e.g. July 3 14:30
-        "%B %d, %I:%M %p", # July 3, 8:30 AM
-        "%B %d, %H:%M"     # July 3, 14:30
+    combined = normalize_date_time(spoken_day, spoken_time)
+    formats = [
+        "%B %d %I:%M %p",     # July 3 8:30 AM
+        "%B %d %H:%M",        # July 3 08:30
+        "%A %B %d %I:%M %p",  # Thursday July 3 8:30 AM
+        "%A %B %d %H:%M",     # Thursday July 3 08:30
     ]
 
-    dt = None
-    for fmt in formats_to_try:
+    for fmt in formats:
         try:
             dt = datetime.strptime(combined, fmt)
             break
         except ValueError:
-            continue
+            dt = None
 
     if not dt:
         raise ValueError(f"Failed to parse time from: '{combined}'")
@@ -198,6 +209,7 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     start = dt.isoformat()
     end = (dt + timedelta(minutes=30)).isoformat()
     return start, end
+
 
 
 
