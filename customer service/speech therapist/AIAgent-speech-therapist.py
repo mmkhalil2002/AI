@@ -949,7 +949,7 @@ def voice():
         spoken_day, spoken_time = time_info
         session_data[call_sid]["spoken_day"] = spoken_day
         session_data[call_sid]["spoken_time"] = spoken_time
-        session_data[call_sid]["stage"] = "ask_name"
+        session_data[call_sid]["stage"] = "collect_first_name"
 
         # ----------------------------------------------------------------------
         # Prompt the user for their name next
@@ -962,7 +962,7 @@ def voice():
             speech_model="phone_call",
             bargeIn=True
         )
-        gather.say(gpt_speak("Thanks. What is your name?"), VOICE)
+        gather.say(gpt_speak("Thanks. What is your first name?"), VOICE)
         resp.append(gather)
         return str(resp)
 
