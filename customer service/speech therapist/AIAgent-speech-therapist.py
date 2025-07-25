@@ -158,8 +158,9 @@ Role	    Meaning
 """
 
 from datetime import datetime, timedelta
+from typing import Tuple  # ✅ Add this for Python 3.8 compatibility
 
-def build_timeslot_range(spoken_day: str, spoken_time: str) -> tuple[str, str]:
+def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     """
     Given spoken day and time strings (e.g. 'July 3rd', '9:00 AM'),
     return a tuple of ISO 8601 start and end datetime strings (30-minute slot).
@@ -175,6 +176,7 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> tuple[str, str]:
     start = dt.isoformat()
     end = (dt + timedelta(minutes=30)).isoformat()
     return start, end
+
 
 
 import os
