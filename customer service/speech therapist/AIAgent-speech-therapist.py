@@ -1138,11 +1138,28 @@ def voice():
         return str(resp)
 
     elif stage == "collect_last_name":
-    try:
-        last = speech_result.strip()
-        print(f"👤 collect_last_name: {last}")
+        try:
+            last = speech_result.strip()
+            print(f"👤 collect_last_name: {last}")
 
-        if not last:
+            if not last:
+                gather = Gather(
+                    input="speech",
+                    action="/voice",
+                    method="POST",
+                    speech_model="phone_call",
+                    bargeIn=True,
+                    timeout=SPEECH_INPUT_DURATION
+                )
+                gather.say(gpt_speak("Sorry, I didn't catch your last name. Please repeat it."), VOICE)
+                resp.append(gather)
+                return str(resp)
+
+            # ✅ Save and move to next stage
+            session_data[call_sid]["customer"]["last_name"] = last
+            session_data[call_sid]["stage"] = "collect_phone"
+            print(f"✅ Stored last name: {last}")
+
             gather = Gather(
                 input="speech",
                 action="/voice",
@@ -1151,33 +1168,16 @@ def voice():
                 bargeIn=True,
                 timeout=SPEECH_INPUT_DURATION
             )
-            gather.say(gpt_speak("Sorry, I didn't catch your last name. Please repeat it."), VOICE)
+            gather.say(gpt_speak("Got it. What is your phone number, please?"), VOICE)
             resp.append(gather)
             return str(resp)
 
-        # ✅ Save and move to next stage
-        session_data[call_sid]["customer"]["last_name"] = last
-        session_data[call_sid]["stage"] = "collect_phone"
-        print(f"✅ Stored last name: {last}")
-
-        gather = Gather(
-            input="speech",
-            action="/voice",
-            method="POST",
-            speech_model="phone_call",
-            bargeIn=True,
-            timeout=SPEECH_INPUT_DURATION
-        )
-        gather.say(gpt_speak("Got it. What is your phone number, please?"), VOICE)
-        resp.append(gather)
-        return str(resp)
-
-    except Exception as e:
-        print(f"❌ Exception in collect_last_name stage: {e}")
-        resp.say(gpt_speak("Sorry, there was an error. Let's try again later."), VOICE)
-        resp.hangup()
-        session_data.pop(call_sid, None)
-        return str(resp)
+        except Exception as e:
+            print(f"❌ Exception in collect_last_name stage: {e}")
+            resp.say(gpt_speak("Sorry, there was an error. Let's try again later."), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
 
 
 
