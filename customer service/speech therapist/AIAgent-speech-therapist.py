@@ -158,24 +158,47 @@ Role	    Meaning
 """
 
 from datetime import datetime, timedelta
-from typing import Tuple  # ✅ For Python 3.8 compatibility
+from typing import Tuple
+import re
 
 def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     """
     Given spoken day and time strings (e.g. 'July 3rd', '9:00 AM'),
     return a tuple of ISO 8601 start and end datetime strings (30-minute slot).
     """
-    try:
-        # Combine spoken parts and parse to datetime object
-        combined = f"{spoken_day} {spoken_time}"
-        dt = datetime.strptime(combined, "%B %d %I:%M %p")  # e.g., "July 3 9:00 AM"
-    except ValueError:
-        # Try alternate formats (e.g. without AM/PM)
-        dt = datetime.strptime(combined, "%B %d %H:%M")
+
+    # 🧹 Clean up ordinal suffixes like 'st', 'nd', 'rd', 'th'
+    spoken_day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day, flags=re.IGNORECASE)
+
+    # 🧹 Remove stray dots or extra punctuation
+    spoken_day = spoken_day.replace(".", "").strip()
+    spoken_time = spoken_time.replace(".", "").strip()
+
+    combined = f"{spoken_day} {spoken_time}"
+
+    # Try common formats
+    formats_to_try = [
+        "%B %d %I:%M %p",  # e.g. July 3 8:30 AM
+        "%B %d %H:%M",     # e.g. July 3 14:30
+        "%B %d, %I:%M %p", # July 3, 8:30 AM
+        "%B %d, %H:%M"     # July 3, 14:30
+    ]
+
+    dt = None
+    for fmt in formats_to_try:
+        try:
+            dt = datetime.strptime(combined, fmt)
+            break
+        except ValueError:
+            continue
+
+    if not dt:
+        raise ValueError(f"Failed to parse time from: '{combined}'")
 
     start = dt.isoformat()
     end = (dt + timedelta(minutes=30)).isoformat()
     return start, end
+
 
 
 
