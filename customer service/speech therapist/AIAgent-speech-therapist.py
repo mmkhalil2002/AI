@@ -628,7 +628,7 @@ def voice():
        # Return the XML response as a string (TwiML) to Twilio to speak it to the caller
        return str(resp)
 
-  elif stage == "intent":
+    elif stage == "intent":
         # ----------------------------------------------------------------------
         # 🎯 Intent detection stage: figure out if the caller wants to:
         #  1. Book an appointment
