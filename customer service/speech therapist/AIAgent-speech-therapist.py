@@ -181,13 +181,15 @@ def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, cre
 
 
 
-def format_time_for_speech(slot: tuple[str, str]) -> str:
+from typing import Tuple
+
+def format_time_for_speech(slot: Tuple[str, str]) -> str:
     """
     Converts an ISO datetime range tuple into a human-friendly string
     like 'Tuesday at 9 AM'.
     """
     dt = datetime.fromisoformat(slot[0])
-    return dt.strftime("%A at %-I:%M %p")  # e.g., "Tuesday at 9:00 AM"
+    return dt.strftime("%A at %-I:%M %p")  # Use %#I on Windows
 
 
 
