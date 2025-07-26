@@ -179,6 +179,65 @@ def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, cre
     return len(events) == 0  # True if no conflicts
 
 
+
+
+def format_time_for_speech(slot: tuple[str, str]) -> str:
+    """
+    Converts an ISO datetime range tuple into a human-friendly string
+    like 'Tuesday at 9 AM'.
+    """
+    dt = datetime.fromisoformat(slot[0])
+    return dt.strftime("%A at %-I:%M %p")  # e.g., "Tuesday at 9:00 AM"
+
+
+
+
+from datetime import datetime, timedelta
+
+def suggest_alternative_times(doctor_id: str, creds, num_options: int = 3) -> list[tuple[str, str]]:
+    """
+    Suggests up to `num_options` available 30-minute appointment slots
+    in the future across different days, skipping times already taken.
+
+    Returns a list of tuples: (start_iso, end_iso)
+    """
+    service = build("calendar", "v3", credentials=creds)
+    now = datetime.utcnow().replace(microsecond=0)
+    suggested = []
+    search_window_days = 7  # Search for up to 7 days into the future
+
+    for day_offset in range(search_window_days):
+        date = now + timedelta(days=day_offset)
+
+        for hour in range(8, 17):  # Clinic hours 8 AM – 5 PM
+            start_dt = datetime(date.year, date.month, date.day, hour, 0)
+            end_dt = start_dt + timedelta(minutes=30)
+
+            start_iso = start_dt.isoformat() + "Z"
+            end_iso = end_dt.isoformat() + "Z"
+
+            try:
+                events_result = service.events().list(
+                    calendarId=doctor_id,
+                    timeMin=start_iso,
+                    timeMax=end_iso,
+                    singleEvents=True,
+                    orderBy="startTime"
+                ).execute()
+                events = events_result.get("items", [])
+
+                if not events:
+                    suggested.append((start_dt.isoformat(), end_dt.isoformat()))
+                    if len(suggested) >= num_options:
+                        return suggested
+            except Exception as e:
+                print(f"❌ Failed to fetch calendar events: {e}")
+                continue
+
+    return suggested
+
+
+
 from datetime import datetime, timedelta
 from typing import Tuple
 import re

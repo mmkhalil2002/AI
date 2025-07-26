@@ -415,7 +415,79 @@ def infobip_voice():
                         ]
                     })
 
-    
+    elif stage == "ask_time":
+        # 📌 Step 1: Get the previously selected doctor’s calendar ID from the session
+        doctor_id = session_data[call_sid]["doctor_id"]
+
+        # 🧠 Step 2: Try to interpret the spoken time (e.g., "2 PM", "10 AM")
+        try:
+            requested_time = datetime.strptime(speech_result, "%I %p")  # Expect format like "2 PM"
+        except ValueError:
+            # ⚠️ If the format was wrong or not understood — ask the caller to say it again using Infobip
+            actions = []
+            actions.append({
+                    "action": "talk",  # 📢 Text-to-speech message
+                     "text": gpt_speak("Please say a time like 2 PM or 10 AM.")
+                })
+            actions.append({
+                            "action": "collectSpeech",  # 🎙️ Start listening again
+                            "eventUrl": ["/voice"]      # 🔁 Send speech back to the same endpoint
+                        })
+            return jsonify({"actions": actions})
+
+         # 📅 Step 3: Construct the appointment time window
+        now = datetime.utcnow()
+        event_start = now.replace(hour=requested_time.hour, minute=0, second=0, microsecond=0)
+        event_end = event_start + timedelta(minutes=30)  # 📆 30-minute appointment
+
+        # 🔌 Step 4: Connect to Google Calendar and check for conflicts
+        calendar = build("calendar", "v3", credentials=creds)
+        events = calendar.events().list(
+                calendarId=doctor_id,
+                timeMin=event_start.isoformat() + "Z",
+                timeMax=event_end.isoformat() + "Z",
+                singleEvents=True
+            ).execute()
+
+        if events["items"]:
+            # ❌ Step 5: There is a conflict — ask for another time
+            actions = []
+            actions.append({
+                            "action": "talk",
+                            "text": gpt_speak("This time is not available. Please choose another time.")
+                        })
+            actions.append({
+                            "action": "collectSpeech",
+                            "eventUrl": ["/voice"]
+                        })
+            return jsonify({"actions": actions})
+
+        # ✅ Step 6: No conflict → confirm booking and add to calendar
+        session_data[call_sid]["stage"] = "confirmed"
+        event = {
+                    "summary": f"Appointment for {call_sid}",  # You may replace with caller name later
+                    "start": {"dateTime": event_start.isoformat(), "timeZone": "UTC"},
+                    "end": {"dateTime": event_end.isoformat(), "timeZone": "UTC"}
+                }
+        calendar.events().insert(calendarId=doctor_id, body=event).execute()
+
+        # 🎉 Step 7: Confirm the booking to the user
+        actions = []
+        confirmation_text = (
+                                f"Your appointment with {googleid_dr_name_map[doctor_id]} "
+                                f"is confirmed at {requested_time.strftime('%I %p')}. Thank you!"
+                            )
+        actions.append({
+                        "action": "talk",
+                        "text": gpt_speak(confirmation_text)
+                    })
+
+        # 🧼 Step 8: Optionally clear session if you don’t expect more follow-up
+        session_data.pop(call_sid, None)
+
+        # 📨 Step 9: Return the Infobip action list as a response
+        return jsonify({"actions": actions})
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
