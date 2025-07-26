@@ -194,49 +194,54 @@ def format_time_for_speech(slot: Tuple[str, str]) -> str:
 
 
 
+from typing import List, Tuple
 from datetime import datetime, timedelta
+import pytz
 
-def suggest_alternative_times(doctor_id: str, creds, num_options: int = 3) -> list[tuple[str, str]]:
+def suggest_alternative_times(
+    doctor_id: str,
+    creds,
+    num_options: int = 3
+) -> List[Tuple[str, str]]:
     """
-    Suggests up to `num_options` available 30-minute appointment slots
-    in the future across different days, skipping times already taken.
+    Suggests the next available appointment slots (30 min each) for a given doctor.
 
-    Returns a list of tuples: (start_iso, end_iso)
+    Returns a list of (start_time, end_time) ISO 8601 strings.
     """
+
+    from googleapiclient.discovery import build
     service = build("calendar", "v3", credentials=creds)
-    now = datetime.utcnow().replace(microsecond=0)
+
+    now = datetime.utcnow().replace(tzinfo=pytz.UTC)
+    search_start = now
+    search_end = now + timedelta(days=7)  # Search within the next 7 days
+
     suggested = []
-    search_window_days = 7  # Search for up to 7 days into the future
+    current_time = search_start
 
-    for day_offset in range(search_window_days):
-        date = now + timedelta(days=day_offset)
+    while current_time < search_end and len(suggested) < num_options:
+        start_str = current_time.isoformat()
+        end_dt = current_time + timedelta(minutes=30)
+        end_str = end_dt.isoformat()
 
-        for hour in range(8, 17):  # Clinic hours 8 AM – 5 PM
-            start_dt = datetime(date.year, date.month, date.day, hour, 0)
-            end_dt = start_dt + timedelta(minutes=30)
+        # Check if slot is free
+        events_result = service.events().list(
+            calendarId=doctor_id,
+            timeMin=start_str,
+            timeMax=end_str,
+            singleEvents=True,
+            orderBy="startTime"
+        ).execute()
+        events = events_result.get("items", [])
 
-            start_iso = start_dt.isoformat() + "Z"
-            end_iso = end_dt.isoformat() + "Z"
+        if not events:
+            suggested.append((start_str, end_str))
 
-            try:
-                events_result = service.events().list(
-                    calendarId=doctor_id,
-                    timeMin=start_iso,
-                    timeMax=end_iso,
-                    singleEvents=True,
-                    orderBy="startTime"
-                ).execute()
-                events = events_result.get("items", [])
-
-                if not events:
-                    suggested.append((start_dt.isoformat(), end_dt.isoformat()))
-                    if len(suggested) >= num_options:
-                        return suggested
-            except Exception as e:
-                print(f"❌ Failed to fetch calendar events: {e}")
-                continue
+        # Increment by 30 minutes
+        current_time += timedelta(minutes=30)
 
     return suggested
+
 
 
 
