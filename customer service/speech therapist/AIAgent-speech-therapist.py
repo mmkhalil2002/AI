@@ -187,22 +187,21 @@ def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, cre
 
 
 
-from typing import Tuple
-
-def format_time_for_speech(slot: Tuple[str, str]) -> str:
-    """
-    Converts an ISO datetime range tuple into a human-friendly string
-    like 'Tuesday at 9 AM'.
-    """
-    dt = datetime.fromisoformat(slot[0])
-    return dt.strftime("%A at %-I:%M %p")  # Use %#I on Windows
-
-
-
-
 from typing import List, Tuple
 from datetime import datetime, timedelta
 import pytz
+import calendar
+
+# 🌍 Define working days (0=Mon, ..., 6=Sun)
+WORKING_DAYS = [0, 1, 2, 3, 4]  # Monday, Tuseday,  Wednesday, Thursday, Friday
+
+# 🕒 Working hours (24-hour format)
+WORK_START_HOUR = 7   # 7 AM
+WORK_END_HOUR = 20    # 8 PM
+
+# 🥗 Optional lunch break
+LUNCH_START_HOUR = 13  # 1 PM
+LUNCH_END_HOUR = 14    # 2 PM
 
 def suggest_alternative_times(
     doctor_id: str,
@@ -210,33 +209,48 @@ def suggest_alternative_times(
     num_options: int = 3
 ) -> List[Tuple[str, str]]:
     """
-    Suggests the next available appointment slots (30 min each) for a given doctor,
-    skipping non-working days.
-    
-    Returns a list of (start_time, end_time) ISO 8601 strings.
+    Suggests the next available 30-minute appointment slots for a given doctor.
+    Skips weekends, non-working days, and lunch breaks.
+    Returns: List of (start_time, end_time) tuples in ISO format.
     """
+
     from googleapiclient.discovery import build
     service = build("calendar", "v3", credentials=creds)
 
     now = datetime.utcnow().replace(tzinfo=pytz.UTC)
-    search_start = now
-    search_end = now + timedelta(days=7)  # Look ahead 7 days
+    search_end = now + timedelta(days=7)
 
     suggested = []
-    current_time = search_start
+    current_time = now
 
     while current_time < search_end and len(suggested) < num_options:
-        # Skip non-working days
-        if current_time.weekday() not in WORKING_DAYS:
+        local_time = current_time.astimezone(pytz.timezone("UTC"))
+        weekday = local_time.weekday()
+        hour = local_time.hour
+
+        # ⛔ Skip non-working days
+        if weekday not in WORKING_DAYS:
             current_time += timedelta(days=1)
-            current_time = current_time.replace(hour=8, minute=0)  # Reset to 8:00 AM
+            current_time = current_time.replace(hour=WORK_START_HOUR, minute=0, second=0, microsecond=0)
             continue
 
+        # ⛔ Skip outside work hours
+        if hour < WORK_START_HOUR or hour >= WORK_END_HOUR:
+            current_time += timedelta(days=1)
+            current_time = current_time.replace(hour=WORK_START_HOUR, minute=0, second=0, microsecond=0)
+            continue
+
+        # ⛔ Skip lunch break
+        if LUNCH_START_HOUR is not None and LUNCH_END_HOUR is not None:
+            if LUNCH_START_HOUR <= hour < LUNCH_END_HOUR:
+                current_time += timedelta(minutes=30)
+                continue
+
+        # 📅 Check availability
         start_str = current_time.isoformat()
         end_dt = current_time + timedelta(minutes=30)
         end_str = end_dt.isoformat()
 
-        # Check if slot is free
         events_result = service.events().list(
             calendarId=doctor_id,
             timeMin=start_str,
@@ -249,15 +263,22 @@ def suggest_alternative_times(
         if not events:
             suggested.append((start_str, end_str))
 
-        # Move forward 30 min
         current_time += timedelta(minutes=30)
 
-        # Skip past 6:00 PM
-        if current_time.hour >= 18:
-            current_time += timedelta(days=1)
-            current_time = current_time.replace(hour=8, minute=0)
-
     return suggested
+
+
+
+
+# 🗣️ Helper to speak readable version of time: "July 3rd at 9:30 AM"
+def format_time_for_speech(slot: Tuple[str, str]) -> str:
+    dt = datetime.fromisoformat(slot[0])
+    month = dt.strftime("%B")
+    day = dt.day
+    suffix = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    time_str = dt.strftime("%I:%M %p").lstrip("0")
+    return f"{month} {day}{suffix} at {time_str}"
+
 
 
 
