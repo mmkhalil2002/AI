@@ -191,17 +191,19 @@ from typing import List, Tuple
 from datetime import datetime, timedelta
 import pytz
 import calendar
+from datetime import datetime, timedelta, time
+import pytz
+from typing import List, Tuple
 
-# 🌍 Define working days (0=Mon, ..., 6=Sun)
-WORKING_DAYS = [0, 1, 2, 3, 4]  # Monday, Tuseday,  Wednesday, Thursday, Friday
-
-# 🕒 Working hours (24-hour format)
-WORK_START_HOUR = 7   # 7 AM
-WORK_END_HOUR = 20    # 8 PM
+# 🌍 Define working days and hours
+WORKING_DAYS = {"Monday", "Wednesday", "Thursday", "Friday"}
+WORKING_HOUR_START = time(7, 0)    # 7:00 AM
+WORKING_HOUR_END = time(20, 0)     # 8:00 PM
 
 # 🥗 Optional lunch break
-LUNCH_START_HOUR = 13  # 1 PM
-LUNCH_END_HOUR = 14    # 2 PM
+LUNCH_START = time(13, 0)   # 1:00 PM
+LUNCH_END = time(14, 0)     # 2:00 PM
+
 
 def suggest_alternative_times(
     doctor_id: str,
@@ -209,48 +211,49 @@ def suggest_alternative_times(
     num_options: int = 3
 ) -> List[Tuple[str, str]]:
     """
-    Suggests the next available 30-minute appointment slots for a given doctor.
-    Skips weekends, non-working days, and lunch breaks.
-    Returns: List of (start_time, end_time) tuples in ISO format.
+    Suggests the next available 30-min appointment slots for a given doctor,
+    skipping weekends, off-hours, and lunch breaks.
     """
 
     from googleapiclient.discovery import build
     service = build("calendar", "v3", credentials=creds)
 
-    now = datetime.utcnow().replace(tzinfo=pytz.UTC)
+    tz = pytz.UTC
+    now = datetime.utcnow().replace(tzinfo=tz)
     search_end = now + timedelta(days=7)
 
     suggested = []
     current_time = now
 
     while current_time < search_end and len(suggested) < num_options:
-        local_time = current_time.astimezone(pytz.timezone("UTC"))
-        weekday = local_time.weekday()
-        hour = local_time.hour
+        weekday = current_time.strftime("%A")
 
         # ⛔ Skip non-working days
         if weekday not in WORKING_DAYS:
             current_time += timedelta(days=1)
-            current_time = current_time.replace(hour=WORK_START_HOUR, minute=0, second=0, microsecond=0)
+            current_time = current_time.replace(hour=WORKING_HOUR_START.hour, minute=0)
             continue
 
-        # ⛔ Skip outside work hours
-        if hour < WORK_START_HOUR or hour >= WORK_END_HOUR:
+        # 🕖 Skip before work hours
+        if current_time.time() < WORKING_HOUR_START:
+            current_time = current_time.replace(hour=WORKING_HOUR_START.hour, minute=0)
+        
+        # ⛔ Skip after work hours
+        if current_time.time() >= WORKING_HOUR_END:
             current_time += timedelta(days=1)
-            current_time = current_time.replace(hour=WORK_START_HOUR, minute=0, second=0, microsecond=0)
+            current_time = current_time.replace(hour=WORKING_HOUR_START.hour, minute=0)
             continue
 
-        # ⛔ Skip lunch break
-        if LUNCH_START_HOUR is not None and LUNCH_END_HOUR is not None:
-            if LUNCH_START_HOUR <= hour < LUNCH_END_HOUR:
-                current_time += timedelta(minutes=30)
-                continue
+        # 🥗 Skip lunch break
+        if LUNCH_START <= current_time.time() < LUNCH_END:
+            current_time = current_time.replace(hour=LUNCH_END.hour, minute=LUNCH_END.minute)
+            continue
 
-        # 📅 Check availability
         start_str = current_time.isoformat()
-        end_dt = current_time + timedelta(minutes=30)
-        end_str = end_dt.isoformat()
+        end_time = current_time + timedelta(minutes=30)
+        end_str = end_time.isoformat()
 
+        # ❓ Check availability
         events_result = service.events().list(
             calendarId=doctor_id,
             timeMin=start_str,
@@ -258,6 +261,7 @@ def suggest_alternative_times(
             singleEvents=True,
             orderBy="startTime"
         ).execute()
+
         events = events_result.get("items", [])
 
         if not events:
