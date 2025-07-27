@@ -198,7 +198,7 @@ from typing import List, Tuple
 # 🌍 Define working days and hours
 WORKING_DAYS = {"Monday", "Wednesday", "Thursday", "Friday"}
 WORKING_HOUR_START = time(7, 0)    # 7:00 AM
-WORKING_HOUR_END = time(20, 0)     # 8:00 PM
+WORKING_HOUR_END = time(17, 0)     # 8:00 PM
 
 # 🥗 Optional lunch break
 LUNCH_START = time(13, 0)   # 1:00 PM
@@ -211,8 +211,8 @@ def suggest_alternative_times(
     num_options: int = 3
 ) -> List[Tuple[str, str]]:
     """
-    Suggests the next available 30-min appointment slots for a given doctor,
-    skipping weekends, off-hours, and lunch breaks.
+    Suggests the next available 30-minute slots, considering working days/hours,
+    skipping past times and lunch hour.
     """
 
     from googleapiclient.discovery import build
@@ -228,48 +228,60 @@ def suggest_alternative_times(
     while current_time < search_end and len(suggested) < num_options:
         weekday = current_time.strftime("%A")
 
-        # ⛔ Skip non-working days
+        # Skip non-working days
         if weekday not in WORKING_DAYS:
             current_time += timedelta(days=1)
             current_time = current_time.replace(hour=WORKING_HOUR_START.hour, minute=0)
             continue
 
-        # 🕖 Skip before work hours
+        # Skip before work hours
         if current_time.time() < WORKING_HOUR_START:
             current_time = current_time.replace(hour=WORKING_HOUR_START.hour, minute=0)
-        
-        # ⛔ Skip after work hours
+
+        # Skip after or at end of working hours
         if current_time.time() >= WORKING_HOUR_END:
             current_time += timedelta(days=1)
             current_time = current_time.replace(hour=WORKING_HOUR_START.hour, minute=0)
             continue
 
-        # 🥗 Skip lunch break
+        # Skip lunch break
         if LUNCH_START <= current_time.time() < LUNCH_END:
             current_time = current_time.replace(hour=LUNCH_END.hour, minute=LUNCH_END.minute)
             continue
+
+        # Snap to next valid 30-min block if needed
+        if current_time < now:
+            current_time = now
+
+        if current_time.minute not in [0, 30]:
+            # Round up to nearest 30-minute block
+            minute = 30 if current_time.minute < 30 else 0
+            hour = current_time.hour if minute == 30 else current_time.hour + 1
+            current_time = current_time.replace(hour=hour % 24, minute=minute)
 
         start_str = current_time.isoformat()
         end_time = current_time + timedelta(minutes=30)
         end_str = end_time.isoformat()
 
-        # ❓ Check availability
-        events_result = service.events().list(
-            calendarId=doctor_id,
-            timeMin=start_str,
-            timeMax=end_str,
-            singleEvents=True,
-            orderBy="startTime"
-        ).execute()
+        # Final check: within working hours and not in the past
+        if current_time.time() >= WORKING_HOUR_START and current_time.time() < WORKING_HOUR_END and current_time >= now:
+            events_result = service.events().list(
+                calendarId=doctor_id,
+                timeMin=start_str,
+                timeMax=end_str,
+                singleEvents=True,
+                orderBy="startTime"
+            ).execute()
+            events = events_result.get("items", [])
 
-        events = events_result.get("items", [])
+            if not events:
+                suggested.append((start_str, end_str))
 
-        if not events:
-            suggested.append((start_str, end_str))
-
+        # Move to next slot
         current_time += timedelta(minutes=30)
 
     return suggested
+
 
 
 
