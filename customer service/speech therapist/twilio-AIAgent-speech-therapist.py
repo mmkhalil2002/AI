@@ -65,13 +65,7 @@ VOICE = "Polly.Joanna"
 # Load admin numbers and doctor mapping
 with open("admin_numbers.txt") as f:
     admin_numbers = [line.strip() for line in f.readlines() if line.strip()]
-"""
-dr.smith@example.com:primary
-dr.jones@example.com:secondary
-dr.alex@example.com:backup
-"""
-with open("doctors.txt") as f:
-    dr_google_calendar_ids = dict(line.strip().split(":") for line in f if ":" in line)
+
 """
 Purpose: Loads a dictionary mapping Google Calendar IDs to spoken-friendly doctor names.
 {
