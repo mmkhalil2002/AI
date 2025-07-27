@@ -1273,16 +1273,19 @@ def voice():
         print(f"📱 collect_phone: {phone}")
 
         # Simple validation (adjust if you need stricter checking)
-        digits_only = ''.join(filter(str.isdigit, phone))
+        # Remove spaces, commas, and keep digits only
+        cleaned_phone = phone.replace(',', '').replace(' ', '')
+        digits_only = ''.join(filter(str.isdigit, cleaned_phone))
+        
         if len(digits_only) < 7:
             # Not enough digits to be a real phone number, ask again
             gather = Gather(
-                              input="speech",
-                              action="/voice",
-                              method="POST",
-                              speech_model="phone_call",
-                              bargeIn=True,
-                              timeout=SPEECH_INPUT_DURATION
+                            input="speech",
+                            action="/voice",
+                            method="POST",
+                            speech_model="phone_call",
+                            bargeIn=True,
+                            timeout=SPEECH_INPUT_DURATION
                             )
             gather.say(gpt_speak("Sorry, I didn't catch your phone number clearly. Please say it again."), VOICE)
             resp.append(gather)
@@ -1294,16 +1297,17 @@ def voice():
 
         # Prompt for address
         gather = Gather(
-                         input="speech",
-                         action="/voice",
-                         method="POST",
-                         speech_model="phone_call",
-                         bargeIn=True,
-                         timeout=SPEECH_INPUT_DURATION
+                        input="speech",
+                        action="/voice",
+                        method="POST",
+                        speech_model="phone_call",
+                        bargeIn=True,
+                        timeout=SPEECH_INPUT_DURATION
                         )
         gather.say(gpt_speak("Thank you. What is your address, please?"), VOICE)
         resp.append(gather)
         return str(resp)
+
 
 
     elif stage == "collect_address":
