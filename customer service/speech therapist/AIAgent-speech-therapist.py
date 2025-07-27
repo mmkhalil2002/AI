@@ -44,6 +44,12 @@ MAX_APPT_RETRIEVED_FROM_CALNDER = int(os.getenv("MAX_APPT_RETRIEVED_FROM_CALENDE
 APPOINTMENT_DURATION_MINUTES = int(os.getenv("APPOINTMENT_DURATION_MINUTES", 30))
 # 🌐 Global settings
 MAX_TIME_SELECTION_ATTEMPTS = int(os.getenv("MAX_TIME_SELECTION_ATTEMPTS", 3))
+# Define working days (0 = Monday, 6 = Sunday)
+# Example: [0,1,2,3,4] for Mon–Fri in US; [0,1,2,3,5] for Sun–Thu (skip Friday)
+# 0 = Monday, 1 = Tuesday, 2 = Wednesday, 3 = Thursday, 4 = Friday, 5 = Saturday, 6 = Sunday
+
+WORKING_DAYS = [0, 1, 2, 3, 4]  # Adjust based on your local week
+
 
 USE_GPT = False
 
@@ -204,22 +210,28 @@ def suggest_alternative_times(
     num_options: int = 3
 ) -> List[Tuple[str, str]]:
     """
-    Suggests the next available appointment slots (30 min each) for a given doctor.
-
+    Suggests the next available appointment slots (30 min each) for a given doctor,
+    skipping non-working days.
+    
     Returns a list of (start_time, end_time) ISO 8601 strings.
     """
-
     from googleapiclient.discovery import build
     service = build("calendar", "v3", credentials=creds)
 
     now = datetime.utcnow().replace(tzinfo=pytz.UTC)
     search_start = now
-    search_end = now + timedelta(days=7)  # Search within the next 7 days
+    search_end = now + timedelta(days=7)  # Look ahead 7 days
 
     suggested = []
     current_time = search_start
 
     while current_time < search_end and len(suggested) < num_options:
+        # Skip non-working days
+        if current_time.weekday() not in WORKING_DAYS:
+            current_time += timedelta(days=1)
+            current_time = current_time.replace(hour=8, minute=0)  # Reset to 8:00 AM
+            continue
+
         start_str = current_time.isoformat()
         end_dt = current_time + timedelta(minutes=30)
         end_str = end_dt.isoformat()
@@ -237,8 +249,13 @@ def suggest_alternative_times(
         if not events:
             suggested.append((start_str, end_str))
 
-        # Increment by 30 minutes
+        # Move forward 30 min
         current_time += timedelta(minutes=30)
+
+        # Skip past 6:00 PM
+        if current_time.hour >= 18:
+            current_time += timedelta(days=1)
+            current_time = current_time.replace(hour=8, minute=0)
 
     return suggested
 
