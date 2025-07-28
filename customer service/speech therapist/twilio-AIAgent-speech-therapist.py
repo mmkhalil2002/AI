@@ -1104,91 +1104,102 @@ def voice():
     # ----------------------------------------------------------------------
     
     elif stage == "ask_time_date":
-        
+        # ----------------------------------------------------------------------
         # 📅 Step 1: Try to extract the date and time from the user's response
+        # ----------------------------------------------------------------------
         time_info = smart_parse_time(speech_result)
 
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
 
-            if session_data[call_sid]["retry_time"] >= MAX_TIME_SELECTION_ATTEMPTS:
+            if session_data[call_sid]["retry_time"] >= 3:
                 resp.say(gpt_speak("Sorry, I still couldn't understand the time. Please try again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
             gather = Gather(
-                              input="speech",
-                              action="/voice",
-                              method="POST",
-                              timeout=SPEECH_INPUT_DURATION,
-                              speech_model="phone_call",
-                              bargeIn=True
-                         )
-            gather.say(gpt_speak("Please say the date and time again, like July 3rd at 9 AM."), VOICE)
+                input="speech",
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION,
+                speech_model="phone_call",
+                bargeIn=True
+            )
+            gather.say(gpt_speak("Please say the date and time again, for example, July 3rd at 9 AM."), VOICE)
             resp.append(gather)
             return str(resp)
 
-        # ✅ Parsed day/time
+        # ✅ Successfully extracted
         spoken_day, spoken_time = time_info
         session_data[call_sid]["spoken_day"] = spoken_day
         session_data[call_sid]["spoken_time"] = spoken_time
 
-        # Build start/end range
+        # ⏱️ Build ISO 8601 time slot
         try:
             appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
+            session_data[call_sid]["appointment_time"] = {
+                "start": appointment_start,
+                "end": appointment_end
+            }
+            print(f"📆 Appointment requested → Start: {appointment_start}, End: {appointment_end}")
         except Exception as e:
             print(f"❌ Failed to build appointment time range: {e}")
-            resp.say(gpt_speak("Sorry, I couldn’t understand the time. Let’s try again later."), VOICE)
+            resp.say(gpt_speak("Sorry, I couldn’t understand the time you mentioned. Let’s try again later."), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # 🧠 Check if the doctor is available
+        # ----------------------------------------------------------------------
+        # 🕐 Check if the slot is available
+        # ----------------------------------------------------------------------
         doctor_id = session_data[call_sid]["doctor_id"]
-        if not is_time_slot_available(doctor_id, appointment_start, appointment_end, creds):
-            # Offer up to 3 alternative times
-            alternatives = suggest_alternative_times(doctor_id, creds, num_options=3)
-            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
 
-            if not alternatives or session_data[call_sid]["retry_time"] >= MAX_TIME_SELECTION_ATTEMPTS:
-                resp.say(gpt_speak("Unfortunately, the doctor isn't available at that time. Please call us again later."), VOICE)
+        if not is_time_slot_available(doctor_id, appointment_start, appointment_end, creds):
+            print("❌ Requested slot is not available")
+
+            # 🔄 Fetch 3 alternative slots
+            alternate_times = get_next_available_slots(doctor_id, creds, limit=3)
+
+            if not alternate_times:
+                resp.say(gpt_speak("Sorry, I couldn't find any available slots. Please try again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # 💬 Suggest new times and ask again
-            alt_text = " or ".join([format_time_for_speech(t) for t in alternatives])
-            session_data[call_sid]["suggested_alternatives"] = alternatives
+            # 💾 Save alternate options and switch stage
+            session_data[call_sid]["alternate_times"] = alternate_times
+            session_data[call_sid]["stage"] = "pick_alternate_time"
+
+            # 🗣️ Offer the 3 choices to the caller
+            options = [slot["friendly"] for slot in alternate_times]
+            prompt = "That time is not available. Would you like to book on " + " or ".join(options) + "?"
 
             gather = Gather(
-                            input="speech",
-                            action="/voice",
-                            method="POST",
-                            timeout=SPEECH_INPUT_DURATION,
-                            speech_model="phone_call",
-                            bargeIn=True
-                          )
-            gather.say(gpt_speak(f"That time is not available. Would you like to book on {alt_text}?"), VOICE)
+                input="speech",
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION,
+                speech_model="phone_call",
+                bargeIn=True
+            )
+            gather.say(gpt_speak(prompt), VOICE)
             resp.append(gather)
             return str(resp)
 
-        # 🎯 If available, store and move forward
-        session_data[call_sid]["appointment_time"] = {
-            "start": appointment_start,
-            "end": appointment_end
-        }
+        # ----------------------------------------------------------------------
+        # ✅ Slot is available → Proceed to name collection
+        # ----------------------------------------------------------------------
         session_data[call_sid]["stage"] = "collect_first_name"
-        print(f"📆 Appointment scheduled → Start: {appointment_start}, End: {appointment_end}")
 
         gather = Gather(
-                          input="speech",
-                          action="/voice",
-                          method="POST",
-                          timeout=SPEECH_INPUT_DURATION,
-                          speech_model="phone_call",
-                          bargeIn=True
-                       )
+            input="speech",
+            action="/voice",
+            method="POST",
+            timeout=SPEECH_INPUT_DURATION,
+            speech_model="phone_call",
+            bargeIn=True
+        )
         gather.say(gpt_speak("Thanks. What is your first name?"), VOICE)
         resp.append(gather)
         return str(resp)
