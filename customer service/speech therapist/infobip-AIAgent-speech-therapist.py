@@ -1,276 +1,64 @@
 # INFOPBIP Equivalent Flask App with GPT and Google Calendar
-
-from flask import Flask, request, jsonify
 import os
 import json
 import pickle
-import re
+import dateparser
 from datetime import datetime, timedelta
+from flask import Flask, request, jsonify
+from dotenv import load_dotenv
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from openai import OpenAI, APIConnectionError, AuthenticationError, RateLimitError
+# ✅ Load environment variables from .env
+load_dotenv()
+from flask import Flask, request, jsonify
 
+# ✅ Flask app configuration
 app = Flask(__name__)
+app.url_map.strict_slashes = False
 session_data = {}
 
+
 # Load environment variables
+load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GOOGLE_CREDENTIALS = "credentials.json"
 SPEECH_INPUT_DURATION = int(os.getenv("SPEECH_INPUT_DURATION", 15))
 MAX_RECORD_TIME = int(os.getenv("MAX_RECORD_TIME", 60))
 MAX_NUMBER_DR_RETRY = int(os.getenv("MAX_NUMBER_DR_RETRY", 3))
 MAX_APPT_RETRIEVED_FROM_CALNDER = int(os.getenv("MAX_APPT_RETRIEVED_FROM_CALENDER", 50))
+INFOPBIP_USERNAME = os.getenv("INFOPBIP_USERNAME")
+INFOPBIP_API_KEY = os.getenv("INFOPBIP_API_KEY")
+SPEECH_INPUT_DURATION = int(os.getenv("SPEECH_INPUT_DURATION", 5))
+MAX_RECORD_TIME = int(os.getenv("MAX_RECORD_TIME", 60))
+MAX_NUMBER_DR_RETRY = int(os.getenv("MAX_NUMBER_DR_RETRY", 3))
+MAX_APPT_RETRIEVED_FROM_CALNDER = int(os.getenv("MAX_APPT_RETRIEVED_FROM_CALENDER", 50))
+# 🔧 Appointment duration in minutes (can be 15, 30, 60)
+APPOINTMENT_DURATION_MINUTES = int(os.getenv("APPOINTMENT_DURATION_MINUTES", 30))
+# 🌐 Global settings
+MAX_TIME_SELECTION_ATTEMPTS = int(os.getenv("MAX_TIME_SELECTION_ATTEMPTS", 3))
+# Define working days (0 = Monday, 6 = Sunday)
+# Example: [0,1,2,3,4] for Mon–Fri in US; [0,1,2,3,5] for Sun–Thu (skip Friday)
+# 0 = Monday, 1 = Tuesday, 2 = Wednesday, 3 = Thursday, 4 = Friday, 5 = Saturday, 6 = Sunday
 
-# Load doctor and admin data
-with open("admin_numbers.txt") as f:
-    admin_numbers = [line.strip() for line in f.readlines() if line.strip()]
+WORKING_DAYS = [0, 1, 2, 3, 4]  # Adjust based on your local week
 
-with open("doctors.txt") as f:
-    dr_google_calendar_ids = dict(line.strip().split(":") for line in f if ":" in line)
 
-with open("doctors_map.json") as f:
-    googleid_dr_name_map = json.load(f)
+USE_GPT = False
 
-# Initialize Google Calendar credentials
-if not os.path.exists("token.pkl"):
-    flow = InstalledAppFlow.from_client_secrets_file(
-        "credentials.json",
-        scopes=["https://www.googleapis.com/auth/calendar"]
-    )
-    creds = flow.run_local_server(port=0)
-    with open("token.pkl", "wb") as token:
-        pickle.dump(creds, token)
-else:
-    with open("token.pkl", "rb") as f:
-        creds = pickle.load(f)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        with open("token.pkl", "wb") as token:
-            pickle.dump(creds, token)
+#################################################
+# Voice	          Description
+# Polly.Joanna	Friendly US female
+# Polly.Matthew	Warm US male
+# Polly.Kendra	Soft, natural US female
+# Polly.Ruth	Cheerful female (for casual tones)
+######################################################
 
-client = OpenAI(api_key=OPENAI_API_KEY)
-prompt_cache = {}
-
-def extract_doctor_name(speech_text):
-    """
-    Use ChatGPT (GPT-3.5) to extract the doctor's name from the caller's spoken input.
-
-    Parameters:
-        speech_text (str): The full transcribed sentence spoken by the user.
-
-    Returns:
-        str: The extracted doctor name as interpreted by the GPT model.
-             If GPT is unavailable, return the original input as fallback.
-    """
-
-    # ✅ GPT prompt: ask for name only
-    prompt = f"Extract the doctor name from this sentence: '{speech_text}'. Only return the name."
-
-    try:
-        # 🔗 Call OpenAI API to extract name
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You extract doctor names from user speech."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0  # 🔁 Deterministic output for consistency
-        )
-
-        # ✅ Extract and return only the name
-        return response.choices[0].message.content.strip()
-
-    except (APIConnectionError, AuthenticationError, RateLimitError) as e:
-        # 🔁 Graceful fallback in case of GPT issues
-        print(f"⚠️ GPT fallback in extract_doctor_name: {type(e).__name__}: {e}")
-        return speech_text.strip()
-
-    except Exception as e:
-        # 🔁 Handle unexpected errors
-        print(f"⚠️ Unexpected error in extract_doctor_name: {e}")
-        return speech_text.strip()
-
-import re  # ✅ Required for regular expression matching
-
-def extract_phone_number(speech_text: str) -> str:
-    """
-    🔢 Extract a phone number from speech text (spoken user input).
-
-    This function scans the input for digit patterns resembling a phone number.
-    Accepts common formats like:
-        - "1234567890"
-        - "123 456 7890"
-        - "123-456-7890"
-
-    Parameters:
-        speech_text (str): Transcribed user speech.
-
-    Returns:
-        str: A clean, digits-only phone number string.
-             Returns "" if no phone number found.
-    """
-
-    # 🔍 Match 7 to 11 digits, possibly separated by space or dash
-    match = re.search(r'\b(?:\d[\s\-]?){7,11}\b', speech_text)
-
-    if match:
-        # 🧼 Remove all separators and return digits only
-        return match.group().replace(" ", "").replace("-", "")
-
-    # ❌ No valid number found
-    return ""
-
-from typing import Optional
-from datetime import datetime
-from googleapiclient.discovery import build
-
-def cancel_event_by_phone(
-    calendar_id: str,
-    phone: str,
-    spoken_day: Optional[str] = None,     # e.g. "Monday" or "July 14"
-    spoken_time: Optional[str] = None,    # e.g. "2 PM" or "14 00"
-    creds=None
-) -> bool:
-    """
-    Cancel (delete) a Google Calendar event that belongs to a specific phone
-    number according to three fallback rules:
-
-    1. If BOTH `spoken_day` and `spoken_time` are provided:
-       • Delete the FIRST event whose phone appears in summary/description
-         AND whose weekday/date matches `spoken_day`
-         AND whose clock-time matches `spoken_time`.
-
-    2. If ONLY `spoken_time` is provided:
-       • Delete the FIRST event whose phone matches AND whose clock-time matches.
-
-    3. If NEITHER day nor time is provided:
-       • Delete simply the FIRST future event whose phone matches,
-         regardless of date or time.
-
-    Parameters
-    ----------
-    calendar_id : str
-        The Google Calendar ID for the doctor.
-    phone : str
-        Normalized phone digits to search for (e.g. "01012345678").
-    spoken_day : str | None
-        Optional day or date string spoken by the caller
-        ("monday", "next tuesday", "july 14", etc.)
-    spoken_time : str | None
-        Optional time string spoken by the caller
-        ("2 pm", "14 00", etc.)
-    creds : google.oauth2.credentials.Credentials | None
-        Authorized credentials for Google Calendar API.
-
-    Returns
-    -------
-    bool
-        True  → Event found and deleted.
-        False → No matching event found.
-    """
-
-    # ----- Step 1: Initialise Google Calendar service ------------------------
-    calendar = build("calendar", "v3", credentials=creds)
-
-    # ----- Step 2: Fetch up to 50 upcoming events ---------------------------
-    now_iso = datetime.utcnow().isoformat() + "Z"
-    events = calendar.events().list(
-        calendarId=calendar_id,
-        timeMin=now_iso,                               # Only future events
-        maxResults=50,                                 # Reasonable window
-        singleEvents=True,                             # Expand recurring events
-        orderBy="startTime"                            # Chronological order
-    ).execute().get("items", [])
-
-    # ----- Helper functions to normalize spoken day/time --------------------
-    def norm_day(dt: datetime) -> str:
-        return dt.strftime("%A").lower()  # → 'monday', 'tuesday', etc.
-
-    def norm_time(dt: datetime) -> str:
-        return dt.strftime("%-I %p").lower()  # → '2 pm', etc.
-
-    # Pre-normalize spoken inputs if available
-    target_day  = spoken_day.lower()  if spoken_day  else None
-    target_time = spoken_time.lower() if spoken_time else None
-
-    # ----- Step 3: Iterate through events and find a match ------------------
-    for event in events:
-        # Event start can be dateTime or all-day date
-        start_raw = event["start"].get("dateTime") or event["start"]["date"]
-        start_dt  = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
-
-        summary     = event.get("summary", "")
-        description = event.get("description", "")
-
-        # ➊ Phone match is MANDATORY
-        if phone not in summary and phone not in description:
-            continue
-
-        # ➋ Day match if provided
-        if target_day and target_day not in norm_day(start_dt):
-            continue
-
-        # ➌ Time match if provided
-        if target_time and target_time not in norm_time(start_dt):
-            continue
-
-        # ✅ Found the matching event — delete it
-        calendar.events().delete(
-            calendarId=calendar_id,
-            eventId=event["id"]
-        ).execute()
-
-        return True  # Match and deletion successful
-
-    # 🔚 No matching event found
-    return False
+VOICE = "Polly.Joanna"
+# Load admin numbers and doctor mapping
 
 
 
 
-def fallback_response(prompt):
-    prompt_lower = prompt.lower()
-    greeting_keywords = ["hello", "hi", "good morning", "good afternoon", "good evening", "hey", "greetings", "salaam", "marhaba"]
-    booking_keywords = ["book", "make", "schedule", "appointment", "visit", "slot", "reserve"]
-    cancel_keywords = ["cancel", "reschedule", "change", "remove", "delete"]
-    voicemail_keywords = ["message", "voicemail", "leave", "say something", "record", "note"]
-
-    if "list of doctors" in prompt_lower or "available doctors" in prompt_lower:
-        doctor_names = ", ".join(googleid_dr_name_map.values())
-        return f"The available doctors are: {doctor_names}. Please say the name of the doctor you'd like to book with."
-    if any(kw in prompt_lower for kw in greeting_keywords):
-        return "This is an AI Agent. Welcome to Epic Therapist Clinic! Would you like to book an appointment, cancel one, or leave a message?"
-    elif any(kw in prompt_lower for kw in booking_keywords):
-        return "Sure, I can help you book an appointment. Please tell me the doctor name, here is the doctors list."
-    elif any(kw in prompt_lower for kw in cancel_keywords):
-        return "Okay, I can help cancel your appointment. Can you please tell me your name and appointment time?"
-    elif any(kw in prompt_lower for kw in voicemail_keywords):
-        return "Alright, please leave your message after the beep."
-    else:
-        return prompt
-
-def gpt_speak(prompt):
-    print(f"📨 Prompt: {prompt}")
-    print(f"🔑 Using API Key (first 8 chars): {OPENAI_API_KEY[:8] if OPENAI_API_KEY else 'Not set'}")
-    if prompt in prompt_cache:
-        return prompt_cache[prompt]
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful and friendly assistant for a therapy clinic."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7
-        )
-        message = response.choices[0].message.content.strip()
-        prompt_cache[prompt] = message
-        return message
-    except Exception as e:
-        print(f"❌ GPT error: {e}")
-        return fallback_response(prompt)
 
 @app.route("/voice", methods=["POST"])
 @app.route("/voice/", methods=["POST"])
@@ -312,181 +100,128 @@ def infobip_voice():
 
         return jsonify({"actions": actions})
     
-
-   
     elif stage == "booking":
-             # ----------------------------------------------------------------------
-             # 📍 Booking flow: the caller has just been asked to name a doctor.
-             # Our task here is to identify which doctor they said and, if successful,
-             # proceed to ask what time they’d like to book.
-             # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # 📍 Booking flow: the caller has just been asked to name a doctor.
+        # Our task here is to identify which doctor they said and, if successful,
+        # proceed to ask what time they’d like to book.
+        # ----------------------------------------------------------------------
 
-             # 🗣️ 1) Capture the caller’s speech and normalize to lowercase
-            spoken_text = speech_result.lower()
-            print(f"📥 Doctor name spoken: {spoken_text}")
-            matched_id = None  # Will hold the Google-calendar ID once we find a match
+        if "retry_booking" not in session_data[call_sid]:
+            session_data[call_sid]["retry_booking"] = 0
 
-            # ------------------------------------------------------------------
-            # 🔍 2) FAST MATCH: Try simple substring matching first (cheap & quick)
-            # ------------------------------------------------------------------
-            for doc_id, friendly in googleid_dr_name_map.items():
-                if friendly.lower() in spoken_text or spoken_text in friendly.lower():
-                    matched_id = doc_id
-                    break
+        import string
 
-            # ------------------------------------------------------------------
-            # 🤖 3) FALLBACK: Use GPT extraction if no match
-            # ------------------------------------------------------------------
-            if matched_id is None:
-                extracted = extract_doctor_name(speech_result)  # e.g., returns "Dr. Ahmed"
-                if extracted:
-                    extracted_lower = extracted.lower()
-                    for doc_id, friendly in googleid_dr_name_map.items():
-                        if extracted_lower in friendly.lower() or friendly.lower() in extracted_lower:
-                            matched_id = doc_id
-                            break
+        # 📻 Clean and normalize speech input
+        spoken_text = speech_result.lower().strip() if speech_result else ""
+        spoken_clean = spoken_text.translate(str.maketrans('', '', string.punctuation)).strip()
+        print(f"📻 booking :speech_result: {spoken_clean}")
 
-            # ------------------------------------------------------------------
-            # ❌ 4) NO MATCH FOUND → retry (up to MAX_NUMBER_DR_RETRY)
-            # ------------------------------------------------------------------
-            if matched_id is None:
-                session_data[call_sid]["retry_booking"] += 1
-                retries = session_data[call_sid]["retry_booking"]
+        # 🚫 Block common junk phrases
+        junk_inputs = {
+            "hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test",
+            "1", "yes", "no", "i know", "huh", "what", "okay", "ok", "bye", "goodbye", ""
+        }
 
-            if retries >= MAX_NUMBER_DR_RETRY:
-                session_data.pop(call_sid, None)
-                return jsonify({
-                        "actions": [
-                        {"say": {"text": gpt_speak(
-                            "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
-                             "Please call us again when convenient. Goodbye.")}},
-                        {"hangup": {}}
-                    ]
-                })
-
-            # 🔁 Re-prompt the user with doctor list
-            doctor_list = ", ".join(googleid_dr_name_map.values())
-            retry_prompt = (
-                            f"I didn't recognize that name. Available doctors are: {doctor_list}. "
-                            "Please say the doctor's name again."
-                            )
-            return jsonify({
+        if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
+            print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
+            doctor_list_str = ", ".join(googleid_dr_name_map.values())
+            return {
                 "actions": [
-                            {"say": {"text": gpt_speak(retry_prompt)}},
-                            {
-                                "collectSpeech": {
-                                "timeout": SPEECH_INPUT_DURATION,
-                                 "speechRecognition": {
-                                 "language": "en-US"
-                                 },
-                        "action": {
-                            "url": "/voice",
-                            "method": "POST"
-                            }
-                        }
+                    {"action": "talk", "text": gpt_speak("Please say the name of the doctor you'd like to book with.")},
+                    {
+                        "action": "collectSpeech",
+                        "eventUrl": [f"{BASE_URL}/voice"],
+                        "speechTimeout": "auto",
+                        "bargeIn": True
                     }
                 ]
-            })
+            }
 
-            # ------------------------------------------------------------------
-            # ✅ 5) MATCH SUCCESS → save doctor and move to "ask_time"
-            # ------------------------------------------------------------------
-            
-            session_data[call_sid]["doctor_id"] = matched_id
-            session_data[call_sid]["stage"] = "ask_time"
-            friendly_name = googleid_dr_name_map[matched_id]
-            time_prompt = f"What time would you like to book with {friendly_name}?"
+        matched_id = None
 
-            return jsonify({
-                             "actions": [
-                                         {"say": {"text": gpt_speak(time_prompt)}},
-                                             {
-                                                "collectSpeech": {
-                                                "timeout": SPEECH_INPUT_DURATION,
-                                                "speechRecognition": {
-                                                "language": "en-US"
-                                        },
-                            "action": {
-                                        "url": "/voice",
-                                        "method": "POST"
-                                     }
-                             }
-                          }
-                        ]
-                    })
+        # 🔍 1. Partial or exact substring match
+        partial_matches = []
+        for doc_id, friendly in googleid_dr_name_map.items():
+            friendly_clean = friendly.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+            if spoken_clean in friendly_clean or friendly_clean in spoken_clean:
+                partial_matches.append((doc_id, friendly))
 
-    elif stage == "ask_time":
-        # 📌 Step 1: Get the previously selected doctor’s calendar ID from the session
-        doctor_id = session_data[call_sid]["doctor_id"]
+        if len(partial_matches) == 1:
+            matched_id = partial_matches[0][0]
+            print(f"✅ Partial match with: {partial_matches[0][1]}")
 
-        # 🧠 Step 2: Try to interpret the spoken time (e.g., "2 PM", "10 AM")
-        try:
-            requested_time = datetime.strptime(speech_result, "%I %p")  # Expect format like "2 PM"
-        except ValueError:
-            # ⚠️ If the format was wrong or not understood — ask the caller to say it again using Infobip
-            actions = []
-            actions.append({
-                    "action": "talk",  # 📢 Text-to-speech message
-                     "text": gpt_speak("Please say a time like 2 PM or 10 AM.")
-                })
-            actions.append({
-                            "action": "collectSpeech",  # 🎙️ Start listening again
-                            "eventUrl": ["/voice"]      # 🔁 Send speech back to the same endpoint
-                        })
-            return jsonify({"actions": actions})
+        # 🤖 2. GPT fallback (only if 2+ words)
+        if matched_id is None and len(spoken_clean.split()) >= 2:
+            try:
+                extracted = extract_doctor_name(spoken_text)
+                if extracted:
+                    extracted_clean = extracted.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+                    for doc_id, friendly in googleid_dr_name_map.items():
+                        friendly_clean = friendly.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+                        if extracted_clean in friendly_clean or friendly_clean in extracted_clean:
+                            matched_id = doc_id
+                            print(f"✅ Matched via GPT fallback: {friendly}")
+                            break
+            except Exception as e:
+                print(f"⚠️ GPT fallback failed: {e}")
 
-         # 📅 Step 3: Construct the appointment time window
-        now = datetime.utcnow()
-        event_start = now.replace(hour=requested_time.hour, minute=0, second=0, microsecond=0)
-        event_end = event_start + timedelta(minutes=30)  # 📆 30-minute appointment
+        # ❌ 3. Still no match → Retry logic
+        if matched_id is None:
+            print(f"❌ No doctor match for: '{spoken_clean}'")
+            session_data[call_sid]["retry_booking"] += 1
+            retries = session_data[call_sid]["retry_booking"]
 
-        # 🔌 Step 4: Connect to Google Calendar and check for conflicts
-        calendar = build("calendar", "v3", credentials=creds)
-        events = calendar.events().list(
-                calendarId=doctor_id,
-                timeMin=event_start.isoformat() + "Z",
-                timeMax=event_end.isoformat() + "Z",
-                singleEvents=True
-            ).execute()
-
-        if events["items"]:
-            # ❌ Step 5: There is a conflict — ask for another time
-            actions = []
-            actions.append({
-                            "action": "talk",
-                            "text": gpt_speak("This time is not available. Please choose another time.")
-                        })
-            actions.append({
-                            "action": "collectSpeech",
-                            "eventUrl": ["/voice"]
-                        })
-            return jsonify({"actions": actions})
-
-        # ✅ Step 6: No conflict → confirm booking and add to calendar
-        session_data[call_sid]["stage"] = "confirmed"
-        event = {
-                    "summary": f"Appointment for {call_sid}",  # You may replace with caller name later
-                    "start": {"dateTime": event_start.isoformat(), "timeZone": "UTC"},
-                    "end": {"dateTime": event_end.isoformat(), "timeZone": "UTC"}
+            if retries >= 3:
+                session_data.pop(call_sid, None)
+                return {
+                    "actions": [
+                        {"action": "talk", "text": gpt_speak(
+                            "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
+                            "Please call us again when convenient. Goodbye."
+                        )},
+                        {"action": "hangup"}
+                    ]
                 }
-        calendar.events().insert(calendarId=doctor_id, body=event).execute()
 
-        # 🎉 Step 7: Confirm the booking to the user
-        actions = []
-        confirmation_text = (
-                                f"Your appointment with {googleid_dr_name_map[doctor_id]} "
-                                f"is confirmed at {requested_time.strftime('%I %p')}. Thank you!"
-                            )
-        actions.append({
-                        "action": "talk",
-                        "text": gpt_speak(confirmation_text)
-                    })
+            doctor_list_str = ", ".join(googleid_dr_name_map.values())
+            retry_prompt = (
+                f"I couldn't match that to a doctor. Available doctors are: {doctor_list_str}. "
+                "Please say the doctor name again."
+            )
+            return {
+                "actions": [
+                    {"action": "talk", "text": gpt_speak(retry_prompt)},
+                    {
+                        "action": "collectSpeech",
+                        "eventUrl": [f"{BASE_URL}/voice"],
+                        "speechTimeout": "auto",
+                        "bargeIn": True
+                    }
+                ]
+            }
 
-        # 🧼 Step 8: Optionally clear session if you don’t expect more follow-up
-        session_data.pop(call_sid, None)
+        # ✅ 4. Success → Ask for time
+        session_data[call_sid]["doctor_id"] = matched_id
+        session_data[call_sid]["stage"] = "ask_time_date"
 
-        # 📨 Step 9: Return the Infobip action list as a response
-        return jsonify({"actions": actions})
+        friendly_name = googleid_dr_name_map[matched_id]
+        time_prompt = f"What time would you like to book with {friendly_name}?"
+
+        return {
+            "actions": [
+                {"action": "talk", "text": gpt_speak(time_prompt)},
+                {
+                    "action": "collectSpeech",
+                    "eventUrl": [f"{BASE_URL}/voice"],
+                    "speechTimeout": "auto",
+                    "bargeIn": True
+                }
+            ]
+        }
+
+
+    
 
 
 if __name__ == "__main__":
