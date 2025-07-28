@@ -269,24 +269,34 @@ from datetime import datetime, timedelta
 from typing import Tuple
 import re
 
+import re
+
 def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
     """
     Normalize spoken input like "3rd of July" → "July 3"
-    Removes ordinal suffixes and rearranges if needed.
+    Cleans leading noise (e.g., "Is"), removes ordinal suffixes,
+    and rearranges day/month if needed.
     """
-    # Remove ordinal suffixes (e.g., 1st → 1, 2nd → 2, 3rd → 3, etc.)
-    day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day.strip(), flags=re.IGNORECASE)
 
-    # Handle "3 of July", "3rd of July" → "July 3"
+    # 🧹 Remove filler/junk at the start of the input (e.g., "is", "it's", "on", etc.)
+    spoken_day = re.sub(r"^(is|it's|on|at|for)\s+", "", spoken_day.strip(), flags=re.IGNORECASE)
+    spoken_time = re.sub(r"^(is|it's|on|at|for)\s+", "", spoken_time.strip(), flags=re.IGNORECASE)
+
+    # 🔢 Remove ordinal suffixes (e.g., 1st → 1, 2nd → 2, 3rd → 3)
+    day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day, flags=re.IGNORECASE)
+
+    # 🔁 Convert "3 of July" → "July 3"
     match = re.match(r"(\d+)\s+of\s+([A-Za-z]+)", day, flags=re.IGNORECASE)
     if match:
         day = f"{match.group(2)} {match.group(1)}"
 
-    # Remove commas or prepositions
+    # 🧽 Remove commas and remaining 'of'
     day = day.replace(",", "").replace("of", "").strip()
 
-    # Combine and return cleaned format
+    # ✅ Combine normalized day and time
     return f"{day} {spoken_time}".strip()
+
+
 
 from datetime import datetime, timedelta
 from typing import Tuple
