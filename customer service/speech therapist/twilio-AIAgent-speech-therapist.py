@@ -179,6 +179,74 @@ def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, cre
     return len(events) == 0  # True if no conflicts
 
 
+from datetime import datetime, timedelta
+from googleapiclient.discovery import build
+import pytz
+
+def get_next_available_slots(calendar_id, creds, limit=3, duration_minutes=30) -> list:
+    """
+    Get the next N available appointment slots for the given doctor calendar.
+
+    Args:
+        calendar_id (str): The Google Calendar ID of the doctor
+        creds: Authenticated Google credentials
+        limit (int): Number of alternative slots to return
+        duration_minutes (int): Length of each appointment slot in minutes
+
+    Returns:
+        list of dict: Each dict contains 'start', 'end', 'friendly' keys
+    """
+    # ⏱️ Timezone and search range setup
+    timezone = "America/Chicago"  # ✅ Change to your clinic's timezone
+    tz = pytz.timezone(timezone)
+    now = datetime.utcnow().replace(microsecond=0)
+    end_of_range = now + timedelta(days=7)
+
+    # 📅 Google Calendar setup
+    service = build("calendar", "v3", credentials=creds)
+    events_result = service.events().list(
+        calendarId=calendar_id,
+        timeMin=now.isoformat() + "Z",
+        timeMax=end_of_range.isoformat() + "Z",
+        singleEvents=True,
+        orderBy="startTime"
+    ).execute()
+
+    # 🕓 Extract busy times from existing events
+    busy_times = []
+    for event in events_result.get("items", []):
+        start = event.get("start", {}).get("dateTime")
+        end = event.get("end", {}).get("dateTime")
+        if start and end:
+            busy_times.append((datetime.fromisoformat(start), datetime.fromisoformat(end)))
+
+    # 🔍 Search for next available slots
+    results = []
+    current = now + timedelta(minutes=15)  # Avoid suggesting immediate next slot
+    while current < end_of_range and len(results) < limit:
+        slot_start = current.replace(second=0, microsecond=0)
+        slot_end = slot_start + timedelta(minutes=duration_minutes)
+
+        # Only suggest slots within working hours (e.g., 8 AM to 6 PM)
+        if not (8 <= slot_start.hour < 18):
+            current += timedelta(minutes=duration_minutes)
+            continue
+
+        # ❌ Skip if overlaps with any busy period
+        conflict = any(slot_start < end and slot_end > start for start, end in busy_times)
+        if not conflict:
+            friendly = slot_start.astimezone(tz).strftime("%B %-d at %-I:%M %p")
+            results.append({
+                "start": slot_start.isoformat(),
+                "end": slot_end.isoformat(),
+                "friendly": friendly
+            })
+
+        current += timedelta(minutes=duration_minutes)
+
+    return results
+
+
 
 from typing import List, Tuple
 from datetime import datetime, timedelta, time
@@ -1159,7 +1227,7 @@ def voice():
             print("❌ Requested slot is not available")
 
             # 🔄 Fetch 3 alternative slots
-            alternate_times = get_next_available_slots(doctor_id, creds, limit=3)
+            alts = get_next_available_slots(calendar_id, creds, limit=3, duration_minutes=APPOINTMENT_DURATION_MINUTES)
 
             if not alternate_times:
                 resp.say(gpt_speak("Sorry, I couldn't find any available slots. Please try again later."), VOICE)
