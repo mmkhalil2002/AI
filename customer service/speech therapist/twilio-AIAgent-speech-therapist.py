@@ -183,68 +183,57 @@ from datetime import datetime, timedelta
 from googleapiclient.discovery import build
 import pytz
 
-def get_next_available_slots(calendar_id, creds, limit=3, duration_minutes=30) -> list:
+from datetime import datetime, timedelta
+from typing import List, Dict
+
+def get_next_available_slots(calendar_id: str, creds, limit: int = 3, duration_minutes: int = 30) -> List[Dict]:
     """
-    Get the next N available appointment slots for the given doctor calendar.
-
-    Args:
-        calendar_id (str): The Google Calendar ID of the doctor
-        creds: Authenticated Google credentials
-        limit (int): Number of alternative slots to return
-        duration_minutes (int): Length of each appointment slot in minutes
-
-    Returns:
-        list of dict: Each dict contains 'start', 'end', 'friendly' keys
+    Return a list of the next `limit` available time slots for a doctor.
+    Each slot is a dictionary with 'start', 'end', and 'friendly' keys.
     """
-    # ⏱️ Timezone and search range setup
-    timezone = "America/Chicago"  # ✅ Change to your clinic's timezone
-    tz = pytz.timezone(timezone)
-    now = datetime.utcnow().replace(microsecond=0)
-    end_of_range = now + timedelta(days=7)
+    from googleapiclient.discovery import build
+    import pytz
 
-    # 📅 Google Calendar setup
     service = build("calendar", "v3", credentials=creds)
-    events_result = service.events().list(
-        calendarId=calendar_id,
-        timeMin=now.isoformat() + "Z",
-        timeMax=end_of_range.isoformat() + "Z",
-        singleEvents=True,
-        orderBy="startTime"
-    ).execute()
+    now = datetime.utcnow().replace(second=0, microsecond=0)
+    tz = pytz.timezone("America/Chicago")
+    now_local = now.astimezone(tz)
 
-    # 🕓 Extract busy times from existing events
-    busy_times = []
-    for event in events_result.get("items", []):
-        start = event.get("start", {}).get("dateTime")
-        end = event.get("end", {}).get("dateTime")
-        if start and end:
-            busy_times.append((datetime.fromisoformat(start), datetime.fromisoformat(end)))
+    # 🔁 Start from the next rounded-up 30-minute boundary
+    minute = (now_local.minute // duration_minutes + 1) * duration_minutes
+    rounded_start = now_local.replace(minute=0) + timedelta(minutes=minute)
+    if rounded_start.minute >= 60:
+        rounded_start += timedelta(hours=1)
+        rounded_start = rounded_start.replace(minute=0)
 
-    # 🔍 Search for next available slots
-    results = []
-    current = now + timedelta(minutes=15)  # Avoid suggesting immediate next slot
-    while current < end_of_range and len(results) < limit:
-        slot_start = current.replace(second=0, microsecond=0)
-        slot_end = slot_start + timedelta(minutes=duration_minutes)
+    suggestions = []
+    checked_slots = 0
+    MAX_LOOKAHEAD_HOURS = 72  # how far to search into the future
 
-        # Only suggest slots within working hours (e.g., 8 AM to 6 PM)
-        if not (8 <= slot_start.hour < 18):
-            current += timedelta(minutes=duration_minutes)
-            continue
+    while len(suggestions) < limit and checked_slots < (MAX_LOOKAHEAD_HOURS * 60) // duration_minutes:
+        end_slot = rounded_start + timedelta(minutes=duration_minutes)
+        time_min = rounded_start.isoformat()
+        time_max = end_slot.isoformat()
 
-        # ❌ Skip if overlaps with any busy period
-        conflict = any(slot_start < end and slot_end > start for start, end in busy_times)
-        if not conflict:
-            friendly = slot_start.astimezone(tz).strftime("%B %-d at %-I:%M %p")
-            results.append({
-                "start": slot_start.isoformat(),
-                "end": slot_end.isoformat(),
-                "friendly": friendly
+        events = service.events().list(
+            calendarId=calendar_id,
+            timeMin=time_min,
+            timeMax=time_max,
+            singleEvents=True
+        ).execute()
+
+        if not events["items"]:
+            suggestions.append({
+                "start": time_min,
+                "end": time_max,
+                "friendly": rounded_start.strftime("%B %-d at %-I:%M %p")
             })
 
-        current += timedelta(minutes=duration_minutes)
+        rounded_start += timedelta(minutes=duration_minutes)
+        checked_slots += 1
 
-    return results
+    return suggestions
+
 
 
 
