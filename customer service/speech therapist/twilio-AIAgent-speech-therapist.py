@@ -1269,42 +1269,43 @@ def voice():
         # ----------------------------------------------------------------------
         # ☎️ Stage: Collect Phone Number
         # ----------------------------------------------------------------------
-        phone = speech_result.strip()
-        print(f"📱 collect_phone: {phone}")
+        import re
 
-        # Simple validation (adjust if you need stricter checking)
-        # Remove spaces, commas, and keep digits only
-        cleaned_phone = phone.replace(',', '').replace(' ', '')
-        digits_only = ''.join(filter(str.isdigit, cleaned_phone))
-        
+        raw_phone = speech_result.strip()
+        print(f"📱 collect_phone (raw): {raw_phone}")
+
+        # 🔧 Normalize and compact the phone number (remove punctuation, spaces, etc.)
+        digits_only = re.sub(r"\D", "", raw_phone)
+        print(f"📞 Cleaned phone number: {digits_only}")
+
         if len(digits_only) < 7:
-            # Not enough digits to be a real phone number, ask again
+            # Not enough digits → re-prompt
             gather = Gather(
-                            input="speech",
-                            action="/voice",
-                            method="POST",
-                            speech_model="phone_call",
-                            bargeIn=True,
-                            timeout=SPEECH_INPUT_DURATION
-                            )
-            gather.say(gpt_speak("Sorry, I didn't catch your phone number clearly. Please say it again."), VOICE)
+                input="speech",
+                action="/voice",
+                method="POST",
+                speech_model="phone_call",
+                bargeIn=True,
+                timeout=SPEECH_INPUT_DURATION
+            )
+            gather.say(gpt_speak("Sorry, I didn't catch your phone number clearly. Please say it again, digit by digit."), VOICE)
             resp.append(gather)
             return str(resp)
 
-        # ✅ Save the phone number
+        # ✅ Save cleaned number
         session_data[call_sid]["customer"]["phone"] = digits_only
         session_data[call_sid]["stage"] = "collect_address"
 
-        # Prompt for address
+        # 🏠 Prompt for address
         gather = Gather(
-                        input="speech",
-                        action="/voice",
-                        method="POST",
-                        speech_model="phone_call",
-                        bargeIn=True,
-                        timeout=SPEECH_INPUT_DURATION
-                        )
-        gather.say(gpt_speak("Thank you. What is your address, please?"), VOICE)
+            input="speech",
+            action="/voice",
+            method="POST",
+            speech_model="phone_call",
+            bargeIn=True,
+            timeout=SPEECH_INPUT_DURATION
+        )
+        gather.say(gpt_speak("Thank you. What is your full address, please?"), VOICE)
         resp.append(gather)
         return str(resp)
 
