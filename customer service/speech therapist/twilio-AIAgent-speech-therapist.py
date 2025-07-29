@@ -624,24 +624,11 @@ def cancel_event_by_phone(
     spoken_day: Optional[str] = None,
     spoken_time: Optional[str] = None,
     creds=None,
-    return_details: bool = False  # ✅ Whether to return full event details
+    return_details: bool = False
 ):
     """
     Cancel (delete) a Google Calendar event that matches a given phone number,
     and optionally a specific spoken day and/or time.
-
-    Parameters:
-    - calendar_id (str): ID of the Google Calendar to query.
-    - phone (str): Phone number to match in event summary or description.
-    - spoken_day (Optional[str]): Natural language string like "Monday" or "July 3".
-    - spoken_time (Optional[str]): Time string like "9:00 AM".
-    - creds: Google OAuth2 credentials.
-    - return_details (bool): If True, return full event object instead of just success/failure.
-
-    Returns:
-    - dict: Matching event object if return_details is True and a match was found.
-    - True: If deletion was successful (and return_details is False).
-    - False/None: If no match was found or deletion failed.
     """
 
     from googleapiclient.discovery import build
@@ -649,61 +636,66 @@ def cancel_event_by_phone(
     import pytz
     import re
 
-    # Build Google Calendar service client
     service = build("calendar", "v3", credentials=creds)
-
-    # Start from current time
     now = datetime.utcnow().isoformat() + 'Z'
 
-    # Fetch upcoming events (limit 25 for performance)
-    events_result = service.events().list(
-        calendarId=calendar_id,
-        timeMin=now,
-        maxResults=25,
-        singleEvents=True,
-        orderBy="startTime"
-    ).execute()
+    try:
+        events_result = service.events().list(
+            calendarId=calendar_id,
+            timeMin=now,
+            maxResults=25,
+            singleEvents=True,
+            orderBy="startTime"
+        ).execute()
+    except Exception as e:
+        print(f"❌ Failed to fetch events: {e}")
+        return None if return_details else False
 
     events = events_result.get("items", [])
 
     for event in events:
-        # Extract phone number from summary or description
         summary = event.get("summary", "").lower()
         description = event.get("description", "").lower()
 
-        if phone in summary or phone in description:
-            # ✅ Found an event with matching phone number
+        # Normalize phone digits (remove dashes, dots, etc.)
+        phone_clean = re.sub(r"[^\d]", "", phone)
+        event_text = re.sub(r"[^\d]", "", summary + description)
 
-            event_start = event.get("start", {}).get("dateTime")
-            if not event_start:
-                continue  # Skip all-day or malformed events
+        if phone_clean not in event_text:
+            continue  # ⛔ Skip if phone doesn't match
 
-            try:
-                # Parse the event datetime
-                dt = datetime.fromisoformat(event_start.replace("Z", "+00:00"))
+        event_start = event.get("start", {}).get("dateTime")
+        if not event_start:
+            continue  # Skip if all-day or invalid
 
-                # Normalize and check day match
-                dt_day_str = dt.strftime("%A, %B %-d").lower()  # e.g., "Thursday, July 3"
-                spoken_day_clean = (spoken_day or "").lower().strip()
-                day_match = not spoken_day or spoken_day_clean in dt_day_str
+        try:
+            # ⏱️ Parse datetime safely
+            dt = datetime.fromisoformat(event_start.replace("Z", "+00:00"))
 
-                # Normalize and check time match
-                dt_time_str = dt.strftime("%-I:%M %p").lower()  # e.g., "9:00 am"
-                spoken_time_clean = (spoken_time or "").lower().strip()
-                time_match = not spoken_time or spoken_time_clean in dt_time_str
+            # 🗓️ Check day match
+            dt_day_str = dt.strftime("%A, %B %-d").lower()  # e.g., "Thursday, July 4"
+            spoken_day_clean = (spoken_day or "").lower().strip()
+            day_match = not spoken_day or spoken_day_clean in dt_day_str
 
-                if day_match and time_match:
-                    # 🎯 Matching event → Delete it
-                    service.events().delete(calendarId=calendar_id, eventId=event["id"]).execute()
+            # 🕘 Check time match
+            dt_time_str = dt.strftime("%-I:%M %p").lower()  # e.g., "8:30 am"
+            spoken_time_clean = (spoken_time or "").lower().strip()
+            time_match = not spoken_time or spoken_time_clean in dt_time_str
 
-                    return event if return_details else True
+            print(f"🔍 Checking event: {dt_day_str} {dt_time_str} | Phone: {phone_clean} | Match: {day_match} + {time_match}")
 
-            except Exception as e:
-                print(f"⚠️ Error parsing event datetime: {e}")
-                continue
+            if day_match and time_match:
+                print(f"✅ Match found — Deleting event: {event.get('id')}")
+                service.events().delete(calendarId=calendar_id, eventId=event["id"]).execute()
+                return event if return_details else True
 
-    # ❌ No match found
+        except Exception as e:
+            print(f"⚠️ Error parsing datetime: {e}")
+            continue
+
+    print("❌ No matching event found.")
     return None if return_details else False
+
 
 
 #app = Flask(__name__)
