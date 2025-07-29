@@ -325,74 +325,63 @@ def format_time_for_speech(slot: Tuple[str, str]) -> str:
 from datetime import datetime, timedelta
 from typing import Tuple
 import re
-
-import re
-
 def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
     """
     Normalize spoken input like "3rd of July" → "July 3"
-    Cleans leading noise (e.g., "Is"), removes ordinal suffixes,
-    and rearranges day/month if needed.
+    Removes ordinal suffixes and rearranges if needed.
     """
+    print(f"🧽 Raw spoken_day: '{spoken_day}', spoken_time: '{spoken_time}'")
 
-    # 🧹 Remove filler/junk at the start of the input (e.g., "is", "it's", "on", etc.)
-    spoken_day = re.sub(r"^(is|it's|on|at|for)\s+", "", spoken_day.strip(), flags=re.IGNORECASE)
-    spoken_time = re.sub(r"^(is|it's|on|at|for)\s+", "", spoken_time.strip(), flags=re.IGNORECASE)
+    # Remove ordinal suffixes
+    day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day.strip(), flags=re.IGNORECASE)
 
-    # 🔢 Remove ordinal suffixes (e.g., 1st → 1, 2nd → 2, 3rd → 3)
-    day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day, flags=re.IGNORECASE)
-
-    # 🔁 Convert "3 of July" → "July 3"
+    # Handle "4 of July" → "July 4"
     match = re.match(r"(\d+)\s+of\s+([A-Za-z]+)", day, flags=re.IGNORECASE)
     if match:
         day = f"{match.group(2)} {match.group(1)}"
 
-    # 🧽 Remove commas and remaining 'of'
+    # Remove any commas or redundant prepositions
     day = day.replace(",", "").replace("of", "").strip()
+    time = spoken_time.strip().replace(".", "")
 
-    # ✅ Combine normalized day and time
-    return f"{day} {spoken_time}".strip()
+    combined = f"{day} {time}".strip()
+    print(f"🧽 Normalized → Combined: '{combined}'")
+    return combined
 
 
 
-from datetime import datetime, timedelta
-from typing import Tuple
 
 from datetime import datetime, timedelta, timezone
 from typing import Tuple
 
 def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
-    """
-    Converts spoken day/time into ISO 8601 datetime range (30 minutes).
-    Accepts various formats like:
-        - "July 3", "8:30 AM"
-        - "3rd of July", "8:30"
-        - "Thursday, July 3", "8:30"
-    """
-    combined = normalize_date_time(spoken_day, spoken_time)
+    from datetime import datetime, timedelta
 
+    combined = normalize_date_time(spoken_day, spoken_time)
     formats = [
         "%B %d %I:%M %p",
         "%B %d %H:%M",
+        "%B %d %I %p",           # e.g., July 4 10 AM
+        "%A, %B %d %I:%M %p",
         "%A %B %d %I:%M %p",
-        "%A %B %d %H:%M",
+        "%A, %B %d %H:%M"
     ]
 
+    dt = None
     for fmt in formats:
         try:
+            print(f"⏳ Trying format '{fmt}' for: '{combined}'")
             dt = datetime.strptime(combined, fmt)
-            dt = dt.replace(year=datetime.now().year)  # Ensure year is set
-            dt = dt.replace(tzinfo=timezone.utc)       # 👈 Add UTC timezone
             break
         except ValueError:
-            dt = None
+            continue
 
     if not dt:
-        raise ValueError(f"Failed to parse time from: '{combined}'")
+        raise ValueError(f"❌ Failed to parse time from: '{combined}'")
 
-    start = dt.isoformat()          # RFC3339 format with timezone
+    print(f"✅ Parsed datetime: {dt.isoformat()}")
+    start = dt.isoformat()
     end = (dt + timedelta(minutes=30)).isoformat()
-
     return start, end
 
 
@@ -624,17 +613,34 @@ def cancel_event_by_phone(
     spoken_day: Optional[str] = None,
     spoken_time: Optional[str] = None,
     creds=None,
-    return_details: bool = False
+    return_details: bool = False  # ✅ Whether to return full event details
 ):
     """
     Cancel (delete) a Google Calendar event that matches a given phone number,
     and optionally a specific spoken day and/or time.
-    """
 
+    Parameters:
+    - calendar_id (str): ID of the Google Calendar to query.
+    - phone (str): Phone number to match in event summary or description.
+    - spoken_day (Optional[str]): Natural language string like "Monday" or "July 3".
+    - spoken_time (Optional[str]): Time string like "9:00 AM".
+    - creds: Google OAuth2 credentials.
+    - return_details (bool): If True, return full event object instead of just success/failure.
+
+    Returns:
+    - dict: Matching event object if return_details is True and a match was found.
+    - True: If deletion was successful (and return_details is False).
+    - False/None: If no match was found or deletion failed.
+    """
     from googleapiclient.discovery import build
     from datetime import datetime
-    import pytz
     import re
+
+    print("🔍 Starting cancel_event_by_phone")
+    print(f"📅 Calendar ID: {calendar_id}")
+    print(f"📱 Searching for phone: {phone}")
+    print(f"🗓️ Spoken day: {spoken_day}")
+    print(f"⏰ Spoken time: {spoken_time}")
 
     service = build("calendar", "v3", credentials=creds)
     now = datetime.utcnow().isoformat() + 'Z'
@@ -648,54 +654,55 @@ def cancel_event_by_phone(
             orderBy="startTime"
         ).execute()
     except Exception as e:
-        print(f"❌ Failed to fetch events: {e}")
+        print(f"❌ Error fetching events from calendar: {e}")
         return None if return_details else False
 
     events = events_result.get("items", [])
+    print(f"📋 Total upcoming events found: {len(events)}")
 
     for event in events:
         summary = event.get("summary", "").lower()
         description = event.get("description", "").lower()
 
-        # Normalize phone digits (remove dashes, dots, etc.)
-        phone_clean = re.sub(r"[^\d]", "", phone)
-        event_text = re.sub(r"[^\d]", "", summary + description)
+        print(f"\n🔎 Checking event: {summary} | {description}")
 
-        if phone_clean not in event_text:
-            continue  # ⛔ Skip if phone doesn't match
+        if phone in summary or phone in description:
+            print(f"✅ Phone number matched in summary/description.")
 
-        event_start = event.get("start", {}).get("dateTime")
-        if not event_start:
-            continue  # Skip if all-day or invalid
+            event_start = event.get("start", {}).get("dateTime")
+            if not event_start:
+                print("⚠️ Skipping all-day or malformed event.")
+                continue
 
-        try:
-            # ⏱️ Parse datetime safely
-            dt = datetime.fromisoformat(event_start.replace("Z", "+00:00"))
+            try:
+                dt = datetime.fromisoformat(event_start.replace("Z", "+00:00"))
+                dt_day_str = dt.strftime("%A, %B %-d").lower()
+                dt_time_str = dt.strftime("%-I:%M %p").lower()
 
-            # 🗓️ Check day match
-            dt_day_str = dt.strftime("%A, %B %-d").lower()  # e.g., "Thursday, July 4"
-            spoken_day_clean = (spoken_day or "").lower().strip()
-            day_match = not spoken_day or spoken_day_clean in dt_day_str
+                spoken_day_clean = (spoken_day or "").lower().strip()
+                spoken_time_clean = (spoken_time or "").lower().strip()
 
-            # 🕘 Check time match
-            dt_time_str = dt.strftime("%-I:%M %p").lower()  # e.g., "8:30 am"
-            spoken_time_clean = (spoken_time or "").lower().strip()
-            time_match = not spoken_time or spoken_time_clean in dt_time_str
+                day_match = not spoken_day or spoken_day_clean in dt_day_str
+                time_match = not spoken_time or spoken_time_clean in dt_time_str
 
-            print(f"🔍 Checking event: {dt_day_str} {dt_time_str} | Phone: {phone_clean} | Match: {day_match} + {time_match}")
+                print(f"📆 Event time: {dt.isoformat()}")
+                print(f"🧠 Comparing → Day: '{spoken_day_clean}' ∈ '{dt_day_str}' = {day_match}")
+                print(f"🧠 Comparing → Time: '{spoken_time_clean}' ∈ '{dt_time_str}' = {time_match}")
 
-            if day_match and time_match:
-                print(f"✅ Match found — Deleting event: {event.get('id')}")
-                service.events().delete(calendarId=calendar_id, eventId=event["id"]).execute()
-                return event if return_details else True
+                if day_match and time_match:
+                    print(f"🗑️ Deleting event ID: {event['id']}")
+                    service.events().delete(calendarId=calendar_id, eventId=event["id"]).execute()
+                    return event if return_details else True
 
-        except Exception as e:
-            print(f"⚠️ Error parsing datetime: {e}")
-            continue
+            except Exception as e:
+                print(f"⚠️ Error parsing event start datetime: {e}")
+                continue
 
-    print("❌ No matching event found.")
+        else:
+            print("❌ Phone number not found in this event.")
+
+    print("🚫 No matching appointment found.")
     return None if return_details else False
-
 
 
 #app = Flask(__name__)
