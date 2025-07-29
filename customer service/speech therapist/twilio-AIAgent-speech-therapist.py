@@ -613,61 +613,63 @@ def cancel_event_by_phone(
     spoken_day: Optional[str] = None,
     spoken_time: Optional[str] = None,
     creds=None,
-    return_details: bool = False  # ✅ Whether to return full event details
+    return_details: bool = False
 ):
     """
-    Cancel (delete) a Google Calendar event that matches a given phone number,
-    and optionally a specific spoken day and/or time.
+    Cancel (delete) a Google Calendar event based on phone number and optional day/time.
 
     Parameters:
-    - calendar_id (str): ID of the Google Calendar to query.
-    - phone (str): Phone number to match in event summary or description.
-    - spoken_day (Optional[str]): Natural language string like "Monday" or "July 3".
-    - spoken_time (Optional[str]): Time string like "9:00 AM".
-    - creds: Google OAuth2 credentials.
-    - return_details (bool): If True, return full event object instead of just success/failure.
+    - calendar_id: str → Google Calendar ID
+    - phone: str → Phone number to match in event summary/description
+    - spoken_day: Optional[str] → e.g., "Monday", "July 3"
+    - spoken_time: Optional[str] → e.g., "9:00 AM"
+    - creds → Google credentials
+    - return_details: bool → If True, return the full event object; otherwise return True/False
 
     Returns:
-    - dict: Matching event object if return_details is True and a match was found.
-    - True: If deletion was successful (and return_details is False).
-    - False/None: If no match was found or deletion failed.
+    - event object (dict) if return_details is True and deletion was successful
+    - True if deleted successfully (basic mode)
+    - False if no matching event was found
     """
     from googleapiclient.discovery import build
     from datetime import datetime
     import re
 
-    print("🔍 Starting cancel_event_by_phone")
-    print(f"📅 Calendar ID: {calendar_id}")
-    print(f"📱 Searching for phone: {phone}")
-    print(f"🗓️ Spoken day: {spoken_day}")
-    print(f"⏰ Spoken time: {spoken_time}")
+    # 🔨 Normalize input phone (remove spaces, dashes, commas, etc.)
+    clean_phone = re.sub(r"[^\d]", "", phone)
+    print(f"🔍 Searching for normalized phone: {clean_phone}")
 
+    # 🔧 Initialize calendar client
     service = build("calendar", "v3", credentials=creds)
+
     now = datetime.utcnow().isoformat() + 'Z'
-
-    try:
-        events_result = service.events().list(
-            calendarId=calendar_id,
-            timeMin=now,
-            maxResults=25,
-            singleEvents=True,
-            orderBy="startTime"
-        ).execute()
-    except Exception as e:
-        print(f"❌ Error fetching events from calendar: {e}")
-        return None if return_details else False
-
+    events_result = service.events().list(
+        calendarId=calendar_id,
+        timeMin=now,
+        maxResults=25,
+        singleEvents=True,
+        orderBy="startTime"
+    ).execute()
     events = events_result.get("items", [])
-    print(f"📋 Total upcoming events found: {len(events)}")
+
+    print(f"📅 Retrieved {len(events)} upcoming events to check")
 
     for event in events:
         summary = event.get("summary", "").lower()
         description = event.get("description", "").lower()
 
-        print(f"\n🔎 Checking event: {summary} | {description}")
+        # 🔍 Normalize numbers from summary and description
+        summary_digits = re.sub(r"[^\d]", "", summary)
+        description_digits = re.sub(r"[^\d]", "", description)
 
-        if phone in summary or phone in description:
-            print(f"✅ Phone number matched in summary/description.")
+        print("🔎 Checking event:")
+        print(f"     summary: {summary}")
+        print(f"     description: {description}")
+        print(f"     normalized summary digits: {summary_digits}")
+        print(f"     normalized description digits: {description_digits}")
+
+        if clean_phone in summary_digits or clean_phone in description_digits:
+            print("✅ Phone number matched.")
 
             event_start = event.get("start", {}).get("dateTime")
             if not event_start:
@@ -685,21 +687,18 @@ def cancel_event_by_phone(
                 day_match = not spoken_day or spoken_day_clean in dt_day_str
                 time_match = not spoken_time or spoken_time_clean in dt_time_str
 
-                print(f"📆 Event time: {dt.isoformat()}")
-                print(f"🧠 Comparing → Day: '{spoken_day_clean}' ∈ '{dt_day_str}' = {day_match}")
-                print(f"🧠 Comparing → Time: '{spoken_time_clean}' ∈ '{dt_time_str}' = {time_match}")
+                print(f"📆 Date match: {day_match}, Time match: {time_match}")
+                print(f"    spoken_day: {spoken_day_clean}, dt_day_str: {dt_day_str}")
+                print(f"    spoken_time: {spoken_time_clean}, dt_time_str: {dt_time_str}")
 
                 if day_match and time_match:
-                    print(f"🗑️ Deleting event ID: {event['id']}")
+                    print("🗑️ Deleting matching event...")
                     service.events().delete(calendarId=calendar_id, eventId=event["id"]).execute()
                     return event if return_details else True
 
             except Exception as e:
-                print(f"⚠️ Error parsing event start datetime: {e}")
+                print(f"⚠️ Failed to parse datetime: {e}")
                 continue
-
-        else:
-            print("❌ Phone number not found in this event.")
 
     print("🚫 No matching appointment found.")
     return None if return_details else False
