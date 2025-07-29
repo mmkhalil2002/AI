@@ -580,7 +580,6 @@ def extract_doctor_name(speech_text):
 
 import re
 
-dimport re
 
 def extract_phone_number(speech_text: str) -> str:
     """
