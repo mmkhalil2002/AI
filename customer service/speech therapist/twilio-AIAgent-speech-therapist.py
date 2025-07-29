@@ -580,32 +580,36 @@ def extract_doctor_name(speech_text):
 
 import re
 
-def extract_phone_number(speech_text):
+dimport re
+
+def extract_phone_number(speech_text: str) -> str:
     """
-    Extracts a phone number from the given speech text.
-    
-    This function is useful when a user speaks their phone number during a voice call.
-    It searches for digit sequences that resemble phone numbers (7 to 11 digits),
-    optionally separated by spaces or dashes.
+    Extracts a phone number from a transcribed voice input.
+
+    Supports:
+    - Spoken digit sequences with spaces or hyphens (e.g. "4 6 9 4 6 3 3 2 7 6")
+    - Common phone number groupings (e.g. "469-463-3276", "469 463 3276")
+    - Returns a compact number with digits only (e.g. "4694633276")
 
     Parameters:
-        speech_text (str): The transcribed text spoken by the user.
+        speech_text (str): Transcribed text from the caller.
 
     Returns:
-        str: The extracted phone number as a clean string of digits.
-             Returns an empty string if no valid phone number is found.
+        str: Cleaned phone number string (digits only), or empty string if invalid.
     """
+    if not speech_text:
+        return ""
 
-    # 🔍 Use regular expression to find a pattern of 7 to 11 digits that may be separated by spaces or hyphens.
-    # Example matches: "123 456 7890", "123-456-7890", "1234567890"
-    match = re.search(r'\b(?:\d[\s\-]?){7,11}\b', speech_text)
+    # 🧼 Remove all non-digit characters except spaces and dashes
+    cleaned = re.sub(r"[^\d\s\-]", "", speech_text)
 
-    # ✅ If a match is found:
-    if match:
-        # 🧼 Remove all spaces and hyphens to return a clean digit-only phone number
-        return match.group().replace(" ", "").replace("-", "")
+    # 🔢 Collapse into digit-only string
+    digits = re.sub(r"[^\d]", "", cleaned)
 
-    # ❌ If no match found, return an empty string
+    # ✅ Return if reasonable phone length (US-based assumption: 7 to 11 digits)
+    if 7 <= len(digits) <= 11:
+        return digits
+
     return ""
 
 import re  # Import the regular expression module
@@ -1574,44 +1578,47 @@ def voice():
         resp.append(gather)
         return str(resp)
 
-
     elif stage == "cancel_appt_by_phone_number":
-        # ----------------------------------------------------------------------
-        # 📞 Step 1: Extract the phone number and store it
-        # ----------------------------------------------------------------------
+        # 📞 Step 1: Extract phone number
         phone = extract_phone_number(speech_result)
         print(f"📱 Extracted phone → {phone}")
-        session_data[call_sid]["cancel"]["phone"] = phone
 
-        # ----------------------------------------------------------------------
-        # 🗣️ Step 2: Prompt user to now provide the date and time
-        # ----------------------------------------------------------------------
+        if not phone or len(phone) < 7:
+            # ❗ Not valid → ask again
+            gather = Gather(
+                input="speech",
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION,
+                speech_model="phone_call",
+                bargeIn=True
+            )
+            gather.say(gpt_speak("I didn’t catch your phone number. Please say it again clearly."), VOICE)
+            resp.append(gather)
+            return str(resp)
+
+        session_data[call_sid]["cancel"]["phone"] = phone
         session_data[call_sid]["stage"] = "cancel_appt_get_date"
 
+        # 🗣️ Ask for date and time
         gather = Gather(
-                        input="speech",
-                        action="/voice",
-                        method="POST",
-                        timeout=SPEECH_INPUT_DURATION,
-                        speech_model="phone_call",
-                        bargeIn=True
-                        )
+            input="speech",
+            action="/voice",
+            method="POST",
+            timeout=SPEECH_INPUT_DURATION,
+            speech_model="phone_call",
+            bargeIn=True
+        )
         gather.say(gpt_speak("Thanks. Now, please tell me the date and time of the appointment you want to cancel. For example, say July 3rd at 9 AM."), VOICE)
         resp.append(gather)
         return str(resp)
 
 
-
-
-
     elif stage == "cancel_appt_get_date":
-        # ----------------------------------------------------------------------
-        # 🧠 Step 1: Try extracting spoken date and time using smart_parse_time
-        # ----------------------------------------------------------------------
+        # 🧠 Extract date and time
         time_info = smart_parse_time(speech_result)
 
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
-            # 🛑 Failed to extract → ask the user again
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
 
             if session_data[call_sid]["retry_time"] >= 3:
@@ -1620,38 +1627,32 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # 🔁 Prompt again for date/time
+            # 🔁 Re-prompt
             gather = Gather(
-                             input="speech",
-                             action="/voice",
-                             method="POST",
-                             timeout=SPEECH_INPUT_DURATION,
-                             speech_model="phone_call",
-                             bargeIn=True
-                            )
-            gather.say(gpt_speak(
-                "Sorry, I didn’t catch that. Please say the date and time of the appointment you want to cancel, like July 3rd at 9 AM."
-            ), VOICE)
+                input="speech",
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION,
+                speech_model="phone_call",
+                bargeIn=True
+            )
+            gather.say(gpt_speak("Sorry, I didn’t catch that. Please say the date and time of the appointment you want to cancel, like July 3rd at 9 AM."), VOICE)
             resp.append(gather)
             return str(resp)
 
-        # ✅ Extracted values from speech
+        # ✅ Valid time extracted
         spoken_day, spoken_time = time_info
-        print(f"📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
         session_data[call_sid]["cancel"]["day"] = spoken_day
         session_data[call_sid]["cancel"]["time"] = spoken_time
+        print(f"📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
 
-        # ----------------------------------------------------------------------
-        # 🔄 Get stored phone number and doctor name
-        # ----------------------------------------------------------------------
+        # 🔄 Retrieve stored values
         phone = session_data[call_sid]["cancel"].get("phone")
         doctor = session_data[call_sid]["cancel"].get("doctor")
         print(f"📱 Using phone → {phone}")
         print(f"👨‍⚕️ Using doctor → {doctor}")
 
-        # ----------------------------------------------------------------------
-        # 🔍 Find calendar ID from friendly doctor name
-        # ----------------------------------------------------------------------
+        # 🔎 Find Google Calendar ID
         calendar_id = None
         for doc_id, friendly in googleid_dr_name_map.items():
             if friendly.lower() == doctor.lower():
@@ -1664,22 +1665,19 @@ def voice():
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🗑️ Attempt cancellation and get full event if found
-        # ----------------------------------------------------------------------
+        # 🗑️ Attempt cancellation
         canceled_event = cancel_event_by_phone(
             calendar_id=calendar_id,
             phone=phone,
             spoken_day=spoken_day,
             spoken_time=spoken_time,
             creds=creds,
-            return_details=True  # ✅ now returns the deleted event object if successful
+            return_details=True
         )
 
         if canceled_event:
             from dateutil import parser
             try:
-                # 🧾 Format the spoken cancellation time for confirmation
                 start = canceled_event.get("start", {})
                 start_str = start.get("dateTime", "") or start.get("date", "")
                 if start_str:
@@ -1691,16 +1689,14 @@ def voice():
                 print(f"⚠️ Failed to parse canceled event time: {e}")
                 spoken_time_str = f"{spoken_day} at {spoken_time}"
 
-            # 🗣️ Confirm cancellation with friendly voice message
             msg = f"Your appointment with {doctor} on {spoken_time_str} has been cancelled. Thank you!"
             resp.say(gpt_speak(msg), VOICE)
         else:
-            # ❌ No matching appointment found
+            # ❌ Could not match event
             resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time."), VOICE)
 
         session_data.pop(call_sid, None)
         return str(resp)
-
 
 
       
