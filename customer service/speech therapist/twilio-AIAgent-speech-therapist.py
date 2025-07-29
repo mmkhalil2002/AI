@@ -585,20 +585,29 @@ def extract_phone_number(speech_text: str) -> str:
     Returns:
         str: Cleaned phone number string (digits only), or empty string if invalid.
     """
+    import re
+
     if not speech_text:
+        print("📞 extract_phone_number: Input is empty.")
         return ""
 
-    # 🧼 Remove all non-digit characters except spaces and dashes
+    print(f"🗣️ Original speech input: '{speech_text}'")
+
+    # 🧼 Step 1: Remove all characters except digits, spaces, and dashes
     cleaned = re.sub(r"[^\d\s\-]", "", speech_text)
+    print(f"🔍 Cleaned speech (kept digits/spaces/dashes): '{cleaned}'")
 
-    # 🔢 Collapse into digit-only string
+    # 🔢 Step 2: Extract digits only
     digits = re.sub(r"[^\d]", "", cleaned)
+    print(f"📞 Digits only: '{digits}'")
 
-    # ✅ Return if reasonable phone length (US-based assumption: 7 to 11 digits)
+    # ✅ Step 3: Check length
     if 7 <= len(digits) <= 11:
+        print(f"✅ Valid phone number found: {digits}")
         return digits
-
-    return ""
+    else:
+        print(f"❌ Invalid phone number length: {len(digits)} digits")
+        return ""
 
 import re  # Import the regular expression module
 from datetime import datetime, timedelta
@@ -606,7 +615,6 @@ from datetime import datetime, timedelta
 
 
 from typing import Optional
-
 def cancel_event_by_phone(
     calendar_id: str,
     phone: str,
@@ -618,31 +626,21 @@ def cancel_event_by_phone(
     """
     Cancel (delete) a Google Calendar event based on phone number and optional day/time.
 
-    Parameters:
-    - calendar_id: str → Google Calendar ID
-    - phone: str → Phone number to match in event summary/description
-    - spoken_day: Optional[str] → e.g., "Monday", "July 3"
-    - spoken_time: Optional[str] → e.g., "9:00 AM"
-    - creds → Google credentials
-    - return_details: bool → If True, return the full event object; otherwise return True/False
-
     Returns:
-    - event object (dict) if return_details is True and deletion was successful
-    - True if deleted successfully (basic mode)
-    - False if no matching event was found
+    - The full event (if return_details=True) or True on success, False/None if no match.
     """
     from googleapiclient.discovery import build
     from datetime import datetime
     import re
 
-    # 🔨 Normalize input phone (remove spaces, dashes, commas, etc.)
+    # 🔨 Normalize input phone
     clean_phone = re.sub(r"[^\d]", "", phone)
     print(f"🔍 Searching for normalized phone: {clean_phone}")
 
-    # 🔧 Initialize calendar client
+    # 🔧 Google Calendar API
     service = build("calendar", "v3", credentials=creds)
-
     now = datetime.utcnow().isoformat() + 'Z'
+
     events_result = service.events().list(
         calendarId=calendar_id,
         timeMin=now,
@@ -658,7 +656,7 @@ def cancel_event_by_phone(
         summary = event.get("summary", "").lower()
         description = event.get("description", "").lower()
 
-        # 🔍 Normalize numbers from summary and description
+        # 🔢 Extract digits
         summary_digits = re.sub(r"[^\d]", "", summary)
         description_digits = re.sub(r"[^\d]", "", description)
 
@@ -702,6 +700,7 @@ def cancel_event_by_phone(
 
     print("🚫 No matching appointment found.")
     return None if return_details else False
+
 
 
 #app = Flask(__name__)
@@ -1339,13 +1338,15 @@ def voice():
         import re
 
         raw_phone = speech_result.strip()
-        print(f"📱 collect_phone (raw): {raw_phone}")
+        print(f"📱 collect_phone (raw): '{raw_phone}'")
 
-        # 🔧 Normalize and compact the phone number (remove punctuation, spaces, etc.)
+        # 🔧 Normalize and compact the phone number (remove all non-digit characters)
         digits_only = re.sub(r"\D", "", raw_phone)
-        print(f"📞 Cleaned phone number: {digits_only}")
+        print(f"📞 Cleaned phone number (digits only): '{digits_only}'")
+        print(f"🔢 Phone number length: {len(digits_only)} digits")
 
         if len(digits_only) < 7:
+            print("❌ Phone number too short. Re-prompting user.")
             # Not enough digits → re-prompt
             gather = Gather(
                 input="speech",
@@ -1355,11 +1356,15 @@ def voice():
                 bargeIn=True,
                 timeout=SPEECH_INPUT_DURATION
             )
-            gather.say(gpt_speak("Sorry, I didn't catch your phone number clearly. Please say it again, digit by digit."), VOICE)
+            gather.say(
+                gpt_speak("Sorry, I didn't catch your phone number clearly. Please say it again, digit by digit."),
+                VOICE
+            )
             resp.append(gather)
             return str(resp)
 
         # ✅ Save cleaned number
+        print(f"✅ Valid phone number accepted: {digits_only}")
         session_data[call_sid]["customer"]["phone"] = digits_only
         session_data[call_sid]["stage"] = "collect_address"
 
@@ -1378,6 +1383,8 @@ def voice():
 
 
 
+
+    
     elif stage == "collect_address":
         # ----------------------------------------------------------------------
         # 🏠 Collect Customer Address and Finalize Appointment
@@ -1388,28 +1395,66 @@ def voice():
         session_data[call_sid]["customer"]["address"] = address
         session_data[call_sid]["stage"] = "completed"
 
+        # 🔍 Extract data from session
         customer = session_data[call_sid]["customer"]
         appointment = session_data[call_sid]["appointment_time"]
         doctor_id = session_data[call_sid]["doctor_id"]
 
-        # 🧩 Safely assemble full name from first + last name
-        full_name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
-
-        # 🛠️ Store full name for backward compatibility (optional)
+        # 🧩 Construct full name
+        first = customer.get("first_name", "")
+        last = customer.get("last_name", "")
+        full_name = f"{first} {last}".strip()
         session_data[call_sid]["customer"]["name"] = full_name
 
-        # 📅 Create appointment in Google Calendar
+        # 📞 Debug the cleaned phone number
+        phone = customer.get("phone", "")
+        print(f"📞 Final stored phone: {phone} (digits only expected)")
+
+        # 📆 Debug the local appointment time
+        local_start_raw = appointment["start"]
+        local_end_raw = appointment["end"]
+        print(f"📅 Local time slot → Start: {local_start_raw}, End: {local_end_raw}")
+
+        # 🌍 Convert local time (America/Chicago) to UTC
+        from datetime import datetime
+        import pytz
+
+        local_tz = pytz.timezone("America/Chicago")
+        try:
+            local_start = local_tz.localize(datetime.fromisoformat(local_start_raw))
+            local_end = local_tz.localize(datetime.fromisoformat(local_end_raw))
+
+            utc_start = local_start.astimezone(pytz.utc).isoformat()
+            utc_end = local_end.astimezone(pytz.utc).isoformat()
+
+            print(f"🌐 UTC converted times → Start: {utc_start}, End: {utc_end}")
+        except Exception as e:
+            print(f"❌ Error converting to UTC: {e}")
+            resp.say(gpt_speak("Sorry, I had trouble confirming your appointment. Please try again later."), VOICE)
+            session_data.pop(call_sid, None)
+            resp.hangup()
+            return str(resp)
+
+        # 📤 Build the calendar event payload
         calendar = build("calendar", "v3", credentials=creds)
         event = {
             "summary": f"Appointment for {full_name}",
-            "description": f"Name: {full_name}\nPhone: {customer.get('phone')}\nAddress: {address}",
-            "start": {"dateTime": appointment["start"], "timeZone": "America/Chicago"},
-            "end": {"dateTime": appointment["end"], "timeZone": "America/Chicago"},
+            "description": f"Name: {full_name}\nPhone: {phone}\nAddress: {address}",
+            "start": {"dateTime": utc_start, "timeZone": "UTC"},
+            "end": {"dateTime": utc_end, "timeZone": "UTC"},
         }
 
-        calendar.events().insert(calendarId=doctor_id, body=event).execute()
+        try:
+            result = calendar.events().insert(calendarId=doctor_id, body=event).execute()
+            print(f"📅 Google Calendar event created → ID: {result.get('id')}")
+        except Exception as e:
+            print(f"❌ Failed to insert event into Google Calendar: {e}")
+            resp.say(gpt_speak("Sorry, I couldn’t book your appointment at the moment. Please try again later."), VOICE)
+            session_data.pop(call_sid, None)
+            resp.hangup()
+            return str(resp)
 
-        # ✅ Confirm to user
+        # 🗣️ Confirm to user
         resp.say(gpt_speak(f"Thanks {full_name}. Your appointment has been confirmed. Goodbye!"), VOICE)
         return str(resp)
 
