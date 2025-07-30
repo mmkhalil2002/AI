@@ -379,48 +379,55 @@ import re
 
 def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     """
-    Convert spoken date/time into an ISO 8601 datetime range.
-    Uses current year by default, and raises if date is in the past.
+    Given spoken day and time strings, return a tuple of ISO start and end times.
+    Example inputs:
+      - spoken_day: "Wednesday, July 30"
+      - spoken_time: "8:30 AM"
     """
+    from datetime import datetime, timedelta
+    import pytz
+
+    # Combine input
+    combined = f"{spoken_day} {spoken_time}".replace(",", "").strip()
     print(f"🔍 Input received → spoken_day: {spoken_day}, spoken_time: {spoken_time}")
+    print(f"🧽 Combined datetime string for parsing: '{combined}'")
 
-    # Clean "4th" → "4"
-    spoken_day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day, flags=re.IGNORECASE).strip()
-    spoken_time = spoken_time.strip()
-
-    # Combine and default to current year
-    combined = f"{spoken_day} {spoken_time}"
+    # Use the current year as fallback if year is missing
     current_year = datetime.now().year
 
     formats = [
-        "%B %d %I:%M %p",   # July 4 8:30 AM
-        "%B %d %H:%M",      # July 4 08:30
-        "%d %B %I:%M %p",   # 4 July 8:30 AM
-        "%d %B %H:%M",      # 4 July 08:30
+        "%B %d %I:%M %p",         # July 30 8:30 AM
+        "%A %B %d %I:%M %p",      # Wednesday July 30 8:30 AM
+        "%B %d %H:%M",            # July 30 08:30
+        "%A %B %d %H:%M",         # Wednesday July 30 08:30
+        "%A %d %B %I:%M %p",      # Wednesday 30 July 8:30 AM
+        "%B %d at %I:%M %p",      # July 30 at 8:30 AM
     ]
 
     dt = None
     for fmt in formats:
         try:
             dt = datetime.strptime(combined, fmt)
+            # 🔁 Insert current year since speech rarely includes it
             dt = dt.replace(year=current_year)
             break
-        except Exception:
-            continue
+        except ValueError as e:
+            print(f"🛑 Format failed: {fmt} → {e}")
 
     if not dt:
         raise ValueError(f"🛑 Could not parse datetime from: '{combined}'")
 
-    # 🕓 Check that it's not in the past
-    now = datetime.now()
-    if dt < now:
-        raise ValueError(f"🛑 The requested time is in the past: {dt}")
+    # Convert to UTC and format as ISO
+    local_tz = pytz.timezone("America/Chicago")
+    local_dt = local_tz.localize(dt)
+    utc_dt = local_dt.astimezone(pytz.utc)
 
-    start = dt.isoformat()
-    end = (dt + timedelta(minutes=30)).isoformat()
+    start = utc_dt.isoformat()
+    end = (utc_dt + timedelta(minutes=APPOINTMENT_DURATION_MINUTES)).isoformat()
 
-    print(f"✅ Final datetime → Start: {start}, End: {end}")
+    print(f"✅ Parsed datetime → Start: {start}, End: {end}")
     return start, end
+
 
 
 
@@ -1244,9 +1251,24 @@ def voice():
             print(f"📆 Appointment requested → Start: {appointment_start}, End: {appointment_end}")
         except Exception as e:
             print(f"❌ Failed to build appointment time range from '{spoken_day}' and '{spoken_time}': {e}")
-            resp.say(gpt_speak("Sorry, I couldn’t understand the time you mentioned. Let’s try again later."), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
+            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
+
+            if session_data[call_sid]["retry_time"] >= 3:
+                resp.say(gpt_speak("Sorry, I couldn’t understand the time you mentioned. Let’s try again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            gather = Gather(
+                input="speech",
+                action="/voice",
+                method="POST",
+                timeout=SPEECH_INPUT_DURATION,
+                speech_model="phone_call",
+                bargeIn=True
+            )
+            gather.say(gpt_speak("I didn't catch that clearly. Please repeat the date and time, like July 3rd at 9 AM."), VOICE)
+            resp.append(gather)
             return str(resp)
 
         # 🔎 Check availability
@@ -1300,7 +1322,6 @@ def voice():
         gather.say(gpt_speak("Thanks. What is your first name?"), VOICE)
         resp.append(gather)
         return str(resp)
-
 
 
 
