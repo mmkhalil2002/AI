@@ -182,9 +182,11 @@ def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, cre
 from datetime import datetime, timedelta
 from googleapiclient.discovery import build
 import pytz
+from typing import List, Dict
 
 from datetime import datetime, timedelta
 from typing import List, Dict
+import pytz
 
 def get_next_available_slots(calendar_id: str, creds, limit: int = 3, duration_minutes: int = 30) -> List[Dict]:
     """
@@ -192,46 +194,63 @@ def get_next_available_slots(calendar_id: str, creds, limit: int = 3, duration_m
     Each slot is a dictionary with 'start', 'end', and 'friendly' keys.
     """
     from googleapiclient.discovery import build
-    import pytz
+
+    print(f"🔍 Starting search for next {limit} available slots.")
+    print(f"📅 Duration per slot: {duration_minutes} minutes")
 
     service = build("calendar", "v3", credentials=creds)
+
     now = datetime.utcnow().replace(second=0, microsecond=0)
     tz = pytz.timezone("America/Chicago")
     now_local = now.astimezone(tz)
+    print(f"🕒 Current local time (Chicago): {now_local}")
 
-    # 🔁 Start from the next rounded-up 30-minute boundary
+    # 🔁 Start from the next rounded-up duration boundary (e.g., 9:00, 9:30, etc.)
     minute = (now_local.minute // duration_minutes + 1) * duration_minutes
     rounded_start = now_local.replace(minute=0) + timedelta(minutes=minute)
     if rounded_start.minute >= 60:
         rounded_start += timedelta(hours=1)
         rounded_start = rounded_start.replace(minute=0)
 
+    print(f"⏱️ First slot to check (rounded): {rounded_start.strftime('%Y-%m-%d %H:%M')}")
+
     suggestions = []
     checked_slots = 0
-    MAX_LOOKAHEAD_HOURS = 72  # how far to search into the future
+    MAX_LOOKAHEAD_HOURS = 72  # ⏩ Max time range to scan
 
     while len(suggestions) < limit and checked_slots < (MAX_LOOKAHEAD_HOURS * 60) // duration_minutes:
         end_slot = rounded_start + timedelta(minutes=duration_minutes)
         time_min = rounded_start.isoformat()
         time_max = end_slot.isoformat()
 
-        events = service.events().list(
-            calendarId=calendar_id,
-            timeMin=time_min,
-            timeMax=time_max,
-            singleEvents=True
-        ).execute()
+        print(f"🔎 Checking slot: {time_min} → {time_max} ...")
 
-        if not events["items"]:
+        try:
+            events_result = service.events().list(
+                calendarId=calendar_id,
+                timeMin=time_min,
+                timeMax=time_max,
+                singleEvents=True
+            ).execute()
+        except Exception as e:
+            print(f"❌ Error while querying events: {e}")
+            break
+
+        if not events_result.get("items", []):
+            friendly = rounded_start.strftime("%B %-d at %-I:%M %p")
+            print(f"✅ Slot available: {friendly}")
             suggestions.append({
                 "start": time_min,
                 "end": time_max,
-                "friendly": rounded_start.strftime("%B %-d at %-I:%M %p")
+                "friendly": friendly
             })
+        else:
+            print(f"❌ Slot is busy ({len(events_result.get('items', []))} events)")
 
         rounded_start += timedelta(minutes=duration_minutes)
         checked_slots += 1
 
+    print(f"📦 Found {len(suggestions)} available slots after checking {checked_slots} candidates.")
     return suggestions
 
 
@@ -354,34 +373,53 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
 from datetime import datetime, timedelta, timezone
 from typing import Tuple
 
-def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
-    from datetime import datetime, timedelta
+from datetime import datetime, timedelta
+from typing import Tuple
+import re
 
-    combined = normalize_date_time(spoken_day, spoken_time)
+def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
+    """
+    Convert spoken date/time into an ISO 8601 datetime range.
+    Uses current year by default, and raises if date is in the past.
+    """
+    print(f"🔍 Input received → spoken_day: {spoken_day}, spoken_time: {spoken_time}")
+
+    # Clean "4th" → "4"
+    spoken_day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day, flags=re.IGNORECASE).strip()
+    spoken_time = spoken_time.strip()
+
+    # Combine and default to current year
+    combined = f"{spoken_day} {spoken_time}"
+    current_year = datetime.now().year
+
     formats = [
-        "%B %d %I:%M %p",
-        "%B %d %H:%M",
-        "%B %d %I %p",           # e.g., July 4 10 AM
-        "%A, %B %d %I:%M %p",
-        "%A %B %d %I:%M %p",
-        "%A, %B %d %H:%M"
+        "%B %d %I:%M %p",   # July 4 8:30 AM
+        "%B %d %H:%M",      # July 4 08:30
+        "%d %B %I:%M %p",   # 4 July 8:30 AM
+        "%d %B %H:%M",      # 4 July 08:30
     ]
 
     dt = None
     for fmt in formats:
         try:
-            print(f"⏳ Trying format '{fmt}' for: '{combined}'")
             dt = datetime.strptime(combined, fmt)
+            dt = dt.replace(year=current_year)
             break
-        except ValueError:
+        except Exception:
             continue
 
     if not dt:
-        raise ValueError(f"❌ Failed to parse time from: '{combined}'")
+        raise ValueError(f"🛑 Could not parse datetime from: '{combined}'")
 
-    print(f"✅ Parsed datetime: {dt.isoformat()}")
+    # 🕓 Check that it's not in the past
+    now = datetime.now()
+    if dt < now:
+        raise ValueError(f"🛑 The requested time is in the past: {dt}")
+
     start = dt.isoformat()
     end = (dt + timedelta(minutes=30)).isoformat()
+
+    print(f"✅ Final datetime → Start: {start}, End: {end}")
     return start, end
 
 
@@ -1162,14 +1200,18 @@ def voice():
     
     elif stage == "ask_time_date":
         # --------------------------------------
-        # Step 1: Parse date and time
+        # 🧠 Step 1: Parse date and time from spoken input
         # --------------------------------------
+        print(f"🗣️ Received spoken time: {speech_result}")
         time_info = smart_parse_time(speech_result)
 
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
+            retry_count = session_data[call_sid]["retry_time"]
+            print(f"⚠️ Time parsing failed. Retry count: {retry_count}")
 
-            if session_data[call_sid]["retry_time"] >= 3:
+            if retry_count >= 3:
+                print("❌ Max retries reached. Ending call.")
                 resp.say(gpt_speak("Sorry, I still couldn't understand the time. Please try again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
@@ -1187,7 +1229,9 @@ def voice():
             resp.append(gather)
             return str(resp)
 
+        # ✅ Valid date and time extracted
         spoken_day, spoken_time = time_info
+        print(f"📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
         session_data[call_sid]["spoken_day"] = spoken_day
         session_data[call_sid]["spoken_time"] = spoken_time
 
@@ -1199,55 +1243,63 @@ def voice():
             }
             print(f"📆 Appointment requested → Start: {appointment_start}, End: {appointment_end}")
         except Exception as e:
-            print(f"❌ Failed to build appointment time range: {e}")
+            print(f"❌ Failed to build appointment time range from '{spoken_day}' and '{spoken_time}': {e}")
             resp.say(gpt_speak("Sorry, I couldn’t understand the time you mentioned. Let’s try again later."), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
 
+        # 🔎 Check availability
         doctor_id = session_data[call_sid]["doctor_id"]
         calendar_id = doctor_id
+        print(f"👨‍⚕️ Checking calendar ID: {calendar_id}")
 
-        # ❌ Slot is taken
         if not is_time_slot_available(calendar_id, appointment_start, appointment_end, creds):
-            print("❌ Requested slot is not available")
+            print("❌ Requested time slot is not available")
 
-            alts = get_next_available_slots(calendar_id, creds, limit=3, duration_minutes=APPOINTMENT_DURATION_MINUTES)
+            # 📅 Fetch alternative slots
+            alts = get_next_available_slots(
+                calendar_id,
+                creds,
+                limit=3,
+                duration_minutes=APPOINTMENT_DURATION_MINUTES
+            )
 
             if alts:
                 options = " or ".join([slot["friendly"] for slot in alts])
                 prompt = f"That time is not available. Would you like to book on {options}?"
+                print(f"💡 Offering alternatives: {options}")
             else:
                 prompt = "That time is not available, and I couldn't find any open slots soon. Please try again later."
+                print("⚠️ No alternative slots found.")
 
             gather = Gather(
                 input="speech",
                 action="/voice",
                 method="POST",
+                timeout=SPEECH_INPUT_DURATION,
                 speech_model="phone_call",
-                bargeIn=True,
-                timeout=SPEECH_INPUT_DURATION
+                bargeIn=True
             )
             gather.say(gpt_speak(prompt), VOICE)
             resp.append(gather)
             return str(resp)
 
-        # ✅ Slot is available — advance to name collection
+        # ✅ Slot is free → proceed to collect first name
+        print("✅ Slot is available. Moving to name collection.")
         session_data[call_sid]["stage"] = "collect_first_name"
 
         gather = Gather(
             input="speech",
             action="/voice",
             method="POST",
+            timeout=SPEECH_INPUT_DURATION,
             speech_model="phone_call",
-            bargeIn=True,
-            timeout=SPEECH_INPUT_DURATION
+            bargeIn=True
         )
         gather.say(gpt_speak("Thanks. What is your first name?"), VOICE)
         resp.append(gather)
-        return str(resp)  # ✅ Don't forget this
-
-    # Otherwise: proceed to collect first name...
+        return str(resp)
 
 
 
