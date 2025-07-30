@@ -379,54 +379,54 @@ import re
 
 def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     """
-    Given spoken day and time strings, return a tuple of ISO start and end times.
-    Example inputs:
-      - spoken_day: "Wednesday, July 30"
-      - spoken_time: "8:30 AM"
+    Given a spoken day and time, return a UTC ISO 8601 start/end range.
+    Ensures correct conversion from local (America/Chicago) to UTC.
     """
-    from datetime import datetime, timedelta
+    from dateutil import parser
     import pytz
 
-    # Combine input
-    combined = f"{spoken_day} {spoken_time}".replace(",", "").strip()
-    print(f"🔍 Input received → spoken_day: {spoken_day}, spoken_time: {spoken_time}")
-    print(f"🧽 Combined datetime string for parsing: '{combined}'")
-
-    # Use the current year as fallback if year is missing
-    current_year = datetime.now().year
-
+    combined = normalize_date_time(spoken_day, spoken_time)
     formats = [
-        "%B %d %I:%M %p",         # July 30 8:30 AM
-        "%A %B %d %I:%M %p",      # Wednesday July 30 8:30 AM
-        "%B %d %H:%M",            # July 30 08:30
-        "%A %B %d %H:%M",         # Wednesday July 30 08:30
-        "%A %d %B %I:%M %p",      # Wednesday 30 July 8:30 AM
-        "%B %d at %I:%M %p",      # July 30 at 8:30 AM
+        "%B %d %I:%M %p",     # July 3 8:30 AM
+        "%B %d %H:%M",        # July 3 08:30
+        "%A %B %d %I:%M %p",  # Thursday July 3 8:30 AM
+        "%A %B %d %H:%M",     # Thursday July 3 08:30
     ]
 
     dt = None
     for fmt in formats:
         try:
             dt = datetime.strptime(combined, fmt)
-            # 🔁 Insert current year since speech rarely includes it
-            dt = dt.replace(year=current_year)
+            print(f"✅ Parsed datetime: {dt} using format {fmt}")
             break
-        except ValueError as e:
-            print(f"🛑 Format failed: {fmt} → {e}")
+        except ValueError:
+            continue
 
     if not dt:
         raise ValueError(f"🛑 Could not parse datetime from: '{combined}'")
 
-    # Convert to UTC and format as ISO
-    local_tz = pytz.timezone("America/Chicago")
-    local_dt = local_tz.localize(dt)
-    utc_dt = local_dt.astimezone(pytz.utc)
+    # Get current year to avoid 1900 issue
+    now = datetime.now()
+    dt = dt.replace(year=now.year)
+    print(f"📅 Inferred year → Updated datetime: {dt}")
 
-    start = utc_dt.isoformat()
-    end = (utc_dt + timedelta(minutes=APPOINTMENT_DURATION_MINUTES)).isoformat()
+    tz = pytz.timezone("America/Chicago")
 
-    print(f"✅ Parsed datetime → Start: {start}, End: {end}")
+    # Convert to timezone-aware datetime safely
+    if dt.tzinfo is None:
+        dt_local = tz.localize(dt)
+    else:
+        dt_local = dt.astimezone(tz)
+
+    dt_utc = dt_local.astimezone(pytz.UTC)
+    start = dt_utc.isoformat()
+    end = (dt_utc + timedelta(minutes=30)).isoformat()
+
+    print(f"📅 Local time slot → Start: {dt_local}, End: {dt_local + timedelta(minutes=30)}")
+    print(f"🌍 UTC time slot → Start: {start}, End: {end}")
+
     return start, end
+
 
 
 
@@ -671,37 +671,55 @@ def cancel_event_by_phone(
     """
     Cancel (delete) a Google Calendar event based on phone number and optional day/time.
 
+    Parameters:
+    - calendar_id (str): ID of the Google Calendar to search
+    - phone (str): Normalized phone number (digits only) to match against
+    - spoken_day (Optional[str]): Spoken day (e.g. "July 4")
+    - spoken_time (Optional[str]): Spoken time (e.g. "9:00 AM")
+    - creds: Google OAuth credentials
+    - return_details (bool): Whether to return the canceled event metadata
+
     Returns:
-    - The full event (if return_details=True) or True on success, False/None if no match.
+    - True if successful, False/None if no match found, or the event dict if return_details=True
     """
     from googleapiclient.discovery import build
     from datetime import datetime
     import re
+    import pytz
 
-    # 🔨 Normalize input phone
+    # 🔨 Normalize input phone number
     clean_phone = re.sub(r"[^\d]", "", phone)
     print(f"🔍 Searching for normalized phone: {clean_phone}")
 
-    # 🔧 Google Calendar API
-    service = build("calendar", "v3", credentials=creds)
+    # 🔧 Setup Calendar API client
+    try:
+        service = build("calendar", "v3", credentials=creds)
+    except Exception as e:
+        print(f"❌ Failed to build calendar service: {e}")
+        return None if return_details else False
+
+    # 🔍 Query starting from now
     now = datetime.utcnow().isoformat() + 'Z'
 
-    events_result = service.events().list(
-        calendarId=calendar_id,
-        timeMin=now,
-        maxResults=25,
-        singleEvents=True,
-        orderBy="startTime"
-    ).execute()
-    events = events_result.get("items", [])
-
-    print(f"📅 Retrieved {len(events)} upcoming events to check")
+    try:
+        events_result = service.events().list(
+            calendarId=calendar_id,
+            timeMin=now,
+            maxResults=25,
+            singleEvents=True,
+            orderBy="startTime"
+        ).execute()
+        events = events_result.get("items", [])
+        print(f"📅 Retrieved {len(events)} upcoming events to check")
+    except Exception as e:
+        print(f"❌ Failed to fetch events: {e}")
+        return None if return_details else False
 
     for event in events:
         summary = event.get("summary", "").lower()
         description = event.get("description", "").lower()
 
-        # 🔢 Extract digits
+        # 🔢 Normalize phone numbers from text
         summary_digits = re.sub(r"[^\d]", "", summary)
         description_digits = re.sub(r"[^\d]", "", description)
 
@@ -716,7 +734,7 @@ def cancel_event_by_phone(
 
             event_start = event.get("start", {}).get("dateTime")
             if not event_start:
-                print("⚠️ Skipping all-day or malformed event.")
+                print("⚠️ Skipping malformed or all-day event.")
                 continue
 
             try:
@@ -727,6 +745,7 @@ def cancel_event_by_phone(
                 spoken_day_clean = (spoken_day or "").lower().strip()
                 spoken_time_clean = (spoken_time or "").lower().strip()
 
+                # 🧠 Perform flexible matching
                 day_match = not spoken_day or spoken_day_clean in dt_day_str
                 time_match = not spoken_time or spoken_time_clean in dt_time_str
 
@@ -737,14 +756,16 @@ def cancel_event_by_phone(
                 if day_match and time_match:
                     print("🗑️ Deleting matching event...")
                     service.events().delete(calendarId=calendar_id, eventId=event["id"]).execute()
+                    print("✅ Event deleted successfully.")
                     return event if return_details else True
 
             except Exception as e:
-                print(f"⚠️ Failed to parse datetime: {e}")
+                print(f"⚠️ Failed to parse or match event datetime: {e}")
                 continue
 
     print("🚫 No matching appointment found.")
     return None if return_details else False
+
 
 
 
@@ -1204,11 +1225,10 @@ def voice():
     #  2. Checks Google Calendar for availability
     #  3. If available, confirms and moves to collect name/phone/address
     # ----------------------------------------------------------------------
-    
     elif stage == "ask_time_date":
-        # --------------------------------------
+        # ----------------------------------------------------------------------
         # 🧠 Step 1: Parse date and time from spoken input
-        # --------------------------------------
+        # ----------------------------------------------------------------------
         print(f"🗣️ Received spoken time: {speech_result}")
         time_info = smart_parse_time(speech_result)
 
@@ -1254,7 +1274,8 @@ def voice():
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
 
             if session_data[call_sid]["retry_time"] >= 3:
-                resp.say(gpt_speak("Sorry, I couldn’t understand the time you mentioned. Let’s try again later."), VOICE)
+                print("❌ Max retries reached during build_timeslot_range.")
+                resp.say(gpt_speak("Sorry, I couldn’t understand the time you mentioned. Please try again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
@@ -1322,6 +1343,7 @@ def voice():
         gather.say(gpt_speak("Thanks. What is your first name?"), VOICE)
         resp.append(gather)
         return str(resp)
+
 
 
 
@@ -1455,124 +1477,115 @@ def voice():
         return str(resp)
 
 
-
-
-    
     elif stage == "collect_address":
         # ----------------------------------------------------------------------
-        # 🏠 Collect Customer Address and Finalize Appointment
+        # 🏠 Stage: Collect Customer Address and finalize appointment booking
         # ----------------------------------------------------------------------
         address = speech_result.strip()
         print(f"📬 collect_address: Collected address: {address}")
 
         session_data[call_sid]["customer"]["address"] = address
-        session_data[call_sid]["stage"] = "completed"
+        session_data[call_sid]["stage"] = "confirmed"  # ✅ next stage
 
-        # 🔍 Extract data from session
         customer = session_data[call_sid]["customer"]
         appointment = session_data[call_sid]["appointment_time"]
         doctor_id = session_data[call_sid]["doctor_id"]
 
-        # 🧩 Construct full name
-        first = customer.get("first_name", "")
-        last = customer.get("last_name", "")
-        full_name = f"{first} {last}".strip()
-        session_data[call_sid]["customer"]["name"] = full_name
+        # 🧩 Assemble full name safely
+        full_name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
+        session_data[call_sid]["customer"]["name"] = full_name  # for use in SMS & confirmation
 
-        # 📞 Debug the cleaned phone number
-        phone = customer.get("phone", "")
-        print(f"📞 Final stored phone: {phone} (digits only expected)")
+        # 📞 Normalize phone number
+        import re
+        raw_phone = customer.get("phone", "")
+        normalized_phone = re.sub(r"[^\d]", "", raw_phone)
+        session_data[call_sid]["customer"]["phone"] = normalized_phone
+        print(f"📞 Final stored phone: {normalized_phone} (digits only expected)")
 
-        # 📆 Debug the local appointment time
-        local_start_raw = appointment["start"]
-        local_end_raw = appointment["end"]
-        print(f"📅 Local time slot → Start: {local_start_raw}, End: {local_end_raw}")
-
-        # 🌍 Convert local time (America/Chicago) to UTC
-        from datetime import datetime
-        import pytz
-
-        local_tz = pytz.timezone("America/Chicago")
+        # 📅 Handle time conversion: appointment time is in UTC
         try:
-            local_start = local_tz.localize(datetime.fromisoformat(local_start_raw))
-            local_end = local_tz.localize(datetime.fromisoformat(local_end_raw))
+            from datetime import datetime
+            import pytz
 
-            utc_start = local_start.astimezone(pytz.utc).isoformat()
-            utc_end = local_end.astimezone(pytz.utc).isoformat()
+            local_tz = pytz.timezone("America/Chicago")
+            start_utc = datetime.fromisoformat(appointment["start"]).astimezone(pytz.utc)
+            end_utc = datetime.fromisoformat(appointment["end"]).astimezone(pytz.utc)
 
-            print(f"🌐 UTC converted times → Start: {utc_start}, End: {utc_end}")
+            print(f"📅 Local time slot → Start: {start_utc.isoformat()}, End: {end_utc.isoformat()}")
         except Exception as e:
             print(f"❌ Error converting to UTC: {e}")
             resp.say(gpt_speak("Sorry, I had trouble confirming your appointment. Please try again later."), VOICE)
-            session_data.pop(call_sid, None)
             resp.hangup()
+            session_data.pop(call_sid, None)
             return str(resp)
 
-        # 📤 Build the calendar event payload
-        calendar = build("calendar", "v3", credentials=creds)
-        event = {
-            "summary": f"Appointment for {full_name}",
-            "description": f"Name: {full_name}\nPhone: {phone}\nAddress: {address}",
-            "start": {"dateTime": utc_start, "timeZone": "UTC"},
-            "end": {"dateTime": utc_end, "timeZone": "UTC"},
-        }
-
+        # 📅 Build Google Calendar API service and create the appointment
         try:
-            result = calendar.events().insert(calendarId=doctor_id, body=event).execute()
-            print(f"📅 Google Calendar event created → ID: {result.get('id')}")
+            calendar = build("calendar", "v3", credentials=creds)
+            event = {
+                "summary": f"Appointment for {full_name}",
+                "description": f"Name: {full_name}\nPhone: {normalized_phone}\nAddress: {address}",
+                "start": {"dateTime": start_utc.isoformat(), "timeZone": "UTC"},
+                "end": {"dateTime": end_utc.isoformat(), "timeZone": "UTC"},
+            }
+
+            calendar.events().insert(calendarId=doctor_id, body=event).execute()
+            print("✅ Google Calendar event created")
         except Exception as e:
-            print(f"❌ Failed to insert event into Google Calendar: {e}")
-            resp.say(gpt_speak("Sorry, I couldn’t book your appointment at the moment. Please try again later."), VOICE)
-            session_data.pop(call_sid, None)
+            print(f"❌ Failed to create calendar event: {e}")
+            resp.say(gpt_speak("Sorry, something went wrong while saving your appointment. Please try again later."), VOICE)
             resp.hangup()
+            session_data.pop(call_sid, None)
             return str(resp)
 
-        # 🗣️ Confirm to user
+        # 📣 Success — proceed to confirmation
         resp.say(gpt_speak(f"Thanks {full_name}. Your appointment has been confirmed. Goodbye!"), VOICE)
         return str(resp)
 
 
-
+    
     elif stage == "confirmed":
         # ------------------------------------------------------------
-        # 📍 We're in the final stage of booking: "confirmed"
-        # At this point, we already have:
-        #   - the selected doctor ID (calendar ID)
-        #   - the chosen time (from previous step)
-        #   - possibly other metadata like name or phone (optional)
-        # So now we simply finalize the confirmation
+        # 📍 Final confirmation stage after booking is complete
         # ------------------------------------------------------------
+        print("📍 Stage: confirmed")
 
-        # 🆔 Get the doctor calendar ID from session
+        # 🆔 Doctor info
         doctor_id = session_data[call_sid].get("doctor_id")
-
-        # 🧑‍⚕️ Get the friendly doctor name to include in voice prompt
         doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
+        print(f"👨‍⚕️ Doctor: {doctor_name} (ID: {doctor_id})")
 
-        # 🕐 Get the appointment start time from session to include in SMS/text
+        # 🕐 Appointment info
         appointment_time = session_data[call_sid].get("appointment_time", {}).get("start")
         formatted_time = ""
         if appointment_time:
             from datetime import datetime
+            import pytz
             try:
-                dt = datetime.fromisoformat(appointment_time.replace("Z", "").replace("+00:00", ""))
-                formatted_time = dt.strftime("%A, %B %d at %I:%M %p")
+                # Convert UTC → Central Time (America/Chicago)
+                dt_utc = datetime.fromisoformat(appointment_time.replace("Z", "+00:00"))
+                tz = pytz.timezone("America/Chicago")
+                dt_local = dt_utc.astimezone(tz)
+                formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
+                print(f"📆 Appointment (local): {formatted_time}")
             except Exception as e:
-                print("⚠️ Failed to parse appointment time for SMS:", e)
+                print(f"⚠️ Failed to parse appointment time: {e}")
 
-        # 🧾 (Optional) Extract customer info if available
+        # 🧍 Customer info
         customer = session_data[call_sid].get("customer", {})
         customer_name = customer.get("name", "")
         customer_phone = customer.get("phone")
+        print(f"👤 Customer: {customer_name}, Phone: {customer_phone}")
 
-        # 🎤 Compose a confirmation message using GPT for a friendly tone
-        confirmation_message = f"Your appointment with {doctor_name} has been successfully booked. We look forward to seeing you. Goodbye!"
-
-        # 🗣️ Say the confirmation message to the caller
+        # 🗣️ Voice confirmation message
+        confirmation_message = (
+            f"Your appointment with {doctor_name} has been successfully booked."
+            " We look forward to seeing you. Goodbye!"
+        )
         resp.say(gpt_speak(confirmation_message), VOICE)
 
         # ------------------------------------------------------------
-        # 📤 SMS confirmation message to the customer (optional but helpful)
+        # 📩 Send SMS confirmation
         # ------------------------------------------------------------
         if customer_phone:
             sms_text = f"Hi {customer_name}, your appointment with {doctor_name} is confirmed"
@@ -1586,23 +1599,22 @@ def voice():
                     from_=TWILIO_PHONE_NUMBER,
                     to=customer_phone
                 )
-                print("📩 SMS sent to customer:", customer_phone)
-                print("📤 Twilio SMS SID:", message.sid)
-                print("📤 Twilio SMS status:", message.status)
+                print("📤 SMS sent to:", customer_phone)
+                print("🧾 SID:", message.sid, "| Status:", message.status)
             except Exception as e:
-                print("❌ SMS sending failed:", e)
-
+                print(f"❌ SMS send failed: {e}")
         else:
-            print("⚠️ No phone number to send SMS confirmation.")
+            print("⚠️ No phone number available — skipping SMS.")
 
-        # 📞 End the call politely
+        # 📞 End the call
         resp.hangup()
 
-        # 🧹 Clear the session data so this call session doesn’t persist in memory
+        # 🧹 Clear session
         session_data.pop(call_sid, None)
+        print("🧼 Session data cleared")
 
-        # 📤 Return the TwiML <Response> to Twilio to execute the hangup and message
         return str(resp)
+
 
 
 
