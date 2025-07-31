@@ -1693,7 +1693,7 @@ def voice():
         resp.append(gather)
         return str(resp)
 
-        elif stage == "cancel_appt_by_phone_number":
+    elif stage == "cancel_appt_by_phone_number":
             # 📞 Step 1: Extract phone number
             phone = extract_phone_number(speech_result)
             print(f"📱 Extracted phone → {phone}")
