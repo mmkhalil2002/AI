@@ -669,57 +669,53 @@ def cancel_event_by_phone(
     return_details: bool = False
 ):
     """
-    Cancel (delete) a Google Calendar event based on phone number and optional day/time.
-
-    Parameters:
-    - calendar_id (str): ID of the Google Calendar to search
-    - phone (str): Normalized phone number (digits only) to match against
-    - spoken_day (Optional[str]): Spoken day (e.g. "July 4")
-    - spoken_time (Optional[str]): Spoken time (e.g. "9:00 AM")
-    - creds: Google OAuth credentials
-    - return_details (bool): Whether to return the canceled event metadata
+    Cancel (delete) a Google Calendar event by matching phone number and optional spoken date/time.
 
     Returns:
-    - True if successful, False/None if no match found, or the event dict if return_details=True
+        - The matching event (dict) if return_details is True
+        - True on success
+        - False / None if not found
     """
     from googleapiclient.discovery import build
     from datetime import datetime
-    import re
     import pytz
+    import re
 
-    # 🔨 Normalize input phone number
+    # 📞 Normalize phone number (remove non-digit characters)
     clean_phone = re.sub(r"[^\d]", "", phone)
     print(f"🔍 Searching for normalized phone: {clean_phone}")
 
-    # 🔧 Setup Calendar API client
-    try:
-        service = build("calendar", "v3", credentials=creds)
-    except Exception as e:
-        print(f"❌ Failed to build calendar service: {e}")
-        return None if return_details else False
+    # 🗓️ Parse expected spoken datetime to full datetime object
+    parsed_datetime = None
+    if spoken_day and spoken_time:
+        try:
+            from utils.time_tools import build_timeslot_range
+            start_iso, _ = build_timeslot_range(spoken_day, spoken_time)
+            parsed_datetime = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+            print(f"🧠 Parsed target datetime: {parsed_datetime.isoformat()}")
+        except Exception as e:
+            print(f"⚠️ Failed to parse spoken datetime → {spoken_day}, {spoken_time}: {e}")
 
-    # 🔍 Query starting from now
+    # 🔧 Setup Google Calendar API
+    service = build("calendar", "v3", credentials=creds)
     now = datetime.utcnow().isoformat() + 'Z'
 
-    try:
-        events_result = service.events().list(
-            calendarId=calendar_id,
-            timeMin=now,
-            maxResults=25,
-            singleEvents=True,
-            orderBy="startTime"
-        ).execute()
-        events = events_result.get("items", [])
-        print(f"📅 Retrieved {len(events)} upcoming events to check")
-    except Exception as e:
-        print(f"❌ Failed to fetch events: {e}")
-        return None if return_details else False
+    # 🔍 Search 25 upcoming events
+    events_result = service.events().list(
+        calendarId=calendar_id,
+        timeMin=now,
+        maxResults=25,
+        singleEvents=True,
+        orderBy="startTime"
+    ).execute()
+
+    events = events_result.get("items", [])
+    print(f"📅 Retrieved {len(events)} upcoming events to check")
 
     for event in events:
         summary = event.get("summary", "").lower()
         description = event.get("description", "").lower()
 
-        # 🔢 Normalize phone numbers from text
         summary_digits = re.sub(r"[^\d]", "", summary)
         description_digits = re.sub(r"[^\d]", "", description)
 
@@ -734,33 +730,28 @@ def cancel_event_by_phone(
 
             event_start = event.get("start", {}).get("dateTime")
             if not event_start:
-                print("⚠️ Skipping malformed or all-day event.")
+                print("⚠️ Skipping all-day or malformed event.")
                 continue
 
             try:
-                dt = datetime.fromisoformat(event_start.replace("Z", "+00:00"))
-                dt_day_str = dt.strftime("%A, %B %-d").lower()
-                dt_time_str = dt.strftime("%-I:%M %p").lower()
+                event_dt = datetime.fromisoformat(event_start.replace("Z", "+00:00"))
 
-                spoken_day_clean = (spoken_day or "").lower().strip()
-                spoken_time_clean = (spoken_time or "").lower().strip()
+                if parsed_datetime:
+                    # Compare with ±1 minute tolerance
+                    delta = abs((event_dt - parsed_datetime).total_seconds())
+                    print(f"🕐 Comparing event start {event_dt} to target {parsed_datetime}, Δ={delta}s")
 
-                # 🧠 Perform flexible matching
-                day_match = not spoken_day or spoken_day_clean in dt_day_str
-                time_match = not spoken_time or spoken_time_clean in dt_time_str
-
-                print(f"📆 Date match: {day_match}, Time match: {time_match}")
-                print(f"    spoken_day: {spoken_day_clean}, dt_day_str: {dt_day_str}")
-                print(f"    spoken_time: {spoken_time_clean}, dt_time_str: {dt_time_str}")
-
-                if day_match and time_match:
-                    print("🗑️ Deleting matching event...")
-                    service.events().delete(calendarId=calendar_id, eventId=event["id"]).execute()
-                    print("✅ Event deleted successfully.")
-                    return event if return_details else True
+                    if delta <= 90:
+                        print("🗑️ Found matching event. Deleting...")
+                        service.events().delete(calendarId=calendar_id, eventId=event["id"]).execute()
+                        return event if return_details else True
+                    else:
+                        print("❌ Date/time mismatch despite phone match.")
+                else:
+                    print("⚠️ No valid spoken datetime to match against.")
 
             except Exception as e:
-                print(f"⚠️ Failed to parse or match event datetime: {e}")
+                print(f"⚠️ Failed to parse event datetime: {e}")
                 continue
 
     print("🚫 No matching appointment found.")
@@ -1742,19 +1733,25 @@ def voice():
 
 
     elif stage == "cancel_appt_get_date":
-        # 🧠 Extract date and time
+        # ----------------------------------------------------------------------
+        # 🧠 Step 1: Try extracting spoken date and time using smart_parse_time
+        # ----------------------------------------------------------------------
+        print(f"🗣️ Received for cancellation date/time: {speech_result}")
         time_info = smart_parse_time(speech_result)
 
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
+            # 🛑 Failed to extract → ask the user again
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
+            retries = session_data[call_sid]["retry_time"]
+            print(f"⚠️ Failed to parse cancellation time. Retry #{retries}")
 
-            if session_data[call_sid]["retry_time"] >= 3:
+            if retries >= 3:
                 resp.say(gpt_speak("Sorry, I couldn't understand the time. Please try again later. Goodbye."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # 🔁 Re-prompt
+            # 🔁 Prompt again
             gather = Gather(
                 input="speech",
                 action="/voice",
@@ -1763,23 +1760,27 @@ def voice():
                 speech_model="phone_call",
                 bargeIn=True
             )
-            gather.say(gpt_speak("Sorry, I didn’t catch that. Please say the date and time of the appointment you want to cancel, like July 3rd at 9 AM."), VOICE)
+            gather.say(gpt_speak(
+                "Sorry, I didn’t catch that. Please say the date and time of the appointment you want to cancel, like July 3rd at 9 AM."
+            ), VOICE)
             resp.append(gather)
             return str(resp)
 
-        # ✅ Valid time extracted
+        # ✅ Extracted values from speech
         spoken_day, spoken_time = time_info
+        print(f"📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
         session_data[call_sid]["cancel"]["day"] = spoken_day
         session_data[call_sid]["cancel"]["time"] = spoken_time
-        print(f"📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
 
-        # 🔄 Retrieve stored values
+        # ----------------------------------------------------------------------
+        # 🔄 Get stored phone number and doctor name
+        # ----------------------------------------------------------------------
         phone = session_data[call_sid]["cancel"].get("phone")
         doctor = session_data[call_sid]["cancel"].get("doctor")
         print(f"📱 Using phone → {phone}")
         print(f"👨‍⚕️ Using doctor → {doctor}")
 
-        # 🔎 Find Google Calendar ID
+        # 🔍 Find calendar ID
         calendar_id = None
         for doc_id, friendly in googleid_dr_name_map.items():
             if friendly.lower() == doctor.lower():
@@ -1792,34 +1793,38 @@ def voice():
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # 🗑️ Attempt cancellation
+        # ----------------------------------------------------------------------
+        # 🗑️ Attempt cancellation using helper
+        # ----------------------------------------------------------------------
         canceled_event = cancel_event_by_phone(
             calendar_id=calendar_id,
             phone=phone,
             spoken_day=spoken_day,
             spoken_time=spoken_time,
             creds=creds,
-            return_details=True
+            return_details=True  # ✅ Get event metadata
         )
 
         if canceled_event:
             from dateutil import parser
             try:
-                start = canceled_event.get("start", {})
-                start_str = start.get("dateTime", "") or start.get("date", "")
+                start = canceled_event.get("start", {}) or {}
+                start_str = start.get("dateTime") or start.get("date")
                 if start_str:
                     dt = parser.parse(start_str)
                     spoken_time_str = dt.strftime("%B %-d at %-I:%M %p")
                 else:
                     spoken_time_str = f"{spoken_day} at {spoken_time}"
             except Exception as e:
-                print(f"⚠️ Failed to parse canceled event time: {e}")
+                print(f"⚠️ Failed to format canceled time: {e}")
                 spoken_time_str = f"{spoken_day} at {spoken_time}"
 
             msg = f"Your appointment with {doctor} on {spoken_time_str} has been cancelled. Thank you!"
+            print(f"✅ {msg}")
             resp.say(gpt_speak(msg), VOICE)
+
         else:
-            # ❌ Could not match event
+            print("🚫 No matching appointment found to cancel.")
             resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time."), VOICE)
 
         session_data.pop(call_sid, None)
