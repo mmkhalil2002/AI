@@ -686,7 +686,6 @@ def cancel_event_by_phone(
     parsed_datetime = None
     if spoken_day and spoken_time:
         try:
-            #from utils.time_tools import build_timeslot_range
             start_iso, _ = build_timeslot_range(spoken_day, spoken_time)
             parsed_datetime = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
             print(f"🧠 Parsed target datetime: {parsed_datetime.isoformat()}")
