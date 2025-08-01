@@ -931,7 +931,7 @@ def voice():
                              bargeIn=True,
                              timeout=SPEECH_INPUT_DURATION
                          )
-            gather.say(gpt_speak("Please tell me if you'd like to book an appointment, cancel one, reschedule, or leave a message."))
+            gather.say(gpt_speak("Thank you for Calling EPIC thearapist : Please tell me if you'd like to book an appointment, cancel one, reschedule, or leave a message."))
             resp.append(gather)
             return str(resp)
 
