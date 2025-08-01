@@ -367,27 +367,34 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
 
 
 
-from datetime import datetime, timedelta, timezone
-from typing import Tuple
-
 from datetime import datetime, timedelta
-from typing import Tuple
+import pytz
 import re
+from typing import Tuple
 
 def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     """
-    Given a spoken day and time, return a UTC ISO 8601 start/end range.
-    Ensures correct conversion from local (America/Chicago) to UTC.
+    Convert spoken date/time strings into a start and end ISO 8601 UTC datetime string.
+    Adds debug logging and assumes current year if year is missing.
+    Accepts formats like:
+    - "July 29", "8:30 AM"
+    - "Tuesday, July 29", "8:30"
     """
-    from dateutil import parser
-    import pytz
 
-    combined = normalize_date_time(spoken_day, spoken_time)
+    print(f"🧽 Raw inputs → spoken_day: '{spoken_day}', spoken_time: '{spoken_time}'")
+
+    # Normalize day (remove suffixes like "th", "st", etc.)
+    cleaned_day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day.strip(), flags=re.IGNORECASE)
+    cleaned_day = cleaned_day.replace("of", "").replace(",", "").strip()
+    combined = f"{cleaned_day} {spoken_time}".strip()
+    print(f"🧼 Combined input → {combined}")
+
+    # Define formats to try
     formats = [
-        "%B %d %I:%M %p",     # July 3 8:30 AM
-        "%B %d %H:%M",        # July 3 08:30
-        "%A %B %d %I:%M %p",  # Thursday July 3 8:30 AM
-        "%A %B %d %H:%M",     # Thursday July 3 08:30
+        "%B %d %I:%M %p",       # July 29 8:30 AM
+        "%B %d %H:%M",          # July 29 08:30
+        "%A %B %d %I:%M %p",    # Tuesday July 29 8:30 AM
+        "%A %B %d %H:%M",       # Tuesday July 29 08:30
     ]
 
     dt = None
@@ -399,30 +406,31 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
         except ValueError:
             continue
 
-    if not dt:
+    if dt is None:
         raise ValueError(f"🛑 Could not parse datetime from: '{combined}'")
 
-    # Get current year to avoid 1900 issue
+    # 🧭 Add current year if missing
     now = datetime.now()
-    dt = dt.replace(year=now.year)
-    print(f"📅 Inferred year → Updated datetime: {dt}")
+    if dt.year == 1900:
+        dt = dt.replace(year=now.year)
+        print(f"📅 Inferred year → Updated datetime: {dt}")
 
+    # 🕰️ Localize to America/Chicago
     tz = pytz.timezone("America/Chicago")
+    local_dt = tz.localize(dt)
+    end_dt = local_dt + timedelta(minutes=30)
 
-    # Convert to timezone-aware datetime safely
-    if dt.tzinfo is None:
-        dt_local = tz.localize(dt)
-    else:
-        dt_local = dt.astimezone(tz)
+    print(f"📅 Local time slot → Start: {local_dt}, End: {end_dt}")
 
-    dt_utc = dt_local.astimezone(pytz.UTC)
-    start = dt_utc.isoformat()
-    end = (dt_utc + timedelta(minutes=30)).isoformat()
+    # 🌍 Convert to UTC
+    utc_start = local_dt.astimezone(pytz.UTC)
+    utc_end = end_dt.astimezone(pytz.UTC)
 
-    print(f"📅 Local time slot → Start: {dt_local}, End: {dt_local + timedelta(minutes=30)}")
-    print(f"🌍 UTC time slot → Start: {start}, End: {end}")
+    print(f"🌍 UTC time slot → Start: {utc_start.isoformat()}, End: {utc_end.isoformat()}")
 
-    return start, end
+    return utc_start.isoformat(), utc_end.isoformat()
+
+
 
 
 
@@ -667,36 +675,35 @@ def cancel_event_by_phone(
 ):
     """
     Cancel (delete) a Google Calendar event by matching phone number and optional spoken date/time.
-
-    Returns:
-        - The matching event (dict) if return_details is True
-        - True on success
-        - False / None if not found
     """
     from googleapiclient.discovery import build
     from datetime import datetime
+    from dateutil import parser
     import pytz
     import re
 
-    # 📞 Normalize phone number (remove non-digit characters)
+    # 📞 Normalize phone number
     clean_phone = re.sub(r"[^\d]", "", phone)
     print(f"🔍 Searching for normalized phone: {clean_phone}")
 
-    # 🗓️ Parse expected spoken datetime to full datetime object
+    # 🌐 Timezone setup
+    tz = pytz.timezone("America/Chicago")
+
+    # 🧠 Parse spoken day+time into UTC-aware datetime
     parsed_datetime = None
     if spoken_day and spoken_time:
         try:
-            start_iso, _ = build_timeslot_range(spoken_day, spoken_time)
-            parsed_datetime = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
-            print(f"🧠 Parsed target datetime: {parsed_datetime.isoformat()}")
+            local_start_str, _ = build_timeslot_range(spoken_day, spoken_time)
+            local_dt = datetime.fromisoformat(local_start_str)
+            parsed_datetime = local_dt.astimezone(pytz.UTC)
+            print(f"🧠 Parsed target datetime (UTC): {parsed_datetime.isoformat()}")
         except Exception as e:
             print(f"⚠️ Failed to parse spoken datetime → {spoken_day}, {spoken_time}: {e}")
 
-    # 🔧 Setup Google Calendar API
+    # 🔧 Setup calendar
     service = build("calendar", "v3", credentials=creds)
     now = datetime.utcnow().isoformat() + 'Z'
 
-    # 🔍 Search 25 upcoming events
     events_result = service.events().list(
         calendarId=calendar_id,
         timeMin=now,
@@ -704,7 +711,6 @@ def cancel_event_by_phone(
         singleEvents=True,
         orderBy="startTime"
     ).execute()
-
     events = events_result.get("items", [])
     print(f"📅 Retrieved {len(events)} upcoming events to check")
 
@@ -730,10 +736,9 @@ def cancel_event_by_phone(
                 continue
 
             try:
-                event_dt = datetime.fromisoformat(event_start.replace("Z", "+00:00"))
+                event_dt = parser.isoparse(event_start).astimezone(pytz.UTC)
 
                 if parsed_datetime:
-                    # Compare with ±1 minute tolerance
                     delta = abs((event_dt - parsed_datetime).total_seconds())
                     print(f"🕐 Comparing event start {event_dt} to target {parsed_datetime}, Δ={delta}s")
 
@@ -752,6 +757,8 @@ def cancel_event_by_phone(
 
     print("🚫 No matching appointment found.")
     return None if return_details else False
+
+
 
 
 
