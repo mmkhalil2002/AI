@@ -688,6 +688,36 @@ def cancel_event_by_phone(
         except Exception as e:
             print(f"⚠️ Failed to parse spoken datetime → {spoken_day}, {spoken_time}: {e}")
 
+    """
+
+          Parameter	                            Purpose
+    calendarId=calendar_id	Specifies the calendar you want to query. This ID is typically a Google email or a group calendar ID.
+    timeMin=now	            Filters events to only include those starting after the current time.
+    maxResults=50	        Limits the number of events returned to a maximum of 50.
+    singleEvents=True	    Expands recurring events into individual occurrences. So if a meeting repeats every Monday, each one appears separately.
+    orderBy="startTime"	    Sorts the results chronologically by their start time.
+
+    Finally, .execute() sends the API request and returns the response as a dictionary containing events.
+
+    Example Result (events_result):
+    
+     {
+        "items": [
+                     {
+                         "summary": "Appointment for Ali",
+                         "start": { "dateTime": "2025-08-01T09:00:00-05:00" },
+                         "description": "Name: Ali\nPhone: 4694633276\nAddress: 123 Main St"
+                    },
+                    {
+                       "summary": "Appointment for Sarah",
+                       "start": { "dateTime": "2025-08-02T14:30:00-05:00" },
+                       "description": "Name: Sarah\nPhone: 4699991234\nAddress: ..."
+                    }
+                 ]
+    c}
+
+       """
+    
     service = build("calendar", "v3", credentials=creds)
     now = datetime.utcnow().isoformat() + 'Z'
     events_result = service.events().list(
