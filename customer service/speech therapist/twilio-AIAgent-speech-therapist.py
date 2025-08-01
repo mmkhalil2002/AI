@@ -371,30 +371,27 @@ from datetime import datetime, timedelta
 import pytz
 import re
 from typing import Tuple
+from datetime import datetime, timedelta
+import re
 
-def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
+def build_timeslot_range(spoken_day: str, spoken_time: str) -> tuple[str, str]:
     """
-    Convert spoken date/time strings into a start and end ISO 8601 UTC datetime string.
-    Adds debug logging and assumes current year if year is missing.
-    Accepts formats like:
-    - "July 29", "8:30 AM"
-    - "Tuesday, July 29", "8:30"
+    Converts spoken day/time into ISO 8601 datetime range (30 minutes).
+    Supports spoken formats like:
+        - "July 29", "8:30 AM"
+        - "Tuesday, July 29", "8:30"
     """
+    current_year = datetime.now().year
 
-    print(f"🧽 Raw inputs → spoken_day: '{spoken_day}', spoken_time: '{spoken_time}'")
+    combined = f"{spoken_day} {spoken_time}".strip()
+    print(f"🧪 Trying to parse combined input → {combined}")
 
-    # Normalize day (remove suffixes like "th", "st", etc.)
-    cleaned_day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day.strip(), flags=re.IGNORECASE)
-    cleaned_day = cleaned_day.replace("of", "").replace(",", "").strip()
-    combined = f"{cleaned_day} {spoken_time}".strip()
-    print(f"🧼 Combined input → {combined}")
-
-    # Define formats to try
+    # Try multiple formats
     formats = [
-        "%B %d %I:%M %p",       # July 29 8:30 AM
-        "%B %d %H:%M",          # July 29 08:30
-        "%A %B %d %I:%M %p",    # Tuesday July 29 8:30 AM
-        "%A %B %d %H:%M",       # Tuesday July 29 08:30
+        "%A %B %d %I:%M %p",  # Tuesday July 29 8:30 AM
+        "%B %d %I:%M %p",     # July 29 8:30 AM
+        "%A %B %d %H:%M",     # Tuesday July 29 08:30
+        "%B %d %H:%M"         # July 29 08:30
     ]
 
     dt = None
@@ -403,38 +400,24 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
             dt = datetime.strptime(combined, fmt)
             print(f"✅ Parsed datetime: {dt} using format {fmt}")
             break
-        except ValueError:
+        except Exception:
             continue
 
-    if dt is None:
+    if not dt:
         raise ValueError(f"🛑 Could not parse datetime from: '{combined}'")
 
-    # 🧭 Add current year if missing
-    now = datetime.now()
+    # If year was not specified, assume current year
     if dt.year == 1900:
-        dt = dt.replace(year=now.year)
+        dt = dt.replace(year=current_year)
         print(f"📅 Inferred year → Updated datetime: {dt}")
 
-    # 🕰️ Localize to America/Chicago
-    tz = pytz.timezone("America/Chicago")
-    local_dt = tz.localize(dt)
-    end_dt = local_dt + timedelta(minutes=30)
+    # Convert to UTC ISO format
+    local_dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    utc_start = local_dt.astimezone(tz=datetime.utc).isoformat()
+    utc_end = (local_dt + timedelta(minutes=30)).astimezone(tz=datetime.utc).isoformat()
 
-    print(f"📅 Local time slot → Start: {local_dt}, End: {end_dt}")
-
-    # 🌍 Convert to UTC
-    utc_start = local_dt.astimezone(pytz.UTC)
-    utc_end = end_dt.astimezone(pytz.UTC)
-
-    print(f"🌍 UTC time slot → Start: {utc_start.isoformat()}, End: {utc_end.isoformat()}")
-
-    return utc_start.isoformat(), utc_end.isoformat()
-
-
-
-
-
-
+    print(f"🌍 UTC time slot → Start: {utc_start}, End: {utc_end}")
+    return utc_start, utc_end
 
 
 
@@ -664,7 +647,6 @@ from datetime import datetime, timedelta
 #from googleapiclient.discovery import build
 
 
-from typing import Optional
 def cancel_event_by_phone(
     calendar_id: str,
     phone: str,
@@ -757,6 +739,7 @@ def cancel_event_by_phone(
 
     print("🚫 No matching appointment found.")
     return None if return_details else False
+
 
 
 
