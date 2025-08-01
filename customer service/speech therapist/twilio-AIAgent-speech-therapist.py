@@ -682,7 +682,23 @@ def cancel_event_by_phone(
     parsed_datetime = None
     if spoken_day and spoken_time:
         try:
+            """
+              spoken_day = "July 29"
+              spoken_time = "8:30 AM"
+              start_iso, _ = build_timeslot_range("July 29", "8:30 AM")
+              print(start_iso)
+              output 
+                2025-07-29T13:30:00+00:00
+
+            """
             start_iso, _ = build_timeslot_range(spoken_day, spoken_time)
+            """
+            start_iso = "2025-07-29T13:30:00Z"
+            Z will be repaced 
+            2025-07-29 13:30:00+00:00
+            <class 'datetime.datetime'>
+
+            """
             parsed_datetime = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
             print(f"🧠 Parsed target datetime (UTC): {parsed_datetime.isoformat()}")
         except Exception as e:
@@ -690,7 +706,8 @@ def cancel_event_by_phone(
 
     """
 
-          Parameter	                            Purpose
+     Parameter	                            Purpose
+     --------------------------------------------------------------------------------------------------------------------
     calendarId=calendar_id	Specifies the calendar you want to query. This ID is typically a Google email or a group calendar ID.
     timeMin=now	            Filters events to only include those starting after the current time.
     maxResults=50	        Limits the number of events returned to a maximum of 50.
@@ -728,6 +745,60 @@ def cancel_event_by_phone(
         orderBy="startTime"
     ).execute()
 
+    """
+    events_result["items"]
+    [
+     {
+        "kind": "calendar#event",
+        "id": "evt-abc123",
+        "status": "confirmed",
+        "summary": "Appointment for Muhammad Khalil",
+        "description": "Name: Muhammad Khalil\nPhone: 4694633276\nAddress: 118 Briar Oak, Murphy, TX 75094",
+        "start": {
+                     "dateTime": "2025-07-29T08:30:00-05:00",
+                    "timeZone": "America/Chicago"
+                },
+        "end": {
+                    "dateTime": "2025-07-29T09:00:00-05:00",
+                    "timeZone": "America/Chicago"
+               },
+        "created": "2025-07-20T14:00:00Z",
+        "updated": "2025-07-20T14:01:00Z",
+        "organizer": {
+                         "email": "dr.john@example.com"
+                    },
+         "htmlLink": "https://www.google.com/calendar/event?eid=evt-abc123"
+     },
+     {
+         "kind": "calendar#event",
+         "id": "evt-def456",
+         "status": "confirmed",
+         "summary": "Appointment for Ali Abdel",
+         "description": "Phone: 4694633276\nAddress: 118 Brier Oak, Murphy, TX 75094",
+        "start": {
+                     "dateTime": "2025-08-01T13:00:00-05:00",
+                     "timeZone": "America/Chicago"
+                },
+        "end": {
+                     "dateTime": "2025-08-01T13:30:00-05:00",
+                     "timeZone": "America/Chicago"
+                },
+        "created": "2025-07-21T11:22:00Z",
+        "updated": "2025-07-21T11:22:30Z",
+        "organizer": {
+                         "email": "dr.john@example.com"
+                     },
+         "htmlLink": "https://www.google.com/calendar/event?eid=evt-def456"
+     }
+    ]
+     if summanry is    Appointment for Muhammad Khalil 469-463-3276"
+     then  summary_digits → "4694633276"
+
+     if description "Name: Muhammad Khalil\nPhone: 469 463 3276\nAddress: 118 Briar Oak, Murphy, TX 75094"
+     then description_digits → "469463327611875094"
+    
+    """
+
     events = events_result.get("items", [])
     print(f"📅 Retrieved {len(events)} upcoming events to check")
 
@@ -746,7 +817,13 @@ def cancel_event_by_phone(
 
         if clean_phone in summary_digits or clean_phone in description_digits:
             print("✅ Phone number matched.")
+            """
+            event_start (dateTime) -> "2025-07-29T08:30:00-05:00"
 
+                2025-07-29: the date
+                T08:30:00: the time (08:30 AM)
+                -05:00: the timezone offset from UTC (Central Daylight Time in this case)
+            """
             event_start = event.get("start", {}).get("dateTime")
             if not event_start:
                 print("⚠️ Skipping all-day or malformed event.")
@@ -756,11 +833,39 @@ def cancel_event_by_phone(
                 event_dt = datetime.fromisoformat(event_start.replace("Z", "+00:00"))
 
                 if parsed_datetime:
+                    """
+                    from datetime import datetime
+
+                    # 📅 Event datetime from Google Calendar (in UTC)
+                    event_dt = datetime.fromisoformat("2025-07-29T13:30:00+00:00")
+
+                    # 📞 Parsed user input (converted to UTC)
+                    parsed_datetime = datetime.fromisoformat("2025-07-29T13:30:00+00:00")
+
+                    # 🔁 Compute time difference in seconds
+                    delta = abs((event_dt - parsed_datetime).total_seconds())
+
+                    print("Time difference in seconds:", delta)
+
+                    """
                     delta = abs((event_dt - parsed_datetime).total_seconds())
                     print(f"🕐 Comparing event start {event_dt} to target {parsed_datetime}, Δ={delta}s")
 
-                    if delta <= 120:
+                    if delta <= 10:
                         print("🗑️ Deleting matching event...")
+                        """
+                        calendar_id = "doctor123@clinic-calendar.com"
+                        event = {
+                                     "id": "ab12cd34ef56gh78ij90kl",
+                                     "summary": "Appointment for Mohamed Khalil",
+                                     "start": {"dateTime": "2025-07-29T13:30:00+00:00"},
+                                     "description": "Name: Mohamed Khalil\nPhone: 4694633276\nAddress: 118 Briar Oak, Murphy, TX"
+                                }
+                         event["id"] ->  "ab12cd34ef56gh78ij90kl"
+                         calendar_id -?  input to this function
+                         delete based on event_id, and claender_id    
+
+                        """
                         service.events().delete(calendarId=calendar_id, eventId=event["id"]).execute()
                         return event if return_details else True
                     else:
