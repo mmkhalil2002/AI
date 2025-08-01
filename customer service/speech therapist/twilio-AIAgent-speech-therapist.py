@@ -370,11 +370,11 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
 from datetime import datetime, timedelta
 import pytz
 import re
-from typing import Tuple
-from datetime import datetime, timedelta
-import re
+from typing import Tuple  # ✅ Add this
 
-def build_timeslot_range(spoken_day: str, spoken_time: str) -> tuple[str, str]:
+def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
+    ...
+
     """
     Converts spoken day/time into ISO 8601 datetime range (30 minutes).
     Supports spoken formats like:
