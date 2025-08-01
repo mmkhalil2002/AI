@@ -371,53 +371,63 @@ from datetime import datetime, timedelta
 import pytz
 import re
 from typing import Tuple  # ✅ Add this
+from datetime import datetime, timedelta
+from typing import Tuple
+import pytz
+import re
 
 def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
-    ...
-
     """
-    Converts spoken day/time into ISO 8601 datetime range (30 minutes).
-    Supports spoken formats like:
-        - "July 29", "8:30 AM"
-        - "Tuesday, July 29", "8:30"
+    Given a spoken date and time (e.g. 'July 29', '8:30 AM'), return ISO 8601 start/end times in UTC.
+    Adds current year if not provided, handles common variations.
     """
-    current_year = datetime.now().year
+    print(f"📥 build_timeslot_range: Input → Day: '{spoken_day}', Time: '{spoken_time}'")
 
-    combined = f"{spoken_day} {spoken_time}".strip()
-    print(f"🧪 Trying to parse combined input → {combined}")
+    # 🧼 Clean up input
+    day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day.strip(), flags=re.IGNORECASE)
+    day = day.replace("of", "").replace(",", "").strip()
+    combined_input = f"{day} {spoken_time}".strip()
 
-    # Try multiple formats
+    print(f"🧽 Cleaned combined input: '{combined_input}'")
+
+    # Define parsing formats (assuming year will be added if not present)
     formats = [
-        "%A %B %d %I:%M %p",  # Tuesday July 29 8:30 AM
-        "%B %d %I:%M %p",     # July 29 8:30 AM
-        "%A %B %d %H:%M",     # Tuesday July 29 08:30
-        "%B %d %H:%M"         # July 29 08:30
+        "%B %d %I:%M %p",         # July 29 8:30 AM
+        "%B %d %H:%M",            # July 29 08:30
+        "%A %B %d %I:%M %p",      # Tuesday July 29 8:30 AM
+        "%A %B %d %H:%M",         # Tuesday July 29 08:30
     ]
 
-    dt = None
+    parsed_dt = None
     for fmt in formats:
         try:
-            dt = datetime.strptime(combined, fmt)
-            print(f"✅ Parsed datetime: {dt} using format {fmt}")
+            parsed_dt = datetime.strptime(combined_input, fmt)
+            print(f"✅ Parsed datetime: {parsed_dt} using format {fmt}")
             break
-        except Exception:
+        except ValueError:
             continue
 
-    if not dt:
-        raise ValueError(f"🛑 Could not parse datetime from: '{combined}'")
+    if not parsed_dt:
+        raise ValueError(f"🛑 Could not parse datetime from: '{combined_input}'")
 
-    # If year was not specified, assume current year
-    if dt.year == 1900:
-        dt = dt.replace(year=current_year)
-        print(f"📅 Inferred year → Updated datetime: {dt}")
+    # 🧠 Add current year if not present
+    current_year = datetime.now().year
+    parsed_dt = parsed_dt.replace(year=current_year)
+    print(f"📅 Inferred year → Updated datetime: {parsed_dt}")
 
-    # Convert to UTC ISO format
-    local_dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
-    utc_start = local_dt.astimezone(tz=datetime.utc).isoformat()
-    utc_end = (local_dt + timedelta(minutes=30)).astimezone(tz=datetime.utc).isoformat()
+    # 🌎 Localize to Central time and convert to UTC
+    tz = pytz.timezone("America/Chicago")
+    try:
+        localized = tz.localize(parsed_dt)
+        utc_start = localized.astimezone(pytz.utc)
+        utc_end = utc_start + timedelta(minutes=30)
+        print(f"📅 Local time slot → Start: {localized}, End: {localized + timedelta(minutes=30)}")
+        print(f"🌍 UTC time slot → Start: {utc_start.isoformat()}, End: {utc_end.isoformat()}")
+    except Exception as e:
+        raise ValueError(f"❌ Error converting to UTC: {e}")
 
-    print(f"🌍 UTC time slot → Start: {utc_start}, End: {utc_end}")
-    return utc_start, utc_end
+    return utc_start.isoformat(), utc_end.isoformat()
+
 
 
 
@@ -645,7 +655,9 @@ def extract_phone_number(speech_text: str) -> str:
 import re  # Import the regular expression module
 from datetime import datetime, timedelta
 #from googleapiclient.discovery import build
-
+from typing import Optional
+import pytz
+from googleapiclient.discovery import build
 
 def cancel_event_by_phone(
     calendar_id: str,
@@ -656,43 +668,36 @@ def cancel_event_by_phone(
     return_details: bool = False
 ):
     """
-    Cancel (delete) a Google Calendar event by matching phone number and optional spoken date/time.
-    """
-    from googleapiclient.discovery import build
-    from datetime import datetime
-    from dateutil import parser
-    import pytz
-    import re
+    Cancel a Google Calendar event based on phone number and optional day/time.
 
-    # 📞 Normalize phone number
+    Returns:
+        - Matching event object if return_details is True
+        - True if deletion was successful
+        - False / None if not found
+    """
+
     clean_phone = re.sub(r"[^\d]", "", phone)
     print(f"🔍 Searching for normalized phone: {clean_phone}")
 
-    # 🌐 Timezone setup
-    tz = pytz.timezone("America/Chicago")
-
-    # 🧠 Parse spoken day+time into UTC-aware datetime
     parsed_datetime = None
     if spoken_day and spoken_time:
         try:
-            local_start_str, _ = build_timeslot_range(spoken_day, spoken_time)
-            local_dt = datetime.fromisoformat(local_start_str)
-            parsed_datetime = local_dt.astimezone(pytz.UTC)
+            start_iso, _ = build_timeslot_range(spoken_day, spoken_time)
+            parsed_datetime = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
             print(f"🧠 Parsed target datetime (UTC): {parsed_datetime.isoformat()}")
         except Exception as e:
             print(f"⚠️ Failed to parse spoken datetime → {spoken_day}, {spoken_time}: {e}")
 
-    # 🔧 Setup calendar
     service = build("calendar", "v3", credentials=creds)
     now = datetime.utcnow().isoformat() + 'Z'
-
     events_result = service.events().list(
         calendarId=calendar_id,
         timeMin=now,
-        maxResults=25,
+        maxResults=50,
         singleEvents=True,
         orderBy="startTime"
     ).execute()
+
     events = events_result.get("items", [])
     print(f"📅 Retrieved {len(events)} upcoming events to check")
 
@@ -718,14 +723,14 @@ def cancel_event_by_phone(
                 continue
 
             try:
-                event_dt = parser.isoparse(event_start).astimezone(pytz.UTC)
+                event_dt = datetime.fromisoformat(event_start.replace("Z", "+00:00"))
 
                 if parsed_datetime:
                     delta = abs((event_dt - parsed_datetime).total_seconds())
                     print(f"🕐 Comparing event start {event_dt} to target {parsed_datetime}, Δ={delta}s")
 
-                    if delta <= 90:
-                        print("🗑️ Found matching event. Deleting...")
+                    if delta <= 120:
+                        print("🗑️ Deleting matching event...")
                         service.events().delete(calendarId=calendar_id, eventId=event["id"]).execute()
                         return event if return_details else True
                     else:
@@ -739,6 +744,7 @@ def cancel_event_by_phone(
 
     print("🚫 No matching appointment found.")
     return None if return_details else False
+
 
 
 
