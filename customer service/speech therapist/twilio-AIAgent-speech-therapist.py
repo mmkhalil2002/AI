@@ -77,6 +77,10 @@ Purpose: Loads a dictionary mapping Google Calendar IDs to spoken-friendly docto
 with open("doctors_map.json") as f:
     googleid_dr_name_map = json.load(f)
 
+
+#load_doctor_appt()  # <== Call it here on startup
+
+
 # OpenAI API key
 #openai.api_key = "YOUR_OPENAI_API_KEY"
 
@@ -322,6 +326,7 @@ def suggest_alternative_times(
         current_time += timedelta(minutes=30)
 
     return suggested
+
 
 
 
@@ -883,6 +888,86 @@ def cancel_event_by_phone(
 
 
 
+import os
+import json
+
+# 📁 Directory where appointment JSON files are stored
+APPOINTMENT_TABLE_DIR = "./appointment_data"
+
+# 🧠 In-memory structure: { "john_wayne": { "4694633276": "2025-07-29T13:30:00Z", ... } }
+doctor_appointments = {}
+
+# ------------------------
+# 🧰 Utility functions
+# ------------------------
+
+def sanitize_filename(name: str) -> str:
+    """Convert doctor name to lowercase, underscores, and .json filename"""
+    return name.lower().replace(" ", "_") + ".json"
+
+def get_doctor_filename(friendly_name: str) -> str:
+    """Get full file path for a doctor's appointment JSON"""
+    return os.path.join(APPOINTMENT_TABLE_DIR, sanitize_filename(friendly_name))
+
+# ------------------------
+# 🔄 Load on startup
+# ------------------------
+
+def load_doctor_appointments():
+    """Load all doctor appointment mappings from JSON files into memory"""
+    os.makedirs(APPOINTMENT_TABLE_DIR, exist_ok=True)
+
+    for filename in os.listdir(APPOINTMENT_TABLE_DIR):
+        if filename.endswith(".json"):
+            path = os.path.join(APPOINTMENT_TABLE_DIR, filename)
+            with open(path, "r") as f:
+                doctor_name = filename.replace(".json", "")
+                doctor_appointments[doctor_name] = json.load(f)
+
+    print(f"📂 Loaded appointment tables for: {list(doctor_appointments.keys())}")
+
+# ------------------------
+# ➕ Add appointment
+# ------------------------
+
+def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str):
+    """Add or update an appointment for a doctor and persist to file"""
+    key = sanitize_filename(doctor_name).replace(".json", "")
+    full_path = get_doctor_filename(doctor_name)
+
+    if key not in doctor_appointments:
+        doctor_appointments[key] = {}
+
+    doctor_appointments[key][phone] = utc_start
+
+    with open(full_path, "w") as f:
+        json.dump(doctor_appointments[key], f, indent=2)
+
+    print(f"✅ Confirmed appointment for {phone} at {utc_start} → {key}")
+
+# ------------------------
+# ❌ Remove appointment
+# ------------------------
+
+def cancel_appointment_by_name(doctor_name: str, phone: str):
+    """Remove a phone number's appointment from a doctor's table and persist"""
+    key = sanitize_filename(doctor_name).replace(".json", "")
+    full_path = get_doctor_filename(doctor_name)
+
+    if key in doctor_appointments and phone in doctor_appointments[key]:
+        del doctor_appointments[key][phone]
+
+        with open(full_path, "w") as f:
+            json.dump(doctor_appointments[key], f, indent=2)
+
+        print(f"🗑️ Canceled appointment for {phone} in {key}")
+        return True
+
+    print(f"⚠️ No appointment found for {phone} in {key}")
+    return False
+
+
+load_doctor_appointments()
 
 
 
@@ -1695,6 +1780,13 @@ def voice():
         customer_phone = customer.get("phone")
         print(f"👤 Customer: {customer_name}, Phone: {customer_phone}")
 
+        # 📥 Save confirmation in doctor table
+        try:
+            confirm_appointment_by_name(doctor_name, customer_phone, appointment_time)
+            print(f"✅ Mapping saved to {doctor_name}.json: {customer_phone} → {appointment_time}")
+        except Exception as e:
+            print(f"⚠️ Failed to save appointment in doctor table: {e}")
+
         # 🗣️ Voice confirmation message
         confirmation_message = (
             f"Your appointment with {doctor_name} has been successfully booked."
@@ -1732,8 +1824,6 @@ def voice():
         print("🧼 Session data cleared")
 
         return str(resp)
-
-
 
 
 
@@ -1843,7 +1933,7 @@ def voice():
                 return str(resp)
 
             session_data[call_sid]["cancel"]["phone"] = phone
-            session_data[call_sid]["stage"] = "cancel_appt_get_date"
+            session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
 
             # 🗣️ Ask for date and time
             gather = Gather(
@@ -1859,7 +1949,7 @@ def voice():
             return str(resp)
 
 
-    elif stage == "cancel_appt_get_date":
+    elif stage == "cancel_appt_get_date_time":
         # 🧠 Step 1: Try extracting spoken date and time
         print(f"🗣️ Received for cancellation date/time: {speech_result}")
         time_info = smart_parse_time(speech_result)
@@ -1889,11 +1979,23 @@ def voice():
         print(f"📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
         session_data[call_sid]["cancel"]["day"] = spoken_day
         session_data[call_sid]["cancel"]["time"] = spoken_time
+        session_data[call_sid]["stage"] = "cancel_appt_confirm"
 
+        # 🔁 Prompt transition to confirm stage
+        return voice()  # re-invoke main handler to continue flow
+
+
+    elif stage == "cancel_appt_confirm":
+        # 🔁 Execute the cancellation using captured phone, doctor, and datetime
         phone = session_data[call_sid]["cancel"].get("phone")
         doctor = session_data[call_sid]["cancel"].get("doctor")
-        print(f"📱 Using phone → {phone}")
-        print(f"👨‍⚕️ Using doctor → {doctor}")
+        spoken_day = session_data[call_sid]["cancel"].get("day")
+        spoken_time = session_data[call_sid]["cancel"].get("time")
+
+        print("📍 Stage: cancel_appt_confirm")
+        print(f"📱 Phone: {phone}")
+        print(f"👨‍⚕️ Doctor: {doctor}")
+        print(f"🗓️ Day: {spoken_day}, Time: {spoken_time}")
 
         # 🔍 Match doctor to calendar ID
         calendar_id = None
@@ -1903,12 +2005,13 @@ def voice():
                 break
 
         if not calendar_id:
+            print("❌ Calendar ID not found for doctor.")
             resp.say(gpt_speak("Sorry, I couldn't find the doctor in our system. Please try again later."), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # 🔁 Attempt to cancel the event
+        # 🔁 Attempt to cancel the event in Google Calendar
         canceled_event = cancel_event_by_phone(
             calendar_id=calendar_id,
             phone=phone,
@@ -1928,13 +2031,24 @@ def voice():
                 print(f"⚠️ Failed to format date for confirmation: {e}")
                 spoken_time_str = f"{spoken_day} at {spoken_time}"
 
+            # 🧹 Remove entry from doctor appointment JSON table
+            try:
+                cancel_appointment_by_name(doctor, phone)
+                print(f"🧹 Mapping removed from table → {doctor} : {phone}")
+            except Exception as e:
+                print(f"⚠️ Failed to remove mapping from doctor appointment file: {e}")
+
             msg = f"Your appointment with {doctor} on {spoken_time_str} has been cancelled. Thank you!"
             resp.say(gpt_speak(msg), VOICE)
         else:
+            print("🚫 No matching appointment found to cancel.")
             resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time."), VOICE)
 
         session_data.pop(call_sid, None)
+        print("🧼 Session data cleared after cancellation.")
         return str(resp)
+
+
 
 
       
