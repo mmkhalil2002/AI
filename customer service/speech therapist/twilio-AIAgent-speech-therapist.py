@@ -1704,7 +1704,7 @@ def voice():
         print(f"📬 collect_address: Collected address: {address}")
 
         session_data[call_sid]["customer"]["address"] = address
-        session_data[call_sid]["stage"] = "confirmed"  # ✅ next stage
+        session_data[call_sid]["stage"] = "book_appt_confirm"  # ✅ next stage
 
         customer = session_data[call_sid]["customer"]
         appointment = session_data[call_sid]["appointment_time"]
@@ -1764,7 +1764,7 @@ def voice():
 
 
     
-    elif stage == "confirmed":
+    elif stage == "book_appt_confirm":
         # ------------------------------------------------------------
         # 📍 Final confirmation stage after booking is complete
         # ------------------------------------------------------------
