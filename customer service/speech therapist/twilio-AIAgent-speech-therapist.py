@@ -958,24 +958,40 @@ def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str, ca
 # ❌ Remove appointment
 # ------------------------
 
-def cancel_appointment_by_name(doctor_name: str, phone: str):
+def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str) -> bool:
     """
-    Remove an appointment from local table by phone.
-    Returns True if deleted, False if not found.
+    Remove an appointment from a doctor's JSON file using phone number AND UTC datetime.
+    
+    Parameters:
+        doctor_name (str): Friendly name of the doctor.
+        phone (str): Customer's phone number (digits only).
+        utc_start (str): The UTC datetime string of the appointment (e.g., '2025-07-29T13:30:00+00:00').
+
+    Returns:
+        bool: True if the entry was found and deleted, False otherwise.
     """
+    import os
+    import json
+
     key = sanitize_filename(doctor_name).replace(".json", "")
     full_path = get_doctor_filename(doctor_name)
 
-    if key in doctor_appointments and phone in doctor_appointments[key]:
-        del doctor_appointments[key][phone]
+    if key in doctor_appointments:
+        entries = doctor_appointments[key]
+        if phone in entries and entries[phone] == utc_start:
+            print(f"🗑️ Deleting entry → {phone}: {utc_start}")
+            del entries[phone]
 
-        with open(full_path, "w") as f:
-            json.dump(doctor_appointments[key], f, indent=2)
+            # Write updated dict back to file
+            with open(full_path, "w") as f:
+                json.dump(entries, f, indent=2)
 
-        print(f"🗑️ Canceled appointment for {phone} in {key}")
-        return True
+            return True
+        else:
+            print(f"⚠️ Entry not found or date mismatch for {phone} in {key}.")
+    else:
+        print(f"⚠️ Doctor table {key} not found.")
 
-    print(f"⚠️ No appointment found for {phone} in {key}")
     return False
 
 # ------------------------
@@ -2052,12 +2068,16 @@ def voice():
                 spoken_time_str = dt.strftime("%B %-d at %-I:%M %p")
             except Exception as e:
                 print(f"⚠️ Failed to format date for confirmation: {e}")
+                start_str = ""
                 spoken_time_str = f"{spoken_day} at {spoken_time}"
 
-            # 🧹 Remove entry from doctor appointment JSON table
+            # 🧹 Remove entry from doctor appointment JSON table using exact UTC datetime
             try:
-                cancel_appointment_by_name(doctor, phone)
-                print(f"🧹 Mapping removed from table → {doctor} : {phone}")
+                if start_str:
+                    cancel_appointment_by_name(doctor, phone, start_str)
+                    print(f"🧹 Mapping removed from table → {doctor} : {phone} at {start_str}")
+                else:
+                    print("⚠️ No valid UTC datetime available to remove from table.")
             except Exception as e:
                 print(f"⚠️ Failed to remove mapping from doctor appointment file: {e}")
 
