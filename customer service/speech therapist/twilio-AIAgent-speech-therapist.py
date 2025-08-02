@@ -891,10 +891,10 @@ def cancel_event_by_phone(
 import os
 import json
 
-# 📁 Directory where appointment JSON files are stored
+# 📁 Directory to store appointment data files
 APPOINTMENT_TABLE_DIR = "./appointment_data"
 
-# 🧠 In-memory structure: { "john_wayne": { "4694633276": "2025-07-29T13:30:00Z", ... } }
+# Global dictionary: {doctor_filename: {phone: {datetime, calendar_id}}}
 doctor_appointments = {}
 
 # ------------------------
@@ -902,11 +902,11 @@ doctor_appointments = {}
 # ------------------------
 
 def sanitize_filename(name: str) -> str:
-    """Convert doctor name to lowercase, underscores, and .json filename"""
+    """Convert doctor name to a safe filename (e.g., John Wayne → john_wayne.json)"""
     return name.lower().replace(" ", "_") + ".json"
 
 def get_doctor_filename(friendly_name: str) -> str:
-    """Get full file path for a doctor's appointment JSON"""
+    """Return full path for doctor's JSON file"""
     return os.path.join(APPOINTMENT_TABLE_DIR, sanitize_filename(friendly_name))
 
 # ------------------------
@@ -914,43 +914,55 @@ def get_doctor_filename(friendly_name: str) -> str:
 # ------------------------
 
 def load_doctor_appointments():
-    """Load all doctor appointment mappings from JSON files into memory"""
+    """Load all appointment mappings into memory on startup"""
     os.makedirs(APPOINTMENT_TABLE_DIR, exist_ok=True)
-
     for filename in os.listdir(APPOINTMENT_TABLE_DIR):
         if filename.endswith(".json"):
             path = os.path.join(APPOINTMENT_TABLE_DIR, filename)
-            with open(path, "r") as f:
-                doctor_name = filename.replace(".json", "")
-                doctor_appointments[doctor_name] = json.load(f)
-
+            try:
+                with open(path, "r") as f:
+                    doctor_name = filename.replace(".json", "")
+                    doctor_appointments[doctor_name] = json.load(f)
+            except Exception as e:
+                print(f"⚠️ Failed to load {filename}: {e}")
     print(f"📂 Loaded appointment tables for: {list(doctor_appointments.keys())}")
 
 # ------------------------
 # ➕ Add appointment
 # ------------------------
 
-def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str):
-    """Add or update an appointment for a doctor and persist to file"""
+def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str, calendar_id: str):
+    """
+    Add or update an appointment for a doctor, saving:
+    - phone number
+    - UTC datetime
+    - Google Calendar ID
+    """
     key = sanitize_filename(doctor_name).replace(".json", "")
     full_path = get_doctor_filename(doctor_name)
 
     if key not in doctor_appointments:
         doctor_appointments[key] = {}
 
-    doctor_appointments[key][phone] = utc_start
+    doctor_appointments[key][phone] = {
+        "datetime": utc_start,
+        "calendar_id": calendar_id
+    }
 
     with open(full_path, "w") as f:
         json.dump(doctor_appointments[key], f, indent=2)
 
-    print(f"✅ Confirmed appointment for {phone} at {utc_start} → {key}")
+    print(f"✅ Confirmed appointment for {phone} at {utc_start} with calendar {calendar_id} → {key}")
 
 # ------------------------
 # ❌ Remove appointment
 # ------------------------
 
 def cancel_appointment_by_name(doctor_name: str, phone: str):
-    """Remove a phone number's appointment from a doctor's table and persist"""
+    """
+    Remove an appointment from local table by phone.
+    Returns True if deleted, False if not found.
+    """
     key = sanitize_filename(doctor_name).replace(".json", "")
     full_path = get_doctor_filename(doctor_name)
 
@@ -965,6 +977,10 @@ def cancel_appointment_by_name(doctor_name: str, phone: str):
 
     print(f"⚠️ No appointment found for {phone} in {key}")
     return False
+
+# ------------------------
+# 🔁 Call this once at startup
+# ------------------------
 
 
 load_doctor_appointments()
@@ -1746,6 +1762,7 @@ def voice():
         return str(resp)
 
 
+
     
     elif stage == "confirmed":
         # ------------------------------------------------------------
@@ -1780,10 +1797,15 @@ def voice():
         customer_phone = customer.get("phone")
         print(f"👤 Customer: {customer_name}, Phone: {customer_phone}")
 
-        # 📥 Save confirmation in doctor table
+        # 📥 Save confirmation in doctor table with calendar_id
         try:
-            confirm_appointment_by_name(doctor_name, customer_phone, appointment_time)
-            print(f"✅ Mapping saved to {doctor_name}.json: {customer_phone} → {appointment_time}")
+            confirm_appointment_by_name(
+                                          doctor_name=doctor_name,
+                                          phone=customer_phone,
+                                          utc_start=appointment_time,
+                                          calendar_id=doctor_id
+                                        )
+            print(f"✅ Mapping saved to {doctor_name}.json: {customer_phone} → {appointment_time} (Calendar ID: {doctor_id})")
         except Exception as e:
             print(f"⚠️ Failed to save appointment in doctor table: {e}")
 
@@ -1824,6 +1846,7 @@ def voice():
         print("🧼 Session data cleared")
 
         return str(resp)
+
 
 
 
