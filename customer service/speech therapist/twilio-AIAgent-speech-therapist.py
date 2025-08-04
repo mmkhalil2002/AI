@@ -1879,55 +1879,60 @@ def voice():
 
 
     
+   
     elif stage == "cancel_appointment":
         # ----------------------------------------------------------------------
         # 🔄 This stage handles when a user wants to cancel an appointment
         # and just spoke the doctor’s name (e.g., "Dr. Omar", or "cancel with Dr. Alex")
         # ----------------------------------------------------------------------
 
-        selected_name = speech_result.lower().strip()  # 🎤 Raw speech input from caller
-        matched_id = None                              # 🧠 Variable to store matching calendar ID
+        import string
+        selected_text = speech_result or ""
+        selected_clean = selected_text.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+        print(f"🗣️ Received doctor name: {selected_clean}")
+        matched_id = None
 
-        print(f"🗣️ Received doctor name: {selected_name}")
-
-        # 🔍 Step 1: Try basic partial match — check if spoken name is in any doctor name
+        # 🔍 Step 1: Try partial substring match
         partial_matches = []
         for doc_id, friendly_name in googleid_dr_name_map.items():
-            friendly_clean = friendly_name.lower()
-            if selected_name in friendly_clean or friendly_clean in selected_name:
+            friendly_clean = friendly_name.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+            if selected_clean in friendly_clean or friendly_clean in selected_clean:
                 partial_matches.append((doc_id, friendly_name))
 
         if len(partial_matches) == 1:
             matched_id = partial_matches[0][0]
             print(f"✅ Partial match found: {partial_matches[0][1]}")
 
-        # 🤖 Step 2: If no match found, call GPT to extract doctor name intelligently
+        # 🤖 Step 2: GPT fallback
         if not matched_id:
-            extracted_name = extract_doctor_name(speech_result)  # 🧠 GPT will try to extract just the doctor name
-            print(f"🤖 GPT extracted name: {extracted_name}")
-            if extracted_name:
-                for doc_id, friendly_name in googleid_dr_name_map.items():
-                    if friendly_name.lower() == extracted_name.lower():
-                        matched_id = doc_id
-                        print(f"✅ GPT matched: {friendly_name}")
-                        break
+            try:
+                extracted_name = extract_doctor_name(speech_result)
+                print(f"🤖 GPT extracted name: {extracted_name}")
+                if extracted_name:
+                    extracted_clean = extracted_name.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+                    for doc_id, friendly_name in googleid_dr_name_map.items():
+                        friendly_clean = friendly_name.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+                        if extracted_clean in friendly_clean or friendly_clean in extracted_clean:
+                            matched_id = doc_id
+                            print(f"✅ GPT matched: {friendly_name}")
+                            break
+            except Exception as e:
+                print(f"⚠️ GPT fallback in extract_doctor_name: {e}")
 
-        # ❌ Step 3: Still no match → handle retries
+        # ❌ Step 3: Still no match → retry
         if not matched_id:
-            # Safely retrieve or initialize retry counter
             retries = session_data[call_sid].get("retry_booking", 0)
             session_data[call_sid]["retry_booking"] = retries + 1
 
             if retries >= MAX_NUMBER_DR_RETRY:
-                # 🛑 Too many failed attempts → end call
                 resp.say(gpt_speak(
                     "I'm sorry, I still couldn't match that name with any doctor in our clinic. Please try again later. Goodbye."
                 ), VOICE)
                 resp.hangup()
-                session_data.pop(call_sid, None)  # 🧹 Clean up session data
+                session_data.pop(call_sid, None)
                 return str(resp)
 
-            # 🔁 Less than 3 attempts → re-ask with full doctor list
+            doctor_list = ", ".join(googleid_dr_name_map.values())
             gather = Gather(
                 input="speech",
                 action="/voice",
@@ -1937,28 +1942,24 @@ def voice():
                 timeout=SPEECH_INPUT_DURATION
             )
 
-            # 🧾 Convert the list of available doctors to a comma-separated string
-            doctor_list = ", ".join(googleid_dr_name_map.values())
             retry_prompt = (
                 f"I didn't recognize that name. Available doctors are: {doctor_list}. "
                 "Please say the name again."
             )
-
             try:
                 gather.say(gpt_speak(retry_prompt), VOICE)
             except Exception as e:
-                print(f"⚠️ GPT error in retry_prompt fallback: {e}")
+                print(f"⚠️ GPT error fallback: {e}")
                 gather.say(retry_prompt, VOICE)
 
             resp.append(gather)
             return str(resp)
 
-        # ✅ Step 4: Doctor matched — store info and ask for phone number
-        session_data[call_sid]["cancel"]["doctor"] = googleid_dr_name_map[matched_id]  # Save friendly name
-        session_data[call_sid]["doctor_id"] = matched_id                                # Save Google Calendar ID
-        session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"                 # Advance to phone entry
+        # ✅ Step 4: Proceed with matched doctor
+        session_data[call_sid]["cancel"]["doctor"] = googleid_dr_name_map[matched_id]
+        session_data[call_sid]["doctor_id"] = matched_id
+        session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"
 
-        # 📞 Prompt user for the phone number they used when booking
         gather = Gather(
             input="speech",
             action="/voice",
@@ -1967,7 +1968,6 @@ def voice():
             bargeIn=True,
             timeout=SPEECH_INPUT_DURATION
         )
-
         gather.say(gpt_speak("Thanks. What phone number did you use when booking the appointment?"), VOICE)
         resp.append(gather)
         return str(resp)
