@@ -1190,18 +1190,29 @@ def voice():
         # ✅ Rescheduling intent
         elif any(word in lower for word in ["reschedule", "change", "move"]):
             print("🔁 Intent to reschedule detected → will cancel then rebook")
+            
+            # 🧼 Initialize session
             session_data[call_sid] = {
                 "stage": "cancel_appointment",
                 "cancel": {},
                 "retry_booking": 0,
                 "reschedule_after_cancel": True
             }
+
             doctor_names = list(googleid_dr_name_map.values())
-            doctor_list = ", ".join(doctor_names[:-1]) + ", or " + doctor_names[-1] if len(doctor_names) > 1 else doctor_names[0]
+            print(f"📋 Available doctor names: {doctor_names}")
+
+            if len(doctor_names) > 1:
+                doctor_list = ", ".join(doctor_names[:-1]) + ", or " + doctor_names[-1]
+            else:
+                doctor_list = doctor_names[0]
+
             prompt = (
                 f"Sure, let's reschedule your appointment. First, we'll cancel your current appointment. "
                 f"Available doctors include: {doctor_list}. Please say the name of the doctor you had booked with."
             )
+
+            # 🎤 Prepare re-prompt for doctor name
             gather = Gather(
                 input="speech",
                 action="/voice",
@@ -1211,9 +1222,13 @@ def voice():
                 bargeIn=True,
                 hints=", ".join(doctor_names)
             )
+
             gather.say(gpt_speak(prompt), VOICE)
             resp.append(gather)
+
+            print("🎙️ Prompted user to specify doctor for cancellation as part of reschedule.")
             return str(resp)
+
 
         # ✅ Cancellation intent
         elif any(word in lower for word in ["cancel", "delete"]):
@@ -2111,8 +2126,6 @@ def voice():
         session_data.pop(call_sid, None)
         print("🧼 Session data cleared after cancellation.")
         return str(resp)
-
-
 
 
       
