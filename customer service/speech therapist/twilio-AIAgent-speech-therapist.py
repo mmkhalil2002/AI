@@ -1135,7 +1135,7 @@ def voice():
                       )
 
        # Define a friendly prompt to ask the customer what they want to do
-       prompt = "Thank you for calling EPIC therapist: would you like  to book an appointment, cancel an appointment, reschedulle an appointment  or leave a message."
+       prompt = "Thank you for calling EPIC therapist: would you like  to book an appointment, cancel an appointment, change an appointment  or leave a message."
 
        # Use GPT to generate a dynamic and friendly greeting based on the prompt
        gather.say(gpt_speak(prompt),VOICE)  # This adds spoken text to the <Gather> block
@@ -1188,7 +1188,7 @@ def voice():
             return str(resp)
 
         # ✅ Rescheduling intent
-        elif any(word in lower for word in ["reschedule", "change", "move"]):
+        elif any(word in lower for word in ["change", "move"]):
             print("🔁 Intent to reschedule detected → will cancel then rebook")
             
             # 🧼 Initialize session
