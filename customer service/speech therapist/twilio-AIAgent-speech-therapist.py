@@ -2060,6 +2060,7 @@ def voice():
         return voice()  # re-invoke main handler to continue flow
 
 
+
     elif stage == "cancel_appt_confirm":
         # 🔁 Execute the cancellation using captured phone, doctor, and datetime
         phone = session_data[call_sid]["cancel"].get("phone")
@@ -2106,15 +2107,17 @@ def voice():
                 print(f"⚠️ Failed to format date for confirmation: {e}")
                 spoken_time_str = f"{spoken_day} at {spoken_time}"
 
-            # 🧹 Remove entry from doctor appointment table
+            # 🧹 Remove entry from doctor appointment JSON table
             try:
-                cancel_appointment_by_name(doctor, phone)
+                canceled = cancel_appointment_by_name(doctor, phone)
                 print(f"🧹 Mapping removed from table → {doctor} : {phone}")
             except Exception as e:
                 print(f"⚠️ Failed to remove mapping from doctor appointment file: {e}")
 
+            # 🎤 Voice confirmation
             msg = f"Your appointment with {doctor} on {spoken_time_str} has been cancelled. Thank you!"
             resp.say(gpt_speak(msg), VOICE)
+
         else:
             print("🚫 No matching appointment found to cancel.")
             resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time."), VOICE)
@@ -2139,7 +2142,7 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ✅ Otherwise: Normal cancellation
+        # ✅ Otherwise: end the session
         session_data.pop(call_sid, None)
         print("🧼 Session data cleared after cancellation.")
         return str(resp)
