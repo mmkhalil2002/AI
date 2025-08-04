@@ -1352,32 +1352,43 @@ def voice():
             print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
             gather = Gather(
-                            input="speech",
-                            action="/voice",
-                            method="POST",
-                            speech_model="phone_call",  # 🎯 Optimized for voice calls
-                            bargeIn=True, 
-                            timeout=SPEECH_INPUT_DURATION,
-                            hints=doctor_list_str
-                        )
-            gather.say(gpt_speak("Please say the name of the doctor you'd like to book with."),VOICE)
+                input="speech",
+                action="/voice",
+                method="POST",
+                speech_model="phone_call",
+                bargeIn=True,
+                timeout=SPEECH_INPUT_DURATION,
+                hints=doctor_list_str
+            )
+            gather.say(gpt_speak("Please say the name of the doctor you'd like to book with."), VOICE)
             resp.append(gather)
             return str(resp)
 
         matched_id = None
 
         # ------------------------------------------------------------------
-        # 🔍 1. Partial or exact substring match
+        # 🔍 1. Partial token-based name match
         # ------------------------------------------------------------------
         partial_matches = []
+        spoken_tokens = set(spoken_clean.split())
+
         for doc_id, friendly in googleid_dr_name_map.items():
             friendly_clean = friendly.lower().translate(str.maketrans('', '', string.punctuation)).strip()
-            if spoken_clean in friendly_clean or friendly_clean in spoken_clean:
+            friendly_tokens = set(friendly_clean.split())
+
+            if (
+                spoken_clean in friendly_clean
+                or friendly_clean in spoken_clean
+                or spoken_tokens & friendly_tokens  # Token overlap
+            ):
                 partial_matches.append((doc_id, friendly))
 
         if len(partial_matches) == 1:
             matched_id = partial_matches[0][0]
             print(f"✅ Partial match with: {partial_matches[0][1]}")
+        elif len(partial_matches) > 1:
+            print(f"🔍 Multiple potential matches found: {[name for _, name in partial_matches]}")
+            matched_id = partial_matches[0][0]  # Default to first match (or you can ask user to clarify)
 
         # ------------------------------------------------------------------
         # 🤖 2. GPT fallback (only if 2+ words)
@@ -1408,26 +1419,26 @@ def voice():
                 resp.say(gpt_speak(
                     "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
                     "Please call us again when convenient. Goodbye."
-                ),VOICE)
+                ), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
             gather = Gather(
-                                input="speech",
-                                action="/voice",
-                                method="POST",
-                                speech_model="phone_call",  # 🎯 Optimized for voice calls
-                                bargeIn=True, 
-                                timeout=SPEECH_INPUT_DURATION,
-                                hints=doctor_list_str
-                        )
+                input="speech",
+                action="/voice",
+                method="POST",
+                speech_model="phone_call",
+                bargeIn=True,
+                timeout=SPEECH_INPUT_DURATION,
+                hints=doctor_list_str
+            )
             retry_prompt = (
                 f"I couldn't match that to a doctor. Available doctors are: {doctor_list_str}. "
                 "Please say the doctor name again."
             )
-            gather.say(gpt_speak(retry_prompt),VOICE)
+            gather.say(gpt_speak(retry_prompt), VOICE)
             resp.append(gather)
             return str(resp)
 
@@ -1441,14 +1452,14 @@ def voice():
         time_prompt = f"What time would you like to book with {friendly_name}?"
 
         gather = Gather(
-                         input="speech",
-                         action="/voice",
-                         method="POST",
-                         speech_model="phone_call",  # 🎯 Optimized for voice calls
-                         bargeIn=True, 
-                         timeout=SPEECH_INPUT_DURATION
-                      )
-        gather.say(gpt_speak(time_prompt),VOICE)
+            input="speech",
+            action="/voice",
+            method="POST",
+            speech_model="phone_call",
+            bargeIn=True,
+            timeout=SPEECH_INPUT_DURATION
+        )
+        gather.say(gpt_speak(time_prompt), VOICE)
         resp.append(gather)
         return str(resp)
 
