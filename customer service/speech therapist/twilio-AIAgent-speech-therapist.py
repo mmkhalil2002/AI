@@ -1880,27 +1880,36 @@ def voice():
 
     
     elif stage == "cancel_appointment":
-            # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
         # 🔄 This stage handles when a user wants to cancel an appointment
         # and just spoke the doctor’s name (e.g., "Dr. Omar", or "cancel with Dr. Alex")
         # ----------------------------------------------------------------------
 
-        selected_name = speech_result.lower()  # 🎤 Raw speech input from caller (e.g., "cancel with Dr. Omar")
-        matched_id = None                      # 🧠 Variable to store matching calendar ID
+        selected_name = speech_result.lower().strip()  # 🎤 Raw speech input from caller
+        matched_id = None                              # 🧠 Variable to store matching calendar ID
 
-        # 🔍 Step 1: Try basic match — loop through known doctors and check if the spoken input contains a known name
+        print(f"🗣️ Received doctor name: {selected_name}")
+
+        # 🔍 Step 1: Try basic partial match — check if spoken name is in any doctor name
+        partial_matches = []
         for doc_id, friendly_name in googleid_dr_name_map.items():
-            if friendly_name.lower() in selected_name:
-                matched_id = doc_id
-                break
+            friendly_clean = friendly_name.lower()
+            if selected_name in friendly_clean or friendly_clean in selected_name:
+                partial_matches.append((doc_id, friendly_name))
+
+        if len(partial_matches) == 1:
+            matched_id = partial_matches[0][0]
+            print(f"✅ Partial match found: {partial_matches[0][1]}")
 
         # 🤖 Step 2: If no match found, call GPT to extract doctor name intelligently
         if not matched_id:
             extracted_name = extract_doctor_name(speech_result)  # 🧠 GPT will try to extract just the doctor name
+            print(f"🤖 GPT extracted name: {extracted_name}")
             if extracted_name:
                 for doc_id, friendly_name in googleid_dr_name_map.items():
                     if friendly_name.lower() == extracted_name.lower():
                         matched_id = doc_id
+                        print(f"✅ GPT matched: {friendly_name}")
                         break
 
         # ❌ Step 3: Still no match → handle retries
@@ -1920,13 +1929,13 @@ def voice():
 
             # 🔁 Less than 3 attempts → re-ask with full doctor list
             gather = Gather(
-                              input="speech", 
-                              action="/voice",
-                              method="POST",
-                              speech_model="phone_call",
-                              bargeIn=True, 
-                              timeout=SPEECH_INPUT_DURATION
-                            )
+                input="speech",
+                action="/voice",
+                method="POST",
+                speech_model="phone_call",
+                bargeIn=True,
+                timeout=SPEECH_INPUT_DURATION
+            )
 
             # 🧾 Convert the list of available doctors to a comma-separated string
             doctor_list = ", ".join(googleid_dr_name_map.values())
@@ -1951,17 +1960,18 @@ def voice():
 
         # 📞 Prompt user for the phone number they used when booking
         gather = Gather(
-                          input="speech", 
-                          action="/voice",
-                          method="POST",
-                          speech_model="phone_call",
-                          bargeIn=True, 
-                          timeout=SPEECH_INPUT_DURATION
-                        )
+            input="speech",
+            action="/voice",
+            method="POST",
+            speech_model="phone_call",
+            bargeIn=True,
+            timeout=SPEECH_INPUT_DURATION
+        )
 
         gather.say(gpt_speak("Thanks. What phone number did you use when booking the appointment?"), VOICE)
         resp.append(gather)
         return str(resp)
+
 
     elif stage == "cancel_appt_by_phone_number":
             # 📞 Step 1: Extract phone number
