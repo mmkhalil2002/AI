@@ -2104,16 +2104,12 @@ def voice():
                 spoken_time_str = dt.strftime("%B %-d at %-I:%M %p")
             except Exception as e:
                 print(f"⚠️ Failed to format date for confirmation: {e}")
-                start_str = ""
                 spoken_time_str = f"{spoken_day} at {spoken_time}"
 
-            # 🧹 Remove entry from doctor appointment JSON table using exact UTC datetime
+            # 🧹 Remove entry from doctor appointment table
             try:
-                if start_str:
-                    cancel_appointment_by_name(doctor, phone, start_str)
-                    print(f"🧹 Mapping removed from table → {doctor} : {phone} at {start_str}")
-                else:
-                    print("⚠️ No valid UTC datetime available to remove from table.")
+                cancel_appointment_by_name(doctor, phone)
+                print(f"🧹 Mapping removed from table → {doctor} : {phone}")
             except Exception as e:
                 print(f"⚠️ Failed to remove mapping from doctor appointment file: {e}")
 
@@ -2123,6 +2119,27 @@ def voice():
             print("🚫 No matching appointment found to cancel.")
             resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time."), VOICE)
 
+        # 🔁 If rescheduling, continue to booking
+        if session_data[call_sid].get("reschedule_after_cancel"):
+            print("🔁 Reschedule flag detected — transitioning to rebooking flow.")
+            session_data[call_sid]["stage"] = "booking"
+            session_data[call_sid].pop("cancel", None)
+
+            doctor_list_str = ", ".join(googleid_dr_name_map.values())
+            gather = Gather(
+                input="speech",
+                action="/voice",
+                method="POST",
+                speech_model="phone_call",
+                bargeIn=True,
+                timeout=SPEECH_INPUT_DURATION,
+                hints=doctor_list_str
+            )
+            gather.say(gpt_speak("Now, please tell me which doctor you'd like to reschedule with."), VOICE)
+            resp.append(gather)
+            return str(resp)
+
+        # ✅ Otherwise: Normal cancellation
         session_data.pop(call_sid, None)
         print("🧼 Session data cleared after cancellation.")
         return str(resp)
