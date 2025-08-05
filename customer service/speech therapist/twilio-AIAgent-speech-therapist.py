@@ -903,11 +903,15 @@ doctor_appointments = {}
 
 def sanitize_filename(name: str) -> str:
     """Convert doctor name to a safe filename (e.g., John Wayne → john_wayne.json)"""
-    return name.lower().replace(" ", "_") + ".json"
+    filename = name.lower().replace(" ", "_") + ".json"
+    print(f"[sanitize_filename] Sanitized '{name}' → '{filename}'")
+    return filename
 
 def get_doctor_filename(friendly_name: str) -> str:
     """Return full path for doctor's JSON file"""
-    return os.path.join(APPOINTMENT_TABLE_DIR, sanitize_filename(friendly_name))
+    path = os.path.join(APPOINTMENT_TABLE_DIR, sanitize_filename(friendly_name))
+    print(f"[get_doctor_filename] Full path for '{friendly_name}' → {path}")
+    return path
 
 # ------------------------
 # 🔄 Load on startup
@@ -915,6 +919,7 @@ def get_doctor_filename(friendly_name: str) -> str:
 
 def load_doctor_appointments():
     """Load all appointment mappings into memory on startup"""
+    print("[load_doctor_appointments] Loading appointment tables...")
     os.makedirs(APPOINTMENT_TABLE_DIR, exist_ok=True)
     for filename in os.listdir(APPOINTMENT_TABLE_DIR):
         if filename.endswith(".json"):
@@ -923,9 +928,10 @@ def load_doctor_appointments():
                 with open(path, "r") as f:
                     doctor_name = filename.replace(".json", "")
                     doctor_appointments[doctor_name] = json.load(f)
+                    print(f"[load_doctor_appointments] Loaded {filename}")
             except Exception as e:
-                print(f"⚠️ Failed to load {filename}: {e}")
-    print(f"📂 Loaded appointment tables for: {list(doctor_appointments.keys())}")
+                print(f"[load_doctor_appointments] ⚠️ Failed to load {filename}: {e}")
+    print(f"[load_doctor_appointments] 📂 Loaded appointment tables: {list(doctor_appointments.keys())}")
 
 # ------------------------
 # ➕ Add appointment
@@ -938,10 +944,12 @@ def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str, ca
     - UTC datetime
     - Google Calendar ID
     """
+    print(f"[confirm_appointment_by_name] Called for {doctor_name}, phone: {phone}, time: {utc_start}")
     key = sanitize_filename(doctor_name).replace(".json", "")
     full_path = get_doctor_filename(doctor_name)
 
     if key not in doctor_appointments:
+        print(f"[confirm_appointment_by_name] Initializing entry for {key}")
         doctor_appointments[key] = {}
 
     doctor_appointments[key][phone] = {
@@ -949,10 +957,12 @@ def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str, ca
         "calendar_id": calendar_id
     }
 
-    with open(full_path, "w") as f:
-        json.dump(doctor_appointments[key], f, indent=2)
-
-    print(f"✅ Confirmed appointment for {phone} at {utc_start} with calendar {calendar_id} → {key}")
+    try:
+        with open(full_path, "w") as f:
+            json.dump(doctor_appointments[key], f, indent=2)
+        print(f"[confirm_appointment_by_name] ✅ Saved: {phone} → {utc_start} to {full_path}")
+    except Exception as e:
+        print(f"[confirm_appointment_by_name] ❌ Failed to write file: {e}")
 
 # ------------------------
 # ❌ Remove appointment
@@ -961,15 +971,8 @@ def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str, ca
 def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str) -> bool:
     """
     Remove an appointment from a doctor's JSON file using phone number AND UTC datetime.
-    
-    Parameters:
-        doctor_name (str): Friendly name of the doctor.
-        phone (str): Customer's phone number (digits only).
-        utc_start (str): The UTC datetime string of the appointment (e.g., '2025-07-29T13:30:00+00:00').
-
-    Returns:
-        bool: True if the entry was found and deleted, False otherwise.
     """
+    print(f"[cancel_appointment_by_name] Attempting to cancel: {doctor_name}, {phone}, {utc_start}")
     import os
     import json
 
@@ -978,19 +981,22 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str) -> 
 
     if key in doctor_appointments:
         entries = doctor_appointments[key]
-        if phone in entries and entries[phone] == utc_start:
-            print(f"🗑️ Deleting entry → {phone}: {utc_start}")
+        if phone in entries and entries[phone]["datetime"] == utc_start:
+            print(f"[cancel_appointment_by_name] 🗑️ Deleting entry → {phone}: {utc_start}")
             del entries[phone]
 
-            # Write updated dict back to file
-            with open(full_path, "w") as f:
-                json.dump(entries, f, indent=2)
+            try:
+                with open(full_path, "w") as f:
+                    json.dump(entries, f, indent=2)
+                print(f"[cancel_appointment_by_name] ✅ Updated file after deletion: {full_path}")
+            except Exception as e:
+                print(f"[cancel_appointment_by_name] ❌ Failed to update file: {e}")
 
             return True
         else:
-            print(f"⚠️ Entry not found or date mismatch for {phone} in {key}.")
+            print(f"[cancel_appointment_by_name] ⚠️ Entry not found or date mismatch for {phone} in {key}.")
     else:
-        print(f"⚠️ Doctor table {key} not found.")
+        print(f"[cancel_appointment_by_name] ⚠️ Doctor table {key} not found.")
 
     return False
 
@@ -998,8 +1004,8 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str) -> 
 # 🔁 Call this once at startup
 # ------------------------
 
-
 load_doctor_appointments()
+
 
 
 
