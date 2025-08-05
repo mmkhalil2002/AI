@@ -1812,7 +1812,6 @@ def voice():
     
 
 # ------------------------------------------------------------------
-
     elif stage == "book_appt_confirm":
         print("book_appt_confirm: 📍 Stage entered")
 
@@ -1835,8 +1834,14 @@ def voice():
                 print(f"book_appt_confirm: 📆 Appointment time (local) → {formatted_time}")
             except Exception as e:
                 print(f"book_appt_confirm: ⚠️ Failed to parse appointment time → {e}")
+                resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+                resp.hangup()
+                return str(resp)
         else:
             print("book_appt_confirm: ❌ No appointment time found in session data")
+            resp.say(gpt_speak("Appointment time missing. Goodbye!"), VOICE)
+            resp.hangup()
+            return str(resp)
 
         # 🧍 Customer info
         customer = session_data[call_sid].get("customer", {})
@@ -1844,13 +1849,13 @@ def voice():
         customer_phone = customer.get("phone")
         print(f"book_appt_confirm: 👤 Customer → Name: {customer_name}, Phone: {customer_phone}")
 
-        # 📥 Save confirmation in doctor table
+        # 📥 Save confirmation in doctor table with calendar_id
         try:
             confirm_appointment_by_name(
                 doctor_name=doctor_name,
                 phone=customer_phone,
                 utc_start=appointment_time,
-                calendar_id=doctor_id
+                calendar_id=doctor_id  # ✅ Included again as requested
             )
             print(f"book_appt_confirm: ✅ Mapping saved → {doctor_name}.json: {customer_phone} → {appointment_time} (Calendar ID: {doctor_id})")
         except Exception as e:
@@ -1858,8 +1863,8 @@ def voice():
 
         # 🗣️ Voice confirmation message
         confirmation_message = (
-            f"Your appointment with {doctor_name} has been successfully booked."
-            " We look forward to seeing you. Goodbye!"
+            f"Your appointment with {doctor_name} has been successfully booked. "
+            "We look forward to seeing you. Goodbye!"
         )
         print(f"book_appt_confirm: 🗣️ Speaking confirmation message → {confirmation_message}")
         resp.say(gpt_speak(confirmation_message), VOICE)
