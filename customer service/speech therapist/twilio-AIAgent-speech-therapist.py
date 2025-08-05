@@ -937,32 +937,35 @@ def load_doctor_appointments():
 # ➕ Add appointment
 # ------------------------
 
-def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str, calendar_id: str):
-    """
-    Add or update an appointment for a doctor, saving:
-    - phone number
-    - UTC datetime
-    - Google Calendar ID
-    """
-    print(f"[confirm_appointment_by_name] Called for {doctor_name}, phone: {phone}, time: {utc_start}")
-    key = sanitize_filename(doctor_name).replace(".json", "")
-    full_path = get_doctor_filename(doctor_name)
+def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str):
+    """Add or update an appointment for a doctor and persist to file"""
+    print("[confirm_appointment_by_name] ➕ Starting appointment confirmation")
 
+    # Sanitize doctor name to create a consistent key
+    key = sanitize_filename(doctor_name).replace(".json", "")  # e.g., 'john_wayne'
+    print(f"[confirm_appointment_by_name] 🧼 Sanitized doctor name: {doctor_name} → key: {key}")
+
+    # Construct full path to the appointment file
+    full_path = os.path.join(APPOINTMENT_TABLE_DIR, key + ".json")
+    print(f"[confirm_appointment_by_name] 📁 Appointment file path: {full_path}")
+
+    # Initialize in-memory table if missing
     if key not in doctor_appointments:
-        print(f"[confirm_appointment_by_name] Initializing entry for {key}")
+        print(f"[confirm_appointment_by_name] 🆕 Creating new entry for {key}")
         doctor_appointments[key] = {}
 
-    doctor_appointments[key][phone] = {
-        "datetime": utc_start,
-        "calendar_id": calendar_id
-    }
+    # Add or update the appointment entry
+    doctor_appointments[key][phone] = utc_start
+    print(f"[confirm_appointment_by_name] 📌 Storing appointment → Phone: {phone}, Start: {utc_start}")
 
     try:
+        # Write updated table to file
         with open(full_path, "w") as f:
             json.dump(doctor_appointments[key], f, indent=2)
-        print(f"[confirm_appointment_by_name] ✅ Saved: {phone} → {utc_start} to {full_path}")
+        print(f"[confirm_appointment_by_name] ✅ Successfully wrote to file: {full_path}")
     except Exception as e:
-        print(f"[confirm_appointment_by_name] ❌ Failed to write file: {e}")
+        print(f"[confirm_appointment_by_name] ❌ Failed to write file: {full_path}")
+        print(f"[confirm_appointment_by_name] 🔥 Exception: {e}")
 
 # ------------------------
 # ❌ Remove appointment
