@@ -1814,7 +1814,6 @@ def voice():
 
 
 
-    
     elif stage == "book_appt_confirm":
         # ------------------------------------------------------------
         # 📍 Final confirmation stage after booking is complete
@@ -1866,7 +1865,39 @@ def voice():
             f"Your appointment with {doctor_name} has been successfully booked."
             " We look forward to seeing you. Goodbye!"
         )
-        print(f"book_appt_confirm: 🗣️ Speaking confirmation message →
+        print(f"book_appt_confirm: 🗣️ Speaking confirmation message → {confirmation_message}")
+        resp.say(gpt_speak(confirmation_message), VOICE)
+
+        # 📩 Send SMS confirmation
+        if customer_phone:
+            sms_text = f"Hi {customer_name}, your appointment with {doctor_name} is confirmed"
+            if formatted_time:
+                sms_text += f" on {formatted_time}"
+            sms_text += ". Thank you for choosing Epic Therapist Clinic."
+
+            try:
+                message = client.messages.create(
+                    body=sms_text,
+                    from_=TWILIO_PHONE_NUMBER,
+                    to=customer_phone
+                )
+                print(f"book_appt_confirm: 📤 SMS sent to {customer_phone}")
+                print(f"book_appt_confirm: 🧾 SMS SID: {message.sid}, Status: {message.status}")
+            except Exception as e:
+                print(f"book_appt_confirm: ❌ SMS send failed → {e}")
+        else:
+            print("book_appt_confirm: ⚠️ No phone number provided — skipping SMS.")
+
+        # 📞 End the call
+        print("book_appt_confirm: 📞 Hanging up the call")
+        resp.hangup()
+
+        # 🧹 Clear session
+        session_data.pop(call_sid, None)
+        print("book_appt_confirm: 🧼 Session data cleared")
+
+        return str(resp)
+
 
 
 
