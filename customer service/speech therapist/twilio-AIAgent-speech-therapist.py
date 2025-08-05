@@ -1752,7 +1752,7 @@ def voice():
         # 🏠 Stage: Collect Customer Address and finalize appointment booking
         # ----------------------------------------------------------------------
         address = speech_result.strip()
-        print(f"📬 collect_address: Collected address: {address}")
+        print(f"collect_address: 📬 Collected address: {address}")
 
         session_data[call_sid]["customer"]["address"] = address
         session_data[call_sid]["stage"] = "book_appt_confirm"  # ✅ next stage
@@ -1763,14 +1763,14 @@ def voice():
 
         # 🧩 Assemble full name safely
         full_name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
-        session_data[call_sid]["customer"]["name"] = full_name  # for use in SMS & confirmation
+        session_data[call_sid]["customer"]["name"] = full_name
 
         # 📞 Normalize phone number
         import re
         raw_phone = customer.get("phone", "")
         normalized_phone = re.sub(r"[^\d]", "", raw_phone)
         session_data[call_sid]["customer"]["phone"] = normalized_phone
-        print(f"📞 Final stored phone: {normalized_phone} (digits only expected)")
+        print(f"collect_address: 📞 Final stored phone: {normalized_phone}")
 
         # 📅 Handle time conversion: appointment time is in UTC
         try:
@@ -1781,15 +1781,15 @@ def voice():
             start_utc = datetime.fromisoformat(appointment["start"]).astimezone(pytz.utc)
             end_utc = datetime.fromisoformat(appointment["end"]).astimezone(pytz.utc)
 
-            print(f"📅 Local time slot → Start: {start_utc.isoformat()}, End: {end_utc.isoformat()}")
+            print(f"collect_address: 📅 Local time slot → Start: {start_utc.isoformat()}, End: {end_utc.isoformat()}")
         except Exception as e:
-            print(f"❌ Error converting to UTC: {e}")
+            print(f"collect_address: ❌ Error converting to UTC: {e}")
             resp.say(gpt_speak("Sorry, I had trouble confirming your appointment. Please try again later."), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # 📅 Build Google Calendar API service and create the appointment
+        # 📅 Build Google Calendar event
         try:
             calendar = build("calendar", "v3", credentials=creds)
             event = {
@@ -1800,32 +1800,32 @@ def voice():
             }
 
             calendar.events().insert(calendarId=doctor_id, body=event).execute()
-            print("✅ Google Calendar event created")
+            print("collect_address: ✅ Google Calendar event created")
         except Exception as e:
-            print(f"❌ Failed to create calendar event: {e}")
+            print(f"collect_address: ❌ Failed to create calendar event: {e}")
             resp.say(gpt_speak("Sorry, something went wrong while saving your appointment. Please try again later."), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # 📣 Success — proceed to confirmation
-        resp.say(gpt_speak(f"Thanks {full_name}. Your appointment has been confirmed. Goodbye!"), VOICE)
+        # 🔁 Forward to /voice to trigger book_appt_confirm
+        print("collect_address: 🔁 Redirecting to /voice to confirm booking")
+        resp.redirect("/voice")
         return str(resp)
+    
 
 
+    
+
+# ------------------------------------------------------------------
 
     elif stage == "book_appt_confirm":
-        # ------------------------------------------------------------
-        # 📍 Final confirmation stage after booking is complete
-        # ------------------------------------------------------------
         print("book_appt_confirm: 📍 Stage entered")
 
-        # 🆔 Doctor info
         doctor_id = session_data[call_sid].get("doctor_id")
         doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
         print(f"book_appt_confirm: 👨‍⚕️ Doctor → {doctor_name} (ID: {doctor_id})")
 
-        # 🕐 Appointment info
         appointment_time = session_data[call_sid].get("appointment_time", {}).get("start")
         formatted_time = ""
         if appointment_time:
@@ -1840,15 +1840,14 @@ def voice():
             except Exception as e:
                 print(f"book_appt_confirm: ⚠️ Failed to parse appointment time → {e}")
         else:
-            print("book_appt_confirm: ❌ No appointment time found in session data")
+            print("book_appt_confirm: ❌ No appointment time found in session")
 
-        # 🧍 Customer info
         customer = session_data[call_sid].get("customer", {})
         customer_name = customer.get("name", "")
         customer_phone = customer.get("phone")
         print(f"book_appt_confirm: 👤 Customer → Name: {customer_name}, Phone: {customer_phone}")
 
-        # 📥 Save confirmation in doctor table
+        # 💾 Save in doctor JSON table
         try:
             confirm_appointment_by_name(
                 doctor_name=doctor_name,
@@ -1856,19 +1855,19 @@ def voice():
                 utc_start=appointment_time,
                 calendar_id=doctor_id
             )
-            print(f"book_appt_confirm: ✅ Mapping saved → {doctor_name}.json: {customer_phone} → {appointment_time} (Calendar ID: {doctor_id})")
+            print(f"book_appt_confirm: ✅ Mapping saved → {doctor_name}.json: {customer_phone} → {appointment_time}")
         except Exception as e:
             print(f"book_appt_confirm: ⚠️ Failed to save appointment in doctor table → {e}")
 
-        # 🗣️ Voice confirmation message
+        # 📢 Voice response
         confirmation_message = (
-            f"Your appointment with {doctor_name} has been successfully booked."
-            " We look forward to seeing you. Goodbye!"
+            f"Your appointment with {doctor_name} has been successfully booked. "
+            "We look forward to seeing you. Goodbye!"
         )
         print(f"book_appt_confirm: 🗣️ Speaking confirmation message → {confirmation_message}")
         resp.say(gpt_speak(confirmation_message), VOICE)
 
-        # 📩 Send SMS confirmation
+        # 📩 SMS
         if customer_phone:
             sms_text = f"Hi {customer_name}, your appointment with {doctor_name} is confirmed"
             if formatted_time:
@@ -1888,15 +1887,14 @@ def voice():
         else:
             print("book_appt_confirm: ⚠️ No phone number provided — skipping SMS.")
 
-        # 📞 End the call
-        print("book_appt_confirm: 📞 Hanging up the call")
+        # 📞 End call and cleanup
+        print("book_appt_confirm: 📞 Hanging up")
         resp.hangup()
-
-        # 🧹 Clear session
         session_data.pop(call_sid, None)
         print("book_appt_confirm: 🧼 Session data cleared")
 
         return str(resp)
+
 
 
 
