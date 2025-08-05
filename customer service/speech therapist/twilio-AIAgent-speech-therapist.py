@@ -1004,7 +1004,7 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str) -> 
 # 🔁 Call this once at startup
 # ------------------------
 
-load_doctor_appointments()
+#load_doctor_appointments()
 
 
 
@@ -2159,4 +2159,12 @@ def voice():
 
 
 if __name__ == "__main__":
+    
+    # ------------------------
+    # 🔁 Call this once at startup
+    # ------------------------
+
+    load_doctor_appointments()
+
+
     app.run(host="0.0.0.0", port=5000)
