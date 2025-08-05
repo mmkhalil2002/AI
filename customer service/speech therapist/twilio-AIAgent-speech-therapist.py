@@ -1819,12 +1819,12 @@ def voice():
         # ------------------------------------------------------------
         # 📍 Final confirmation stage after booking is complete
         # ------------------------------------------------------------
-        print("📍 Stage: confirmed")
+        print("book_appt_confirm: 📍 Stage entered")
 
         # 🆔 Doctor info
         doctor_id = session_data[call_sid].get("doctor_id")
         doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
-        print(f"👨‍⚕️ Doctor: {doctor_name} (ID: {doctor_id})")
+        print(f"book_appt_confirm: 👨‍⚕️ Doctor → {doctor_name} (ID: {doctor_id})")
 
         # 🕐 Appointment info
         appointment_time = session_data[call_sid].get("appointment_time", {}).get("start")
@@ -1833,70 +1833,40 @@ def voice():
             from datetime import datetime
             import pytz
             try:
-                # Convert UTC → Central Time (America/Chicago)
                 dt_utc = datetime.fromisoformat(appointment_time.replace("Z", "+00:00"))
                 tz = pytz.timezone("America/Chicago")
                 dt_local = dt_utc.astimezone(tz)
                 formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
-                print(f"📆 Appointment (local): {formatted_time}")
+                print(f"book_appt_confirm: 📆 Appointment time (local) → {formatted_time}")
             except Exception as e:
-                print(f"⚠️ Failed to parse appointment time: {e}")
+                print(f"book_appt_confirm: ⚠️ Failed to parse appointment time → {e}")
+        else:
+            print("book_appt_confirm: ❌ No appointment time found in session data")
 
         # 🧍 Customer info
         customer = session_data[call_sid].get("customer", {})
         customer_name = customer.get("name", "")
         customer_phone = customer.get("phone")
-        print(f"👤 Customer: {customer_name}, Phone: {customer_phone}")
+        print(f"book_appt_confirm: 👤 Customer → Name: {customer_name}, Phone: {customer_phone}")
 
-        # 📥 Save confirmation in doctor table with calendar_id
+        # 📥 Save confirmation in doctor table
         try:
             confirm_appointment_by_name(
-                                          doctor_name=doctor_name,
-                                          phone=customer_phone,
-                                          utc_start=appointment_time,
-                                          calendar_id=doctor_id
-                                        )
-            print(f"✅ Mapping saved to {doctor_name}.json: {customer_phone} → {appointment_time} (Calendar ID: {doctor_id})")
+                doctor_name=doctor_name,
+                phone=customer_phone,
+                utc_start=appointment_time,
+                calendar_id=doctor_id
+            )
+            print(f"book_appt_confirm: ✅ Mapping saved → {doctor_name}.json: {customer_phone} → {appointment_time} (Calendar ID: {doctor_id})")
         except Exception as e:
-            print(f"⚠️ Failed to save appointment in doctor table: {e}")
+            print(f"book_appt_confirm: ⚠️ Failed to save appointment in doctor table → {e}")
 
         # 🗣️ Voice confirmation message
         confirmation_message = (
             f"Your appointment with {doctor_name} has been successfully booked."
             " We look forward to seeing you. Goodbye!"
         )
-        resp.say(gpt_speak(confirmation_message), VOICE)
-
-        # ------------------------------------------------------------
-        # 📩 Send SMS confirmation
-        # ------------------------------------------------------------
-        if customer_phone:
-            sms_text = f"Hi {customer_name}, your appointment with {doctor_name} is confirmed"
-            if formatted_time:
-                sms_text += f" on {formatted_time}"
-            sms_text += ". Thank you for choosing Epic Therapist Clinic."
-
-            try:
-                message = client.messages.create(
-                    body=sms_text,
-                    from_=TWILIO_PHONE_NUMBER,
-                    to=customer_phone
-                )
-                print("📤 SMS sent to:", customer_phone)
-                print("🧾 SID:", message.sid, "| Status:", message.status)
-            except Exception as e:
-                print(f"❌ SMS send failed: {e}")
-        else:
-            print("⚠️ No phone number available — skipping SMS.")
-
-        # 📞 End the call
-        resp.hangup()
-
-        # 🧹 Clear session
-        session_data.pop(call_sid, None)
-        print("🧼 Session data cleared")
-
-        return str(resp)
+        print(f"book_appt_confirm: 🗣️ Speaking confirmation message →
 
 
 
