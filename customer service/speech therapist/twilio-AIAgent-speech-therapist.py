@@ -1005,6 +1005,51 @@ def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str, ca
 
 
 
+def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str):
+    """
+    Remove an appointment by phone and time from the doctor's JSON list.
+    Keeps other appointments intact.
+    """
+    key = sanitize_filename(doctor_name).replace(".json", "")
+    full_path = get_doctor_filename(doctor_name)
+
+    # 📥 Load the appointments from file
+    if os.path.exists(full_path):
+        try:
+            with open(full_path, "r") as f:
+                data = json.load(f)
+                if not isinstance(data, list):
+                    print(f"❌ File content is not a list for doctor: {key}")
+                    return False
+        except Exception as e:
+            print(f"❌ Error reading JSON for doctor {key} → {e}")
+            return False
+    else:
+        print(f"⚠️ Appointment file not found for {key}")
+        return False
+
+    # 🔎 Find matching entries to remove
+    original_count = len(data)
+    data = [
+        appt for appt in data
+        if not (appt.get("phone") == phone and appt.get("time") == utc_start)
+    ]
+    removed_count = original_count - len(data)
+
+    if removed_count == 0:
+        print(f"⚠️ No appointment found for {phone} at {utc_start} in {key}")
+        return False
+
+    # 💾 Save updated list back to file
+    try:
+        with open(full_path, "w") as f:
+            json.dump(data, f, indent=2)
+        doctor_appointments[key] = data  # update in-memory copy too
+        print(f"🗑️ Canceled {removed_count} appointment(s) for {phone} at {utc_start} in {key}")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to save updated appointments for {key} → {e}")
+        return False
 
 
 
