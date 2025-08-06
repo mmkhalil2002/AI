@@ -960,43 +960,49 @@ def load_doctor_appointments():
 # ------------------------
 import os
 import json
-
 def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str, calendar_id: str):
     """Add a new appointment to the doctor's table and save to JSON file."""
 
     filename = sanitize_filename(doctor_name).replace(".json", "")
     full_path = get_doctor_filename(doctor_name)
 
-    # 📥 Load existing appointments from file (if exists)
+    print(f"[confirm_appointment_by_name] 🔍 Loading file: {full_path}")
+
+    # 📥 Load or initialize doctor_appointments[filename] as a list
     if os.path.exists(full_path):
         try:
             with open(full_path, "r") as f:
-                doctor_appointments[filename] = json.load(f)
-        except json.JSONDecodeError:
-            print(f"confirm_appointment_by_name: ⚠️ Failed to parse JSON, starting fresh for {filename}")
+                data = json.load(f)
+                if isinstance(data, list):
+                    doctor_appointments[filename] = data
+                    print(f"[confirm_appointment_by_name] ✅ Loaded existing list with {len(data)} appointments")
+                else:
+                    print(f"[confirm_appointment_by_name] ⚠️ JSON was a dict instead of a list. Resetting.")
+                    doctor_appointments[filename] = []
+        except Exception as e:
+            print(f"[confirm_appointment_by_name] ⚠️ Failed to parse JSON file → {e}")
             doctor_appointments[filename] = []
     else:
+        print(f"[confirm_appointment_by_name] 📂 No file found — starting new list")
         doctor_appointments[filename] = []
 
-    # 🆕 Append new appointment
-    new_entry = {
+    # 🆕 Append the new appointment
+    new_appt = {
         "phone": phone,
         "time": utc_start,
         "calendar_id": calendar_id
     }
-    doctor_appointments[filename].append(new_entry)
+    doctor_appointments[filename].append(new_appt)
+    print(f"[confirm_appointment_by_name] ➕ Appended: {new_appt}")
 
-    # 💾 Write back all appointments (now with new entry) to file
-    with open(full_path, "w") as f:
-        json.dump(doctor_appointments[filename], f, indent=2)
+    # 💾 Save updated list back to file
+    try:
+        with open(full_path, "w") as f:
+            json.dump(doctor_appointments[filename], f, indent=2)
+        print(f"[confirm_appointment_by_name] 💾 Saved to {full_path}")
+    except Exception as e:
+        print(f"[confirm_appointment_by_name] ❌ Failed to write JSON → {e}")
 
-    print(f"confirm_appointment_by_name: ✅ Appended appointment to {filename}.json")
-
-# ------------------------
-# 🔁 Call this once at startup
-# ------------------------
-
-#load_doctor_appointments()
 
 
 
