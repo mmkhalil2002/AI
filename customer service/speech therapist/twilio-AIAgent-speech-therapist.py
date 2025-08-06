@@ -936,28 +936,39 @@ def load_doctor_appointments():
 # ------------------------
 # ➕ Add appointment
 # ------------------------
+import os
+import json
+
 def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str, calendar_id: str):
     """Add a new appointment to the doctor's table and save to JSON file."""
+
     filename = sanitize_filename(doctor_name).replace(".json", "")
     full_path = get_doctor_filename(doctor_name)
 
-    # 📥 Initialize if doctor file doesn't exist
-    if filename not in doctor_appointments:
+    # 📥 Load existing appointments from file (if exists)
+    if os.path.exists(full_path):
+        try:
+            with open(full_path, "r") as f:
+                doctor_appointments[filename] = json.load(f)
+        except json.JSONDecodeError:
+            print(f"confirm_appointment_by_name: ⚠️ Failed to parse JSON, starting fresh for {filename}")
+            doctor_appointments[filename] = []
+    else:
         doctor_appointments[filename] = []
 
     # 🆕 Append new appointment
-    doctor_appointments[filename].append({
+    new_entry = {
         "phone": phone,
         "time": utc_start,
         "calendar_id": calendar_id
-    })
+    }
+    doctor_appointments[filename].append(new_entry)
 
-    # 💾 Save to JSON file
+    # 💾 Write back all appointments (now with new entry) to file
     with open(full_path, "w") as f:
         json.dump(doctor_appointments[filename], f, indent=2)
 
     print(f"confirm_appointment_by_name: ✅ Appended appointment to {filename}.json")
-
 
 # ------------------------
 # ❌ Remove appointment
@@ -1847,19 +1858,19 @@ def voice():
         customer_phone = customer.get("phone")
         print(f"book_appt_confirm: 👤 Customer → Name: {customer_name}, Phone: {customer_phone}")
 
-        # 📥 Save confirmation in doctor table with calendar_id
+        # 📥 Save confirmation in doctor table
         try:
             confirm_appointment_by_name(
                 doctor_name=doctor_name,
                 phone=customer_phone,
                 utc_start=appointment_time,
-                calendar_id=doctor_id  # ✅ Included again
+                calendar_id=doctor_id
             )
             print(f"book_appt_confirm: ✅ Mapping saved → {doctor_name}.json: {customer_phone} → {appointment_time} (Calendar ID: {doctor_id})")
         except Exception as e:
             print(f"book_appt_confirm: ⚠️ Failed to save appointment in doctor table → {e}")
 
-        # 🗣️ Voice confirmation message
+        # 🗣️ Voice confirmation
         confirmation_message = (
             f"Your appointment with {doctor_name} has been successfully booked. "
             "We look forward to seeing you. Goodbye!"
@@ -1869,9 +1880,9 @@ def voice():
 
         # 📩 Send SMS confirmation
         if customer_phone:
-            # ✅ Normalize phone with +1 for US if missing
+            # ✅ Normalize phone number
             if not customer_phone.startswith("+"):
-                customer_phone = "+1" + customer_phone
+                customer_phone = "+1" + ''.join(filter(str.isdigit, customer_phone))
 
             sms_text = f"Hi {customer_name}, your appointment with {doctor_name} is confirmed"
             if formatted_time:
@@ -1900,6 +1911,7 @@ def voice():
         print("book_appt_confirm: 🧼 Session data cleared")
 
         return str(resp)
+
 
 
 
