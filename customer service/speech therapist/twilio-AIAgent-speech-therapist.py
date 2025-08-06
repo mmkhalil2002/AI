@@ -52,7 +52,7 @@ WORKING_DAYS = [0, 1, 2, 3, 4]  # Adjust based on your local week
 
 
 USE_GPT = False
-
+DEBUG  = True
 
 if USE_GPT:
     import openai
@@ -73,6 +73,14 @@ else:
 
     client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     print("📞 Using Twilio client")
+
+**  print debug
+
+def debug_print(*args, **kwargs):
+    if DEBUG:
+        print(*args, **kwargs)
+
+
 
 
 #################################################
@@ -2099,14 +2107,22 @@ def voice():
             return str(resp)
 
 
-    elif stage == "cancel_appt_get_date_time":
-        # 🧠 Step 1: Try extracting spoken date and time
-        print(f"🗣️ Received for cancellation date/time: {speech_result}")
-        time_info = smart_parse_time(speech_result)
 
+    elif stage == "cancel_appt_get_date_time":
+        debug_print("cancel_appt_get_date_time: 📍 Stage entered")
+
+        # 🧠 Step 1: Try extracting spoken date and time
+        debug_print(f"cancel_appt_get_date_time: 🗣️ Raw speech input → '{speech_result}'")
+        time_info = smart_parse_time(speech_result)
+        debug_print(f"cancel_appt_get_date_time: 🧠 smart_parse_time() returned → {time_info}")
+
+        # 🔁 Retry handling if time parsing failed
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
+            debug_print(f"cancel_appt_get_date_time: ❌ Failed to parse time. Retry count → {session_data[call_sid]['retry_time']}")
+
             if session_data[call_sid]["retry_time"] >= 3:
+                debug_print("cancel_appt_get_date_time: ⛔ Max retries reached. Ending call.")
                 resp.say(gpt_speak("Sorry, I couldn't understand the time. Please try again later. Goodbye."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
@@ -2126,13 +2142,41 @@ def voice():
 
         # ✅ Successfully parsed
         spoken_day, spoken_time = time_info
-        print(f"📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
-        session_data[call_sid]["cancel"]["day"] = spoken_day
-        session_data[call_sid]["cancel"]["time"] = spoken_time
-        session_data[call_sid]["stage"] = "cancel_appt_confirm"
+        debug_print(f"cancel_appt_get_date_time: 📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
 
-        # 🔁 Prompt transition to confirm stage
-        return voice()  # re-invoke main handler to continue flow
+        # 🕐 Combine and convert to UTC
+        from datetime import datetime
+        import pytz
+
+        try:
+            local_tz = pytz.timezone("America/Chicago")
+            combined_dt = datetime.combine(spoken_day, spoken_time)
+            debug_print(f"cancel_appt_get_date_time: 🧮 Combined local naive datetime → {combined_dt}")
+
+            localized_dt = local_tz.localize(combined_dt)
+            debug_print(f"cancel_appt_get_date_time: 📍 Localized datetime (America/Chicago) → {localized_dt}")
+
+            utc_dt = localized_dt.astimezone(pytz.utc)
+            utc_str = utc_dt.isoformat().replace("+00:00", "Z")
+            debug_print(f"cancel_appt_get_date_time: 🌐 Converted UTC datetime → {utc_dt}")
+            debug_print(f"cancel_appt_get_date_time: 📝 UTC string to store → {utc_str}")
+
+            # 🗃️ Store everything in session
+            session_data[call_sid]["cancel"]["day"] = spoken_day
+            session_data[call_sid]["cancel"]["time"] = spoken_time
+            session_data[call_sid]["cancel"]["utc"] = utc_str
+            session_data[call_sid]["stage"] = "cancel_appt_confirm"
+
+            debug_print("cancel_appt_get_date_time: ✅ Stored all cancel fields in session")
+            return voice()  # 🔁 Continue to main handler
+
+        except Exception as e:
+            debug_print(f"cancel_appt_get_date_time: ❌ Failed to convert to UTC → {e}")
+            resp.say(gpt_speak("Sorry, I couldn't process the date and time correctly."), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
+
 
 
 
