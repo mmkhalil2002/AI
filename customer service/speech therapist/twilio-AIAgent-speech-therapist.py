@@ -400,29 +400,41 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
 
 
 
-
-from datetime import datetime, timedelta
-import pytz
-import re
-from typing import Tuple  # ✅ Add this
-from datetime import datetime, timedelta
-from typing import Tuple
+from datetime import datetime, timedelta, date, time
+from typing import Tuple, Union
 import pytz
 import re
 
-def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
+def build_timeslot_range(spoken_day: Union[str, date], spoken_time: Union[str, time]) -> Tuple[str, str]:
     """
-    Given a spoken date and time (e.g. 'July 29', '8:30 AM'), return ISO 8601 start/end times in UTC.
+    Given a spoken date and time (e.g. 'July 29', '8:30 AM') OR datetime.date/time objects,
+    return ISO 8601 start/end times in UTC.
     Adds current year if not provided, handles common variations.
     """
-    print(f"📥 build_timeslot_range: Input → Day: '{spoken_day}', Time: '{spoken_time}'")
+    debug_print(f"📥 build_timeslot_range: Input → Day: '{spoken_day}', Time: '{spoken_time}'")
 
+    # ✅ Case 1: Inputs are already datetime.date and datetime.time
+    if isinstance(spoken_day, date) and isinstance(spoken_time, time):
+        try:
+            # 🧠 Combine and localize
+            combined_dt = datetime.combine(spoken_day, spoken_time)
+            tz = pytz.timezone("America/Chicago")
+            localized = tz.localize(combined_dt)
+            utc_start = localized.astimezone(pytz.utc)
+            utc_end = utc_start + timedelta(minutes=30)
+            debug_print(f"📅 Local time slot → Start: {localized}, End: {localized + timedelta(minutes=30)}")
+            debug_print(f"🌍 UTC time slot → Start: {utc_start.isoformat()}, End: {utc_end.isoformat()}")
+            return utc_start.isoformat(), utc_end.isoformat()
+        except Exception as e:
+            raise ValueError(f"❌ Error handling datetime objects: {e}")
+
+    # ✅ Case 2: Inputs are strings (original flow)
     # 🧼 Clean up input
-    day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day.strip(), flags=re.IGNORECASE)
+    day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', str(spoken_day).strip(), flags=re.IGNORECASE)
     day = day.replace("of", "").replace(",", "").strip()
     combined_input = f"{day} {spoken_time}".strip()
 
-    print(f"🧽 Cleaned combined input: '{combined_input}'")
+    debug_print(f"🧽 Cleaned combined input: '{combined_input}'")
 
     # Define parsing formats (assuming year will be added if not present)
     formats = [
@@ -436,7 +448,7 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     for fmt in formats:
         try:
             parsed_dt = datetime.strptime(combined_input, fmt)
-            print(f"✅ Parsed datetime: {parsed_dt} using format {fmt}")
+            debug_print(f"✅ Parsed datetime: {parsed_dt} using format {fmt}")
             break
         except ValueError:
             continue
@@ -447,7 +459,7 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     # 🧠 Add current year if not present
     current_year = datetime.now().year
     parsed_dt = parsed_dt.replace(year=current_year)
-    print(f"📅 Inferred year → Updated datetime: {parsed_dt}")
+    debug_print(f"📅 Inferred year → Updated datetime: {parsed_dt}")
 
     # 🌎 Localize to Central time and convert to UTC
     tz = pytz.timezone("America/Chicago")
@@ -455,12 +467,13 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
         localized = tz.localize(parsed_dt)
         utc_start = localized.astimezone(pytz.utc)
         utc_end = utc_start + timedelta(minutes=30)
-        print(f"📅 Local time slot → Start: {localized}, End: {localized + timedelta(minutes=30)}")
-        print(f"🌍 UTC time slot → Start: {utc_start.isoformat()}, End: {utc_end.isoformat()}")
+        debug_print(f"📅 Local time slot → Start: {localized}, End: {localized + timedelta(minutes=30)}")
+        debug_print(f"🌍 UTC time slot → Start: {utc_start.isoformat()}, End: {utc_end.isoformat()}")
     except Exception as e:
         raise ValueError(f"❌ Error converting to UTC: {e}")
 
     return utc_start.isoformat(), utc_end.isoformat()
+
 
 
 
@@ -2110,12 +2123,11 @@ def voice():
     elif stage == "cancel_appt_get_date_time":
         debug_print("cancel_appt_get_date_time: 📍 Stage entered")
 
-        # 🧠 Step 1: Try extracting spoken date and time
+        # 🧠 Step 1: Parse speech
         debug_print(f"cancel_appt_get_date_time: 🗣️ Raw speech input → '{speech_result}'")
         time_info = smart_parse_time(speech_result)
         debug_print(f"cancel_appt_get_date_time: 🧠 smart_parse_time() returned → {time_info}")
 
-        # 🔁 Retry handling if parsing failed
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
             debug_print(f"cancel_appt_get_date_time: ❌ Failed to parse time. Retry count → {session_data[call_sid]['retry_time']}")
@@ -2139,51 +2151,32 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ✅ Parsed output
+        # ✅ Successfully parsed
         spoken_day, spoken_time = time_info
-        debug_print(f"cancel_appt_get_date_time: 📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
+        debug_print(f"cancel_appt_get_date_time: 📆 Parsed → Day: {spoken_day}, Time: {spoken_time}")
 
-        # 🔁 Convert strings to actual datetime.date and datetime.time if needed
-        from datetime import datetime
-        import pytz
-
+        # ✅ Use build_timeslot_range for UTC handling
         try:
-            # ⏱️ If inputs are strings, convert them
-            if isinstance(spoken_day, str):
-                spoken_day = datetime.strptime(spoken_day.strip(), "%A, %B %d").date()
-                debug_print(f"cancel_appt_get_date_time: 📅 Converted spoken_day to date → {spoken_day}")
+            utc_start, utc_end = build_timeslot_range(spoken_day, spoken_time)
+            debug_print(f"cancel_appt_get_date_time: ✅ UTC range → Start: {utc_start}, End: {utc_end}")
 
-            if isinstance(spoken_time, str):
-                spoken_time = datetime.strptime(spoken_time.strip(), "%I:%M %p").time()
-                debug_print(f"cancel_appt_get_date_time: ⏰ Converted spoken_time to time → {spoken_time}")
-
-            # 🕐 Combine and convert to UTC
-            local_tz = pytz.timezone("America/Chicago")
-            combined_dt = datetime.combine(spoken_day, spoken_time)
-            debug_print(f"cancel_appt_get_date_time: 🧮 Combined naive datetime → {combined_dt}")
-
-            localized_dt = local_tz.localize(combined_dt)
-            debug_print(f"cancel_appt_get_date_time: 📍 Localized datetime → {localized_dt}")
-
-            utc_dt = localized_dt.astimezone(pytz.utc)
-            utc_str = utc_dt.isoformat().replace("+00:00", "Z")
-            debug_print(f"cancel_appt_get_date_time: 🌐 Converted to UTC → {utc_str}")
-
-            # 🧾 Save in session
+            # Save in session for next stage
             session_data[call_sid]["cancel"]["day"] = spoken_day
             session_data[call_sid]["cancel"]["time"] = spoken_time
-            session_data[call_sid]["cancel"]["utc"] = utc_str
+            session_data[call_sid]["cancel"]["utc_start"] = utc_start
+            session_data[call_sid]["cancel"]["utc_end"] = utc_end
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
 
-            debug_print("cancel_appt_get_date_time: ✅ Stored all fields. Moving to next stage.")
+            debug_print("cancel_appt_get_date_time: ✅ Session updated, moving to cancel_appt_confirm")
             return voice()
 
         except Exception as e:
-            debug_print(f"cancel_appt_get_date_time: ❌ Failed to process datetime → {e}")
+            debug_print(f"cancel_appt_get_date_time: ❌ Failed to convert time to UTC → {e}")
             resp.say(gpt_speak("Sorry, I couldn't process the date and time correctly."), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
+
 
 
 
