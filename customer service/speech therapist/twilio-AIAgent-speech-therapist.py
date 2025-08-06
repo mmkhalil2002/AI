@@ -74,7 +74,7 @@ else:
     client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     print("📞 Using Twilio client")
 
-**  print debug
+## print debug
 
 def debug_print(*args, **kwargs):
     if DEBUG:
