@@ -53,6 +53,28 @@ WORKING_DAYS = [0, 1, 2, 3, 4]  # Adjust based on your local week
 
 USE_GPT = False
 
+
+if USE_GPT:
+    import openai
+
+    class OpenAIClient:
+        def generate_text(self, prompt):
+            response = openai.ChatCompletion.create(
+                model="gpt-4",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.choices[0].message.content.strip()
+
+    client = OpenAIClient()
+    print("🔁 Using OpenAI client")
+
+else:
+    from twilio.rest import Client as TwilioClient
+
+    client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    print("📞 Using Twilio client")
+
+
 #################################################
 # Voice	          Description
 # Polly.Joanna	Friendly US female
@@ -489,8 +511,8 @@ def smart_parse_time(text):
 
 
 # ✅ OpenAI client initialization
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
+#OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+#client = OpenAI(api_key=OPENAI_API_KEY)
 
 
 
@@ -566,7 +588,7 @@ def gpt_speak(prompt):
 from openai import OpenAI, APIConnectionError, AuthenticationError, RateLimitError
 
 # Initialize the OpenAI client (using the environment variable OPENAI_API_KEY)
-client = OpenAI()
+#client = OpenAI()
 
 from openai import OpenAIError  # Add this import at the top
 
