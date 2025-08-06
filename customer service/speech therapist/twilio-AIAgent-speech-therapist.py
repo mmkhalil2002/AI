@@ -971,42 +971,6 @@ def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str, ca
     print(f"confirm_appointment_by_name: ✅ Appended appointment to {filename}.json")
 
 # ------------------------
-# ❌ Remove appointment
-# ------------------------
-
-def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str) -> bool:
-    """
-    Remove an appointment from a doctor's JSON file using phone number AND UTC datetime.
-    """
-    print(f"[cancel_appointment_by_name] Attempting to cancel: {doctor_name}, {phone}, {utc_start}")
-    import os
-    import json
-
-    key = sanitize_filename(doctor_name).replace(".json", "")
-    full_path = get_doctor_filename(doctor_name)
-
-    if key in doctor_appointments:
-        entries = doctor_appointments[key]
-        if phone in entries and entries[phone]["datetime"] == utc_start:
-            print(f"[cancel_appointment_by_name] 🗑️ Deleting entry → {phone}: {utc_start}")
-            del entries[phone]
-
-            try:
-                with open(full_path, "w") as f:
-                    json.dump(entries, f, indent=2)
-                print(f"[cancel_appointment_by_name] ✅ Updated file after deletion: {full_path}")
-            except Exception as e:
-                print(f"[cancel_appointment_by_name] ❌ Failed to update file: {e}")
-
-            return True
-        else:
-            print(f"[cancel_appointment_by_name] ⚠️ Entry not found or date mismatch for {phone} in {key}.")
-    else:
-        print(f"[cancel_appointment_by_name] ⚠️ Doctor table {key} not found.")
-
-    return False
-
-# ------------------------
 # 🔁 Call this once at startup
 # ------------------------
 
@@ -1826,11 +1790,13 @@ def voice():
 
         # 🆔 Doctor info
         doctor_id = session_data[call_sid].get("doctor_id")
+        print(f"book_appt_confirm: 🧩 Raw doctor_id from session → {doctor_id}")
         doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
-        print(f"book_appt_confirm: 👨‍⚕️ Doctor → {doctor_name} (ID: {doctor_id})")
+        print(f"book_appt_confirm: 👨‍⚕️ Resolved doctor_name → {doctor_name}")
 
         # 🕐 Appointment info
         appointment_time = session_data[call_sid].get("appointment_time", {}).get("start")
+        print(f"book_appt_confirm: 🕓 Raw appointment_time UTC → {appointment_time}")
         formatted_time = ""
         if appointment_time:
             from datetime import datetime
@@ -1840,7 +1806,7 @@ def voice():
                 tz = pytz.timezone("America/Chicago")
                 dt_local = dt_utc.astimezone(tz)
                 formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
-                print(f"book_appt_confirm: 📆 Appointment time (local) → {formatted_time}")
+                print(f"book_appt_confirm: 📆 Formatted appointment time (local) → {formatted_time}")
             except Exception as e:
                 print(f"book_appt_confirm: ⚠️ Failed to parse appointment time → {e}")
                 resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
@@ -1854,11 +1820,13 @@ def voice():
 
         # 🧍 Customer info
         customer = session_data[call_sid].get("customer", {})
+        print(f"book_appt_confirm: 🧾 Raw customer object → {customer}")
         customer_name = customer.get("name", "")
         customer_phone = customer.get("phone")
-        print(f"book_appt_confirm: 👤 Customer → Name: {customer_name}, Phone: {customer_phone}")
+        print(f"book_appt_confirm: 👤 Extracted customer name → {customer_name}")
+        print(f"book_appt_confirm: 📞 Extracted customer phone → {customer_phone}")
 
-        # 📥 Save confirmation in doctor table
+        # 📥 Save confirmation in doctor table with calendar_id
         try:
             confirm_appointment_by_name(
                 doctor_name=doctor_name,
@@ -1870,7 +1838,7 @@ def voice():
         except Exception as e:
             print(f"book_appt_confirm: ⚠️ Failed to save appointment in doctor table → {e}")
 
-        # 🗣️ Voice confirmation
+        # 🗣️ Voice confirmation message
         confirmation_message = (
             f"Your appointment with {doctor_name} has been successfully booked. "
             "We look forward to seeing you. Goodbye!"
@@ -1880,23 +1848,33 @@ def voice():
 
         # 📩 Send SMS confirmation
         if customer_phone:
-            # ✅ Normalize phone number
-            if not customer_phone.startswith("+"):
-                customer_phone = "+1" + ''.join(filter(str.isdigit, customer_phone))
-
-            sms_text = f"Hi {customer_name}, your appointment with {doctor_name} is confirmed"
-            if formatted_time:
-                sms_text += f" on {formatted_time}"
-            sms_text += ". Thank you for choosing Epic Therapist Clinic."
-
             try:
+                print(f"book_appt_confirm: 📦 Preparing to send SMS to → {customer_phone}")
+
+                # ✅ Normalize phone number (E.164 format, US default)
+                digits_only = ''.join(filter(str.isdigit, customer_phone))
+                print(f"book_appt_confirm: 🔢 Digits-only phone → {digits_only}")
+                if not digits_only.startswith("1"):
+                    digits_only = "1" + digits_only
+                customer_phone = f"+{digits_only}"
+                print(f"book_appt_confirm: ☎️ Normalized E.164 phone → {customer_phone}")
+
+                sms_text = f"Hi {customer_name}, your appointment with {doctor_name} is confirmed"
+                if formatted_time:
+                    sms_text += f" on {formatted_time}"
+                sms_text += ". Thank you for choosing Epic Therapist Clinic."
+
+                print(f"book_appt_confirm: 📝 Final SMS text → {sms_text}")
+
                 message = client.messages.create(
                     body=sms_text,
                     from_=TWILIO_PHONE_NUMBER,
                     to=customer_phone
                 )
+
                 print(f"book_appt_confirm: 📤 SMS sent to {customer_phone}")
                 print(f"book_appt_confirm: 🧾 SMS SID: {message.sid}, Status: {message.status}")
+
             except Exception as e:
                 print(f"book_appt_confirm: ❌ SMS send failed → {e}")
         else:
