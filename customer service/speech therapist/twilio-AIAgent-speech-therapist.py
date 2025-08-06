@@ -82,7 +82,6 @@ def debug_print(*args, **kwargs):
 
 
 
-
 #################################################
 # Voice	          Description
 # Polly.Joanna	Friendly US female
@@ -2116,7 +2115,7 @@ def voice():
         time_info = smart_parse_time(speech_result)
         debug_print(f"cancel_appt_get_date_time: 🧠 smart_parse_time() returned → {time_info}")
 
-        # 🔁 Retry handling if time parsing failed
+        # 🔁 Retry handling if parsing failed
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
             debug_print(f"cancel_appt_get_date_time: ❌ Failed to parse time. Retry count → {session_data[call_sid]['retry_time']}")
@@ -2140,42 +2139,54 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ✅ Successfully parsed
+        # ✅ Parsed output
         spoken_day, spoken_time = time_info
         debug_print(f"cancel_appt_get_date_time: 📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
 
-        # 🕐 Combine and convert to UTC
+        # 🔁 Convert strings to actual datetime.date and datetime.time if needed
         from datetime import datetime
         import pytz
 
         try:
+            # ⏱️ If inputs are strings, convert them
+            if isinstance(spoken_day, str):
+                spoken_day = datetime.strptime(spoken_day.strip(), "%A, %B %d").date()
+                debug_print(f"cancel_appt_get_date_time: 📅 Converted spoken_day to date → {spoken_day}")
+
+            if isinstance(spoken_time, str):
+                spoken_time = datetime.strptime(spoken_time.strip(), "%I:%M %p").time()
+                debug_print(f"cancel_appt_get_date_time: ⏰ Converted spoken_time to time → {spoken_time}")
+
+            # 🕐 Combine and convert to UTC
             local_tz = pytz.timezone("America/Chicago")
             combined_dt = datetime.combine(spoken_day, spoken_time)
-            debug_print(f"cancel_appt_get_date_time: 🧮 Combined local naive datetime → {combined_dt}")
+            debug_print(f"cancel_appt_get_date_time: 🧮 Combined naive datetime → {combined_dt}")
 
             localized_dt = local_tz.localize(combined_dt)
-            debug_print(f"cancel_appt_get_date_time: 📍 Localized datetime (America/Chicago) → {localized_dt}")
+            debug_print(f"cancel_appt_get_date_time: 📍 Localized datetime → {localized_dt}")
 
             utc_dt = localized_dt.astimezone(pytz.utc)
             utc_str = utc_dt.isoformat().replace("+00:00", "Z")
-            debug_print(f"cancel_appt_get_date_time: 🌐 Converted UTC datetime → {utc_dt}")
-            debug_print(f"cancel_appt_get_date_time: 📝 UTC string to store → {utc_str}")
+            debug_print(f"cancel_appt_get_date_time: 🌐 Converted to UTC → {utc_str}")
 
-            # 🗃️ Store everything in session
+            # 🧾 Save in session
             session_data[call_sid]["cancel"]["day"] = spoken_day
             session_data[call_sid]["cancel"]["time"] = spoken_time
             session_data[call_sid]["cancel"]["utc"] = utc_str
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
 
-            debug_print("cancel_appt_get_date_time: ✅ Stored all cancel fields in session")
-            return voice()  # 🔁 Continue to main handler
+            debug_print("cancel_appt_get_date_time: ✅ Stored all fields. Moving to next stage.")
+            return voice()
 
         except Exception as e:
-            debug_print(f"cancel_appt_get_date_time: ❌ Failed to convert to UTC → {e}")
+            debug_print(f"cancel_appt_get_date_time: ❌ Failed to process datetime → {e}")
             resp.say(gpt_speak("Sorry, I couldn't process the date and time correctly."), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
+
+
+
 
 
 
