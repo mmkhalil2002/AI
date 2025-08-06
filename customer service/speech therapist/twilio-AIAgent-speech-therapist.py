@@ -936,30 +936,28 @@ def load_doctor_appointments():
 # ------------------------
 # ➕ Add appointment
 # ------------------------
-def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str, calendar_id: str = None):
-    print("confirm_appointment_by_name: 📥 Called with:")
-    print(f"    📞 Phone: {phone}")
-    print(f"    🧑‍⚕️ Doctor: {doctor_name}")
-    print(f"    🕐 Time (UTC): {utc_start}")
-    print(f"    🗂️ Calendar ID: {calendar_id}")
-
-    key = sanitize_filename(doctor_name).replace(".json", "")
+def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str, calendar_id: str):
+    """Add a new appointment to the doctor's table and save to JSON file."""
+    filename = sanitize_filename(doctor_name).replace(".json", "")
     full_path = get_doctor_filename(doctor_name)
 
-    if key not in doctor_appointments:
-        doctor_appointments[key] = {}
+    # 📥 Initialize if doctor file doesn't exist
+    if filename not in doctor_appointments:
+        doctor_appointments[filename] = []
 
-    doctor_appointments[key][phone] = {
+    # 🆕 Append new appointment
+    doctor_appointments[filename].append({
+        "phone": phone,
         "time": utc_start,
         "calendar_id": calendar_id
-    }
+    })
 
-    try:
-        with open(full_path, "w") as f:
-            json.dump(doctor_appointments[key], f, indent=2)
-        print(f"confirm_appointment_by_name: ✅ Appointment saved to → {full_path}")
-    except Exception as e:
-        print(f"confirm_appointment_by_name: ❌ Failed to save file → {e}")
+    # 💾 Save to JSON file
+    with open(full_path, "w") as f:
+        json.dump(doctor_appointments[filename], f, indent=2)
+
+    print(f"confirm_appointment_by_name: ✅ Appended appointment to {filename}.json")
+
 
 # ------------------------
 # ❌ Remove appointment
@@ -1811,7 +1809,7 @@ def voice():
 
     
 
-# ------------------------------------------------------------------
+# -# -----------------------------------------------------------------
     elif stage == "book_appt_confirm":
         print("book_appt_confirm: 📍 Stage entered")
 
@@ -1855,7 +1853,7 @@ def voice():
                 doctor_name=doctor_name,
                 phone=customer_phone,
                 utc_start=appointment_time,
-                calendar_id=doctor_id  # ✅ Included again as requested
+                calendar_id=doctor_id  # ✅ Included again
             )
             print(f"book_appt_confirm: ✅ Mapping saved → {doctor_name}.json: {customer_phone} → {appointment_time} (Calendar ID: {doctor_id})")
         except Exception as e:
@@ -1871,6 +1869,10 @@ def voice():
 
         # 📩 Send SMS confirmation
         if customer_phone:
+            # ✅ Normalize phone with +1 for US if missing
+            if not customer_phone.startswith("+"):
+                customer_phone = "+1" + customer_phone
+
             sms_text = f"Hi {customer_name}, your appointment with {doctor_name} is confirmed"
             if formatted_time:
                 sms_text += f" on {formatted_time}"
@@ -1898,6 +1900,7 @@ def voice():
         print("book_appt_confirm: 🧼 Session data cleared")
 
         return str(resp)
+
 
 
 
