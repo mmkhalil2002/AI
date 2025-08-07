@@ -1073,6 +1073,58 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str):
 
 
 
+def get_upcoming_events(calendar_id, creds, time_min=None, max_results=20):
+    """
+    Fetches upcoming events from a Google Calendar.
+
+    Parameters:
+    - calendar_id (str): Google Calendar ID (e.g., dr.smith@example.com or full ID)
+    - creds: Authorized credentials object (OAuth2)
+    - time_min (str): ISO formatted datetime string (e.g., "2025-08-01T00:00:00Z").
+                      Defaults to now in UTC if None.
+    - max_results (int): Maximum number of events to retrieve (default is 20)
+
+    Returns:
+    - List of event dictionaries (each with 'start', 'summary', etc.)
+    """
+
+    from googleapiclient.discovery import build
+    from datetime import datetime, timezone
+
+    try:
+        # Default time_min to current UTC if not specified
+        if not time_min:
+            time_min = datetime.now(timezone.utc).isoformat()
+
+        debug_print(f"[get_upcoming_events] 🔍 Fetching events for calendar: {calendar_id}")
+        debug_print(f"[get_upcoming_events] ⏰ timeMin: {time_min}, maxResults: {max_results}")
+
+        # Build the calendar API service
+        service = build("calendar", "v3", credentials=creds)
+
+        # Perform the query
+        events_result = (
+            service.events()
+            .list(
+                calendarId=calendar_id,
+                timeMin=time_min,
+                maxResults=max_results,
+                singleEvents=True,
+                orderBy="startTime"
+            )
+            .execute()
+        )
+
+        events = events_result.get("items", [])
+        debug_print(f"[get_upcoming_events] 📅 Found {len(events)} event(s)")
+
+        return events
+
+    except Exception as e:
+        debug_print(f"[get_upcoming_events] ❌ Error fetching events: {e}")
+        return []
+
+
 #app = Flask(__name__)
 
 from flask import request
@@ -2165,13 +2217,41 @@ def voice():
             session_data[call_sid]["cancel"]["time"] = spoken_time
             session_data[call_sid]["cancel"]["utc_start"] = utc_start
             session_data[call_sid]["cancel"]["utc_end"] = utc_end
-            session_data[call_sid]["stage"] = "cancel_appt_confirm"
 
+            # 🔍 Fetch upcoming events from Google Calendar to speed up next stage
+            calendar_id = session_data[call_sid]["cancel"].get("calendar_id")
+            if not calendar_id:
+                # fallback using doctor name
+                doctor = session_data[call_sid]["cancel"].get("doctor", "")
+                for doc_id, friendly in googleid_dr_name_map.items():
+                    if friendly.lower() == doctor.lower():
+                        calendar_id = doc_id
+                        session_data[call_sid]["cancel"]["calendar_id"] = calendar_id
+                        break
+
+            if not calendar_id:
+                debug_print("cancel_appt_get_date_time: ❌ Doctor calendar ID not found.")
+                resp.say(gpt_speak("Sorry, I couldn't find the doctor's calendar. Please try again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            debug_print(f"cancel_appt_get_date_time: 📅 Doctor calendar ID → {calendar_id}")
+
+            from datetime import datetime, timezone, timedelta
+            time_min = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+
+            events = get_upcoming_events(calendar_id, creds, time_min=time_min)
+            debug_print(f"cancel_appt_get_date_time: 📅 Retrieved {len(events)} upcoming events")
+            session_data[call_sid]["cancel"]["events"] = events
+
+            # Proceed to next stage
+            session_data[call_sid]["stage"] = "cancel_appt_confirm"
             debug_print("cancel_appt_get_date_time: ✅ Session updated, moving to cancel_appt_confirm")
             return voice()
 
         except Exception as e:
-            debug_print(f"cancel_appt_get_date_time: ❌ Failed to convert time to UTC → {e}")
+            debug_print(f"cancel_appt_get_date_time: ❌ Failed to convert time or fetch events → {e}")
             resp.say(gpt_speak("Sorry, I couldn't process the date and time correctly."), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
