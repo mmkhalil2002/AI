@@ -1073,57 +1073,67 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str):
 
 
 
-def get_upcoming_events(calendar_id, phone, utc_start, utc_end, creds):
-    """
-    Searches Google Calendar for an event matching the given phone number
-    within a specific UTC time range.
+from googleapiclient.discovery import build
+from dateutil import parser
 
-    Args:
-        calendar_id (str): Google Calendar ID.
-        phone (str): Phone number of the customer.
-        utc_start (datetime): UTC start time of desired slot.
-        utc_end (datetime): UTC end time of desired slot.
-        creds: Authorized Google credentials.
+def get_upcoming_events(calendar_id, phone, utc_start, utc_end, creds, debug=False):
+    """
+    Searches for an event in the specified Google Calendar that matches the given phone number
+    and falls within the provided UTC time range.
+
+    Parameters:
+        calendar_id (str): Google Calendar ID of the doctor.
+        phone (str): Customer's phone number to match against event descriptions.
+        utc_start (str): ISO 8601 start of the timeslot (e.g., "2025-08-07T10:00:00+00:00").
+        utc_end (str): ISO 8601 end of the timeslot.
+        creds: Google credentials object.
+        debug (bool): If True, prints debug logs.
 
     Returns:
-        dict | None: Matching event object if found, else None.
+        dict or None: Matching event object if found, else None.
     """
-    from googleapiclient.discovery import build
-    import pytz
-    from datetime import datetime
-
     try:
         service = build("calendar", "v3", credentials=creds)
 
-        print(f"📅 Searching events from {utc_start} to {utc_end} in calendar: {calendar_id}")
+        if debug:
+            print(f"📅 get_upcoming_events: Searching calendar → {calendar_id}")
+            print(f"⏱️ Time window → {utc_start} to {utc_end}")
+            print(f"📞 Looking for phone → {phone}")
+
         events_result = service.events().list(
             calendarId=calendar_id,
-            timeMin=utc_start.isoformat(),
-            timeMax=utc_end.isoformat(),
+            timeMin=utc_start,
+            timeMax=utc_end,
             singleEvents=True,
             orderBy="startTime"
         ).execute()
 
         events = events_result.get("items", [])
-        print(f"📅 Retrieved {len(events)} events to check")
 
-        # 🔢 Normalize phone
-        phone_digits = "".join(filter(str.isdigit, phone))
-        print(f"📞 Normalized phone for matching → {phone_digits}")
+        if debug:
+            print(f"🔍 get_upcoming_events: Found {len(events)} events in time window")
 
         for event in events:
-            desc = event.get("description", "")
-            desc_digits = "".join(filter(str.isdigit, desc))
-            print(f"🔍 Checking event → Start: {event.get('start')} | Description digits: {desc_digits}")
+            description = event.get("description", "")
+            summary = event.get("summary", "")
+            start = event.get("start", {}).get("dateTime", event.get("start", {}).get("date"))
+            end = event.get("end", {}).get("dateTime", event.get("end", {}).get("date"))
 
-            if phone_digits in desc_digits:
-                print(f"✅ Match found by phone in event → {event.get('summary')}")
-                return event
+            if debug:
+                print(f"📝 Event → Summary: {summary}, Start: {start}, Description: {description}")
 
-        print("🚫 No matching event found in the time range.")
+            # Check if phone number is present in the description field
+            if phone in description:
+                if debug:
+                    print(f"✅ Match found! Phone number {phone} is in event.")
+                return event  # Return the first matching event
+
+        if debug:
+            print("❌ No matching event found with the provided phone number.")
         return None
+
     except Exception as e:
-        print(f"❌ get_upcoming_event error → {e}")
+        print(f"❌ get_upcoming_events: Exception occurred → {e}")
         return None
 
 
