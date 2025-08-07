@@ -1073,7 +1073,7 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str):
 
 
 
-def get_upcoming_event(calendar_id, phone, utc_start, utc_end, creds):
+def get_upcoming_events(calendar_id, phone, utc_start, utc_end, creds):
     """
     Searches Google Calendar for an event matching the given phone number
     within a specific UTC time range.
