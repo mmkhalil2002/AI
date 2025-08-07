@@ -2230,14 +2230,18 @@ def voice():
 
 
 
+
+
+
     elif stage == "cancel_appt_get_date_time":
         debug_print("cancel_appt_get_date_time: 📍 Stage entered")
 
-        # 🧠 Step 1: Parse speech
+        # 🧠 Step 1: Parse speech input
         debug_print(f"cancel_appt_get_date_time: 🗣️ Raw speech input → '{speech_result}'")
         time_info = smart_parse_time(speech_result)
         debug_print(f"cancel_appt_get_date_time: 🧠 smart_parse_time() returned → {time_info}")
 
+        # 🛑 Check if parsing failed
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
             debug_print(f"cancel_appt_get_date_time: ❌ Failed to parse time. Retry count → {session_data[call_sid]['retry_time']}")
@@ -2249,6 +2253,7 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
+            # Retry prompt
             gather = Gather(
                 input="speech",
                 action="/voice",
@@ -2261,25 +2266,24 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ✅ Successfully parsed
+        # ✅ Parsed day and time
         spoken_day, spoken_time = time_info
         debug_print(f"cancel_appt_get_date_time: 📆 Parsed → Day: {spoken_day}, Time: {spoken_time}")
 
-        # ✅ Use build_timeslot_range for UTC handling
         try:
+            # 🌍 Convert to UTC range
             utc_start, utc_end = build_timeslot_range(spoken_day, spoken_time)
             debug_print(f"cancel_appt_get_date_time: ✅ UTC range → Start: {utc_start}, End: {utc_end}")
 
-            # Save in session for next stage
+            # 💾 Save values in session for next stage
             session_data[call_sid]["cancel"]["day"] = spoken_day
             session_data[call_sid]["cancel"]["time"] = spoken_time
             session_data[call_sid]["cancel"]["utc_start"] = utc_start
             session_data[call_sid]["cancel"]["utc_end"] = utc_end
 
-            # 🔍 Fetch upcoming events from Google Calendar to speed up next stage
+            # 📅 Get doctor calendar ID
             calendar_id = session_data[call_sid]["cancel"].get("calendar_id")
             if not calendar_id:
-                # fallback using doctor name
                 doctor = session_data[call_sid]["cancel"].get("doctor", "")
                 for doc_id, friendly in googleid_dr_name_map.items():
                     if friendly.lower() == doctor.lower():
@@ -2296,19 +2300,25 @@ def voice():
 
             debug_print(f"cancel_appt_get_date_time: 📅 Doctor calendar ID → {calendar_id}")
 
-            # 🧠 Get events using corrected argument names
+            # ⏱️ Get recent events (1 day lookback)
+            from datetime import datetime, timezone, timedelta
+            time_min = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+
             events = get_upcoming_events(
                 calendar_id=calendar_id,
-                phone=session_data[call_sid]["cancel"].get("phone"),
-                utc_start=utc_start,
-                utc_end=utc_end,
                 creds=creds,
-                debug=True  # Optional debug mode
+                time_min=time_min
             )
-            debug_print(f"cancel_appt_get_date_time: 📅 Retrieved {len(events)} upcoming events")
-            session_data[call_sid]["cancel"]["events"] = events
 
-            # Proceed to next stage
+            # ✅ Check for results
+            if events is not None:
+                debug_print(f"cancel_appt_get_date_time: 📅 Retrieved {len(events)} upcoming events")
+                session_data[call_sid]["cancel"]["events"] = events
+            else:
+                debug_print("cancel_appt_get_date_time: ⚠️ No events retrieved (events is None)")
+                session_data[call_sid]["cancel"]["events"] = []
+
+            # 🔄 Proceed to next stage
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
             debug_print("cancel_appt_get_date_time: ✅ Session updated, moving to cancel_appt_confirm")
             return voice()
@@ -2319,6 +2329,7 @@ def voice():
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
+
 
 
 
