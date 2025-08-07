@@ -2273,7 +2273,9 @@ def voice():
 
 
     elif stage == "cancel_appt_confirm":
-        # 🔁 Execute the cancellation using captured phone, doctor, and datetime
+        print("📍 Stage: cancel_appt_confirm")
+
+        # 📞 Retrieve info from session
         phone = session_data[call_sid]["cancel"].get("phone")
         doctor = session_data[call_sid]["cancel"].get("doctor")
         spoken_day = session_data[call_sid]["cancel"].get("day")
@@ -2281,13 +2283,12 @@ def voice():
         utc_start = session_data[call_sid]["cancel"].get("utc_start")
         utc_end = session_data[call_sid]["cancel"].get("utc_end")
 
-        print("📍 Stage: cancel_appt_confirm")
         print(f"📱 Phone: {phone}")
         print(f"👨‍⚕️ Doctor: {doctor}")
         print(f"🗓️ Day: {spoken_day}, Time: {spoken_time}")
         print(f"🌍 UTC range: {utc_start} to {utc_end}")
 
-        # 🔍 Match doctor to calendar ID
+        # 🔍 Match doctor name to calendar ID
         calendar_id = None
         for doc_id, friendly in googleid_dr_name_map.items():
             if friendly.lower() == doctor.lower():
@@ -2301,17 +2302,28 @@ def voice():
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # 🧠 Get matching event
-        event_to_cancel = get_upcoming_events(
-            calendar_id=calendar_id,
-            phone=phone,
-            utc_start=utc_start,
-            utc_end=utc_end,
-            creds=creds
-        )
+        # 🧠 Look for appointment in calendar
+        try:
+            event_to_cancel = get_upcoming_events(
+                calendar_id=calendar_id,
+                phone=phone,
+                utc_start=utc_start,
+                utc_end=utc_end,
+                creds=creds,
+                debug=True  # Enable debug messages
+            )
 
+            if event_to_cancel:
+                print(f"✅ get_upcoming_events: Found matching event → {event_to_cancel.get('summary')}")
+            else:
+                print("🚫 get_upcoming_events: No matching event found.")
+        except Exception as e:
+            print(f"❌ get_upcoming_events: Failed to fetch matching event → {e}")
+            event_to_cancel = None
+
+        # 🗑️ Cancel the event if found
         if event_to_cancel:
-            event_id = event_to_cancel["id"]
+            event_id = event_to_cancel.get("id")
             try:
                 service = build("calendar", "v3", credentials=creds)
                 service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
@@ -2327,14 +2339,14 @@ def voice():
                     print(f"⚠️ Failed to format event time → {e}")
                     formatted_time = f"{spoken_day} at {spoken_time}"
 
-                # 🧹 Remove entry from doctor file
+                # 🧹 Remove from doctor mapping file
                 try:
                     canceled = cancel_appointment_by_name(doctor, phone)
                     print(f"🧹 Mapping removed from {doctor}.json for phone: {phone}")
                 except Exception as e:
-                    print(f"⚠️ Failed to update doctor file: {e}")
+                    print(f"⚠️ Failed to update doctor file → {e}")
 
-                # 🎤 Confirmation
+                # 🗣️ Confirm to caller
                 msg = f"Your appointment with {doctor} on {formatted_time} has been cancelled. Thank you!"
                 resp.say(gpt_speak(msg), VOICE)
 
@@ -2345,7 +2357,7 @@ def voice():
             print("🚫 No matching appointment found to cancel.")
             resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time."), VOICE)
 
-        # 🔁 Rescheduling?
+        # 🔁 Check for rescheduling flow
         if session_data[call_sid].get("reschedule_after_cancel"):
             print("🔁 Reschedule flag detected — transitioning to rebooking flow.")
             session_data[call_sid]["stage"] = "booking"
