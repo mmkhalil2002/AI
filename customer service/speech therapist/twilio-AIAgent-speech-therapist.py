@@ -2256,10 +2256,15 @@ def voice():
 
             debug_print(f"cancel_appt_get_date_time: 📅 Doctor calendar ID → {calendar_id}")
 
-            from datetime import datetime, timezone, timedelta
-            time_min = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-
-            events = get_upcoming_events(calendar_id, creds, time_min=time_min)
+            # 🧠 Get events using corrected argument names
+            events = get_upcoming_events(
+                calendar_id=calendar_id,
+                phone=session_data[call_sid]["cancel"].get("phone"),
+                utc_start=utc_start,
+                utc_end=utc_end,
+                creds=creds,
+                debug=True  # Optional debug mode
+            )
             debug_print(f"cancel_appt_get_date_time: 📅 Retrieved {len(events)} upcoming events")
             session_data[call_sid]["cancel"]["events"] = events
 
@@ -2274,6 +2279,7 @@ def voice():
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
+
 
 
 
