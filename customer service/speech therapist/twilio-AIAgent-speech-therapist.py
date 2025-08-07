@@ -1025,51 +1025,91 @@ def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str, ca
 
 
 
+
+
+
+
+from dateutil import parser
+import os
+import json
+
 def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str):
     """
-    Remove an appointment by phone and time from the doctor's JSON list.
-    Keeps other appointments intact.
+    Remove an appointment by phone and exact UTC time from the doctor's JSON list.
+    All comparisons and saved values are handled in UTC ISO 8601 format.
     """
     key = sanitize_filename(doctor_name).replace(".json", "")
     full_path = get_doctor_filename(doctor_name)
 
+    print(f"🩺 Attempting to cancel appointment for doctor '{key}'")
+    print(f"📞 Phone: {phone}")
+    print(f"🌍 UTC Start: {utc_start}")
+    print(f"📂 File path: {full_path}")
+
     # 📥 Load the appointments from file
-    if os.path.exists(full_path):
-        try:
-            with open(full_path, "r") as f:
-                data = json.load(f)
-                if not isinstance(data, list):
-                    print(f"❌ File content is not a list for doctor: {key}")
-                    return False
-        except Exception as e:
-            print(f"❌ Error reading JSON for doctor {key} → {e}")
-            return False
-    else:
+    if not os.path.exists(full_path):
         print(f"⚠️ Appointment file not found for {key}")
         return False
 
-    # 🔎 Find matching entries to remove
-    original_count = len(data)
-    data = [
-        appt for appt in data
-        if not (appt.get("phone") == phone and appt.get("time") == utc_start)
-    ]
-    removed_count = original_count - len(data)
-
-    if removed_count == 0:
-        print(f"⚠️ No appointment found for {phone} at {utc_start} in {key}")
+    try:
+        with open(full_path, "r") as f:
+            data = json.load(f)
+            if not isinstance(data, list):
+                print(f"❌ File content is not a list for doctor: {key}")
+                return False
+    except Exception as e:
+        print(f"❌ Error reading JSON for doctor {key} → {e}")
         return False
 
-    # 💾 Save updated list back to file
+    # 🧽 Normalize the UTC start time
+    try:
+        norm_target = parser.isoparse(utc_start).astimezone().astimezone(tz=None).isoformat()
+        print(f"🧽 Normalized target UTC → {norm_target}")
+    except Exception as e:
+        print(f"❌ Failed to parse utc_start → {utc_start} → {e}")
+        return False
+
+    # 🔍 Search for match
+    original_count = len(data)
+    new_data = []
+    removed_count = 0
+
+    for appt in data:
+        appt_phone = appt.get("phone", "")
+        appt_time_raw = appt.get("time", "")
+
+        try:
+            appt_time_utc = parser.isoparse(appt_time_raw).astimezone().astimezone(tz=None).isoformat()
+        except Exception as e:
+            print(f"⚠️ Failed to parse time in appointment → {appt_time_raw} → {e}")
+            new_data.append(appt)
+            continue
+
+        if appt_phone == phone and appt_time_utc == norm_target:
+            print(f"🗑️ Removing match → Phone: {appt_phone}, Time: {appt_time_utc}")
+            removed_count += 1
+        else:
+            new_data.append(appt)
+
+    if removed_count == 0:
+        print(f"⚠️ No appointment found for {phone} at {norm_target} in {key}")
+        return False
+
+    # 💾 Save updated file
     try:
         with open(full_path, "w") as f:
-            json.dump(data, f, indent=2)
-        doctor_appointments[key] = data  # update in-memory copy too
-        print(f"🗑️ Canceled {removed_count} appointment(s) for {phone} at {utc_start} in {key}")
+            json.dump(new_data, f, indent=2)
+        doctor_appointments[key] = new_data
+        print(f"✅ Deleted {removed_count} appointment(s) for {phone} at {norm_target} from {key}")
         return True
     except Exception as e:
         print(f"❌ Failed to save updated appointments for {key} → {e}")
         return False
+
+
+
+
+
 
 
 
