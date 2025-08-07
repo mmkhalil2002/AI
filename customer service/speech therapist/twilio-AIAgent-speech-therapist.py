@@ -1073,56 +1073,64 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str):
 
 
 
-def get_upcoming_events(calendar_id, creds, time_min=None, max_results=20):
+def get_upcoming_event(calendar_id, phone, utc_start, utc_end, creds):
     """
-    Fetches upcoming events from a Google Calendar.
+    Searches Google Calendar for an event matching the given phone number
+    within a specific UTC time range.
 
-    Parameters:
-    - calendar_id (str): Google Calendar ID (e.g., dr.smith@example.com or full ID)
-    - creds: Authorized credentials object (OAuth2)
-    - time_min (str): ISO formatted datetime string (e.g., "2025-08-01T00:00:00Z").
-                      Defaults to now in UTC if None.
-    - max_results (int): Maximum number of events to retrieve (default is 20)
+    Args:
+        calendar_id (str): Google Calendar ID.
+        phone (str): Phone number of the customer.
+        utc_start (datetime): UTC start time of desired slot.
+        utc_end (datetime): UTC end time of desired slot.
+        creds: Authorized Google credentials.
 
     Returns:
-    - List of event dictionaries (each with 'start', 'summary', etc.)
+        dict | None: Matching event object if found, else None.
     """
-
     from googleapiclient.discovery import build
-    from datetime import datetime, timezone
+    import pytz
+    from datetime import datetime
 
     try:
-        # Default time_min to current UTC if not specified
-        if not time_min:
-            time_min = datetime.now(timezone.utc).isoformat()
-
-        debug_print(f"[get_upcoming_events] 🔍 Fetching events for calendar: {calendar_id}")
-        debug_print(f"[get_upcoming_events] ⏰ timeMin: {time_min}, maxResults: {max_results}")
-
-        # Build the calendar API service
         service = build("calendar", "v3", credentials=creds)
 
-        # Perform the query
-        events_result = (
-            service.events()
-            .list(
-                calendarId=calendar_id,
-                timeMin=time_min,
-                maxResults=max_results,
-                singleEvents=True,
-                orderBy="startTime"
-            )
-            .execute()
-        )
+        print(f"📅 Searching events from {utc_start} to {utc_end} in calendar: {calendar_id}")
+        events_result = service.events().list(
+            calendarId=calendar_id,
+            timeMin=utc_start.isoformat(),
+            timeMax=utc_end.isoformat(),
+            singleEvents=True,
+            orderBy="startTime"
+        ).execute()
 
         events = events_result.get("items", [])
-        debug_print(f"[get_upcoming_events] 📅 Found {len(events)} event(s)")
+        print(f"📅 Retrieved {len(events)} events to check")
 
-        return events
+        # 🔢 Normalize phone
+        phone_digits = "".join(filter(str.isdigit, phone))
+        print(f"📞 Normalized phone for matching → {phone_digits}")
 
+        for event in events:
+            desc = event.get("description", "")
+            desc_digits = "".join(filter(str.isdigit, desc))
+            print(f"🔍 Checking event → Start: {event.get('start')} | Description digits: {desc_digits}")
+
+            if phone_digits in desc_digits:
+                print(f"✅ Match found by phone in event → {event.get('summary')}")
+                return event
+
+        print("🚫 No matching event found in the time range.")
+        return None
     except Exception as e:
-        debug_print(f"[get_upcoming_events] ❌ Error fetching events: {e}")
-        return []
+        print(f"❌ get_upcoming_event error → {e}")
+        return None
+
+
+
+
+
+
 
 
 #app = Flask(__name__)
@@ -2270,11 +2278,14 @@ def voice():
         doctor = session_data[call_sid]["cancel"].get("doctor")
         spoken_day = session_data[call_sid]["cancel"].get("day")
         spoken_time = session_data[call_sid]["cancel"].get("time")
+        utc_start = session_data[call_sid]["cancel"].get("utc_start")
+        utc_end = session_data[call_sid]["cancel"].get("utc_end")
 
         print("📍 Stage: cancel_appt_confirm")
         print(f"📱 Phone: {phone}")
         print(f"👨‍⚕️ Doctor: {doctor}")
         print(f"🗓️ Day: {spoken_day}, Time: {spoken_time}")
+        print(f"🌍 UTC range: {utc_start} to {utc_end}")
 
         # 🔍 Match doctor to calendar ID
         calendar_id = None
@@ -2290,42 +2301,51 @@ def voice():
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # 🔁 Attempt to cancel the event in Google Calendar
-        canceled_event = cancel_event_by_phone(
+        # 🧠 Get matching event
+        event_to_cancel = get_upcoming_event(
             calendar_id=calendar_id,
             phone=phone,
-            spoken_day=spoken_day,
-            spoken_time=spoken_time,
-            creds=creds,
-            return_details=True
+            utc_start=utc_start,
+            utc_end=utc_end,
+            creds=creds
         )
 
-        if canceled_event:
-            from dateutil import parser
+        if event_to_cancel:
+            event_id = event_to_cancel["id"]
             try:
-                start_str = canceled_event.get("start", {}).get("dateTime", "") or canceled_event.get("start", {}).get("date", "")
-                dt = parser.parse(start_str)
-                spoken_time_str = dt.strftime("%B %-d at %-I:%M %p")
+                service = build("calendar", "v3", credentials=creds)
+                service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+                print(f"🗑️ Successfully deleted event ID: {event_id}")
+
+                # 🧾 Format confirmation date
+                from dateutil import parser
+                try:
+                    start_str = event_to_cancel.get("start", {}).get("dateTime", "") or event_to_cancel.get("start", {}).get("date", "")
+                    dt = parser.parse(start_str)
+                    formatted_time = dt.strftime("%B %-d at %-I:%M %p")
+                except Exception as e:
+                    print(f"⚠️ Failed to format event time → {e}")
+                    formatted_time = f"{spoken_day} at {spoken_time}"
+
+                # 🧹 Remove entry from doctor file
+                try:
+                    canceled = cancel_appointment_by_name(doctor, phone)
+                    print(f"🧹 Mapping removed from {doctor}.json for phone: {phone}")
+                except Exception as e:
+                    print(f"⚠️ Failed to update doctor file: {e}")
+
+                # 🎤 Confirmation
+                msg = f"Your appointment with {doctor} on {formatted_time} has been cancelled. Thank you!"
+                resp.say(gpt_speak(msg), VOICE)
+
             except Exception as e:
-                print(f"⚠️ Failed to format date for confirmation: {e}")
-                spoken_time_str = f"{spoken_day} at {spoken_time}"
-
-            # 🧹 Remove entry from doctor appointment JSON table
-            try:
-                canceled = cancel_appointment_by_name(doctor, phone)
-                print(f"🧹 Mapping removed from table → {doctor} : {phone}")
-            except Exception as e:
-                print(f"⚠️ Failed to remove mapping from doctor appointment file: {e}")
-
-            # 🎤 Voice confirmation
-            msg = f"Your appointment with {doctor} on {spoken_time_str} has been cancelled. Thank you!"
-            resp.say(gpt_speak(msg), VOICE)
-
+                print(f"❌ Failed to cancel appointment → {e}")
+                resp.say(gpt_speak("Sorry, something went wrong while cancelling your appointment."), VOICE)
         else:
             print("🚫 No matching appointment found to cancel.")
             resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time."), VOICE)
 
-        # 🔁 If rescheduling, continue to booking
+        # 🔁 Rescheduling?
         if session_data[call_sid].get("reschedule_after_cancel"):
             print("🔁 Reschedule flag detected — transitioning to rebooking flow.")
             session_data[call_sid]["stage"] = "booking"
@@ -2345,10 +2365,11 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ✅ Otherwise: end the session
+        # ✅ End the session
         session_data.pop(call_sid, None)
         print("🧼 Session data cleared after cancellation.")
         return str(resp)
+
 
 
       
