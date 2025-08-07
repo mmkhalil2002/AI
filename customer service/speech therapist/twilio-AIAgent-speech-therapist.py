@@ -2302,7 +2302,7 @@ def voice():
             return str(resp)
 
         # 🧠 Get matching event
-        event_to_cancel = get_upcoming_event(
+        event_to_cancel = get_upcoming_events(
             calendar_id=calendar_id,
             phone=phone,
             utc_start=utc_start,
