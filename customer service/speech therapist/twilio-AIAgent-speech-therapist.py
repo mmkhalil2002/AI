@@ -1123,6 +1123,36 @@ def list_events_in_window_utc(calendar_id: str, creds, utc_start: str, utc_end: 
         return []
 
 
+def get_upcoming_events(calendar_id: str, phone: str, utc_start: str, utc_end: str, creds, debug: bool=False):
+    """
+    Find a single event in the UTC window whose description contains the normalized phone digits.
+    Returns the first matching event dict or None.
+    """
+    phone_digits = normalize_phone_digits(phone)
+    if debug:
+        debug_print(f"📅 get_upcoming_events: Searching calendar → {calendar_id}")
+        debug_print(f"⏱️ Time window → {utc_start} to {utc_end}")
+        debug_print(f"📞 Looking for phone digits → {phone_digits}")
+
+    events = list_events_in_window_utc(calendar_id, creds, utc_start, utc_end, debug=debug)
+
+    if debug:
+        debug_print(f"🔍 get_upcoming_events: Found {len(events)} events in time window")
+
+    for ev in events:
+        desc = ev.get("description", "") or ""
+        desc_digits = normalize_phone_digits(desc)
+        if debug:
+            start_dbg = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
+            debug_print(f"📝 Event → summary={ev.get('summary')} start={start_dbg} desc_digits={desc_digits}")
+        if phone_digits and phone_digits in desc_digits:
+            if debug:
+                debug_print("✅ Match found by phone")
+            return ev
+
+    if debug:
+        debug_print("❌ No matching event found with the provided phone number.")
+    return None
 
 
 
