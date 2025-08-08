@@ -1125,35 +1125,74 @@ def list_events_in_window_utc(calendar_id: str, creds, utc_start: str, utc_end: 
 
 def get_upcoming_events(calendar_id: str, phone: str, utc_start: str, utc_end: str, creds, debug: bool=False):
     """
-    Find a single event in the UTC window whose description contains the normalized phone digits.
-    Returns the first matching event dict or None.
+    Search a specific Google Calendar for events within a given UTC time window
+    and return the first event whose description contains the caller's phone number.
+
+    Arguments:
+    ----------
+    calendar_id : str
+        The Google Calendar ID where the search should be performed (e.g., "doctor@example.com").
+    phone : str
+        The caller's phone number in any format (will be normalized to digits only).
+    utc_start : str
+        The ISO 8601 formatted UTC start time of the search window (e.g., "2025-08-07T14:00:00Z").
+    utc_end : str
+        The ISO 8601 formatted UTC end time of the search window.
+    creds :
+        An authenticated Google API credentials object to authorize the Calendar API requests.
+    debug : bool, optional
+        If True, prints detailed debug logs for troubleshooting.
+
+    Returns:
+    --------
+    dict or None
+        The first matching Google Calendar event (full event dictionary) if found,
+        otherwise None.
     """
+
+    # 1️⃣ Normalize the phone number so we can reliably match it against event descriptions.
+    #    This strips all non-digit characters (e.g., spaces, dashes, parentheses, etc.)
     phone_digits = normalize_phone_digits(phone)
+
+    # 2️⃣ If debugging is enabled, print the search parameters.
     if debug:
-        debug_print(f"📅 get_upcoming_events: Searching calendar → {calendar_id}")
+        debug_print(f"📅 get_upcoming_events: Searching in calendar → {calendar_id}")
         debug_print(f"⏱️ Time window → {utc_start} to {utc_end}")
         debug_print(f"📞 Looking for phone digits → {phone_digits}")
 
+    # 3️⃣ Retrieve all events from the given calendar in the specified UTC time window.
+    #    This is done via a helper function that wraps the Google Calendar API request.
     events = list_events_in_window_utc(calendar_id, creds, utc_start, utc_end, debug=debug)
 
+    # 4️⃣ Log how many events were retrieved in the time range (useful for diagnostics).
     if debug:
-        debug_print(f"🔍 get_upcoming_events: Found {len(events)} events in time window")
+        debug_print(f"🔍 get_upcoming_events: Found {len(events)} event(s) in the time window")
 
+    # 5️⃣ Loop through all events to look for one that matches our phone number.
     for ev in events:
+        # Extract the event description (can contain customer details such as phone, name, address).
+        # Ensure it's a string, default to empty if missing.
         desc = ev.get("description", "") or ""
+
+        # Normalize the digits from the event description so we can compare to the caller's digits.
         desc_digits = normalize_phone_digits(desc)
+
+        # 6️⃣ For debugging: print the event summary, start time, and extracted phone digits from the description.
         if debug:
+            # Try to get the start datetime in a consistent format.
             start_dbg = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
             debug_print(f"📝 Event → summary={ev.get('summary')} start={start_dbg} desc_digits={desc_digits}")
+
+        # 7️⃣ If the caller's phone digits are non-empty AND found within the event description's digits → MATCH.
         if phone_digits and phone_digits in desc_digits:
             if debug:
-                debug_print("✅ Match found by phone")
-            return ev
+                debug_print("✅ Match found by phone number in event description")
+            return ev  # Return the entire event dictionary.
 
+    # 8️⃣ If no event matched the phone number, log this (if debugging) and return None.
     if debug:
         debug_print("❌ No matching event found with the provided phone number.")
     return None
-
 
 
 
