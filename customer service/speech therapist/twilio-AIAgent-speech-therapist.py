@@ -47,7 +47,7 @@ MAX_TIME_SELECTION_ATTEMPTS = int(os.getenv("MAX_TIME_SELECTION_ATTEMPTS", 3))
 # Define working days (0 = Monday, 6 = Sunday)
 # Example: [0,1,2,3,4] for Mon–Fri in US; [0,1,2,3,5] for Sun–Thu (skip Friday)
 # 0 = Monday, 1 = Tuesday, 2 = Wednesday, 3 = Thursday, 4 = Friday, 5 = Saturday, 6 = Sunday
-
+MAX_SILENCE_RETRIES = int(os.getenv("MAX_SILENCE_RETRIES", 3))
 WORKING_DAYS = [0, 1, 2, 3, 4]  # Adjust based on your local week
 
 
@@ -81,6 +81,65 @@ def debug_print(*args, **kwargs):
         print(*args, **kwargs)
 
 
+
+
+
+# --- retry counter utils ---
+def _retry_key(stage_name: str) -> str:
+    return f"retry_silence__{stage_name}"
+
+def _inc_retry(session_data, call_sid, stage_name) -> int:
+    key = _retry_key(stage_name)
+    session_data[call_sid][key] = session_data[call_sid].get(key, 0) + 1
+    return session_data[call_sid][key]
+
+def _reset_retry(session_data, call_sid, stage_name):
+    key = _retry_key(stage_name)
+    session_data[call_sid].pop(key, None)
+
+# --- standard gather builder ---
+def make_gather(prompt_text: str, hints: str = None):
+    g = Gather(
+        input="speech",
+        action="/voice",
+        method="POST",
+        timeout=SPEECH_INPUT_DURATION,
+        speech_model="phone_call",
+        bargeIn=True,
+        hints=hints or None,
+    )
+    g.say(gpt_speak(prompt_text), VOICE)
+    return g
+
+
+
+# --- silence handler ---
+def handle_silence_or_continue(
+    resp, session_data, call_sid, stage_name: str, speech_result: str, reprompt_text: str, hints: str = None
+):
+    """
+    If no speech was detected, reprompt and increment a per-stage counter.
+    Returns True if we handled the response (appended a Gather or hung up).
+    Returns False if normal stage logic should continue.
+    """
+    if speech_result and speech_result.strip():
+        _reset_retry(session_data, call_sid, stage_name)
+        return False
+
+    tries = _inc_retry(session_data, call_sid, stage_name)
+    debug_print(f"{stage_name}: ⚠️ No speech detected. Silence retries → {tries}/{MAX_SILENCE_RETRIES}")
+
+    if tries >= MAX_SILENCE_RETRIES:
+        debug_print(f"{stage_name}: ⛔ Max silence retries reached, ending call.")
+        resp.say(gpt_speak("Sorry, I still can't hear you. Please call back later."), VOICE)
+        resp.hangup()
+        session_data.pop(call_sid, None)
+        return True
+
+    reprompt = f"I can't hear you. {reprompt_text}"
+    gather = make_gather(reprompt, hints=hints)
+    resp.append(gather)
+    return True
 
 #################################################
 # Voice	          Description
@@ -400,10 +459,6 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
 
 
 
-from datetime import datetime, timedelta, date, time
-from typing import Tuple, Union
-import pytz
-import re
 
 from datetime import datetime, timedelta, date, time as dtime
 from typing import Tuple, Union
@@ -1371,15 +1426,11 @@ def voice():
         junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
         if not lower.strip() or lower.strip() in junk_inputs:
             print(f"⛔ Ignored junk input: '{lower}' — re-prompting without response")
-            gather = Gather(
-                             input="speech",
-                             action="/voice",
-                             method="POST",
-                             speech_model="phone_call",
-                             bargeIn=True,
-                             timeout=SPEECH_INPUT_DURATION
-                         )
-            gather.say(gpt_speak("Thank you for Calling EPIC thearapist : Please tell me if you'd like to book an appointment, cancel one, reschedule, or leave a message."))
+
+            # ⬇️ CHANGED: use make_gather (same behavior, cleaner + consistent)
+            gather = make_gather(
+                "Thank you for Calling EPIC thearapist : Please tell me if you'd like to book an appointment, cancel one, reschedule, or leave a message."
+            )
             resp.append(gather)
             return str(resp)
 
@@ -1409,22 +1460,12 @@ def voice():
             )
 
             # 🎤 Prepare re-prompt for doctor name
-            gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",
-                bargeIn=True,
-                hints=", ".join(doctor_names)
-            )
-
-            gather.say(gpt_speak(prompt), VOICE)
+            # ⬇️ CHANGED: use make_gather with hints
+            gather = make_gather(prompt, hints=", ".join(doctor_names))
             resp.append(gather)
 
             print("🎙️ Prompted user to specify doctor for cancellation as part of reschedule.")
             return str(resp)
-
 
         # ✅ Cancellation intent
         elif any(word in lower for word in ["cancel", "delete"]):
@@ -1441,16 +1482,9 @@ def voice():
                 f"We currently have the following doctors: {doctor_list}. "
                 f"Please say the name of the doctor you had booked with."
             )
-            gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",
-                bargeIn=True,
-                hints=", ".join(doctor_names)
-            )
-            gather.say(gpt_speak(prompt), VOICE)
+
+            # ⬇️ CHANGED: use make_gather with hints
+            gather = make_gather(prompt, hints=", ".join(doctor_names))
             resp.append(gather)
             return str(resp)
 
@@ -1472,16 +1506,9 @@ def voice():
                 f"Great! Let's schedule your appointment. Here is the list of doctors: {doctor_list}. "
                 "Please say the name of the doctor you want to book with."
             )
-            gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",
-                bargeIn=True,
-                hints=", ".join(googleid_dr_name_map.values())
-            )
-            gather.say(gpt_speak(prompt), VOICE)
+
+            # ⬇️ CHANGED: use make_gather with hints
+            gather = make_gather(prompt, hints=", ".join(googleid_dr_name_map.values()))
             resp.append(gather)
             return str(resp)
 
@@ -1520,20 +1547,13 @@ def voice():
 
             # Otherwise, re-prompt for intent
             session_data[call_sid]["stage"] = "intent"
-            gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                speech_model="phone_call",
-                bargeIn=True,
-                timeout=SPEECH_INPUT_DURATION
-            )
-            gather.say(gpt_speak(
+
+            # ⬇️ CHANGED: use make_gather
+            gather = make_gather(
                 "Sorry, I didn’t catch that. Would you like to book an appointment, cancel one, reschedule, or leave a message?"
-            ), VOICE)
+            )
             resp.append(gather)
             return str(resp)
-
 
 
     elif stage == "booking":
@@ -1562,16 +1582,8 @@ def voice():
         if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
             print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
-            gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                speech_model="phone_call",
-                bargeIn=True,
-                timeout=SPEECH_INPUT_DURATION,
-                hints=doctor_list_str
-            )
-            gather.say(gpt_speak("Please say the name of the doctor you'd like to book with."), VOICE)
+            # ⬇️ CHANGED: use make_gather (keeps same behavior and hints)
+            gather = make_gather("Please say the name of the doctor you'd like to book with.", hints=doctor_list_str)
             resp.append(gather)
             return str(resp)
 
@@ -1636,20 +1648,12 @@ def voice():
                 return str(resp)
 
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
-            gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                speech_model="phone_call",
-                bargeIn=True,
-                timeout=SPEECH_INPUT_DURATION,
-                hints=doctor_list_str
-            )
+            # ⬇️ CHANGED: use make_gather (keeps same behavior and hints)
             retry_prompt = (
                 f"I couldn't match that to a doctor. Available doctors are: {doctor_list_str}. "
                 "Please say the doctor name again."
             )
-            gather.say(gpt_speak(retry_prompt), VOICE)
+            gather = make_gather(retry_prompt, hints=doctor_list_str)
             resp.append(gather)
             return str(resp)
 
@@ -1662,27 +1666,22 @@ def voice():
         friendly_name = googleid_dr_name_map[matched_id]
         time_prompt = f"What time would you like to book with {friendly_name}?"
 
-        gather = Gather(
-            input="speech",
-            action="/voice",
-            method="POST",
-            speech_model="phone_call",
-            bargeIn=True,
-            timeout=SPEECH_INPUT_DURATION
-        )
-        gather.say(gpt_speak(time_prompt), VOICE)
+        # ⬇️ CHANGED: use make_gather (same behavior, standard config)
+        gather = make_gather(time_prompt)
         resp.append(gather)
         return str(resp)
 
 
-    # ----------------------------------------------------------------------
-    # 📍 Stage: ask_time_date
-    # Triggered after doctor is selected. This routine:
-    #  1. Parses user's spoken time (e.g. "July 3rd 12 30")
-    #  2. Checks Google Calendar for availability
-    #  3. If available, confirms and moves to collect name/phone/address
-    # ----------------------------------------------------------------------
+    
     elif stage == "ask_time_date":
+        # ----------------------------------------------------------------------
+        # 📍 Stage: ask_time_date
+        # Triggered after doctor is selected. This routine:
+        #  1. Parses user's spoken time (e.g. "July 3rd 12 30")
+        #  2. Checks Google Calendar for availability
+        #  3. If available, confirms and moves to collect name/phone/address
+        # ----------------------------------------------------------------------
+
         # ----------------------------------------------------------------------
         # 🧠 Step 1: Parse date and time from spoken input
         # ----------------------------------------------------------------------
@@ -1701,15 +1700,8 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",
-                bargeIn=True
-            )
-            gather.say(gpt_speak("Please say the date and time again, for example, July 3rd at 9 AM."), VOICE)
+            # ⬇️ Updated to use make_gather with same prompt
+            gather = make_gather("Please say the date and time again, for example, July 3rd at 9 AM.")
             resp.append(gather)
             return str(resp)
 
@@ -1737,15 +1729,8 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",
-                bargeIn=True
-            )
-            gather.say(gpt_speak("I didn't catch that clearly. Please repeat the date and time, like July 3rd at 9 AM."), VOICE)
+            # ⬇️ Updated to use make_gather
+            gather = make_gather("I didn't catch that clearly. Please repeat the date and time, like July 3rd at 9 AM.")
             resp.append(gather)
             return str(resp)
 
@@ -1773,15 +1758,8 @@ def voice():
                 prompt = "That time is not available, and I couldn't find any open slots soon. Please try again later."
                 print("⚠️ No alternative slots found.")
 
-            gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",
-                bargeIn=True
-            )
-            gather.say(gpt_speak(prompt), VOICE)
+            # ⬇️ Updated to use make_gather
+            gather = make_gather(prompt)
             resp.append(gather)
             return str(resp)
 
@@ -1789,17 +1767,11 @@ def voice():
         print("✅ Slot is available. Moving to name collection.")
         session_data[call_sid]["stage"] = "collect_first_name"
 
-        gather = Gather(
-            input="speech",
-            action="/voice",
-            method="POST",
-            timeout=SPEECH_INPUT_DURATION,
-            speech_model="phone_call",
-            bargeIn=True
-        )
-        gather.say(gpt_speak("Thanks. What is your first name?"), VOICE)
+        # ⬇️ Updated to use make_gather
+        gather = make_gather("Thanks. What is your first name?")
         resp.append(gather)
         return str(resp)
+
 
 
 
@@ -1813,15 +1785,8 @@ def voice():
 
         if not first_name or len(first_name.split()) > 2:
             # ⚠️ If unclear or too long, ask again
-            gather = Gather(
-                                input="speech",
-                                action="/voice",
-                                method="POST",
-                                speech_model="phone_call",
-                                bargeIn=True,
-                                timeout=SPEECH_INPUT_DURATION
-                            )
-            gather.say(gpt_speak("I didn't catch that clearly. Please say your first name again."), VOICE)
+            # ⬇️ Updated to use make_gather so silence is handled
+            gather = make_gather("I didn't catch that clearly. Please say your first name again.")
             resp.append(gather)
             return str(resp)
 
@@ -1829,33 +1794,32 @@ def voice():
         session_data[call_sid]["customer"] = {"first_name": first_name}
         session_data[call_sid]["stage"] = "collect_last_name"
 
-        gather = Gather(
-                        input="speech",
-                        action="/voice",
-                        method="POST",
-                        speech_model="phone_call",
-                        bargeIn=True,
-                        timeout=SPEECH_INPUT_DURATION
-                       )
-        gather.say(gpt_speak("Thank you. Now, what is your last name?"), VOICE)
+        # ⬇️ Updated to use make_gather
+        gather = make_gather("Thank you. Now, what is your last name?")
         resp.append(gather)
         return str(resp)
 
+
+
+
+# ----------------------------------------------------------------------
+# 🧍 Stage: collect_last_name
+# Purpose:
+#   - Capture the caller’s last name via speech.
+#   - If nothing intelligible is heard, politely re-prompt (with silence handling via make_gather).
+#   - On success, persist last name in session and advance to phone collection.
+# Notes:
+#   - Uses make_gather() so silence triggers “I can’t hear you” behavior consistently.
+#   - No business logic changed; only Gather creation is centralized.
+# ----------------------------------------------------------------------
     elif stage == "collect_last_name":
         try:
             last = speech_result.strip()
             print(f"👤 collect_last_name: {last}")
 
             if not last:
-                gather = Gather(
-                                  input="speech",
-                                  action="/voice",
-                                  method="POST",
-                                  speech_model="phone_call",
-                                  bargeIn=True,
-                                  timeout=SPEECH_INPUT_DURATION
-                                )
-                gather.say(gpt_speak("Sorry, I didn't catch your last name. Please repeat it."), VOICE)
+                # ⬇️ Updated to use make_gather (same prompt, now with standardized silence handling)
+                gather = make_gather("Sorry, I didn't catch your last name. Please repeat it.")
                 resp.append(gather)
                 return str(resp)
 
@@ -1864,15 +1828,8 @@ def voice():
             session_data[call_sid]["stage"] = "collect_phone"
             print(f"✅ Stored last name: {last}")
 
-            gather = Gather(
-                            input="speech",
-                            action="/voice",
-                            method="POST",
-                            speech_model="phone_call",
-                            bargeIn=True,
-                            timeout=SPEECH_INPUT_DURATION
-                            )
-            gather.say(gpt_speak("Got it. What is your phone number, please?"), VOICE)
+            # ⬇️ Updated to use make_gather (same prompt)
+            gather = make_gather("Got it. What is your phone number, please?")
             resp.append(gather)
             return str(resp)
 
@@ -1883,10 +1840,21 @@ def voice():
             session_data.pop(call_sid, None)
             return str(resp)
 
+
+
+
+    # ----------------------------------------------------------------------
+# ☎️ Stage: collect_phone
+# Purpose:
+#   - Capture and validate the caller’s phone number.
+#   - Normalize the input by stripping all non-digit characters.
+#   - If fewer than 7 digits are provided, politely re-prompt (silence handled via make_gather).
+#   - On success, store the cleaned number and move to address collection.
+# Notes:
+#   - Uses make_gather() so silence triggers “I can’t hear you” response automatically.
+#   - No business logic changes; only Gather creation centralized.
+# ----------------------------------------------------------------------
     elif stage == "collect_phone":
-        # ----------------------------------------------------------------------
-        # ☎️ Stage: Collect Phone Number
-        # ----------------------------------------------------------------------
         import re
 
         raw_phone = speech_result.strip()
@@ -1899,18 +1867,9 @@ def voice():
 
         if len(digits_only) < 7:
             print("❌ Phone number too short. Re-prompting user.")
-            # Not enough digits → re-prompt
-            gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                speech_model="phone_call",
-                bargeIn=True,
-                timeout=SPEECH_INPUT_DURATION
-            )
-            gather.say(
-                gpt_speak("Sorry, I didn't catch your phone number clearly. Please say it again, digit by digit."),
-                VOICE
+            # Not enough digits → re-prompt with make_gather
+            gather = make_gather(
+                "Sorry, I didn't catch your phone number clearly. Please say it again, digit by digit."
             )
             resp.append(gather)
             return str(resp)
@@ -1920,30 +1879,41 @@ def voice():
         session_data[call_sid]["customer"]["phone"] = digits_only
         session_data[call_sid]["stage"] = "collect_address"
 
-        # 🏠 Prompt for address
-        gather = Gather(
-            input="speech",
-            action="/voice",
-            method="POST",
-            speech_model="phone_call",
-            bargeIn=True,
-            timeout=SPEECH_INPUT_DURATION
-        )
-        gather.say(gpt_speak("Thank you. What is your full address, please?"), VOICE)
+        # 🏠 Prompt for address (using make_gather)
+        gather = make_gather("Thank you. What is your full address, please?")
         resp.append(gather)
         return str(resp)
 
 
+# ----------------------------------------------------------------------
+# 🏠 Stage: collect_address
+# Purpose:
+#   - Capture the caller’s full address.
+#   - Normalize and store all customer data (name, phone, address).
+#   - Confirm appointment time in UTC.
+#   - Create the Google Calendar event for the selected doctor.
+#   - If silence or no input is detected, re-prompt politely using make_gather().
+# Notes:
+#   - Uses make_gather() for consistent silence handling.
+#   - Time conversion ensures all stored times are in UTC.
+#   - If calendar event creation fails, the call ends with an apology.
+# ----------------------------------------------------------------------
     elif stage == "collect_address":
-        # ----------------------------------------------------------------------
-        # 🏠 Stage: Collect Customer Address and finalize appointment booking
-        # ----------------------------------------------------------------------
         address = speech_result.strip()
         print(f"collect_address: 📬 Collected address: {address}")
 
-        session_data[call_sid]["customer"]["address"] = address
-        session_data[call_sid]["stage"] = "book_appt_confirm"  # ✅ next stage
+        # 🛑 If no address provided, re-prompt using make_gather
+        if not address:
+            print("❌ No address detected. Re-prompting user.")
+            gather = make_gather("I didn't catch your address. Please say your full address clearly.")
+            resp.append(gather)
+            return str(resp)
 
+        # ✅ Store the address and advance stage
+        session_data[call_sid]["customer"]["address"] = address
+        session_data[call_sid]["stage"] = "book_appt_confirm"
+
+        # 📦 Prepare customer details
         customer = session_data[call_sid]["customer"]
         appointment = session_data[call_sid]["appointment_time"]
         doctor_id = session_data[call_sid]["doctor_id"]
@@ -1959,16 +1929,13 @@ def voice():
         session_data[call_sid]["customer"]["phone"] = normalized_phone
         print(f"collect_address: 📞 Final stored phone: {normalized_phone}")
 
-        # 📅 Handle time conversion: appointment time is in UTC
+        # ⏳ Convert appointment time to UTC
         try:
             from datetime import datetime
             import pytz
-
-            local_tz = pytz.timezone("America/Chicago")
             start_utc = datetime.fromisoformat(appointment["start"]).astimezone(pytz.utc)
             end_utc = datetime.fromisoformat(appointment["end"]).astimezone(pytz.utc)
-
-            print(f"collect_address: 📅 Local time slot → Start: {start_utc.isoformat()}, End: {end_utc.isoformat()}")
+            print(f"collect_address: 🌍 UTC time slot → Start: {start_utc.isoformat()}, End: {end_utc.isoformat()}")
         except Exception as e:
             print(f"collect_address: ❌ Error converting to UTC: {e}")
             resp.say(gpt_speak("Sorry, I had trouble confirming your appointment. Please try again later."), VOICE)
@@ -1976,7 +1943,7 @@ def voice():
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # 📅 Build Google Calendar event
+        # 📅 Create Google Calendar event
         try:
             calendar = build("calendar", "v3", credentials=creds)
             event = {
@@ -1985,7 +1952,6 @@ def voice():
                 "start": {"dateTime": start_utc.isoformat(), "timeZone": "UTC"},
                 "end": {"dateTime": end_utc.isoformat(), "timeZone": "UTC"},
             }
-
             calendar.events().insert(calendarId=doctor_id, body=event).execute()
             print("collect_address: ✅ Google Calendar event created")
         except Exception as e:
@@ -1995,10 +1961,11 @@ def voice():
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # 🔁 Forward to /voice to trigger book_appt_confirm
+        # 🔁 Redirect to confirm booking
         print("collect_address: 🔁 Redirecting to /voice to confirm booking")
         resp.redirect("/voice")
         return str(resp)
+
     
 
 
@@ -2116,15 +2083,33 @@ def voice():
 
 
     
-   
     elif stage == "cancel_appointment":
         # ----------------------------------------------------------------------
-        # 🔄 This stage handles when a user wants to cancel an appointment
-        # and just spoke the doctor’s name (e.g., "Dr. Omar", or "cancel with Dr. Alex")
+        # 🔄 Stage: Cancel Appointment — after the caller says the doctor’s name
+        # This stage:
+        #  1️⃣ Tries to match the spoken name to a doctor in our list.
+        #  2️⃣ If no match is found, it retries with GPT extraction.
+        #  3️⃣ If still no match, it re-prompts (with retry limits).
+        #  4️⃣ Once matched, moves to the next stage to get the phone number.
         # ----------------------------------------------------------------------
 
         import string
-        selected_text = speech_result or ""
+        selected_text = (speech_result or "").strip()
+
+        # 🆕 Check if nothing was heard → immediate re-prompt
+        if not selected_text:
+            print("⚠️ cancel_appointment: No speech detected — re-prompting user to say the doctor's name.")
+            doctor_list = ", ".join(googleid_dr_name_map.values())
+            retry_prompt = (
+                f"I can't hear you. Available doctors are: {doctor_list}. "
+                "Please say the name of the doctor whose appointment you want to cancel."
+            )
+            resp.append(make_gather(
+                prompt_text=retry_prompt,
+                next_stage="cancel_appointment"
+            ))
+            return str(resp)
+
         selected_clean = selected_text.lower().translate(str.maketrans('', '', string.punctuation)).strip()
         print(f"🗣️ Received doctor name: {selected_clean}")
         matched_id = None
@@ -2170,26 +2155,14 @@ def voice():
                 return str(resp)
 
             doctor_list = ", ".join(googleid_dr_name_map.values())
-            gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                speech_model="phone_call",
-                bargeIn=True,
-                timeout=SPEECH_INPUT_DURATION
-            )
-
             retry_prompt = (
                 f"I didn't recognize that name. Available doctors are: {doctor_list}. "
                 "Please say the name again."
             )
-            try:
-                gather.say(gpt_speak(retry_prompt), VOICE)
-            except Exception as e:
-                print(f"⚠️ GPT error fallback: {e}")
-                gather.say(retry_prompt, VOICE)
-
-            resp.append(gather)
+            resp.append(make_gather(
+                prompt_text=retry_prompt,
+                next_stage="cancel_appointment"
+            ))
             return str(resp)
 
         # ✅ Step 4: Proceed with matched doctor
@@ -2197,60 +2170,82 @@ def voice():
         session_data[call_sid]["doctor_id"] = matched_id
         session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"
 
-        gather = Gather(
-            input="speech",
-            action="/voice",
-            method="POST",
-            speech_model="phone_call",
-            bargeIn=True,
-            timeout=SPEECH_INPUT_DURATION
-        )
-        gather.say(gpt_speak("Thanks. What phone number did you use when booking the appointment?"), VOICE)
-        resp.append(gather)
+        resp.append(make_gather(
+            prompt_text="Thanks. What phone number did you use when booking the appointment?",
+            next_stage="cancel_appt_by_phone_number"
+        ))
         return str(resp)
 
 
+
     elif stage == "cancel_appt_by_phone_number":
-            # 📞 Step 1: Extract phone number
-            phone = extract_phone_number(speech_result)
-            print(f"📱 Extracted phone → {phone}")
+        # ----------------------------------------------------------------------
+        # 📌 Purpose:
+        # This stage collects the **phone number** associated with the
+        # appointment the caller wants to cancel.
+        # 
+        # Flow:
+        # 1. Extract the phone number from the caller's speech.
+        # 2. Validate the phone number (minimum length check).
+        # 3. If invalid → prompt the user again using make_gather().
+        # 4. If valid → store the number in session data and move on to
+        #    ask for the date/time of the appointment to cancel.
+        # 
+        # Notes:
+        # - This ensures the cancellation request is linked to the correct
+        #   appointment record in the system.
+        # ----------------------------------------------------------------------
 
-            if not phone or len(phone) < 7:
-                # ❗ Not valid → ask again
-                gather = Gather(
-                    input="speech",
-                    action="/voice",
-                    method="POST",
-                    timeout=SPEECH_INPUT_DURATION,
-                    speech_model="phone_call",
-                    bargeIn=True
-                )
-                gather.say(gpt_speak("I didn’t catch your phone number. Please say it again clearly."), VOICE)
-                resp.append(gather)
-                return str(resp)
+        # 📞 Step 1: Extract phone number
+        phone = extract_phone_number(speech_result)
+        print(f"📱 Extracted phone → {phone}")
 
-            session_data[call_sid]["cancel"]["phone"] = phone
-            session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
-
-            # 🗣️ Ask for date and time
-            gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",
-                bargeIn=True
-            )
-            gather.say(gpt_speak("Thanks. Now, please tell me the date and time of the appointment you want to cancel. For example, say July 3rd at 9 AM."), VOICE)
+        # ❌ Step 2: If invalid phone, re-prompt
+        if not phone or len(phone) < 7:
+            gather = make_gather("I didn’t catch your phone number. Please say it again clearly.")
             resp.append(gather)
             return str(resp)
 
+        # ✅ Step 3: Store phone and move to next stage
+        session_data[call_sid]["cancel"]["phone"] = phone
+        session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
+
+        # 🗣️ Step 4: Ask for date/time of appointment
+        gather = make_gather(
+            "Thanks. Now, please tell me the date and time of the appointment you want to cancel. "
+            "For example, say July 3rd at 9 AM."
+        )
+        resp.append(gather)
+        return str(resp)
 
 
 
 
 
     elif stage == "cancel_appt_get_date_time":
+        # ----------------------------------------------------------------------
+        # 📌 Purpose:
+        # This stage collects and parses the **date and time** of the appointment
+        # that the caller wants to cancel.
+        #
+        # Flow:
+        # 1. Take the speech input from the caller (e.g., "July 29th at 8:30 AM").
+        # 2. Parse the date and time using `smart_parse_time()`.
+        # 3. If parsing fails:
+        #    - Allow up to 3 retries.
+        #    - Use `make_gather()` to prompt the caller again.
+        # 4. If parsing succeeds:
+        #    - Convert the time to UTC using `build_timeslot_range()`.
+        #    - Save the UTC window and original spoken values in the session.
+        #    - Ensure the doctor’s calendar ID is available in session.
+        #    - Optionally try to find the matching Google Calendar event now.
+        #    - Advance to `cancel_appt_confirm`.
+        #
+        # Notes:
+        # - This step is critical because accurate date/time is required
+        #   to identify the correct appointment for cancellation.
+        # ----------------------------------------------------------------------
+
         debug_print("cancel_appt_get_date_time: 📍 Stage entered")
 
         # 🧠 Step 1: Parse speech
@@ -2258,9 +2253,11 @@ def voice():
         time_info = smart_parse_time(speech_result)
         debug_print(f"cancel_appt_get_date_time: 🧠 smart_parse_time() returned → {time_info}")
 
+        # ❌ Step 2: Handle parsing failure
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
             debug_print(f"cancel_appt_get_date_time: ❌ Failed to parse time. Retry count → {session_data[call_sid]['retry_time']}")
+
             if session_data[call_sid]["retry_time"] >= 3:
                 debug_print("cancel_appt_get_date_time: ⛔ Max retries reached. Ending call.")
                 resp.say(gpt_speak("Sorry, I couldn't understand the time. Please try again later. Goodbye."), VOICE)
@@ -2268,19 +2265,14 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            gather = Gather(
-                input="speech",
-                action="/voice",
-                method="POST",
-                timeout=SPEECH_INPUT_DURATION,
-                speech_model="phone_call",
-                bargeIn=True
+            gather = make_gather(
+                "I didn’t catch that. Please say the date and time of the appointment you want to cancel, "
+                "like July 29th at 8:30 AM."
             )
-            gather.say(gpt_speak("I didn’t catch that. Please say the date and time of the appointment you want to cancel, like July 29th at 8:30 AM."), VOICE)
             resp.append(gather)
             return str(resp)
 
-        # ✅ Parsed
+        # ✅ Step 3: Parsed successfully
         spoken_day, spoken_time = time_info
         debug_print(f"cancel_appt_get_date_time: 📆 Parsed → Day: {spoken_day}, Time: {spoken_time}")
 
@@ -2289,13 +2281,13 @@ def voice():
             utc_start, utc_end = build_timeslot_range(spoken_day, spoken_time)
             debug_print(f"cancel_appt_get_date_time: ✅ UTC range → Start: {utc_start}, End: {utc_end}")
 
-            # Save for next stage
+            # Save details in session
             session_data[call_sid]["cancel"]["day"] = spoken_day
             session_data[call_sid]["cancel"]["time"] = spoken_time
             session_data[call_sid]["cancel"]["utc_start"] = utc_start
             session_data[call_sid]["cancel"]["utc_end"] = utc_end
 
-            # 📅 Resolve doctor calendar ID
+            # 📅 Ensure doctor calendar ID exists
             calendar_id = session_data[call_sid]["cancel"].get("calendar_id")
             if not calendar_id:
                 doctor = session_data[call_sid]["cancel"].get("doctor", "")
@@ -2314,7 +2306,7 @@ def voice():
 
             debug_print(f"cancel_appt_get_date_time: 📅 Doctor calendar ID → {calendar_id}")
 
-            # 🔎 Optional prefetch: try to find the event now (won't block flow if None)
+            # 🔎 Optional: Pre-fetch the matching event
             phone = session_data[call_sid]["cancel"].get("phone")
             try:
                 matching_event = get_upcoming_events(calendar_id, phone, utc_start, utc_end, creds, debug=True)
@@ -2328,7 +2320,7 @@ def voice():
             else:
                 debug_print("cancel_appt_get_date_time: 🚫 No matching event found at this step")
 
-            # ▶️ Next stage
+            # ▶️ Step 4: Move to confirmation stage
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
             debug_print("cancel_appt_get_date_time: ✅ Session updated, moving to cancel_appt_confirm")
             return voice()
@@ -2348,9 +2340,31 @@ def voice():
 
 
 
-
-
     elif stage == "cancel_appt_confirm":
+        # ----------------------------------------------------------------------
+        # 📌 Purpose:
+        # This stage is the **final step** of the cancellation process.
+        #
+        # Flow:
+        # 1. Retrieve all cancellation details from `session_data`:
+        #    - Phone number, doctor, spoken date/time, UTC time window, and calendar ID.
+        # 2. If no calendar ID is available → end the call with an error message.
+        # 3. Use a pre-fetched matching event if available, otherwise query
+        #    Google Calendar now for the appointment.
+        # 4. If the appointment is found:
+        #    - Delete it from Google Calendar.
+        #    - Remove it from the local JSON mapping for the doctor.
+        #    - Confirm the cancellation to the caller using a friendly spoken date/time.
+        # 5. If no matching appointment is found → inform the caller.
+        # 6. If the user requested rescheduling after canceling:
+        #    - Transition to the booking stage and prompt for the doctor’s name.
+        # 7. If not rescheduling → clear session and end call.
+        #
+        # Notes:
+        # - This stage **finalizes the cancellation** by removing the calendar entry
+        #   and optionally initiating a new booking flow.
+        # ----------------------------------------------------------------------
+
         debug_print("📍 Stage: cancel_appt_confirm")
 
         phone       = session_data[call_sid]["cancel"].get("phone")
@@ -2367,6 +2381,7 @@ def voice():
         debug_print(f"🌍 UTC window: {utc_start} → {utc_end}")
         debug_print(f"📅 Calendar ID: {calendar_id}")
 
+        # ❌ If no calendar ID → cannot proceed
         if not calendar_id:
             resp.say(gpt_speak("Sorry, I couldn't find the doctor's calendar. Please try again later."), VOICE)
             resp.hangup()
@@ -2381,6 +2396,7 @@ def voice():
         if event_to_cancel:
             event_id = event_to_cancel.get("id")
             try:
+                # Delete from Google Calendar
                 service = build("calendar", "v3", credentials=creds)
                 service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
                 debug_print(f"🗑️ Deleted calendar event id={event_id}")
@@ -2405,6 +2421,7 @@ def voice():
                 except Exception as e:
                     debug_print(f"⚠️ JSON remove error → {e}")
 
+                # Confirm cancellation to caller
                 resp.say(gpt_speak(f"Your appointment with {doctor} on {friendly} has been cancelled. Thank you!"), VOICE)
 
             except Exception as e:
@@ -2414,28 +2431,24 @@ def voice():
             debug_print("🚫 No matching appointment found to cancel.")
             resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time."), VOICE)
 
-        # End or reschedule
+        # 🔁 If rescheduling after cancel
         if session_data[call_sid].get("reschedule_after_cancel"):
             debug_print("🔁 Reschedule requested; transitioning to booking.")
             session_data[call_sid]["stage"] = "booking"
             session_data[call_sid].pop("cancel", None)
+
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
-            gather = Gather(input="speech", action="/voice", method="POST",
-                            speech_model="phone_call", bargeIn=True,
-                            timeout=SPEECH_INPUT_DURATION, hints=doctor_list_str)
-            gather.say(gpt_speak("Now, please tell me which doctor you'd like to reschedule with."), VOICE)
+            gather = make_gather("Now, please tell me which doctor you'd like to reschedule with.", hints=doctor_list_str)
             resp.append(gather)
             return str(resp)
 
+        # 🧼 End cancellation flow
         session_data.pop(call_sid, None)
         debug_print("🧼 Session data cleared after cancellation.")
         return str(resp)
 
 
 
-
-
-      
     
 
 
