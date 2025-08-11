@@ -1248,8 +1248,105 @@ def get_upcoming_events(calendar_id: str, phone: str, utc_start: str, utc_end: s
     if debug:
         debug_print("❌ No matching event found with the provided phone number.")
     return None
+##
+###    DOB  parsing and processing
+##
+
+from datetime import datetime
+
+ORDINALS = {
+    "first":"1","second":"2","third":"3","fourth":"4","fifth":"5","sixth":"6","seventh":"7","eighth":"8","ninth":"9","tenth":"10",
+    "eleventh":"11","twelfth":"12","thirteenth":"13","fourteenth":"14","fifteenth":"15","sixteenth":"16","seventeenth":"17",
+    "eighteenth":"18","nineteenth":"19","twentieth":"20","twenty-first":"21","twentyfirst":"21","twenty-second":"22","twentysecond":"22",
+    "twenty-third":"23","twentythird":"23","twenty-fourth":"24","twentyfourth":"24","twenty-fifth":"25","twentyfifth":"25",
+    "twenty-sixth":"26","twentysixth":"26","twenty-seventh":"27","twentyseventh":"27","twenty-eighth":"28","twentyeighth":"28",
+    "twenty-ninth":"29","twentyninth":"29","thirtieth":"30","thirty-first":"31","thirtyfirst":"31"
+}
+
+MONTHS = {
+    "january":1,"february":2,"march":3,"april":4,"may":5,"june":6,
+    "july":7,"august":8,"september":9,"october":10,"november":11,"december":12
+}
+
+def _clean_ordinals(text: str) -> str:
+    # replace 'third'->'3', remove commas/periods, strip extra spaces
+    t = text.lower()
+    for k,v in ORDINALS.items():
+        t = t.replace(k, v)
+    t = t.replace(",", " ").replace(".", " ").replace("  ", " ").strip()
+    return t
+
+def parse_dob_input(speech_text: str, dtmf_digits: str) -> datetime | None:
+    """
+    Try DTMF MMDDYYYY first; if not present/invalid, try spoken formats like 'July 3 1990' or 'July third 1990'.
+    Returns a datetime.date (as datetime) or None.
+    """
+    # 1) DTMF path: MMDDYYYY (exactly 8 digits)
+    if dtmf_digits and dtmf_digits.isdigit():
+        if len(dtmf_digits) == 8:
+            mm = int(dtmf_digits[0:2]); dd = int(dtmf_digits[2:4]); yyyy = int(dtmf_digits[4:8])
+            try:
+                return datetime(yyyy, mm, dd)
+            except ValueError:
+                return None
+        # if digits provided but not 8 long, treat as invalid
+        return None
+
+    # 2) Speech path
+    if not speech_text:
+        return None
+
+    cleaned = _clean_ordinals(speech_text)
+    parts = cleaned.split()
+    # Accept patterns like: "july 3 1990" or "3 july 1990"
+    try:
+        # Try Month Day Year
+        for i, p in enumerate(parts):
+            if p in MONTHS and i+2 < len(parts):
+                month = MONTHS[p]
+                day = int(parts[i+1])
+                year = int(parts[i+2])
+                return datetime(year, month, day)
+        # Try Day Month Year
+        for i, p in enumerate(parts):
+            if p.isdigit() and i+2 < len(parts):
+                day = int(p)
+                mword = parts[i+1]
+                if mword in MONTHS:
+                    month = MONTHS[mword]
+                    year = int(parts[i+2])
+                    return datetime(year, month, day)
+    except Exception:
+        pass
+
+    # Last resort: try a forgiving parser if available
+    try:
+        from dateutil import parser as dtparser
+        dt = dtparser.parse(speech_text, dayfirst=False, fuzzy=True)
+        return datetime(dt.year, dt.month, dt.day)
+    except Exception:
+        return None
 
 
+
+def make_gather_dob(prompt_text: str):
+    """
+    DOB gather that delegates to the shared make_gather helper:
+    - Reuses your standard 'can't hear you' behavior (silence re-prompt).
+    - Adds month-name hints for better speech recognition.
+    - Prompt explains speech OR keypad entry (MMDDYYYY + #).
+    NOTE: Assumes make_gather() is configured to accept speech + DTMF.
+    """
+    month_hints = "january,february,march,april,may,june,july,august,september,october,november,december"
+    return make_gather(
+        (
+            f"{prompt_text} "
+            "You can say it, for example, 'July third 1990', "
+            "or type two digits for month, two digits for day, and four digits for year, "
+            "then press pound. For example, 07031990#."
+        ),
+        hints=month_hints
+    )
 
 
 
@@ -2447,6 +2544,86 @@ def voice():
         debug_print("🧼 Session data cleared after cancellation.")
         return str(resp)
 
+    elif stage == "collect_dob":
+        # ----------------------------------------------------------------------
+        # 🎂 Stage: Collect Date of Birth (DOB)
+        # Purpose:
+        #   - Let the caller provide DOB by SPEECH (e.g., "July third 1990")
+        #     or by KEYPAD (DTMF) as MMDDYYYY (e.g., 07151990#).
+        #   - Normalize and validate the date.
+        #   - Store as ISO (YYYY-MM-DD) in session.
+        #   - On failure, re-prompt using the same 'can't hear you' logic as
+        #     other stages (make_gather helper).
+        # ----------------------------------------------------------------------
+        debug_print("collect_dob: 📍 Stage entered")
+
+        # Pull DTMF if present (Twilio sends it as 'Digits'); otherwise use speech
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
+
+        speech_text = (speech_result or "").strip()
+        debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
+
+        # Parse DOB input (speech or keypad)
+        dt = parse_dob_input(speech_text, dtmf_digits)
+        if not dt:
+            # increment retry
+            session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
+            r = session_data[call_sid]["retry_dob"]
+            debug_print(f"collect_dob: ❌ Parse failed. Retry={r}")
+
+            if r >= 3:
+                resp.say(gpt_speak("Sorry, I couldn’t understand your date of birth. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            # Re-prompt using your 'can't hear you' gather helper
+            prompt_text = (
+                "Please say your date of birth, for example July third nineteen ninety, "
+                "or type month month day day year year year year, then press pound."
+            )
+            gather = make_gather(prompt_text, hints="january,february,march,april,may,june,july,august,september,october,november,december")
+            resp.append(gather)
+            return str(resp)
+
+        # Validate reasonable DOB window
+        try:
+            from datetime import date
+            today = date.today()
+            min_date = date(1900, 1, 1)
+            dob_date = dt.date()
+            if not (min_date <= dob_date <= today):
+                debug_print(f"collect_dob: ⚠️ DOB out of range → {dob_date.isoformat()}")
+                session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
+                gather = make_gather(
+                    "That doesn't sound like a valid birth date. Please say it again, or type it as MMDDYYYY then press pound."
+                )
+                resp.append(gather)
+                return str(resp)
+        except Exception as e:
+            debug_print(f"collect_dob: ⚠️ Validation error → {e}")
+
+        # Store ISO DOB
+        iso_dob = dt.strftime("%Y-%m-%d")
+        session_data[call_sid].setdefault("customer", {})
+        session_data[call_sid]["customer"]["dob"] = iso_dob
+        debug_print(f"collect_dob: ✅ Stored DOB → {iso_dob}")
+
+        # Move to next stage in your flow
+        next_stage = "collect_phone" if "phone" not in session_data[call_sid]["customer"] else "collect_address"
+        session_data[call_sid]["stage"] = next_stage
+        debug_print(f"collect_dob: ➡️ Next stage → {next_stage}")
+
+        # Prompt for next field using your gather helper
+        if next_stage == "collect_phone":
+            gather = make_gather("Thanks. What is your phone number?")
+        else:
+            gather = make_gather("Thank you. What is your full address, please?")
+        resp.append(gather)
+        return str(resp)
 
 
     
