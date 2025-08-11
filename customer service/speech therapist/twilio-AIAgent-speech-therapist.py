@@ -1276,77 +1276,64 @@ def _clean_ordinals(text: str) -> str:
     t = t.replace(",", " ").replace(".", " ").replace("  ", " ").strip()
     return t
 
-def parse_dob_input(speech_text: str, dtmf_digits: str) -> datetime | None:
+from typing import Optional
+from datetime import datetime
+
+def parse_dob_input(speech_text: str, dtmf_digits: str) -> Optional[datetime]:
     """
-    Try DTMF MMDDYYYY first; if not present/invalid, try spoken formats like 'July 3 1990' or 'July third 1990'.
+    Date of Birth parser (speech preferred):
+    - First try spoken formats like 'July 3 1990' or '3 July 1990'
+    - If that fails, try keypad DTMF in MMDDYYYY format
     Returns a datetime.date (as datetime) or None.
     """
-    # 1) DTMF path: MMDDYYYY (exactly 8 digits)
+
+    # 1) Spoken path first
+    if speech_text:
+        cleaned = _clean_ordinals(speech_text)  # Remove 'st', 'nd', 'rd', 'th'
+        parts = cleaned.split()
+
+        try:
+            # Month Day Year
+            for i, p in enumerate(parts):
+                if p in MONTHS and i+2 < len(parts):
+                    month = MONTHS[p]
+                    day = int(parts[i+1])
+                    year = int(parts[i+2])
+                    return datetime(year, month, day)
+
+            # Day Month Year
+            for i, p in enumerate(parts):
+                if p.isdigit() and i+2 < len(parts):
+                    day = int(p)
+                    mword = parts[i+1]
+                    if mword in MONTHS:
+                        month = MONTHS[mword]
+                        year = int(parts[i+2])
+                        return datetime(year, month, day)
+        except Exception:
+            pass
+
+        # Forgiving natural language parse
+        try:
+            from dateutil import parser as dtparser
+            dt = dtparser.parse(speech_text, dayfirst=False, fuzzy=True)
+            return datetime(dt.year, dt.month, dt.day)
+        except Exception:
+            pass
+
+    # 2) DTMF fallback
     if dtmf_digits and dtmf_digits.isdigit():
         if len(dtmf_digits) == 8:
-            mm = int(dtmf_digits[0:2]); dd = int(dtmf_digits[2:4]); yyyy = int(dtmf_digits[4:8])
+            mm = int(dtmf_digits[0:2])
+            dd = int(dtmf_digits[2:4])
+            yyyy = int(dtmf_digits[4:8])
             try:
                 return datetime(yyyy, mm, dd)
             except ValueError:
                 return None
-        # if digits provided but not 8 long, treat as invalid
-        return None
+        return None  # Invalid length
 
-    # 2) Speech path
-    if not speech_text:
-        return None
-
-    cleaned = _clean_ordinals(speech_text)
-    parts = cleaned.split()
-    # Accept patterns like: "july 3 1990" or "3 july 1990"
-    try:
-        # Try Month Day Year
-        for i, p in enumerate(parts):
-            if p in MONTHS and i+2 < len(parts):
-                month = MONTHS[p]
-                day = int(parts[i+1])
-                year = int(parts[i+2])
-                return datetime(year, month, day)
-        # Try Day Month Year
-        for i, p in enumerate(parts):
-            if p.isdigit() and i+2 < len(parts):
-                day = int(p)
-                mword = parts[i+1]
-                if mword in MONTHS:
-                    month = MONTHS[mword]
-                    year = int(parts[i+2])
-                    return datetime(year, month, day)
-    except Exception:
-        pass
-
-    # Last resort: try a forgiving parser if available
-    try:
-        from dateutil import parser as dtparser
-        dt = dtparser.parse(speech_text, dayfirst=False, fuzzy=True)
-        return datetime(dt.year, dt.month, dt.day)
-    except Exception:
-        return None
-
-
-
-def make_gather_dob(prompt_text: str):
-    """
-    DOB gather that delegates to the shared make_gather helper:
-    - Reuses your standard 'can't hear you' behavior (silence re-prompt).
-    - Adds month-name hints for better speech recognition.
-    - Prompt explains speech OR keypad entry (MMDDYYYY + #).
-    NOTE: Assumes make_gather() is configured to accept speech + DTMF.
-    """
-    month_hints = "january,february,march,april,may,june,july,august,september,october,november,december"
-    return make_gather(
-        (
-            f"{prompt_text} "
-            "You can say it, for example, 'July third 1990', "
-            "or type two digits for month, two digits for day, and four digits for year, "
-            "then press pound. For example, 07031990#."
-        ),
-        hints=month_hints
-    )
+    return None
 
 
 
@@ -2580,12 +2567,13 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-prompt using your 'can't hear you' gather helper
+            # Re-prompt using your 'can't hear you' gather helper (DOB-specific)
             prompt_text = (
                 "Please say your date of birth, for example July third nineteen ninety, "
-                "or type month month day day year year year year, then press pound."
+                "or type two digits for month, two digits for day, and four digits for year, then press pound. "
+                "For example, 07031990#."
             )
-            gather = make_gather(prompt_text, hints="january,february,march,april,may,june,july,august,september,october,november,december")
+            gather = make_gather_dob(prompt_text)
             resp.append(gather)
             return str(resp)
 
@@ -2598,9 +2586,12 @@ def voice():
             if not (min_date <= dob_date <= today):
                 debug_print(f"collect_dob: ⚠️ DOB out of range → {dob_date.isoformat()}")
                 session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-                gather = make_gather(
-                    "That doesn't sound like a valid birth date. Please say it again, or type it as MMDDYYYY then press pound."
+                prompt_text = (
+                    "That doesn't sound like a valid birth date. Please say it again, "
+                    "or type two digits for month, two digits for day, and four digits for year, then press pound. "
+                    "For example, 07031990#."
                 )
+                gather = make_gather_dob(prompt_text)
                 resp.append(gather)
                 return str(resp)
         except Exception as e:
@@ -2625,8 +2616,6 @@ def voice():
         resp.append(gather)
         return str(resp)
 
-
-    
 
 
 if __name__ == "__main__":
