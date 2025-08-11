@@ -98,18 +98,29 @@ def _reset_retry(session_data, call_sid, stage_name):
     session_data[call_sid].pop(key, None)
 
 # --- standard gather builder ---
-def make_gather(prompt_text: str, hints: str = None):
+def make_gather(prompt_text: str, hints: str = ""):
+    """
+    Standard gather (drop-in replacement):
+    - Backward compatible signature.
+    - Accepts BOTH speech and DTMF globally.
+    - Caller can press '#' to finish input at any time (finishOnKey="#").
+    - Keeps your existing timeout / speech model / barge-in behavior.
+    """
     g = Gather(
-        input="speech",
+        input="speech dtmf",            # ← enable keypad everywhere
         action="/voice",
         method="POST",
         timeout=SPEECH_INPUT_DURATION,
         speech_model="phone_call",
         bargeIn=True,
-        hints=hints or None,
+        finishOnKey="#"                 # ← end on '#'
+        # (no numDigits so variable-length inputs still work)
     )
+    if hints:
+        g.hints = hints
     g.say(gpt_speak(prompt_text), VOICE)
     return g
+
 
 
 
@@ -1024,48 +1035,209 @@ def load_doctor_appointments():
 # ------------------------
 import os
 import json
-def confirm_appointment_by_name(doctor_name: str, phone: str, utc_start: str, calendar_id: str):
-    """Add a new appointment to the doctor's table and save to JSON file."""
 
+def confirm_appointment_by_name(
+    doctor_name: str,
+    phone: str,
+    utc_start: str,
+    calendar_id: str,
+    name: str = None,
+    dob: str = None,
+    address: str = None,
+    event_id: str = None,
+    debug: bool = False,
+):
+    """
+    Add a new appointment to the doctor's table and save to JSON file.
+
+    Compatibility:
+      - Required params remain: doctor_name, phone, utc_start, calendar_id.
+      - Optional params (name, dob, address, event_id, debug) have defaults, so existing
+        call sites won't break if they don't pass them.
+
+    Behavior:
+      - Normalizes phone to digits-only.
+      - Ensures utc_start is UTC ISO8601 (e.g., '2025-08-07T10:00:00Z').
+      - Searches existing file by (phone + dob) if dob provided; otherwise by phone only.
+      - Skips exact duplicates (same phone + dob + time + calendar_id).
+      - Appends record with optional name/dob/address/event_id.
+      - Saves back to disk and refreshes in-memory cache doctor_appointments[filename], if defined.
+
+    Returns:
+      dict with:
+        created: bool           # True if appended, False if duplicate
+        record: dict            # The record (new or existing)
+        reason: str | None      # 'duplicate' if not created, else None
+    """
+    import os
+    import re
+    import json
+    from datetime import datetime, timezone
+
+    def _dbg(msg: str):
+        if debug:
+            print(f"[confirm_appointment_by_name] {msg}")
+
+    # -----------------------
+    # Normalize phone digits
+    # -----------------------
+    digits_only_phone = re.sub(r"\D", "", phone or "")
+    if not digits_only_phone:
+        raise ValueError("Phone is required and must contain digits.")
+
+    # -----------------------------------------
+    # Normalize DOB into ISO YYYY-MM-DD (if any)
+    # -----------------------------------------
+    dob_iso = (dob or "").strip()
+    if dob_iso:
+        # Already ISO?
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None:
+            # Try MM/DD/YYYY or MM-DD-YYYY
+            m = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
+            if m:
+                mm, dd, yyyy = m.groups()
+                dob_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
+            else:
+                # Light normalization: 2025/08/07 → 2025-08-07
+                dob_iso = dob_iso.replace("/", "-")
+
+    # --------------------------------------
+    # Ensure utc_start is UTC ISO8601 string
+    # --------------------------------------
+    def ensure_utc_iso(ts: str) -> str:
+        """
+        Accepts:
+          - '2025-08-07T10:00:00Z'
+          - '2025-08-07T10:00:00+00:00'
+          - '2025-08-07 10:00:00' (assumed UTC if naive)
+        Returns: 'YYYY-MM-DDTHH:MM:SSZ'
+        """
+        if not ts:
+            raise ValueError("utc_start is required")
+        s = ts.strip().replace(" ", "T")
+        try:
+            # Handle trailing Z by converting to +00:00 for fromisoformat
+            if s.endswith("Z"):
+                dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            else:
+                dt = datetime.fromisoformat(s)
+        except Exception:
+            # If naive pattern 'YYYY-MM-DDTHH:MM:SS', try that
+            if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", s):
+                dt = datetime.fromisoformat(s)
+            else:
+                raise
+        # Force UTC tz-aware
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    utc_start_iso = ensure_utc_iso(utc_start)
+
+    # --------------------------
+    # Resolve file paths/keys
+    # --------------------------
     filename = sanitize_filename(doctor_name).replace(".json", "")
     full_path = get_doctor_filename(doctor_name)
+    _dbg(f"🔍 File → {full_path}")
 
-    print(f"[confirm_appointment_by_name] 🔍 Loading file: {full_path}")
-
-    # 📥 Load or initialize doctor_appointments[filename] as a list
+    # --------------------------
+    # Load existing appointments
+    # --------------------------
+    appts = []
     if os.path.exists(full_path):
         try:
             with open(full_path, "r") as f:
                 data = json.load(f)
-                if isinstance(data, list):
-                    doctor_appointments[filename] = data
-                    print(f"[confirm_appointment_by_name] ✅ Loaded existing list with {len(data)} appointments")
-                else:
-                    print(f"[confirm_appointment_by_name] ⚠️ JSON was a dict instead of a list. Resetting.")
-                    doctor_appointments[filename] = []
+            if isinstance(data, list):
+                appts = data
+                _dbg(f"✅ Loaded list with {len(appts)} appointment(s)")
+            else:
+                _dbg("⚠️ Root JSON was not a list; reinitializing")
         except Exception as e:
-            print(f"[confirm_appointment_by_name] ⚠️ Failed to parse JSON file → {e}")
-            doctor_appointments[filename] = []
+            _dbg(f"⚠️ Failed to parse JSON → {e}")
     else:
-        print(f"[confirm_appointment_by_name] 📂 No file found — starting new list")
-        doctor_appointments[filename] = []
+        _dbg("📂 No file found — starting new list")
 
-    # 🆕 Append the new appointment
-    new_appt = {
-        "phone": phone,
-        "time": utc_start,
-        "calendar_id": calendar_id
+    # -------------------------------------------------------
+    # Search by phone (+ dob if provided) for duplicates/info
+    # -------------------------------------------------------
+    matches = []
+    for idx, appt in enumerate(appts):
+        p = re.sub(r"\D", "", appt.get("phone", ""))
+        d = (appt.get("dob") or "").strip()
+        if dob_iso:
+            if p == digits_only_phone and d == dob_iso:
+                matches.append((idx, appt))
+        else:
+            if p == digits_only_phone:
+                matches.append((idx, appt))
+
+    _dbg(f"🔎 Search by phone+dob → {len(matches)} match(es) "
+         f"(phone={digits_only_phone}, dob={dob_iso or 'N/A'})")
+
+    # -----------------------------------------------------------
+    # Skip exact duplicate (same phone + dob + time + calendar)
+    # -----------------------------------------------------------
+    for _, appt in matches:
+        try:
+            appt_time_iso = ensure_utc_iso(appt.get("time", ""))
+        except Exception:
+            # If bad time in file, don't treat as duplicate
+            appt_time_iso = None
+
+        if appt_time_iso == utc_start_iso and appt.get("calendar_id") == calendar_id:
+            _dbg("🔁 Exact duplicate detected — skipping append")
+            # Normalize record before returning
+            appt_norm = dict(appt)
+            appt_norm["phone"] = re.sub(r"\D", "", appt_norm.get("phone", ""))
+            appt_norm["time"] = utc_start_iso
+            return {"created": False, "record": appt_norm, "reason": "duplicate"}
+
+    # ---------------------------------
+    # Append new appointment record
+    # ---------------------------------
+    new_record = {
+        "phone": digits_only_phone,
+        "time": utc_start_iso,
+        "calendar_id": calendar_id,
     }
-    doctor_appointments[filename].append(new_appt)
-    print(f"[confirm_appointment_by_name] ➕ Appended: {new_appt}")
+    if name:
+        new_record["name"] = name
+    if dob_iso:
+        new_record["dob"] = dob_iso
+    if address:
+        new_record["address"] = address
+    if event_id:
+        new_record["event_id"] = event_id
 
-    # 💾 Save updated list back to file
+    appts.append(new_record)
+    _dbg(f"➕ Appended: {new_record}")
+
+    # -----------------------------
+    # Save back to disk (+ cache)
+    # -----------------------------
     try:
         with open(full_path, "w") as f:
-            json.dump(doctor_appointments[filename], f, indent=2)
-        print(f"[confirm_appointment_by_name] 💾 Saved to {full_path}")
+            json.dump(appts, f, indent=2)
+        _dbg(f"💾 Saved to {full_path}")
+
+        # Update in-memory cache if present
+        try:
+            doctor_appointments[filename] = appts
+        except Exception:
+            pass
+
+        return {"created": True, "record": new_record, "reason": None}
     except Exception as e:
-        print(f"[confirm_appointment_by_name] ❌ Failed to write JSON → {e}")
+        _dbg(f"❌ Failed to write JSON → {e}")
+        raise
+
+
+
+
 
 
 
@@ -1336,6 +1508,115 @@ def parse_dob_input(speech_text: str, dtmf_digits: str) -> Optional[datetime]:
     return None
 
 
+def make_gather_dob(prompt_text: str):
+    """
+    DOB gather that delegates to the shared make_gather helper:
+    - Reuses your standard 'can't hear you' behavior (silence re-prompt).
+    - Adds month-name hints for better speech recognition.
+    - Prompt explains speech OR keypad entry (MMDDYYYY + #).
+    NOTE: Assumes make_gather() is configured to accept speech + DTMF.
+    """
+    month_hints = "january,february,march,april,may,june,july,august,september,october,november,december"
+    return make_gather(
+        (
+            f"{prompt_text} "
+            "You can say it, for example, 'July third 1990', "
+            "or type two digits for month, two digits for day, and four digits for year, "
+            "then press pound. For example, 07031990#."
+        ),
+        hints=month_hints
+    )
+
+
+############################################
+##  Customer DB
+#############################################
+import os
+import json
+from datetime import datetime
+
+# ----------------------------------------------------------------------
+# Path under the existing appointment_data folder
+# ----------------------------------------------------------------------
+
+import os
+import json
+from datetime import datetime
+
+DB_FOLDER = "appointment_data"
+DB_FILE = os.path.join(DB_FOLDER, "customers.jsonl")
+
+def init_db():
+    """Ensure appointment_data folder and JSONL DB file exist."""
+    os.makedirs(DB_FOLDER, exist_ok=True)
+    if not os.path.exists(DB_FILE):
+        with open(DB_FILE, "w", encoding="utf-8") as f:
+            pass  # empty file
+
+def _normalize_phone(phone: str) -> str:
+    """Keep digits only."""
+    return "".join(ch for ch in (phone or "") if ch.isdigit())
+
+def customer_search(phone: str, dob: str) -> bool:
+    """
+    Sequential search in customers.jsonl
+    Returns True if (phone, dob) exists, otherwise False.
+    """
+    phone_norm = _normalize_phone(phone)
+    dob = (dob or "").strip()
+
+    if not os.path.exists(DB_FILE):
+        return False
+
+    with open(DB_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if _normalize_phone(rec.get("phone", "")) == phone_norm and (rec.get("dob", "") or "").strip() == dob:
+                return True
+    return False
+
+def insert_customer(phone: str, dob: str, first_name: str, last_name: str, address: str,
+                    cc_name: str, cc_number: str, cc_exp: str, cc_cvv: str) -> bool:
+    """
+    Inserts a new customer record into customers.jsonl under appointment_data
+    if not already present. Adds created_at timestamp.
+    Includes credit card fields: name, number, expiration, cvv.
+    Returns True if inserted, False if duplicate.
+    """
+    init_db()
+    if customer_search(phone, dob):
+        print(f"⚠️ Customer already exists: {phone} / {dob}")
+        return False
+
+    record = {
+        "phone": _normalize_phone(phone),
+        "dob": (dob or "").strip(),
+        "first_name": (first_name or "").strip(),
+        "last_name": (last_name or "").strip(),
+        "address": (address or "").strip(),
+        "cc_name": (cc_name or "").strip(),
+        "cc_number": (cc_number or "").strip(),
+        "cc_exp": (cc_exp or "").strip(),  # format MM/YY
+        "cc_cvv": (cc_cvv or "").strip(),
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    with open(DB_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    print(f"✅ Added new customer with CC info: {first_name} {last_name}")
+    return True
+
+# 
+
+
+
 
 
 
@@ -1456,43 +1737,41 @@ def voice():
     """
     if stage == "intro":
 
-      # Save the current session state as moving to the next stage ("intent")
-       session_data[call_sid] = {"stage": "intent"}
+        # Save the current session state as moving to the next stage ("intent")
+        session_data[call_sid] = {"stage": "intent"}
 
-       # Create a <Gather> TwiML block to collect voice input from the caller
-       gather = Gather(
-                         input="speech",         # Expect spoken input
-                         action="/voice",        # Send the result to the /voice route for further processing
-                         method="POST",          # Use POST method for the follow-up request
-                         speech_model="phone_call",  # 🎯 Optimized for voice calls
-                         bargeIn=True,  
-                        timeout= SPEECH_INPUT_DURATION  # Wait up to 5 seconds for a response before timing out
-                      )
+        # Define a friendly prompt to ask the customer what they want to do
+        prompt = (
+            "Thank you for calling EPIC therapist. "
+            "Would you like to book an appointment, cancel an appointment, "
+            "change an appointment, or leave a message?"
+        )
 
-       # Define a friendly prompt to ask the customer what they want to do
-       prompt = "    Thank you for calling EPIC therapist: would you like  to book an appointment, cancel an appointment, change an appointment  or leave a message."
+        # Create a <Gather> TwiML block using our helper that:
+        # - Speaks the prompt with GPT voice
+        # - Listens for the caller’s voice input
+        # - If silence / no input, re-prompts with 'I can't hear you...'
+        # - Sends the speech result to /voice for further processing
+        gather = make_gather(prompt)
 
-       # Use GPT to generate a dynamic and friendly greeting based on the prompt
-       gather.say(gpt_speak(prompt),VOICE)  # This adds spoken text to the <Gather> block
-       """
-       Speaks the message inside <Say>
-
-        Listens for the caller’s voice input for 5 seconds
-
+        """
+        Speaks the message inside <Say>
+        Listens for the caller’s voice input for SPEECH_INPUT_DURATION seconds
         Sends the speech result to /voice for further handling
 
         <Response>
-        <Gather input="speech" action="/voice" method="POST" timeout="5">
-            <Say>Hello! Welcome to Epic Therapist Clinic. Would you like to book an appointment or leave a message?</Say>
+        <Gather ...>  <!-- created via make_gather(...) -->
+            <Say>Thank you for calling EPIC therapist...</Say>
         </Gather>
         </Response>
         """
 
-       # Append the <Gather> block to the overall TwiML response
-       resp.append(gather)
+        # Append the <Gather> block to the overall TwiML response
+        resp.append(gather)
 
-       # Return the XML response as a string (TwiML) to Twilio to speak it to the caller
-       return str(resp)
+        # Return the XML response as a string (TwiML) to Twilio to speak it to the caller
+        return str(resp)
+
 
     elif stage == "intent":
         # ----------------------------------------------------------------------
@@ -1742,32 +2021,159 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # ✅ 4. Success → Ask for time
+        # ✅ 4. Success → Go collect phone FIRST
         # ------------------------------------------------------------------
         session_data[call_sid]["doctor_id"] = matched_id
-        session_data[call_sid]["stage"] = "ask_time_date"
+        session_data[call_sid]["stage"] = "collect_phone"  # ⬅️ CHANGED
 
         friendly_name = googleid_dr_name_map[matched_id]
-        time_prompt = f"What time would you like to book with {friendly_name}?"
+        phone_prompt = (
+            f"Great, we'll book with {friendly_name}. "
+            "Please say or enter your phone number including area code."
+        )  # ⬅️ CHANGED
 
-        # ⬇️ CHANGED: use make_gather (same behavior, standard config)
-        gather = make_gather(time_prompt)
+        # ⬇️ Keep using make_gather
+        gather = make_gather(phone_prompt)  # ⬅️ CHANGED (prompt only)
         resp.append(gather)
         return str(resp)
 
 
+
+
+
+    elif stage == "collect_phone":
+        # ----------------------------------------------------------------------
+        # ☎️ Stage: Collect Phone Number (after DOB)
+        # Purpose:
+        #   - Prefer SPEECH input first (e.g., "four six nine four six three three two seven six").
+        #   - If speech is missing/invalid, FALL BACK to KEYPAD (DTMF) digits.
+        #   - Normalize to digits only and minimally validate (>= 7 digits).
+        #   - On failure, re-prompt using make_gather (keeps 'can't hear you' flow).
+        # ----------------------------------------------------------------------
+        import re
+
+        # 🎙️ 1) Try SPEECH first
+        speech_text = (speech_result or "").strip()
+        print(f"📱 collect_phone (speech raw): '{speech_text}'")
+        digits_only = re.sub(r"\D", "", speech_text)  # strip everything except digits
+        print(f"📞 From speech → digits_only: '{digits_only}', length={len(digits_only)}")
+
+        # 🔢 2) If speech didn’t give enough digits, try DTMF fallback
+        if len(digits_only) < 7:
+            try:
+                dtmf_digits = (request.values.get("Digits") or "").strip()
+            except Exception:
+                dtmf_digits = ""
+
+            print(f"🎛️ collect_phone (DTMF raw): '{dtmf_digits}'")
+            dtmf_only = re.sub(r"\D", "", dtmf_digits)
+            if len(dtmf_only) >= 7:
+                digits_only = dtmf_only
+                print(f"📟 Using DTMF fallback → digits_only: '{digits_only}', length={len(digits_only)}")
+            else:
+                print("❌ Phone number too short from both speech and DTMF. Re-prompting user.")
+                # Re-prompt: allow speech OR keypad with clear instructions
+                gather = make_gather(
+                    "Sorry, I didn't catch your phone number clearly. "
+                    "Please say it again, digit by digit, or type the digits on your keypad and press pound."
+                )
+                resp.append(gather)
+                return str(resp)
+
+        # ✅ 3) Save cleaned number and proceed
+        print(f"✅ Valid phone number accepted: {digits_only}")
+        session_data[call_sid]["customer"]["phone"] = digits_only
+
+        # 📅 Instead of going to address → go to DOB collection first
+        session_data[call_sid]["stage"] = "collect_dob"  # ⬅️ Changed
+
+        # 🎂 Prompt for DOB (using make_gather)
+        gather = make_gather(
+            "Thank you. Please say your date of birth, for example, January fifteenth nineteen eighty five."
+        )
+        resp.append(gather)
+        return str(resp)
+
     
+    elif stage == "collect_dob":
+        # ----------------------------------------------------------------------
+        # 🎂 Stage: Collect Date of Birth (DOB)
+        # ----------------------------------------------------------------------
+        debug_print("collect_dob: 📍 Stage entered")
+
+        # Pull DTMF if present, otherwise use speech
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
+
+        speech_text = (speech_result or "").strip()
+        debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
+
+        # Parse DOB input
+        dt = parse_dob_input(speech_text, dtmf_digits)
+        if not dt:
+            session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
+            r = session_data[call_sid]["retry_dob"]
+            debug_print(f"collect_dob: ❌ Parse failed. Retry={r}")
+
+            if r >= 3:
+                resp.say(gpt_speak("Sorry, I couldn’t understand your date of birth. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            prompt_text = (
+                "Please say your date of birth, for example July third nineteen ninety, "
+                "or type two digits for month, two digits for day, and four digits for year, then press pound. "
+                "For example, 07031990#."
+            )
+            gather = make_gather_dob(prompt_text)
+            resp.append(gather)
+            return str(resp)
+
+        # Validate DOB range
+        try:
+            from datetime import date
+            today = date.today()
+            min_date = date(1900, 1, 1)
+            dob_date = dt.date()
+            if not (min_date <= dob_date <= today):
+                debug_print(f"collect_dob: ⚠️ DOB out of range → {dob_date.isoformat()}")
+                session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
+                prompt_text = (
+                    "That doesn't sound like a valid birth date. Please say it again, "
+                    "or type two digits for month, two digits for day, and four digits for year, then press pound. "
+                    "For example, 07031990#."
+                )
+                gather = make_gather_dob(prompt_text)
+                resp.append(gather)
+                return str(resp)
+        except Exception as e:
+            debug_print(f"collect_dob: ⚠️ Validation error → {e}")
+
+        # Store ISO DOB
+        iso_dob = dt.strftime("%Y-%m-%d")
+        session_data[call_sid].setdefault("customer", {})
+        session_data[call_sid]["customer"]["dob"] = iso_dob
+        debug_print(f"collect_dob: ✅ Stored DOB → {iso_dob}")
+
+        # ✅ Always move to ask_time_date next
+        session_data[call_sid]["stage"] = "ask_time_date"
+        debug_print("collect_dob: ➡️ Next stage → ask_time_date")
+
+        # Prompt for appointment time/date
+        gather = make_gather(
+            "Thanks. What time and date would you like to book your appointment?"
+        )
+        resp.append(gather)
+        return str(resp)
+
+
+
     elif stage == "ask_time_date":
         # ----------------------------------------------------------------------
         # 📍 Stage: ask_time_date
-        # Triggered after doctor is selected. This routine:
-        #  1. Parses user's spoken time (e.g. "July 3rd 12 30")
-        #  2. Checks Google Calendar for availability
-        #  3. If available, confirms and moves to collect name/phone/address
-        # ----------------------------------------------------------------------
-
-        # ----------------------------------------------------------------------
-        # 🧠 Step 1: Parse date and time from spoken input
         # ----------------------------------------------------------------------
         print(f"🗣️ Received spoken time: {speech_result}")
         time_info = smart_parse_time(speech_result)
@@ -1784,7 +2190,6 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # ⬇️ Updated to use make_gather with same prompt
             gather = make_gather("Please say the date and time again, for example, July 3rd at 9 AM.")
             resp.append(gather)
             return str(resp)
@@ -1813,7 +2218,6 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # ⬇️ Updated to use make_gather
             gather = make_gather("I didn't catch that clearly. Please repeat the date and time, like July 3rd at 9 AM.")
             resp.append(gather)
             return str(resp)
@@ -1826,7 +2230,6 @@ def voice():
         if not is_time_slot_available(calendar_id, appointment_start, appointment_end, creds):
             print("❌ Requested time slot is not available")
 
-            # 📅 Fetch alternative slots
             alts = get_next_available_slots(
                 calendar_id,
                 creds,
@@ -1842,19 +2245,42 @@ def voice():
                 prompt = "That time is not available, and I couldn't find any open slots soon. Please try again later."
                 print("⚠️ No alternative slots found.")
 
-            # ⬇️ Updated to use make_gather
             gather = make_gather(prompt)
             resp.append(gather)
             return str(resp)
 
-        # ✅ Slot is free → proceed to collect first name
-        print("✅ Slot is available. Moving to name collection.")
-        session_data[call_sid]["stage"] = "collect_first_name"
+        # ✅ Slot is free → Check if customer exists
+        print("✅ Slot is available. Checking customer existence...")
+        customer = session_data[call_sid].get("customer", {})
+        customer_phone = customer.get("phone", "")
+        customer_dob = customer.get("dob", "")
 
-        # ⬇️ Updated to use make_gather
-        gather = make_gather("Thanks. What is your first name?")
-        resp.append(gather)
-        return str(resp)
+        try:
+            if customer_phone and customer_dob and customer_search(customer_phone, customer_dob):
+                print("📋 Customer exists — skipping name collection, going to book_appt_confirm.")
+                session_data[call_sid]["stage"] = "book_appt_confirm"
+                gather = make_gather("I found your details on file. Shall I confirm this appointment now?")
+                resp.append(gather)
+                return str(resp)
+            else:
+                print("🆕 Customer not found — proceeding to first name collection.")
+                session_data[call_sid]["stage"] = "collect_first_name"
+                gather = make_gather("Thanks. What is your first name?")
+                resp.append(gather)
+                return str(resp)
+        except Exception as e:
+            print(f"⚠️ Error during customer_search: {e}")
+            session_data[call_sid]["stage"] = "collect_first_name"
+            gather = make_gather("Thanks. What is your first name?")
+            resp.append(gather)
+            return str(resp)
+
+
+
+
+
+
+
 
 
 
@@ -1885,35 +2311,24 @@ def voice():
 
 
 
-
-# ----------------------------------------------------------------------
-# 🧍 Stage: collect_last_name
-# Purpose:
-#   - Capture the caller’s last name via speech.
-#   - If nothing intelligible is heard, politely re-prompt (with silence handling via make_gather).
-#   - On success, persist last name in session and advance to phone collection.
-# Notes:
-#   - Uses make_gather() so silence triggers “I can’t hear you” behavior consistently.
-#   - No business logic changed; only Gather creation is centralized.
-# ----------------------------------------------------------------------
     elif stage == "collect_last_name":
         try:
-            last = speech_result.strip()
+            last = (speech_result or "").strip()
             print(f"👤 collect_last_name: {last}")
 
             if not last:
-                # ⬇️ Updated to use make_gather (same prompt, now with standardized silence handling)
+                # Re-prompt for last name with standardized silence handling
                 gather = make_gather("Sorry, I didn't catch your last name. Please repeat it.")
                 resp.append(gather)
                 return str(resp)
 
-            # ✅ Save and move to next stage
+            # ✅ Save and move to next stage (collect_address instead of collect_phone)
             session_data[call_sid]["customer"]["last_name"] = last
-            session_data[call_sid]["stage"] = "collect_phone"
+            session_data[call_sid]["stage"] = "collect_address"
             print(f"✅ Stored last name: {last}")
 
-            # ⬇️ Updated to use make_gather (same prompt)
-            gather = make_gather("Got it. What is your phone number, please?")
+            # Prompt for address
+            gather = make_gather("Got it. What is your full address, please?")
             resp.append(gather)
             return str(resp)
 
@@ -1926,136 +2341,187 @@ def voice():
 
 
 
+   
+
 
     # ----------------------------------------------------------------------
-# ☎️ Stage: collect_phone
-# Purpose:
-#   - Capture and validate the caller’s phone number.
-#   - Normalize the input by stripping all non-digit characters.
-#   - If fewer than 7 digits are provided, politely re-prompt (silence handled via make_gather).
-#   - On success, store the cleaned number and move to address collection.
-# Notes:
-#   - Uses make_gather() so silence triggers “I can’t hear you” response automatically.
-#   - No business logic changes; only Gather creation centralized.
-# ----------------------------------------------------------------------
-    elif stage == "collect_phone":
-        import re
-
-        raw_phone = speech_result.strip()
-        print(f"📱 collect_phone (raw): '{raw_phone}'")
-
-        # 🔧 Normalize and compact the phone number (remove all non-digit characters)
-        digits_only = re.sub(r"\D", "", raw_phone)
-        print(f"📞 Cleaned phone number (digits only): '{digits_only}'")
-        print(f"🔢 Phone number length: {len(digits_only)} digits")
-
-        if len(digits_only) < 7:
-            print("❌ Phone number too short. Re-prompting user.")
-            # Not enough digits → re-prompt with make_gather
-            gather = make_gather(
-                "Sorry, I didn't catch your phone number clearly. Please say it again, digit by digit."
-            )
-            resp.append(gather)
-            return str(resp)
-
-        # ✅ Save cleaned number
-        print(f"✅ Valid phone number accepted: {digits_only}")
-        session_data[call_sid]["customer"]["phone"] = digits_only
-        session_data[call_sid]["stage"] = "collect_address"
-
-        # 🏠 Prompt for address (using make_gather)
-        gather = make_gather("Thank you. What is your full address, please?")
-        resp.append(gather)
-        return str(resp)
-
-
-# ----------------------------------------------------------------------
-# 🏠 Stage: collect_address
-# Purpose:
-#   - Capture the caller’s full address.
-#   - Normalize and store all customer data (name, phone, address).
-#   - Confirm appointment time in UTC.
-#   - Create the Google Calendar event for the selected doctor.
-#   - If silence or no input is detected, re-prompt politely using make_gather().
-# Notes:
-#   - Uses make_gather() for consistent silence handling.
-#   - Time conversion ensures all stored times are in UTC.
-#   - If calendar event creation fails, the call ends with an apology.
-# ----------------------------------------------------------------------
+    # 🏠 Stage: collect_address
+    # Purpose:
+    #   - Capture the caller’s full address.
+    #   - Normalize and store all customer data (name, phone, address).
+    #   - Hand off to collect_cc to capture payment details before final confirmation.
+    #   - If silence or no input is detected, re-prompt politely using make_gather().
+    # ----------------------------------------------------------------------
     elif stage == "collect_address":
-        address = speech_result.strip()
+        # ----------------------------------------------------------------------
+        # 🏠 Stage: Collect Customer Address (INFO ONLY)
+        # Purpose:
+        #   - Capture the address text and stash it in the session.
+        #   - Do NOT create any calendar events here.
+        #   - Hand off to collect_cc; book_appt_confirm will run after CC is collected.
+        # ----------------------------------------------------------------------
+        address = (speech_result or "").strip()
         print(f"collect_address: 📬 Collected address: {address}")
 
-        # 🛑 If no address provided, re-prompt using make_gather
-        if not address:
-            print("❌ No address detected. Re-prompting user.")
-            gather = make_gather("I didn't catch your address. Please say your full address clearly.")
-            resp.append(gather)
-            return str(resp)
-
-        # ✅ Store the address and advance stage
+        # Save address; keep everything else untouched
+        session_data[call_sid].setdefault("customer", {})
         session_data[call_sid]["customer"]["address"] = address
-        session_data[call_sid]["stage"] = "book_appt_confirm"
 
-        # 📦 Prepare customer details
-        customer = session_data[call_sid]["customer"]
-        appointment = session_data[call_sid]["appointment_time"]
-        doctor_id = session_data[call_sid]["doctor_id"]
-
-        # 🧩 Assemble full name safely
-        full_name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
-        session_data[call_sid]["customer"]["name"] = full_name
-
-        # 📞 Normalize phone number
-        import re
-        raw_phone = customer.get("phone", "")
-        normalized_phone = re.sub(r"[^\d]", "", raw_phone)
-        session_data[call_sid]["customer"]["phone"] = normalized_phone
-        print(f"collect_address: 📞 Final stored phone: {normalized_phone}")
-
-        # ⏳ Convert appointment time to UTC
-        try:
-            from datetime import datetime
-            import pytz
-            start_utc = datetime.fromisoformat(appointment["start"]).astimezone(pytz.utc)
-            end_utc = datetime.fromisoformat(appointment["end"]).astimezone(pytz.utc)
-            print(f"collect_address: 🌍 UTC time slot → Start: {start_utc.isoformat()}, End: {end_utc.isoformat()}")
-        except Exception as e:
-            print(f"collect_address: ❌ Error converting to UTC: {e}")
-            resp.say(gpt_speak("Sorry, I had trouble confirming your appointment. Please try again later."), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            return str(resp)
-
-        # 📅 Create Google Calendar event
-        try:
-            calendar = build("calendar", "v3", credentials=creds)
-            event = {
-                "summary": f"Appointment for {full_name}",
-                "description": f"Name: {full_name}\nPhone: {normalized_phone}\nAddress: {address}",
-                "start": {"dateTime": start_utc.isoformat(), "timeZone": "UTC"},
-                "end": {"dateTime": end_utc.isoformat(), "timeZone": "UTC"},
-            }
-            calendar.events().insert(calendarId=doctor_id, body=event).execute()
-            print("collect_address: ✅ Google Calendar event created")
-        except Exception as e:
-            print(f"collect_address: ❌ Failed to create calendar event: {e}")
-            resp.say(gpt_speak("Sorry, something went wrong while saving your appointment. Please try again later."), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            return str(resp)
-
-        # 🔁 Redirect to confirm booking
-        print("collect_address: 🔁 Redirecting to /voice to confirm booking")
+        # Set next stage to collect CC info (then that stage will jump to book_appt_confirm)
+        session_data[call_sid]["stage"] = "collect_cc"
+        print("collect_address: 🔁 Redirecting to /voice to run collect_cc")
         resp.redirect("/voice")
         return str(resp)
 
-    
-
 
     
+    # ----------------------------------------------------------------------
+    # 💳 Stage: collect_cc
+    # Purpose:
+    #   - Collect credit card info via DTMF in three mini-steps:
+    #       (1) Card number (13–19 digits, Luhn-checked)
+    #       (2) Expiration date (MMYY) → stored as 'MM/YY'
+    #       (3) CVV (3–4 digits)
+    #   - Stores under session_data[call_sid]["customer"]: cc_number, cc_exp, cc_cvv, cc_name
+    #   - Auto-advances to book_appt_confirm upon success (no extra prompt)
+    # Notes:
+    #   - Uses make_gather() so silence handling is consistent.
+    #   - Speech digits are supported (fallback), but DTMF is recommended for reliability.
+    # ----------------------------------------------------------------------
+    elif stage == "collect_cc":
+        import re
 
-# -# -----------------------------------------------------------------
+        def luhn_check(number: str) -> bool:
+            """Return True if 'number' passes Luhn mod-10 check."""
+            s = 0
+            alt = False
+            for ch in number[::-1]:
+                if not ch.isdigit():
+                    return False
+                d = ord(ch) - 48
+                if alt:
+                    d *= 2
+                    if d > 9:
+                        d -= 9
+                s += d
+                alt = not alt
+            return (s % 10) == 0
+
+        # Ensure customer bucket exists
+        session_data[call_sid].setdefault("customer", {})
+        customer = session_data[call_sid]["customer"]
+
+        # Mini-step tracker: 1=number, 2=exp, 3=cvv
+        cc_step = session_data[call_sid].get("cc_step", 1)
+
+        # Pull inputs
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
+        speech_text = (speech_result or "").strip()
+
+        debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{dtmf_digits}', speech='{speech_text}'")
+
+        # Prefer DTMF; if none, extract digits from speech
+        def get_digits() -> str:
+            raw = dtmf_digits if dtmf_digits else speech_text
+            return re.sub(r"\D", "", raw or "")
+
+        # -------------------------------
+        # Step 1: Card Number (13–19)
+        # -------------------------------
+        if cc_step == 1:
+            digits = get_digits()
+            if not digits:
+                gather = make_gather("Please enter your card number now, then press pound.")
+                resp.append(gather)
+                return str(resp)
+
+            if not (13 <= len(digits) <= 19) or not luhn_check(digits):
+                debug_print(f"collect_cc: ❌ Invalid card number: '{digits}'")
+                gather = make_gather("That card number doesn't look right. Please re-enter the full card number and press pound.")
+                resp.append(gather)
+                return str(resp)
+
+            # Save and advance
+            customer["cc_number"] = digits
+            session_data[call_sid]["cc_step"] = 2
+            debug_print(f"collect_cc: ✅ Saved card number (len={len(digits)})")
+
+            gather = make_gather("Thank you. Now enter the expiration as two digits for month and two digits for year. For example, 0527. Then press pound.")
+            resp.append(gather)
+            return str(resp)
+
+        # -------------------------------
+        # Step 2: Expiration (MMYY)
+        # -------------------------------
+        if cc_step == 2:
+            digits = get_digits()
+            if len(digits) != 4:
+                debug_print(f"collect_cc: ❌ Exp not 4 digits: '{digits}'")
+                gather = make_gather("Please enter the expiration as four digits MMYY, then press pound.")
+                resp.append(gather)
+                return str(resp)
+
+            mm = int(digits[:2]) if digits[:2].isdigit() else 0
+            yy = digits[2:]
+            if not (1 <= mm <= 12):
+                debug_print(f"collect_cc: ❌ Invalid month: '{digits}'")
+                gather = make_gather("The month must be 01 through 12. Please re-enter expiration MMYY, then press pound.")
+                resp.append(gather)
+                return str(resp)
+
+            # Optionally check card not expired (requires current date logic)
+            customer["cc_exp"] = f"{digits[:2]}/{yy}"
+            session_data[call_sid]["cc_step"] = 3
+            debug_print(f"collect_cc: ✅ Saved expiration {customer['cc_exp']}")
+
+            gather = make_gather("Great. Finally, enter the three or four digit security code, then press pound.")
+            resp.append(gather)
+            return str(resp)
+
+        # -------------------------------
+        # Step 3: CVV (3–4 digits)
+        # -------------------------------
+        if cc_step == 3:
+            digits = get_digits()
+            if not (3 <= len(digits) <= 4) or not digits.isdigit():
+                debug_print(f"collect_cc: ❌ Invalid CVV: '{digits}'")
+                gather = make_gather("That security code doesn't look right. Please re-enter the three or four digit code, then press pound.")
+                resp.append(gather)
+                return str(resp)
+
+            customer["cc_cvv"] = digits
+
+            # Default the cardholder name from collected name, if not set
+            if not customer.get("cc_name"):
+                # prefer explicit first/last if available; else use 'name'
+                name = customer.get("name") or " ".join(
+                    p for p in [customer.get("first_name"), customer.get("last_name")] if p
+                )
+                customer["cc_name"] = name.strip() if name else None
+
+            debug_print(f"collect_cc: ✅ Saved CVV (len={len(digits)}); cc_name='{customer.get('cc_name')}'")
+
+            # Clear step tracker and jump straight to confirmation
+            session_data[call_sid].pop("cc_step", None)
+            session_data[call_sid]["stage"] = "book_appt_confirm"
+            debug_print("collect_cc: ➡️ Auto-advancing to book_appt_confirm")
+
+            # Immediately re-enter main handler so book_appt_confirm runs now
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))  # adjust endpoint name if different
+            except Exception:
+                resp.redirect(request.path)      # fallback to current path
+
+            return str(resp)
+
+
+    
+
+   # -----------------------------------------------------------------
     elif stage == "book_appt_confirm":
         print("book_appt_confirm: 📍 Stage entered")
 
@@ -2092,67 +2558,100 @@ def voice():
         # 🧍 Customer info
         customer = session_data[call_sid].get("customer", {})
         print(f"book_appt_confirm: 🧾 Raw customer object → {customer}")
-        customer_name = customer.get("name", "")
-        customer_phone = customer.get("phone")
-        print(f"book_appt_confirm: 👤 Extracted customer name → {customer_name}")
-        print(f"book_appt_confirm: 📞 Extracted customer phone → {customer_phone}")
 
-        # 📥 Save confirmation in doctor table with calendar_id
+        customer_name = customer.get("name", "")
+        customer_phone = customer.get("phone", "")
+        customer_dob = customer.get("dob", "")  
+        customer_address = customer.get("address", "")
+
+        # 💳 New credit card fields
+        cc_name = customer.get("cc_name", "")
+        cc_number = customer.get("cc_number", "")
+        cc_exp = customer.get("cc_exp", "")       # MM/YY
+        cc_cvv = customer.get("cc_cvv", "")
+
+        print(f"book_appt_confirm: 👤 Name → {customer_name}")
+        print(f"book_appt_confirm: 📞 Phone → {customer_phone}")
+        print(f"book_appt_confirm: 🎂 DOB → {customer_dob}")
+        print(f"book_appt_confirm: 🏠 Address → {customer_address}")
+        print(f"book_appt_confirm: 💳 CC Name → {cc_name}")
+        print(f"book_appt_confirm: 💳 CC Number → {cc_number}")
+        print(f"book_appt_confirm: 💳 CC Exp → {cc_exp}")
+        print(f"book_appt_confirm: 💳 CC CVV → {cc_cvv}")
+
+        # 🗃️ Insert/ensure customer in JSONL DB
+        try:
+            first_name = (customer.get("first_name") or "").strip()
+            last_name = (customer.get("last_name") or "").strip()
+            if not first_name and customer_name:
+                parts = customer_name.strip().split()
+                first_name = parts[0]
+                last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+            init_db()
+            inserted = insert_customer(
+                phone=customer_phone,
+                dob=customer_dob,
+                first_name=first_name,
+                last_name=last_name,
+                address=customer_address,
+                cc_name=cc_name,
+                cc_number=cc_number,
+                cc_exp=cc_exp,
+                cc_cvv=cc_cvv
+            )
+            print(f"book_appt_confirm: 🗃️ insert_customer result → {'inserted' if inserted else 'already exists'}")
+        except Exception as e:
+            print(f"book_appt_confirm: ⚠️ insert_customer failed → {e}")
+
+        # 📥 Save appointment
         try:
             confirm_appointment_by_name(
                 doctor_name=doctor_name,
                 phone=customer_phone,
+                dob=customer_dob,
+                name=customer_name,
+                address=customer_address,
                 utc_start=appointment_time,
                 calendar_id=doctor_id
             )
-            print(f"book_appt_confirm: ✅ Mapping saved → {doctor_name}.json: {customer_phone} → {appointment_time} (Calendar ID: {doctor_id})")
+            print(f"book_appt_confirm: ✅ Appointment saved/search done for {doctor_name} (Calendar ID: {doctor_id})")
         except Exception as e:
-            print(f"book_appt_confirm: ⚠️ Failed to save appointment in doctor table → {e}")
+            print(f"book_appt_confirm: ⚠️ Failed to save appointment → {e}")
 
         # 🗣️ Voice confirmation message
         confirmation_message = (
-            f"Your appointment with {doctor_name} has been successfully booked. "
+            f"Your appointment with {doctor_name} has been successfully booked."
+            f"{' on ' + formatted_time if formatted_time else ''} "
             "We look forward to seeing you. Goodbye!"
         )
-        print(f"book_appt_confirm: 🗣️ Speaking confirmation message → {confirmation_message}")
         resp.say(gpt_speak(confirmation_message), VOICE)
 
         # 📩 Send SMS confirmation
         if customer_phone:
             try:
-                print(f"book_appt_confirm: 📦 Preparing to send SMS to → {customer_phone}")
-
-                # ✅ Normalize phone number (E.164 format, US default)
                 digits_only = ''.join(filter(str.isdigit, customer_phone))
-                print(f"book_appt_confirm: 🔢 Digits-only phone → {digits_only}")
                 if not digits_only.startswith("1"):
                     digits_only = "1" + digits_only
-                customer_phone = f"+{digits_only}"
-                print(f"book_appt_confirm: ☎️ Normalized E.164 phone → {customer_phone}")
+                e164_phone = f"+{digits_only}"
 
                 sms_text = f"Hi {customer_name}, your appointment with {doctor_name} is confirmed"
                 if formatted_time:
                     sms_text += f" on {formatted_time}"
                 sms_text += ". Thank you for choosing Epic Therapist Clinic."
 
-                print(f"book_appt_confirm: 📝 Final SMS text → {sms_text}")
-
                 message = client.messages.create(
                     body=sms_text,
                     from_=TWILIO_PHONE_NUMBER,
-                    to=customer_phone
+                    to=e164_phone
                 )
-
-                print(f"book_appt_confirm: 📤 SMS sent to {customer_phone}")
-                print(f"book_appt_confirm: 🧾 SMS SID: {message.sid}, Status: {message.status}")
-
+                print(f"book_appt_confirm: 📤 SMS sent to {e164_phone}, SID: {message.sid}")
             except Exception as e:
                 print(f"book_appt_confirm: ❌ SMS send failed → {e}")
         else:
             print("book_appt_confirm: ⚠️ No phone number provided — skipping SMS.")
 
-        # 📞 End the call
-        print("book_appt_confirm: 📞 Hanging up the call")
+        # 📞 End call
         resp.hangup()
 
         # 🧹 Clear session
@@ -2160,8 +2659,6 @@ def voice():
         print("book_appt_confirm: 🧼 Session data cleared")
 
         return str(resp)
-
-
 
 
 
@@ -2531,90 +3028,12 @@ def voice():
         debug_print("🧼 Session data cleared after cancellation.")
         return str(resp)
 
-    elif stage == "collect_dob":
-        # ----------------------------------------------------------------------
-        # 🎂 Stage: Collect Date of Birth (DOB)
-        # Purpose:
-        #   - Let the caller provide DOB by SPEECH (e.g., "July third 1990")
-        #     or by KEYPAD (DTMF) as MMDDYYYY (e.g., 07151990#).
-        #   - Normalize and validate the date.
-        #   - Store as ISO (YYYY-MM-DD) in session.
-        #   - On failure, re-prompt using the same 'can't hear you' logic as
-        #     other stages (make_gather helper).
-        # ----------------------------------------------------------------------
-        debug_print("collect_dob: 📍 Stage entered")
 
-        # Pull DTMF if present (Twilio sends it as 'Digits'); otherwise use speech
-        try:
-            dtmf_digits = (request.values.get("Digits") or "").strip()
-        except Exception:
-            dtmf_digits = ""
 
-        speech_text = (speech_result or "").strip()
-        debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
 
-        # Parse DOB input (speech or keypad)
-        dt = parse_dob_input(speech_text, dtmf_digits)
-        if not dt:
-            # increment retry
-            session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-            r = session_data[call_sid]["retry_dob"]
-            debug_print(f"collect_dob: ❌ Parse failed. Retry={r}")
 
-            if r >= 3:
-                resp.say(gpt_speak("Sorry, I couldn’t understand your date of birth. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
 
-            # Re-prompt using your 'can't hear you' gather helper (DOB-specific)
-            prompt_text = (
-                "Please say your date of birth, for example July third nineteen ninety, "
-                "or type two digits for month, two digits for day, and four digits for year, then press pound. "
-                "For example, 07031990#."
-            )
-            gather = make_gather_dob(prompt_text)
-            resp.append(gather)
-            return str(resp)
-
-        # Validate reasonable DOB window
-        try:
-            from datetime import date
-            today = date.today()
-            min_date = date(1900, 1, 1)
-            dob_date = dt.date()
-            if not (min_date <= dob_date <= today):
-                debug_print(f"collect_dob: ⚠️ DOB out of range → {dob_date.isoformat()}")
-                session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-                prompt_text = (
-                    "That doesn't sound like a valid birth date. Please say it again, "
-                    "or type two digits for month, two digits for day, and four digits for year, then press pound. "
-                    "For example, 07031990#."
-                )
-                gather = make_gather_dob(prompt_text)
-                resp.append(gather)
-                return str(resp)
-        except Exception as e:
-            debug_print(f"collect_dob: ⚠️ Validation error → {e}")
-
-        # Store ISO DOB
-        iso_dob = dt.strftime("%Y-%m-%d")
-        session_data[call_sid].setdefault("customer", {})
-        session_data[call_sid]["customer"]["dob"] = iso_dob
-        debug_print(f"collect_dob: ✅ Stored DOB → {iso_dob}")
-
-        # Move to next stage in your flow
-        next_stage = "collect_phone" if "phone" not in session_data[call_sid]["customer"] else "collect_address"
-        session_data[call_sid]["stage"] = next_stage
-        debug_print(f"collect_dob: ➡️ Next stage → {next_stage}")
-
-        # Prompt for next field using your gather helper
-        if next_stage == "collect_phone":
-            gather = make_gather("Thanks. What is your phone number?")
-        else:
-            gather = make_gather("Thank you. What is your full address, please?")
-        resp.append(gather)
-        return str(resp)
+   
 
 
 
