@@ -2041,14 +2041,14 @@ def voice():
         return str(resp)
 
 
-
     elif stage == "collect_phone":
         # ----------------------------------------------------------------------
         # ☎️ Stage: Collect Phone Number (after DOB)
         # Purpose:
-        #   - Prefer SPEECH input first (e.g., "four six nine four six three three two seven six").
+        #   - Prefer SPEECH input first (e.g., "4694633276").
         #   - If speech is missing/invalid, FALL BACK to KEYPAD (DTMF) digits.
-        #   - Normalize to digits only and minimally validate (>= 7 digits).
+        #   - Normalize to digits only and validate as a callable number:
+        #       * 10 digits (US) OR 11 digits starting with '1' (US country code)
         #   - On failure, re-prompt using make_gather (keeps 'can't hear you' flow).
         # ----------------------------------------------------------------------
         import re
@@ -2057,47 +2057,75 @@ def voice():
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
 
+        # Retry counter (optional, consistent with other stages)
+        session_data[call_sid]["retry_phone"] = session_data[call_sid].get("retry_phone", 0)
+
+        # Helper: validate to 10-digit canonical form (strip leading '1')
+        def _validate_normalize_us_phone(raw_digits: str) -> str:
+            d = re.sub(r"\D", "", raw_digits or "")
+            if len(d) == 11 and d.startswith("1"):
+                d = d[1:]
+            if len(d) == 10:
+                return d
+            return ""
+
         # 🎙️ 1) Try SPEECH first
         speech_text = (speech_result or "").strip()
         debug_print(f"📱 collect_phone (speech raw): '{speech_text}'")
-        digits_only = re.sub(r"\D", "", speech_text)  # strip everything except digits
-        debug_print(f"📞 From speech → digits_only: '{digits_only}', length={len(digits_only)}")
+        speech_digits = re.sub(r"\D", "", speech_text)  # strip everything except digits
+        debug_print(f"📞 From speech → digits_only: '{speech_digits}', length={len(speech_digits)}")
 
-        # 🔢 2) If speech didn’t give enough digits, try DTMF fallback
-        if len(digits_only) < 7:
+        normalized = _validate_normalize_us_phone(speech_digits)
+
+        # 🔢 2) If speech didn’t yield a valid 10-digit number, try DTMF fallback
+        if not normalized:
             try:
                 dtmf_digits = (request.values.get("Digits") or "").strip()
             except Exception:
                 dtmf_digits = ""
-
             debug_print(f"🎛️ collect_phone (DTMF raw): '{dtmf_digits}'")
+
             dtmf_only = re.sub(r"\D", "", dtmf_digits)
-            if len(dtmf_only) >= 7:
-                digits_only = dtmf_only
-                debug_print(f"📟 Using DTMF fallback → digits_only: '{digits_only}', length={len(digits_only)}")
-            else:
-                debug_print("❌ Phone number too short from both speech and DTMF. Re-prompting user.")
-                # Re-prompt: allow speech OR keypad with clear instructions
-                gather = make_gather(
-                    "Sorry, I didn't catch your phone number clearly. "
-                    "Please say it again, digit by digit, or type the digits on your keypad and press pound."
-                )
-                resp.append(gather)
+            normalized = _validate_normalize_us_phone(dtmf_only)
+            if normalized:
+                debug_print(f"📟 Using DTMF fallback → normalized='{normalized}', length=10")
+
+        # ❌ Still invalid → Re-prompt and stay in collect_phone
+        if not normalized:
+            session_data[call_sid]["retry_phone"] += 1
+            debug_print("❌ Phone invalid or missing after speech/DTMF. Re-prompting user.")
+            if session_data[call_sid]["retry_phone"] >= 3:
+                debug_print("⛔ collect_phone: max retries reached.")
+                resp.say(gpt_speak(
+                    "Sorry, I couldn’t capture a valid phone number. Please call again later."
+                ), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
                 return str(resp)
 
-        # ✅ 3) Save cleaned number and proceed
-        debug_print(f"✅ Valid phone number accepted: {digits_only}")
-        session_data[call_sid]["customer"]["phone"] = digits_only
+            # Re-prompt: require area code; allow speech or keypad, press # to finish
+            gather = make_gather(
+                "Please provide your 10 digit phone number including area code. "
+                "You can say it, or type the digits and press pound."
+            )
+            resp.append(gather)
+            return str(resp)
 
-        # 📅 Instead of going to address → go to DOB collection first
-        session_data[call_sid]["stage"] = "collect_dob"  # ⬅️ Changed
+        # ✅ 3) Save validated 10-digit number and proceed
+        debug_print(f"✅ Valid phone number accepted (10-digit): {normalized}")
+        session_data[call_sid]["customer"]["phone"] = normalized
+
+        # 📅 Go to DOB collection next (as per your flow)
+        session_data[call_sid]["stage"] = "collect_dob"  # ⬅️ stays here until phone is valid
 
         # 🎂 Prompt for DOB (using make_gather)
         gather = make_gather(
-            "Thank you. Please say your date of birth, for example, January fifteenth nineteen eighty five."
+            "Thank you. Please say your date of birth, for example, January fifteenth nineteen eighty five. "
+            "Or enter two digits for month, two for day, and four for year, then press pound."
         )
         resp.append(gather)
         return str(resp)
+
 
 
     
