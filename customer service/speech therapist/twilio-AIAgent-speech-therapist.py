@@ -36,7 +36,7 @@ TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_NUMBER")
 GOOGLE_CREDENTIALS = "credentials.json"
-SPEECH_INPUT_DURATION = int(os.getenv("SPEECH_INPUT_DURATION", 3))  # how long to wait for input
+SPEECH_INPUT_DURATION = int(os.getenv("SPEECH_INPUT_DURATION", 12))  # how long to wait for input
 MAX_RECORD_TIME = int(os.getenv("MAX_RECORD_TIME", 60))
 MAX_NUMBER_DR_RETRY = int(os.getenv("MAX_NUMBER_DR_RETRY", 3))
 MAX_APPT_RETRIEVED_FROM_CALNDER = int(os.getenv("MAX_APPT_RETRIEVED_FROM_CALENDER", 50))
@@ -101,25 +101,28 @@ def _reset_retry(session_data, call_sid, stage_name):
 def make_gather(prompt_text: str, hints: str = ""):
     """
     Standard gather (drop-in replacement):
-    - Backward compatible signature.
     - Accepts BOTH speech and DTMF globally.
     - Caller can press '#' to finish input at any time (finishOnKey="#").
-    - Keeps your existing timeout / speech model / barge-in behavior.
+    - Uses your project-wide SPEECH_INPUT_DURATION for timeout (seconds).
+    - speechTimeout='auto' ends when caller stops talking (VAD).
     """
     g = Gather(
-        input="speech dtmf",            # ← enable keypad everywhere
+        input="dtmf speech",            # keypad + voice
         action="/voice",
         method="POST",
-        timeout=SPEECH_INPUT_DURATION,
+        timeout=SPEECH_INPUT_DURATION,  # <-- use the predefined constant
         speech_model="phone_call",
+        speechTimeout="auto",
         bargeIn=True,
-        finishOnKey="#"                 # ← end on '#'
-        # (no numDigits so variable-length inputs still work)
+        finishOnKey="#",
+        actionOnEmptyResult=True        # still POST even if nothing captured
+        # (no numDigits -> variable-length inputs)
     )
     if hints:
         g.hints = hints
     g.say(gpt_speak(prompt_text), VOICE)
     return g
+
 
 
 
@@ -2379,18 +2382,18 @@ def voice():
 
     
     # ----------------------------------------------------------------------
-    # 💳 Stage: collect_cc
-    # Purpose:
-    #   - Collect credit card info via DTMF in three mini-steps:
-    #       (1) Card number (13–19 digits, Luhn-checked)
-    #       (2) Expiration date (MMYY) → stored as 'MM/YY'
-    #       (3) CVV (3–4 digits)
-    #   - Stores under session_data[call_sid]["customer"]: cc_number, cc_exp, cc_cvv, cc_name
-    #   - Auto-advances to book_appt_confirm upon success (no extra prompt)
-    # Notes:
-    #   - Uses make_gather() so silence handling is consistent.
-    #   - Speech digits are supported (fallback), but DTMF is recommended for reliability.
-    # ----------------------------------------------------------------------
+# 💳 Stage: collect_cc
+# Purpose:
+#   - Collect credit card info via DTMF in three mini-steps:
+#       (1) Card number (13–19 digits, Luhn-checked)
+#       (2) Expiration date (MMYY) → stored as 'MM/YY'
+#       (3) CVV (3–4 digits)
+#   - Stores under session_data[call_sid]["customer"]: cc_number, cc_exp, cc_cvv, cc_name
+#   - Auto-advances to book_appt_confirm upon success (no extra prompt)
+# Notes:
+#   - Uses make_gather() so silence handling is consistent.
+#   - Speech digits are supported (fallback), but DTMF is recommended for reliability.
+# ----------------------------------------------------------------------
     elif stage == "collect_cc":
         import re
 
@@ -2410,7 +2413,36 @@ def voice():
                 alt = not alt
             return (s % 10) == 0
 
+        # --- Voice → digits normalizer (supports "double", "triple") ---
+        def normalize_spoken_digits(raw: str) -> str:
+            if not raw:
+                return ""
+            words = raw.lower().strip().split()
+            m = {
+                "zero":"0","oh":"0","o":"0",
+                "one":"1","two":"2","to":"2","too":"2",
+                "three":"3","four":"4","for":"4",
+                "five":"5","six":"6","seven":"7",
+                "eight":"8","ate":"8","nine":"9"
+            }
+            out, i = [], 0
+            while i < len(words):
+                w = words[i].strip(".,;:-")
+                if w in ("double","triple") and i+1 < len(words):
+                    nxt = words[i+1].strip(".,;:-")
+                    if nxt in m:
+                        out.extend([m[nxt]] * (2 if w == "double" else 3))
+                        i += 2
+                        continue
+                if w in m:
+                    out.append(m[w])
+                else:
+                    out.extend([c for c in w if c.isdigit()])
+                i += 1
+            return "".join(out)
+
         # Ensure customer bucket exists
+        session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
         customer = session_data[call_sid]["customer"]
 
@@ -2426,10 +2458,11 @@ def voice():
 
         debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{dtmf_digits}', speech='{speech_text}'")
 
-        # Prefer DTMF; if none, extract digits from speech
+        # Prefer DTMF; if none, extract digits from speech (words → digits)
         def get_digits() -> str:
-            raw = dtmf_digits if dtmf_digits else speech_text
-            return re.sub(r"\D", "", raw or "")
+            if dtmf_digits:
+                return re.sub(r"\D", "", dtmf_digits)
+            return re.sub(r"\D", "", normalize_spoken_digits(speech_text))
 
         # -------------------------------
         # Step 1: Card Number (13–19)
@@ -2437,14 +2470,26 @@ def voice():
         if cc_step == 1:
             digits = get_digits()
             if not digits:
-                gather = make_gather("Please enter your card number now, then press pound.")
+                # Using global make_gather (accepts DTMF + speech)
+                gather = make_gather(
+                    "Please enter your card number now, then press pound.",
+                    hints="zero one two three four five six seven eight nine double triple"
+                )
                 resp.append(gather)
+                # Fallback if no input captured by Gather
+                resp.say(gpt_speak("I didn't get anything."), VOICE)
+                resp.redirect("/voice")
                 return str(resp)
 
             if not (13 <= len(digits) <= 19) or not luhn_check(digits):
                 debug_print(f"collect_cc: ❌ Invalid card number: '{digits}'")
-                gather = make_gather("That card number doesn't look right. Please re-enter the full card number and press pound.")
+                gather = make_gather(
+                    "That card number doesn't look right. Please re-enter the full card number, then press pound.",
+                    hints="zero one two three four five six seven eight nine double triple"
+                )
                 resp.append(gather)
+                resp.say(gpt_speak("I still didn't get the card number."), VOICE)
+                resp.redirect("/voice")
                 return str(resp)
 
             # Save and advance
@@ -2452,8 +2497,14 @@ def voice():
             session_data[call_sid]["cc_step"] = 2
             debug_print(f"collect_cc: ✅ Saved card number (len={len(digits)})")
 
-            gather = make_gather("Thank you. Now enter the expiration as two digits for month and two digits for year. For example, 0527. Then press pound.")
+            gather = make_gather(
+                "Thank you. Now enter the expiration as two digits for month and two digits for year. "
+                "For example, 0527. Then press pound.",
+                hints="zero one two three four five six seven eight nine"
+            )
             resp.append(gather)
+            resp.say(gpt_speak("I didn't hear the expiration."), VOICE)
+            resp.redirect("/voice")
             return str(resp)
 
         # -------------------------------
@@ -2463,16 +2514,26 @@ def voice():
             digits = get_digits()
             if len(digits) != 4:
                 debug_print(f"collect_cc: ❌ Exp not 4 digits: '{digits}'")
-                gather = make_gather("Please enter the expiration as four digits MMYY, then press pound.")
+                gather = make_gather(
+                    "Please enter the expiration as four digits MMYY, then press pound.",
+                    hints="zero one two three four five six seven eight nine"
+                )
                 resp.append(gather)
+                resp.say(gpt_speak("I didn't hear the expiration."), VOICE)
+                resp.redirect("/voice")
                 return str(resp)
 
             mm = int(digits[:2]) if digits[:2].isdigit() else 0
             yy = digits[2:]
             if not (1 <= mm <= 12):
                 debug_print(f"collect_cc: ❌ Invalid month: '{digits}'")
-                gather = make_gather("The month must be 01 through 12. Please re-enter expiration MMYY, then press pound.")
+                gather = make_gather(
+                    "The month must be 01 through 12. Please re-enter expiration MMYY, then press pound.",
+                    hints="zero one two three four five six seven eight nine"
+                )
                 resp.append(gather)
+                resp.say(gpt_speak("I didn't hear the expiration."), VOICE)
+                resp.redirect("/voice")
                 return str(resp)
 
             # Optionally check card not expired (requires current date logic)
@@ -2480,8 +2541,13 @@ def voice():
             session_data[call_sid]["cc_step"] = 3
             debug_print(f"collect_cc: ✅ Saved expiration {customer['cc_exp']}")
 
-            gather = make_gather("Great. Finally, enter the three or four digit security code, then press pound.")
+            gather = make_gather(
+                "Great. Finally, enter the three or four digit security code, then press pound.",
+                hints="zero one two three four five six seven eight nine"
+            )
             resp.append(gather)
+            resp.say(gpt_speak("I didn't hear the security code."), VOICE)
+            resp.redirect("/voice")
             return str(resp)
 
         # -------------------------------
@@ -2491,8 +2557,13 @@ def voice():
             digits = get_digits()
             if not (3 <= len(digits) <= 4) or not digits.isdigit():
                 debug_print(f"collect_cc: ❌ Invalid CVV: '{digits}'")
-                gather = make_gather("That security code doesn't look right. Please re-enter the three or four digit code, then press pound.")
+                gather = make_gather(
+                    "That security code doesn't look right. Please re-enter the three or four digit code, then press pound.",
+                    hints="zero one two three four five six seven eight nine"
+                )
                 resp.append(gather)
+                resp.say(gpt_speak("I didn't hear the security code."), VOICE)
+                resp.redirect("/voice")
                 return str(resp)
 
             customer["cc_cvv"] = digits
