@@ -1584,36 +1584,78 @@ def customer_search(phone: str, dob: str) -> bool:
                 return True
     return False
 
+import os, json, re
+from datetime import datetime
+
+def _oneline(s: str) -> str:
+    """Collapse all whitespace/newlines to single spaces and trim."""
+    return re.sub(r"\s+", " ", (s or "").strip())
+
+def _update_existing_timestamp(phone_norm: str, dob_clean: str) -> bool:
+    """Rewrite JSONL, updating last_seen_at for the matching customer."""
+    if not os.path.exists(DB_FILE):
+        return False
+    changed = False
+    tmp = DB_FILE + ".tmp"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(DB_FILE, "r", encoding="utf-8") as fin, open(tmp, "w", encoding="utf-8") as fout:
+        for line in fin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                # keep malformed lines as-is
+                fout.write(line + "\n")
+                continue
+            if _normalize_phone(rec.get("phone", "")) == phone_norm and (rec.get("dob", "") or "") == dob_clean:
+                rec["last_seen_at"] = now
+                changed = True
+            # write compact, single-line JSON
+            fout.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n")
+    os.replace(tmp, DB_FILE)
+    return changed
+
 def insert_customer(phone: str, dob: str, first_name: str, last_name: str, address: str,
                     cc_name: str, cc_number: str, cc_exp: str, cc_cvv: str) -> bool:
     """
-    Inserts a new customer record into customers.jsonl under appointment_data
-    if not already present. Adds created_at timestamp.
-    Includes credit card fields: name, number, expiration, cvv.
-    Returns True if inserted, False if duplicate.
+    Inserts a new customer into appointment_data/customers.jsonl if not present.
+    - New: 'created_at' and 'last_seen_at' = now.
+    - Existing: update 'last_seen_at' and return False (no new insert).
+    Ensures each record is a single JSON line (no embedded newlines).
     """
     init_db()
-    if customer_search(phone, dob):
-        print(f"⚠️ Customer already exists: {phone} / {dob}")
+
+    phone_norm = _normalize_phone(phone)
+    dob_clean = _oneline(dob)
+
+    # If exists, just update last_seen_at
+    if customer_search(phone_norm, dob_clean):
+        _update_existing_timestamp(phone_norm, dob_clean)
+        print(f"ℹ️ Customer exists; updated last_seen_at: {phone_norm} / {dob_clean}")
         return False
 
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     record = {
-        "phone": _normalize_phone(phone),
-        "dob": (dob or "").strip(),
-        "first_name": (first_name or "").strip(),
-        "last_name": (last_name or "").strip(),
-        "address": (address or "").strip(),
-        "cc_name": (cc_name or "").strip(),
-        "cc_number": (cc_number or "").strip(),
-        "cc_exp": (cc_exp or "").strip(),  # format MM/YY
-        "cc_cvv": (cc_cvv or "").strip(),
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "phone": phone_norm,
+        "dob": dob_clean,
+        "first_name": _oneline(first_name),
+        "last_name": _oneline(last_name),
+        "address": _oneline(address),
+        "cc_name": _oneline(cc_name),
+        "cc_number": _oneline(cc_number),
+        "cc_exp": _oneline(cc_exp),   # format MM/YY
+        "cc_cvv": _oneline(cc_cvv),
+        "created_at": now,
+        "last_seen_at": now
     }
 
+    # Append compact, one-line JSON
     with open(DB_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
 
-    print(f"✅ Added new customer with CC info: {first_name} {last_name}")
+    print(f"✅ Added new customer with CC info: {record['first_name']} {record['last_name']}")
     return True
 
 # 
