@@ -36,7 +36,7 @@ TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_NUMBER")
 GOOGLE_CREDENTIALS = "credentials.json"
-SPEECH_INPUT_DURATION = int(os.getenv("SPEECH_INPUT_DURATION", 30))  # how long to wait for input
+SPEECH_INPUT_DURATION = int(os.getenv("SPEECH_INPUT_DURATION", 3))  # how long to wait for input
 MAX_RECORD_TIME = int(os.getenv("MAX_RECORD_TIME", 60))
 MAX_NUMBER_DR_RETRY = int(os.getenv("MAX_NUMBER_DR_RETRY", 3))
 MAX_APPT_RETRIEVED_FROM_CALNDER = int(os.getenv("MAX_APPT_RETRIEVED_FROM_CALENDER", 50))
@@ -2039,8 +2039,6 @@ def voice():
 
 
 
-
-
     elif stage == "collect_phone":
         # ----------------------------------------------------------------------
         # ☎️ Stage: Collect Phone Number (after DOB)
@@ -2052,11 +2050,15 @@ def voice():
         # ----------------------------------------------------------------------
         import re
 
+        # ✅ Ensure session buckets exist (prevents KeyError: 'customer')
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid].setdefault("customer", {})
+
         # 🎙️ 1) Try SPEECH first
         speech_text = (speech_result or "").strip()
-        print(f"📱 collect_phone (speech raw): '{speech_text}'")
+        debug_print(f"📱 collect_phone (speech raw): '{speech_text}'")
         digits_only = re.sub(r"\D", "", speech_text)  # strip everything except digits
-        print(f"📞 From speech → digits_only: '{digits_only}', length={len(digits_only)}")
+        debug_print(f"📞 From speech → digits_only: '{digits_only}', length={len(digits_only)}")
 
         # 🔢 2) If speech didn’t give enough digits, try DTMF fallback
         if len(digits_only) < 7:
@@ -2065,13 +2067,13 @@ def voice():
             except Exception:
                 dtmf_digits = ""
 
-            print(f"🎛️ collect_phone (DTMF raw): '{dtmf_digits}'")
+            debug_print(f"🎛️ collect_phone (DTMF raw): '{dtmf_digits}'")
             dtmf_only = re.sub(r"\D", "", dtmf_digits)
             if len(dtmf_only) >= 7:
                 digits_only = dtmf_only
-                print(f"📟 Using DTMF fallback → digits_only: '{digits_only}', length={len(digits_only)}")
+                debug_print(f"📟 Using DTMF fallback → digits_only: '{digits_only}', length={len(digits_only)}")
             else:
-                print("❌ Phone number too short from both speech and DTMF. Re-prompting user.")
+                debug_print("❌ Phone number too short from both speech and DTMF. Re-prompting user.")
                 # Re-prompt: allow speech OR keypad with clear instructions
                 gather = make_gather(
                     "Sorry, I didn't catch your phone number clearly. "
@@ -2081,7 +2083,7 @@ def voice():
                 return str(resp)
 
         # ✅ 3) Save cleaned number and proceed
-        print(f"✅ Valid phone number accepted: {digits_only}")
+        debug_print(f"✅ Valid phone number accepted: {digits_only}")
         session_data[call_sid]["customer"]["phone"] = digits_only
 
         # 📅 Instead of going to address → go to DOB collection first
@@ -2093,6 +2095,7 @@ def voice():
         )
         resp.append(gather)
         return str(resp)
+
 
     
     elif stage == "collect_dob":
