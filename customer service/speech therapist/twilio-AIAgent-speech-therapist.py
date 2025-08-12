@@ -2667,17 +2667,17 @@ def voice():
 
    # -----------------------------------------------------------------
     elif stage == "book_appt_confirm":
-        print("book_appt_confirm: 📍 Stage entered")
+        debug_print("book_appt_confirm: 📍 Stage entered")
 
         # 🆔 Doctor info
         doctor_id = session_data[call_sid].get("doctor_id")
-        print(f"book_appt_confirm: 🧩 Raw doctor_id from session → {doctor_id}")
+        debug_print(f"book_appt_confirm: 🧩 Raw doctor_id from session → {doctor_id}")
         doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
-        print(f"book_appt_confirm: 👨‍⚕️ Resolved doctor_name → {doctor_name}")
+        debug_print(f"book_appt_confirm: 👨‍⚕️ Resolved doctor_name → {doctor_name}")
 
         # 🕐 Appointment info
         appointment_time = session_data[call_sid].get("appointment_time", {}).get("start")
-        print(f"book_appt_confirm: 🕓 Raw appointment_time UTC → {appointment_time}")
+        debug_print(f"book_appt_confirm: 🕓 Raw appointment_time UTC → {appointment_time}")
         formatted_time = ""
         if appointment_time:
             from datetime import datetime
@@ -2687,21 +2687,21 @@ def voice():
                 tz = pytz.timezone("America/Chicago")
                 dt_local = dt_utc.astimezone(tz)
                 formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
-                print(f"book_appt_confirm: 📆 Formatted appointment time (local) → {formatted_time}")
+                debug_print(f"book_appt_confirm: 📆 Formatted appointment time (local) → {formatted_time}")
             except Exception as e:
-                print(f"book_appt_confirm: ⚠️ Failed to parse appointment time → {e}")
+                debug_print(f"book_appt_confirm: ⚠️ Failed to parse appointment time → {e}")
                 resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
                 resp.hangup()
                 return str(resp)
         else:
-            print("book_appt_confirm: ❌ No appointment time found in session data")
+            debug_print("book_appt_confirm: ❌ No appointment time found in session data")
             resp.say(gpt_speak("Appointment time missing. Goodbye!"), VOICE)
             resp.hangup()
             return str(resp)
 
         # 🧍 Customer info
         customer = session_data[call_sid].get("customer", {})
-        print(f"book_appt_confirm: 🧾 Raw customer object → {customer}")
+        debug_print(f"book_appt_confirm: 🧾 Raw customer object → {customer}")
 
         customer_name = customer.get("name", "")
         customer_phone = customer.get("phone", "")
@@ -2714,14 +2714,44 @@ def voice():
         cc_exp = customer.get("cc_exp", "")       # MM/YY
         cc_cvv = customer.get("cc_cvv", "")
 
-        print(f"book_appt_confirm: 👤 Name → {customer_name}")
-        print(f"book_appt_confirm: 📞 Phone → {customer_phone}")
-        print(f"book_appt_confirm: 🎂 DOB → {customer_dob}")
-        print(f"book_appt_confirm: 🏠 Address → {customer_address}")
-        print(f"book_appt_confirm: 💳 CC Name → {cc_name}")
-        print(f"book_appt_confirm: 💳 CC Number → {cc_number}")
-        print(f"book_appt_confirm: 💳 CC Exp → {cc_exp}")
-        print(f"book_appt_confirm: 💳 CC CVV → {cc_cvv}")
+        # Masked logging for CC/PII
+        def _mask(s, keep_last=4):
+            s = s or ""
+            return ("*" * max(0, len(s) - keep_last)) + s[-keep_last:]
+        debug_print(f"book_appt_confirm: 👤 Name → {customer_name}")
+        debug_print(f"book_appt_confirm: 📞 Phone → {customer_phone}")
+        debug_print(f"book_appt_confirm: 🎂 DOB → {customer_dob}")
+        debug_print(f"book_appt_confirm: 🏠 Address → {customer_address}")
+        debug_print(f"book_appt_confirm: 💳 CC Name → {cc_name}")
+        debug_print(f"book_appt_confirm: 💳 CC Number → { _mask(cc_number) }")
+        debug_print(f"book_appt_confirm: 💳 CC Exp → {cc_exp}")
+        debug_print(f"book_appt_confirm: 💳 CC CVV → { _mask(cc_cvv, keep_last=0) }")
+
+        # 🔒 Require valid phone (10 digits; allow leading 1) and DOB before confirming
+        def _normalize_10(d):
+            d = "".join(ch for ch in (d or "") if ch.isdigit())
+            return d[1:] if len(d) == 11 and d.startswith("1") else d
+        digits_phone = _normalize_10(customer_phone)
+
+        if len(digits_phone) != 10:
+            debug_print("book_appt_confirm: ❌ Missing/invalid phone → redirecting to collect_phone")
+            session_data[call_sid]["stage"] = "collect_phone"
+            gather = make_gather(
+                "Before we confirm your appointment, I need your ten digit phone number including area code. "
+                "You can say it or type the digits and press pound."
+            )
+            resp.append(gather)
+            return str(resp)
+
+        if not customer_dob:
+            debug_print("book_appt_confirm: ❌ Missing DOB → redirecting to collect_dob")
+            session_data[call_sid]["stage"] = "collect_dob"
+            gather = make_gather(
+                "Before we confirm, please provide your date of birth. "
+                "You can say it, or enter two digits for month, two for day, and four for year, then press pound."
+            )
+            resp.append(gather)
+            return str(resp)
 
         # 🗃️ Insert/ensure customer in JSONL DB
         try:
@@ -2731,10 +2761,9 @@ def voice():
                 parts = customer_name.strip().split()
                 first_name = parts[0]
                 last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
-
             init_db()
             inserted = insert_customer(
-                phone=customer_phone,
+                phone=digits_phone,          # use normalized
                 dob=customer_dob,
                 first_name=first_name,
                 last_name=last_name,
@@ -2744,65 +2773,74 @@ def voice():
                 cc_exp=cc_exp,
                 cc_cvv=cc_cvv
             )
-            print(f"book_appt_confirm: 🗃️ insert_customer result → {'inserted' if inserted else 'already exists'}")
+            debug_print(f"book_appt_confirm: 🗃️ insert_customer result → {'inserted' if inserted else 'already exists'}")
         except Exception as e:
-            print(f"book_appt_confirm: ⚠️ insert_customer failed → {e}")
+            debug_print(f"book_appt_confirm: ⚠️ insert_customer failed → {e}")
 
-        # 📥 Save appointment
+        # 📥 Save appointment (only after phone/DOB guard)
+        appointment_saved = False
         try:
+            # Prefer a non-empty name
+            effective_name = customer_name or " ".join([n for n in [first_name, last_name] if n]).strip()
             confirm_appointment_by_name(
                 doctor_name=doctor_name,
-                phone=customer_phone,
+                phone=digits_phone,          # normalized digits
                 dob=customer_dob,
-                name=customer_name,
+                name=effective_name,
                 address=customer_address,
                 utc_start=appointment_time,
                 calendar_id=doctor_id
             )
-            print(f"book_appt_confirm: ✅ Appointment saved/search done for {doctor_name} (Calendar ID: {doctor_id})")
+            appointment_saved = True
+            debug_print(f"book_appt_confirm: ✅ Appointment saved/search done for {doctor_name} (Calendar ID: {doctor_id})")
         except Exception as e:
-            print(f"book_appt_confirm: ⚠️ Failed to save appointment → {e}")
+            debug_print(f"book_appt_confirm: ⚠️ Failed to save appointment → {e}")
 
-        # 🗣️ Voice confirmation message
-        confirmation_message = (
-            f"Your appointment with {doctor_name} has been successfully booked."
-            f"{' on ' + formatted_time if formatted_time else ''} "
-            "We look forward to seeing you. Goodbye!"
-        )
-        resp.say(gpt_speak(confirmation_message), VOICE)
+        # 🗣️ Voice confirmation message (only if saved)
+        if appointment_saved:
+            confirmation_message = (
+                f"Your appointment with {doctor_name} has been successfully booked."
+                f"{' on ' + formatted_time if formatted_time else ''} "
+                "We look forward to seeing you. Goodbye!"
+            )
+            debug_print(f"book_appt_confirm: 🗣️ Speaking confirmation message → {confirmation_message}")
+            resp.say(gpt_speak(confirmation_message), VOICE)
+        else:
+            # keep user in flow if failure
+            debug_print("book_appt_confirm: ❌ Save failed — reprompting for time.")
+            session_data[call_sid]["stage"] = "ask_time_date"
+            gather = make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, August 14th at 10 AM.")
+            resp.append(gather)
+            return str(resp)
 
         # 📩 Send SMS confirmation
-        if customer_phone:
+        if digits_phone:
             try:
-                digits_only = ''.join(filter(str.isdigit, customer_phone))
-                if not digits_only.startswith("1"):
-                    digits_only = "1" + digits_only
-                e164_phone = f"+{digits_only}"
-
-                sms_text = f"Hi {customer_name}, your appointment with {doctor_name} is confirmed"
+                e164_phone = f"+1{digits_phone}"
+                sms_text = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
                 if formatted_time:
                     sms_text += f" on {formatted_time}"
                 sms_text += ". Thank you for choosing Epic Therapist Clinic."
-
                 message = client.messages.create(
                     body=sms_text,
                     from_=TWILIO_PHONE_NUMBER,
                     to=e164_phone
                 )
-                print(f"book_appt_confirm: 📤 SMS sent to {e164_phone}, SID: {message.sid}")
+                debug_print(f"book_appt_confirm: 📤 SMS sent to {e164_phone}, SID: {message.sid}")
             except Exception as e:
-                print(f"book_appt_confirm: ❌ SMS send failed → {e}")
+                debug_print(f"book_appt_confirm: ❌ SMS send failed → {e}")
         else:
-            print("book_appt_confirm: ⚠️ No phone number provided — skipping SMS.")
+            debug_print("book_appt_confirm: ⚠️ No phone number provided — skipping SMS.")
 
         # 📞 End call
         resp.hangup()
 
         # 🧹 Clear session
         session_data.pop(call_sid, None)
-        print("book_appt_confirm: 🧼 Session data cleared")
+        debug_print("book_appt_confirm: 🧼 Session data cleared")
 
         return str(resp)
+
 
 
 
