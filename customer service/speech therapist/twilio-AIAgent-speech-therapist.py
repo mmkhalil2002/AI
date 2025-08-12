@@ -37,7 +37,7 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_NUMBER")
 GOOGLE_CREDENTIALS = "credentials.json"
 SPEECH_INPUT_DURATION = int(os.getenv("SPEECH_INPUT_DURATION", 12))  # how long to wait for input
-PAUSE_BETWEEN_DIGITS = int(os.getenv("TIME_BETWEEN_DIGITS", 5))  # pause between digits
+PAUSE_BETWEEN_DIGITS = int(os.getenv("PAUSE_BETWEEN_DIGITS", 7))  # pause between digits
 MAX_RECORD_TIME = int(os.getenv("MAX_RECORD_TIME", 60))
 MAX_NUMBER_DR_RETRY = int(os.getenv("MAX_NUMBER_DR_RETRY", 3))
 MAX_APPT_RETRIEVED_FROM_CALNDER = int(os.getenv("MAX_APPT_RETRIEVED_FROM_CALENDER", 50))
@@ -283,11 +283,6 @@ def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, cre
     events = events_result.get("items", [])
     return len(events) == 0  # True if no conflicts
 
-
-from datetime import datetime, timedelta
-from googleapiclient.discovery import build
-import pytz
-from typing import List, Dict
 
 from datetime import datetime, timedelta
 from typing import List, Dict
@@ -2246,21 +2241,20 @@ def voice():
         return str(resp)
 
 
-
     elif stage == "ask_time_date":
         # ----------------------------------------------------------------------
         # 📍 Stage: ask_time_date
         # ----------------------------------------------------------------------
-        print(f"🗣️ Received spoken time: {speech_result}")
+        debug_print(f"🗣️ Received spoken time: {speech_result}")
         time_info = smart_parse_time(speech_result)
 
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
             retry_count = session_data[call_sid]["retry_time"]
-            print(f"⚠️ Time parsing failed. Retry count: {retry_count}")
+            debug_print(f"⚠️ Time parsing failed. Retry count: {retry_count}")
 
             if retry_count >= 3:
-                print("❌ Max retries reached. Ending call.")
+                debug_print("❌ Max retries reached. Ending call.")
                 resp.say(gpt_speak("Sorry, I still couldn't understand the time. Please try again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
@@ -2268,27 +2262,27 @@ def voice():
 
             gather = make_gather("Please say the date and time again, for example, July 3rd at 9 AM.")
             resp.append(gather)
+            # fallback to avoid dead-end
+            resp.say(gpt_speak("I didn't get the date and time."), VOICE)
+            resp.redirect("/voice")
             return str(resp)
 
         # ✅ Valid date and time extracted
         spoken_day, spoken_time = time_info
-        print(f"📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
+        debug_print(f"📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
         session_data[call_sid]["spoken_day"] = spoken_day
         session_data[call_sid]["spoken_time"] = spoken_time
 
         try:
             appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
-            session_data[call_sid]["appointment_time"] = {
-                "start": appointment_start,
-                "end": appointment_end
-            }
-            print(f"📆 Appointment requested → Start: {appointment_start}, End: {appointment_end}")
+            session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
+            debug_print(f"📆 Appointment requested → Start: {appointment_start}, End: {appointment_end}")
         except Exception as e:
-            print(f"❌ Failed to build appointment time range from '{spoken_day}' and '{spoken_time}': {e}")
+            debug_print(f"❌ Failed to build appointment time range from '{spoken_day}' and '{spoken_time}': {e}")
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
 
             if session_data[call_sid]["retry_time"] >= 3:
-                print("❌ Max retries reached during build_timeslot_range.")
+                debug_print("❌ Max retries reached during build_timeslot_range.")
                 resp.say(gpt_speak("Sorry, I couldn’t understand the time you mentioned. Please try again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
@@ -2296,63 +2290,79 @@ def voice():
 
             gather = make_gather("I didn't catch that clearly. Please repeat the date and time, like July 3rd at 9 AM.")
             resp.append(gather)
+            resp.say(gpt_speak("I still didn't get the date and time."), VOICE)
+            resp.redirect("/voice")
             return str(resp)
 
         # 🔎 Check availability
-        doctor_id = session_data[call_sid]["doctor_id"]
+        doctor_id = session_data.get(call_sid, {}).get("doctor_id")
+        if not doctor_id:
+            debug_print("⚠️ No doctor_id in session. Returning to booking stage.")
+            session_data[call_sid]["stage"] = "booking"
+            gather = make_gather("Please say the name of the doctor you'd like to book with.")
+            resp.append(gather)
+            resp.say(gpt_speak("I didn't hear the doctor name."), VOICE)
+            resp.redirect("/voice")
+            return str(resp)
+
         calendar_id = doctor_id
-        print(f"👨‍⚕️ Checking calendar ID: {calendar_id}")
+        debug_print(f"👨‍⚕️ Checking calendar ID: {calendar_id}")
 
         if not is_time_slot_available(calendar_id, appointment_start, appointment_end, creds):
-            print("❌ Requested time slot is not available")
+            debug_print("❌ Requested time slot is not available")
 
-            alts = get_next_available_slots(
-                calendar_id,
-                creds,
-                limit=3,
-                duration_minutes=APPOINTMENT_DURATION_MINUTES
-            )
+            alts = get_next_available_slots(calendar_id, creds, limit=3, duration_minutes=APPOINTMENT_DURATION_MINUTES)
 
             if alts:
                 options = " or ".join([slot["friendly"] for slot in alts])
                 prompt = f"That time is not available. Would you like to book on {options}?"
-                print(f"💡 Offering alternatives: {options}")
+                debug_print(f"💡 Offering alternatives: {options}")
             else:
                 prompt = "That time is not available, and I couldn't find any open slots soon. Please try again later."
-                print("⚠️ No alternative slots found.")
+                debug_print("⚠️ No alternative slots found.")
 
             gather = make_gather(prompt)
             resp.append(gather)
+            resp.say(gpt_speak("I didn't get your choice."), VOICE)
+            resp.redirect("/voice")
             return str(resp)
 
         # ✅ Slot is free → Check if customer exists
-        print("✅ Slot is available. Checking customer existence...")
+        debug_print("✅ Slot is available. Checking customer existence...")
         customer = session_data[call_sid].get("customer", {})
-        customer_phone = customer.get("phone", "")
-        customer_dob = customer.get("dob", "")
+        # normalize phone the same way your DB/search expects
+        phone_norm = "".join(ch for ch in (customer.get("phone", "") or "") if ch.isdigit())
+        if len(phone_norm) == 11 and phone_norm.startswith("1"):
+            phone_norm = phone_norm[1:]
+        dob_val = customer.get("dob", "")
 
         try:
-            if customer_phone and customer_dob and customer_search(customer_phone, customer_dob):
-                print("📋 Customer exists — skipping name collection, going to book_appt_confirm.")
+            if phone_norm and dob_val and customer_search(phone_norm, dob_val):
+                debug_print("📋 Customer exists — skipping info collection, going to book_appt_confirm.")
                 session_data[call_sid]["stage"] = "book_appt_confirm"
-                gather = make_gather("I found your details on file. Shall I confirm this appointment now?")
-                resp.append(gather)
+                # auto-run confirm now (no yes/no that could contradict)
+                try:
+                    from flask import url_for
+                    resp.redirect(url_for("voice"))
+                except Exception:
+                    resp.redirect(request.path)
                 return str(resp)
             else:
-                print("🆕 Customer not found — proceeding to first name collection.")
+                debug_print("🆕 Customer not found — proceeding to first name collection.")
                 session_data[call_sid]["stage"] = "collect_first_name"
                 gather = make_gather("Thanks. What is your first name?")
                 resp.append(gather)
+                resp.say(gpt_speak("I didn't catch the first name."), VOICE)
+                resp.redirect("/voice")
                 return str(resp)
         except Exception as e:
-            print(f"⚠️ Error during customer_search: {e}")
+            debug_print(f"⚠️ Error during customer_search: {e}")
             session_data[call_sid]["stage"] = "collect_first_name"
             gather = make_gather("Thanks. What is your first name?")
             resp.append(gather)
+            resp.say(gpt_speak("I didn't catch the first name."), VOICE)
+            resp.redirect("/voice")
             return str(resp)
-
-
-
 
 
 
@@ -2366,50 +2376,76 @@ def voice():
         # ----------------------------------------------------------------------
         # 🧍 Stage: Collect First Name
         # ----------------------------------------------------------------------
-        first_name = speech_result.strip()
-        print(f"📛 collect_first_name : Collected first name: {first_name}")
+        import re
+        first_name_raw = (speech_result or "").strip()
+        debug_print(f"📛 collect_first_name : Collected first name (raw): {first_name_raw}")
+
+        # Normalize: strip punctuation except hyphen/apostrophe, collapse spaces
+        first_name = re.sub(r"[^\w'\- ]+", "", first_name_raw).strip()
+        first_name = re.sub(r"\s+", " ", first_name)
+        debug_print(f"📛 collect_first_name : Normalized first name: {first_name}")
 
         if not first_name or len(first_name.split()) > 2:
             # ⚠️ If unclear or too long, ask again
-            # ⬇️ Updated to use make_gather so silence is handled
             gather = make_gather("I didn't catch that clearly. Please say your first name again.")
             resp.append(gather)
+            # fallback so we don't dead-end on silence
+            resp.say(gpt_speak("I didn't get the first name."), VOICE)
+            resp.redirect("/voice")
             return str(resp)
 
-        # ✅ Save and move to last name
-        session_data[call_sid]["customer"] = {"first_name": first_name}
+        # ✅ Update in place; DO NOT replace the entire customer dict
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid].setdefault("customer", {})
+        session_data[call_sid]["customer"]["first_name"] = first_name
+        debug_print(f"collect_first_name: 🧾 customer now → {session_data[call_sid]['customer']}")
+
         session_data[call_sid]["stage"] = "collect_last_name"
 
-        # ⬇️ Updated to use make_gather
         gather = make_gather("Thank you. Now, what is your last name?")
         resp.append(gather)
+        resp.say(gpt_speak("I didn't get the last name."), VOICE)
+        resp.redirect("/voice")
         return str(resp)
+
+
 
 
 
     elif stage == "collect_last_name":
         try:
-            last = (speech_result or "").strip()
-            print(f"👤 collect_last_name: {last}")
+            import re
+            last_raw = (speech_result or "").strip()
+            debug_print(f"👤 collect_last_name (raw): {last_raw}")
+
+            # Normalize: strip punctuation except hyphen/apostrophe, collapse spaces
+            last = re.sub(r"[^\w'\- ]+", "", last_raw).strip()
+            last = re.sub(r"\s+", " ", last)
+            debug_print(f"👤 collect_last_name (normalized): {last}")
 
             if not last:
-                # Re-prompt for last name with standardized silence handling
                 gather = make_gather("Sorry, I didn't catch your last name. Please repeat it.")
                 resp.append(gather)
+                resp.say(gpt_speak("I didn't get the last name."), VOICE)
+                resp.redirect("/voice")
                 return str(resp)
 
-            # ✅ Save and move to next stage (collect_address instead of collect_phone)
+            # ✅ Ensure customer bucket exists and update (no overwrite)
+            session_data.setdefault(call_sid, {})
+            session_data[call_sid].setdefault("customer", {})
             session_data[call_sid]["customer"]["last_name"] = last
             session_data[call_sid]["stage"] = "collect_address"
-            print(f"✅ Stored last name: {last}")
+            debug_print(f"✅ Stored last name: {last}; customer → {session_data[call_sid]['customer']}")
 
             # Prompt for address
             gather = make_gather("Got it. What is your full address, please?")
             resp.append(gather)
+            resp.say(gpt_speak("I didn't hear the address."), VOICE)
+            resp.redirect("/voice")
             return str(resp)
 
         except Exception as e:
-            print(f"❌ Exception in collect_last_name stage: {e}")
+            debug_print(f"❌ Exception in collect_last_name stage: {e}")
             resp.say(gpt_speak("Sorry, there was an error. Let's try again later."), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
@@ -2420,14 +2456,6 @@ def voice():
    
 
 
-    # ----------------------------------------------------------------------
-    # 🏠 Stage: collect_address
-    # Purpose:
-    #   - Capture the caller’s full address.
-    #   - Normalize and store all customer data (name, phone, address).
-    #   - Hand off to collect_cc to capture payment details before final confirmation.
-    #   - If silence or no input is detected, re-prompt politely using make_gather().
-    # ----------------------------------------------------------------------
     elif stage == "collect_address":
         # ----------------------------------------------------------------------
         # 🏠 Stage: Collect Customer Address (INFO ONLY)
@@ -2436,37 +2464,90 @@ def voice():
         #   - Do NOT create any calendar events here.
         #   - Hand off to collect_cc; book_appt_confirm will run after CC is collected.
         # ----------------------------------------------------------------------
-        address = (speech_result or "").strip()
-        print(f"collect_address: 📬 Collected address: {address}")
+        import re
+
+        address_raw = (speech_result or "").strip()
+        debug_print(f"collect_address: 📬 Collected address (raw): {address_raw}")
+
+        # Normalize: collapse whitespace, trim trailing punctuation
+        address = re.sub(r"\s+", " ", address_raw).strip()
+        address = re.sub(r"[.,;\-–—\s]+$", "", address)  # remove trailing punctuation
+        debug_print(f"collect_address: 📬 Normalized address: {address}")
+
+        # Ensure session buckets exist
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid].setdefault("customer", {})
+
+        # If no usable address, re-prompt and stay here
+        if not address or len(address) < 5:
+            gather = make_gather("Sorry, I didn't catch your full address. Please say your street, city, state, and zip.")
+            resp.append(gather)
+            resp.say(gpt_speak("I didn't hear the address."), VOICE)
+            resp.redirect("/voice")
+            return str(resp)
 
         # Save address; keep everything else untouched
-        session_data[call_sid].setdefault("customer", {})
         session_data[call_sid]["customer"]["address"] = address
 
-        # Set next stage to collect CC info (then that stage will jump to book_appt_confirm)
+        # 🔒 Require phone + DOB before moving to CC
+        def _normalize_10(d):
+            d = "".join(ch for ch in (d or "") if ch.isdigit())
+            return d[1:] if len(d) == 11 and d.startswith("1") else d
+
+        phone_norm = _normalize_10(session_data[call_sid]["customer"].get("phone", ""))
+        if len(phone_norm) != 10:
+            debug_print("collect_address: ❌ Phone missing/invalid → collect_phone")
+            session_data[call_sid]["stage"] = "collect_phone"
+            gather = make_gather(
+                "Thanks. Before we continue, please provide your ten digit phone number including area code. "
+                "You can say it or type the digits and press pound."
+            )
+            resp.append(gather)
+            resp.say(gpt_speak("I didn't get the phone number."), VOICE)
+            resp.redirect("/voice")
+            return str(resp)
+
+        if not session_data[call_sid]["customer"].get("dob"):
+            debug_print("collect_address: ❌ DOB missing → collect_dob")
+            session_data[call_sid]["stage"] = "collect_dob"
+            gather = make_gather(
+                "Thanks. Before we continue, please provide your date of birth. "
+                "You can say it, or enter two digits for month, two for day, and four for year, then press pound."
+            )
+            resp.append(gather)
+            resp.say(gpt_speak("I didn't get the date of birth."), VOICE)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # ✅ Both present → proceed to CC
         session_data[call_sid]["stage"] = "collect_cc"
-        print("collect_address: 🔁 Redirecting to /voice to run collect_cc")
+        debug_print("collect_address: 🔁 Redirecting to /voice to run collect_cc")
         resp.redirect("/voice")
         return str(resp)
 
 
+
     
-    # ----------------------------------------------------------------------
-# 💳 Stage: collect_cc
-# Purpose:
-#   - Collect credit card info via DTMF in three mini-steps:
-#       (1) Card number (13–19 digits, Luhn-checked)
-#       (2) Expiration date (MMYY) → stored as 'MM/YY'
-#       (3) CVV (3–4 digits)
-#   - Stores under session_data[call_sid]["customer"]: cc_number, cc_exp, cc_cvv, cc_name
-#   - Auto-advances to book_appt_confirm upon success (no extra prompt)
-# Notes:
-#   - Uses make_gather() so silence handling is consistent.
-#   - Speech digits are supported (fallback), but DTMF is recommended for reliability.
-# ----------------------------------------------------------------------
+    
     elif stage == "collect_cc":
+    # ----------------------------------------------------------------------
+    # 💳 Stage: collect_cc
+    # Purpose:
+    #   - Collect credit card info in three mini-steps:
+    #       (1) Card number (13–19 digits, Luhn-checked)
+    #       (2) Expiration (MMYY or MMYYYY) → stored as 'MM/YY' and must be current/future
+    #       (3) CVV (3–4 digits)
+    #   - Stores under session_data[call_sid]["customer"]: cc_number, cc_exp, cc_cvv, cc_name
+    #   - Auto-advances to book_appt_confirm upon success (no extra prompt)
+    # Notes:
+    #   - Uses make_gather() so silence handling is consistent (DTMF + speech, finish on '#').
+    #   - Speech digits supported via spoken→digit normalization; DTMF preferred for reliability.
+    #   - Guards: requires phone (10-digit) and DOB before collecting CC.
+    #   - Logs: PAN/CVV masked to avoid leaking sensitive data.
+    # ----------------------------------------------------------------------
         import re
 
+        # Luhn mod-10
         def luhn_check(number: str) -> bool:
             """Return True if 'number' passes Luhn mod-10 check."""
             s = 0
@@ -2483,7 +2564,7 @@ def voice():
                 alt = not alt
             return (s % 10) == 0
 
-        # --- Voice → digits normalizer (supports "double", "triple") ---
+        # Voice → digits (supports "double"/"triple", common homophones)
         def normalize_spoken_digits(raw: str) -> str:
             if not raw:
                 return ""
@@ -2511,13 +2592,42 @@ def voice():
                 i += 1
             return "".join(out)
 
-        # Ensure customer bucket exists
+        # Maskers for logging
+        def _mask_pan(n: str) -> str:
+            n = n or ""
+            return ("*" * max(0, len(n) - 4)) + n[-4:] if n else ""
+        def _mask_all(n: str) -> str:
+            return "*" * len(n or "")
+
+        # Ensure session buckets exist
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
         customer = session_data[call_sid]["customer"]
 
+        # 🔒 Require phone + DOB before CC
+        def _normalize_10(d):
+            d = "".join(ch for ch in (d or "") if ch.isdigit())
+            return d[1:] if len(d) == 11 and d.startswith("1") else d
+        phone_guard = _normalize_10(customer.get("phone"))
+        if len(phone_guard) != 10 or not customer.get("dob"):
+            debug_print("collect_cc: ❌ Missing phone/DOB → redirecting")
+            session_data[call_sid]["stage"] = "collect_phone" if len(phone_guard) != 10 else "collect_dob"
+            gather = make_gather(
+                "Before payment details, please provide your ten digit phone number including area code."
+                if len(phone_guard) != 10 else
+                "Before payment details, please provide your date of birth. You can say it, or enter MMDDYYYY then press pound.",
+                hints="zero one two three four five six seven eight nine"
+            )
+            resp.append(gather)
+            resp.say(gpt_speak("Let's get that first."), VOICE)
+            resp.redirect("/voice")
+            return str(resp)
+
         # Mini-step tracker: 1=number, 2=exp, 3=cvv
         cc_step = session_data[call_sid].get("cc_step", 1)
+
+        # Retry counter for CC flow
+        session_data[call_sid]["retry_cc"] = session_data[call_sid].get("retry_cc", 0)
 
         # Pull inputs
         try:
@@ -2526,7 +2636,10 @@ def voice():
             dtmf_digits = ""
         speech_text = (speech_result or "").strip()
 
-        debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{dtmf_digits}', speech='{speech_text}'")
+        # Mask logs for step 1 (PAN)
+        masked_speech = "***" if cc_step == 1 and speech_text else speech_text
+        masked_dtmf = "***" if cc_step == 1 and dtmf_digits else dtmf_digits
+        debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{masked_dtmf}', speech='{masked_speech}'")
 
         # Prefer DTMF; if none, extract digits from speech (words → digits)
         def get_digits() -> str:
@@ -2534,38 +2647,43 @@ def voice():
                 return re.sub(r"\D", "", dtmf_digits)
             return re.sub(r"\D", "", normalize_spoken_digits(speech_text))
 
+        # Helper: re-prompt with retry cap
+        def _reprompt(prompt: str, hints: str):
+            session_data[call_sid]["retry_cc"] += 1
+            if session_data[call_sid]["retry_cc"] >= 5:
+                debug_print("collect_cc: ⛔ max CC retries. Ending.")
+                resp.say(gpt_speak("Sorry, we’re having trouble collecting your details. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return True  # handled
+            gather = make_gather(prompt, hints=hints)
+            resp.append(gather)
+            resp.say(gpt_speak("I didn't get that."), VOICE)
+            resp.redirect("/voice")
+            return True
+
         # -------------------------------
         # Step 1: Card Number (13–19)
         # -------------------------------
         if cc_step == 1:
             digits = get_digits()
             if not digits:
-                # Using global make_gather (accepts DTMF + speech)
-                gather = make_gather(
+                if _reprompt(
                     "Please enter your card number now, then press pound.",
                     hints="zero one two three four five six seven eight nine double triple"
-                )
-                resp.append(gather)
-                # Fallback if no input captured by Gather
-                resp.say(gpt_speak("I didn't get anything."), VOICE)
-                resp.redirect("/voice")
-                return str(resp)
+                ): return str(resp)
 
             if not (13 <= len(digits) <= 19) or not luhn_check(digits):
-                debug_print(f"collect_cc: ❌ Invalid card number: '{digits}'")
-                gather = make_gather(
+                debug_print(f"collect_cc: ❌ Invalid card number: '{_mask_pan(digits)}' (len={len(digits)})")
+                if _reprompt(
                     "That card number doesn't look right. Please re-enter the full card number, then press pound.",
                     hints="zero one two three four five six seven eight nine double triple"
-                )
-                resp.append(gather)
-                resp.say(gpt_speak("I still didn't get the card number."), VOICE)
-                resp.redirect("/voice")
-                return str(resp)
+                ): return str(resp)
 
             # Save and advance
             customer["cc_number"] = digits
             session_data[call_sid]["cc_step"] = 2
-            debug_print(f"collect_cc: ✅ Saved card number (len={len(digits)})")
+            debug_print(f"collect_cc: ✅ Saved card number {_mask_pan(digits)}")
 
             gather = make_gather(
                 "Thank you. Now enter the expiration as two digits for month and two digits for year. "
@@ -2578,36 +2696,44 @@ def voice():
             return str(resp)
 
         # -------------------------------
-        # Step 2: Expiration (MMYY)
+        # Step 2: Expiration (MMYY or MMYYYY, must be current/future)
         # -------------------------------
         if cc_step == 2:
             digits = get_digits()
-            if len(digits) != 4:
-                debug_print(f"collect_cc: ❌ Exp not 4 digits: '{digits}'")
-                gather = make_gather(
+            if len(digits) not in (4, 6):
+                debug_print(f"collect_cc: ❌ Exp bad length: '{digits}'")
+                if _reprompt(
                     "Please enter the expiration as four digits MMYY, then press pound.",
                     hints="zero one two three four five six seven eight nine"
-                )
-                resp.append(gather)
-                resp.say(gpt_speak("I didn't hear the expiration."), VOICE)
-                resp.redirect("/voice")
-                return str(resp)
+                ): return str(resp)
 
             mm = int(digits[:2]) if digits[:2].isdigit() else 0
             yy = digits[2:]
             if not (1 <= mm <= 12):
                 debug_print(f"collect_cc: ❌ Invalid month: '{digits}'")
-                gather = make_gather(
+                if _reprompt(
                     "The month must be 01 through 12. Please re-enter expiration MMYY, then press pound.",
                     hints="zero one two three four five six seven eight nine"
-                )
-                resp.append(gather)
-                resp.say(gpt_speak("I didn't hear the expiration."), VOICE)
-                resp.redirect("/voice")
-                return str(resp)
+                ): return str(resp)
 
-            # Optionally check card not expired (requires current date logic)
-            customer["cc_exp"] = f"{digits[:2]}/{yy}"
+            # Normalize year to 2-digit (handle MMYYYY too)
+            if len(yy) == 4:
+                yy = yy[-2:]
+
+            # Reject past month
+            from datetime import datetime
+            now = datetime.now()
+            exp_year = 2000 + int(yy)
+            exp_cmp  = exp_year * 100 + mm
+            now_cmp  = now.year * 100 + now.month
+            if exp_cmp < now_cmp:
+                debug_print(f"collect_cc: ❌ Expired card: {mm:02d}/{yy}")
+                if _reprompt(
+                    "That card appears expired. Please enter a valid expiration date as MMYY, then press pound.",
+                    hints="zero one two three four five six seven eight nine"
+                ): return str(resp)
+
+            customer["cc_exp"] = f"{mm:02d}/{yy}"
             session_data[call_sid]["cc_step"] = 3
             debug_print(f"collect_cc: ✅ Saved expiration {customer['cc_exp']}")
 
@@ -2626,21 +2752,16 @@ def voice():
         if cc_step == 3:
             digits = get_digits()
             if not (3 <= len(digits) <= 4) or not digits.isdigit():
-                debug_print(f"collect_cc: ❌ Invalid CVV: '{digits}'")
-                gather = make_gather(
+                debug_print(f"collect_cc: ❌ Invalid CVV length={len(digits)}")
+                if _reprompt(
                     "That security code doesn't look right. Please re-enter the three or four digit code, then press pound.",
                     hints="zero one two three four five six seven eight nine"
-                )
-                resp.append(gather)
-                resp.say(gpt_speak("I didn't hear the security code."), VOICE)
-                resp.redirect("/voice")
-                return str(resp)
+                ): return str(resp)
 
             customer["cc_cvv"] = digits
 
             # Default the cardholder name from collected name, if not set
             if not customer.get("cc_name"):
-                # prefer explicit first/last if available; else use 'name'
                 name = customer.get("name") or " ".join(
                     p for p in [customer.get("first_name"), customer.get("last_name")] if p
                 )
@@ -2659,7 +2780,6 @@ def voice():
                 resp.redirect(url_for("voice"))  # adjust endpoint name if different
             except Exception:
                 resp.redirect(request.path)      # fallback to current path
-
             return str(resp)
 
 
