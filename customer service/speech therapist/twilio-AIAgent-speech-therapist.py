@@ -3608,116 +3608,397 @@ def voice():
 
     elif stage == "cancel_appt_get_date_time":
         # ----------------------------------------------------------------------
-        # 📌 Purpose:
-        # This stage collects and parses the **date and time** of the appointment
-        # that the caller wants to cancel.
+        # ❌ Stage: cancel_appt_get_date_time
+        # Goal:
+        #   - If caller provides a date/time, parse it and validate against calendar(s).
+        #       • If a matching appointment is found → go to cancel_appt_confirm
+        #       • If not found / invalid → go to cancel_appt_iterate
+        #   - If caller does NOT provide date/time → go to cancel_appt_iterate
         #
-        # Flow:
-        # 1. Take the speech input from the caller (e.g., "July 29th at 8:30 AM").
-        # 2. Parse the date and time using `smart_parse_time()`.
-        # 3. If parsing fails:
-        #    - Allow up to 3 retries.
-        #    - Use `make_gather()` to prompt the caller again.
-        # 4. If parsing succeeds:
-        #    - Convert the time to UTC using `build_timeslot_range()`.
-        #    - Save the UTC window and original spoken values in the session.
-        #    - Ensure the doctor’s calendar ID is available in session.
-        #    - Optionally try to find the matching Google Calendar event now.
-        #    - Advance to `cancel_appt_confirm`.
-        #
-        # Notes:
-        # - This step is critical because accurate date/time is required
-        #   to identify the correct appointment for cancellation.
+        # IMPORTANT: No DOB verification here. Any DOB checks happen in
+        #            cancel_appt_get_dob. We only rely on phone (if available).
         # ----------------------------------------------------------------------
-
         debug_print("cancel_appt_get_date_time: 📍 Stage entered")
 
-        # 🧠 Step 1: Parse speech
-        debug_print(f"cancel_appt_get_date_time: 🗣️ Raw speech input → '{speech_result}'")
-        time_info = smart_parse_time(speech_result)
-        debug_print(f"cancel_appt_get_date_time: 🧠 smart_parse_time() returned → {time_info}")
+        # Ensure buckets
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid].setdefault("cancel", {})
+        cancel_ctx = session_data[call_sid]["cancel"]
 
-        # ❌ Step 2: Handle parsing failure
-        if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
-            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
-            debug_print(f"cancel_appt_get_date_time: ❌ Failed to parse time. Retry count → {session_data[call_sid]['retry_time']}")
+        # --- Require caller phone (10-digit) for event search; DO NOT check DOB here ---
+        def _normalize_10(d: str) -> str:
+            d = "".join(ch for ch in (d or "") if ch.isdigit())
+            return d[1:] if len(d) == 11 and d.startswith("1") else d
 
-            if session_data[call_sid]["retry_time"] >= 3:
-                debug_print("cancel_appt_get_date_time: ⛔ Max retries reached. Ending call.")
-                resp.say(gpt_speak("Sorry, I couldn't understand the time. Please try again later. Goodbye."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
+        phone_norm = _normalize_10(
+            cancel_ctx.get("phone") or session_data[call_sid].get("customer", {}).get("phone")
+        )
+        if len(phone_norm) != 10:
+            debug_print("cancel_appt_get_date_time: ❌ phone missing/invalid → redirecting to collect_phone")
+            session_data[call_sid]["return_stage"] = "cancel_appt_get_date_time"
+            session_data[call_sid]["stage"] = "collect_phone"
             gather = make_gather(
-                "I didn’t catch that. Please say the date and time of the appointment you want to cancel, "
-                "like July 29th at 8:30 AM."
+                "To locate your appointment, please provide your ten digit phone number including area code. "
+                "You can say it, or type the digits and press pound.",
+                hints="zero one two three four five six seven eight nine"
             )
             resp.append(gather)
+            resp.redirect("/voice")
             return str(resp)
 
-        # ✅ Step 3: Parsed successfully
+        # Persist normalized phone for downstream use
+        cancel_ctx["phone"] = phone_norm
+
+        # --- Pull the user's utterance for date/time ----------------------------
+        utter = (speech_result or "").strip()
+        debug_print(f"cancel_appt_get_date_time: 🗣️ Raw speech input → '{utter}'")
+
+        # If no input given → immediately fall back to iterator flow
+        if not utter:
+            debug_print("cancel_appt_get_date_time: 🚫 No date/time provided → falling back to cancel_appt_iterate")
+            cancel_ctx["iter_index"] = 0
+            session_data[call_sid]["stage"] = "cancel_appt_iterate"
+            resp.redirect("/voice")
+            return str(resp)
+
+        # --- Try to parse (no retry loop here) ----------------------------------
+        time_info = smart_parse_time(utter)
+        debug_print(f"cancel_appt_get_date_time: 🧠 smart_parse_time() returned → {time_info}")
+
+        if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
+            debug_print("cancel_appt_get_date_time: ❌ Could not parse date/time → going to iterator")
+            cancel_ctx["iter_index"] = 0
+            session_data[call_sid]["stage"] = "cancel_appt_iterate"
+            resp.redirect("/voice")
+            return str(resp)
+
         spoken_day, spoken_time = time_info
         debug_print(f"cancel_appt_get_date_time: 📆 Parsed → Day: {spoken_day}, Time: {spoken_time}")
 
+        # --- Build UTC search window --------------------------------------------
         try:
-            # 🌍 Convert to UTC window
             utc_start, utc_end = build_timeslot_range(spoken_day, spoken_time)
             debug_print(f"cancel_appt_get_date_time: ✅ UTC range → Start: {utc_start}, End: {utc_end}")
+        except Exception as e:
+            debug_print(f"cancel_appt_get_date_time: ❌ build_timeslot_range failed → {e} → iterator")
+            cancel_ctx["iter_index"] = 0
+            session_data[call_sid]["stage"] = "cancel_appt_iterate"
+            resp.redirect("/voice")
+            return str(resp)
 
-            # Save details in session
-            session_data[call_sid]["cancel"]["day"] = spoken_day
-            session_data[call_sid]["cancel"]["time"] = spoken_time
-            session_data[call_sid]["cancel"]["utc_start"] = utc_start
-            session_data[call_sid]["cancel"]["utc_end"] = utc_end
+        # Save spoken + window in session (useful for confirm/logging)
+        cancel_ctx["day"]       = spoken_day
+        cancel_ctx["time"]      = spoken_time
+        cancel_ctx["utc_start"] = utc_start
+        cancel_ctx["utc_end"]   = utc_end
 
-            # 📅 Ensure doctor calendar ID exists
-            calendar_id = session_data[call_sid]["cancel"].get("calendar_id")
-            if not calendar_id:
-                doctor = session_data[call_sid]["cancel"].get("doctor", "")
-                for doc_id, friendly in googleid_dr_name_map.items():
-                    if friendly.lower() == doctor.lower():
-                        calendar_id = doc_id
-                        session_data[call_sid]["cancel"]["calendar_id"] = calendar_id
-                        break
+        # --- Resolve/search calendars ------------------------------------------
+        calendar_id = cancel_ctx.get("calendar_id")
+        if calendar_id:
+            calendars_to_check = [(calendar_id, googleid_dr_name_map.get(calendar_id, "the doctor"))]
+        else:
+            calendars_to_check = list(googleid_dr_name_map.items())
 
-            if not calendar_id:
-                debug_print("cancel_appt_get_date_time: ❌ Doctor calendar ID not found.")
-                resp.say(gpt_speak("Sorry, I couldn't find the doctor's calendar. Please try again later."), VOICE)
+        matching_event = None
+        matched_calendar = None
+
+        for cal_id, friendly_name in calendars_to_check:
+            try:
+                # Your helper may return None/dict/list; normalize here
+                ev = get_upcoming_events(cal_id, phone_norm, utc_start, utc_end, creds, debug=True)
+                if isinstance(ev, list) and ev:
+                    candidate = ev[0]
+                else:
+                    candidate = ev if ev else None
+            except Exception as e:
+                debug_print(f"cancel_appt_get_date_time: ⚠️ get_upcoming_events error for {friendly_name} → {e}")
+                candidate = None
+
+            if candidate:
+                matching_event = candidate
+                matched_calendar = cal_id
+                debug_print(f"cancel_appt_get_date_time: ✅ Found matching event in {friendly_name} ({cal_id})")
+                break
+
+        # --- Branch: found vs not found -----------------------------------------
+        if matching_event and matched_calendar:
+            cancel_ctx["calendar_id"]    = matched_calendar
+            cancel_ctx["matching_event"] = matching_event
+            debug_print("cancel_appt_get_date_time: ▶️ Match confirmed → proceeding to cancel_appt_confirm")
+            session_data[call_sid]["stage"] = "cancel_appt_confirm"
+            resp.redirect("/voice")
+            return str(resp)
+
+        # No exact match at that date/time → iterate through appointments
+        debug_print("cancel_appt_get_date_time: 🚫 No matching event at that date/time → falling back to cancel_appt_iterate")
+        cancel_ctx["iter_index"] = 0
+        session_data[call_sid]["stage"] = "cancel_appt_iterate"
+        resp.redirect("/voice")
+        return str(resp)
+
+
+
+    elif stage == "cancel_appt_iterate":
+        # ----------------------------------------------------------------------
+        # 🔁 Stage: cancel_appt_iterate
+        # Purpose:
+        #   - Iterate over the caller’s upcoming appointments and ask,
+        #     one-by-one: “Should I cancel this one?”
+        #   - Match scope:
+        #       * If cancel["calendar_id"] present → search only that doctor’s calendar.
+        #       * Else → search across all doctors (googleid_dr_name_map).
+        #   - Matching criteria: by phone (10-digit) and DOB (ISO), consistent with
+        #     how you embed caller info in event description/extendedProperties.
+        #
+        # Flow:
+        #   1) On first entry, fetch candidate appointments → save in cancel["candidates"].
+        #   2) Read the current appointment (at cancel["iter_index"]) aloud and ask
+        #      “Cancel this one?” (Yes = 1 / No = 2 / Repeat = 3).
+        #   3) YES → set cancel["matching_event"] and jump to cancel_appt_confirm.
+        #   4) NO  → iter_index += 1; if exhausted → apologize+hangup OR reschedule→booking.
+        #
+        # Resilience:
+        #   - If phone/DOB missing → bounce to collectors with return path back here.
+        #   - Robust speech/DTMF handling (yes/no/3=repeat). Unknown → re-prompt.
+        #
+        # Side paths:
+        #   - If cancel["reschedule"] is True and no match found, go to booking flow.
+        # ----------------------------------------------------------------------
+        debug_print("cancel_appt_iterate: 📍 Stage entered")
+
+        # --- Ensure buckets exist ------------------------------------------------
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid].setdefault("cancel", {})
+        cancel_ctx = session_data[call_sid]["cancel"]
+
+        # --- Guards: need phone + DOB (normalized) -------------------------------
+        def _normalize_10(d: str) -> str:
+            d = "".join(ch for ch in (d or "") if ch.isdigit())
+            return d[1:] if len(d) == 11 and d.startswith("1") else d
+
+        phone_norm = _normalize_10(cancel_ctx.get("phone") or session_data[call_sid].get("customer", {}).get("phone"))
+        dob_val    = (cancel_ctx.get("dob") or session_data[call_sid].get("customer", {}).get("dob") or "").strip()
+
+        if len(phone_norm) != 10:
+            debug_print("cancel_appt_iterate: ❌ phone missing/invalid → redirecting to collect_phone")
+            session_data[call_sid]["return_stage"] = "cancel_appt_iterate"
+            session_data[call_sid]["stage"] = "collect_phone"
+            gather = make_gather(
+                "To find your appointment, please provide your ten digit phone number including area code. "
+                "You can say it, or type the digits and press pound.",
+                hints="zero one two three four five six seven eight nine"
+            )
+            resp.append(gather)
+            resp.redirect("/voice")
+            return str(resp)
+
+        if not dob_val:
+            debug_print("cancel_appt_iterate: ❌ DOB missing → redirecting to cancel_appt_get_dob")
+            session_data[call_sid]["return_stage"] = "cancel_appt_iterate"
+            session_data[call_sid]["stage"] = "cancel_appt_get_dob"
+            gather = make_gather(
+                "Please say your date of birth, or enter two digits for month, two for day, and four for year, then press pound."
+            )
+            resp.append(gather)
+            resp.redirect("/voice")
+            return str(resp)
+
+        cancel_ctx["phone"] = phone_norm
+        cancel_ctx["dob"]   = dob_val
+
+        # --- Helper: friendly local time for speaking/SMS ------------------------
+        def _fmt_local_friendly(utc_iso: str) -> str:
+            if not utc_iso:
+                return ""
+            try:
+                from datetime import datetime
+                import pytz
+                dt_utc = datetime.fromisoformat(utc_iso.replace("Z", "+00:00"))
+                tz = pytz.timezone("America/Chicago")
+                dt_local = dt_utc.astimezone(tz)
+                try:
+                    return dt_local.strftime("%A, %B %-d at %-I:%M %p")
+                except Exception:
+                    return dt_local.strftime("%A, %B %d at %I:%M %p").lstrip("0").replace(" 0", " ")
+            except Exception as e:
+                debug_print(f"cancel_appt_iterate: ⚠️ time format failed → {e}")
+                return utc_iso
+
+        # --- Helper: fetch candidate appts for this caller -----------------------
+        def _fetch_candidates() -> list:
+            """
+            Returns a list of dicts:
+                {
+                "event_id": "...",
+                "calendar_id": "...",
+                "doctor_name": "Dr. X",
+                "start_utc": "YYYY-MM-DDTHH:MM:SS+00:00",
+                "end_utc":   "YYYY-MM-DDTHH:MM:SS+00:00",
+                "friendly":  "Tuesday, August 12 at 9:00 AM",
+                "summary":   "...",    # optional
+                "location":  "..."     # optional
+                }
+            """
+            horizon_days = 90
+            limit = 25
+            results = []
+
+            # Scope: single calendar if set; else all mapped doctors
+            target_cals = []
+            if cancel_ctx.get("calendar_id"):
+                target_cals = [(cancel_ctx["calendar_id"], googleid_dr_name_map.get(cancel_ctx["calendar_id"], "the doctor"))]
+            else:
+                # Iterate all doctors
+                target_cals = list(googleid_dr_name_map.items())
+
+            for cal_id, friendly_name in target_cals:
+                try:
+                    # 🔎 Replace with your real helper that filters by phone/DOB:
+                    #     find_future_events_for_caller(calendar_id, phone, dob, creds, horizon_days, limit, debug)
+                    events = find_future_events_for_caller(
+                        calendar_id=cal_id,
+                        phone=phone_norm,
+                        dob=dob_val,
+                        creds=creds,
+                        horizon_days=horizon_days,
+                        limit=limit,
+                        debug=True
+                    )
+                except NameError:
+                    debug_print("cancel_appt_iterate: ⚠️ Missing helper find_future_events_for_caller(...) → returning no events for this calendar")
+                    events = []
+                except Exception as e:
+                    debug_print(f"cancel_appt_iterate: ❌ fetch failed for {friendly_name} ({cal_id}) → {e}")
+                    events = []
+
+                # Normalize each event into our shape
+                for ev in events or []:
+                    start = ev.get("start_utc") or ev.get("start")
+                    end   = ev.get("end_utc")   or ev.get("end")
+                    eid   = ev.get("id") or ev.get("event_id")
+                    if not (start and end and eid):
+                        continue
+                    results.append({
+                        "event_id": eid,
+                        "calendar_id": cal_id,
+                        "doctor_name": friendly_name,
+                        "start_utc": start,
+                        "end_utc": end,
+                        "friendly": _fmt_local_friendly(start),
+                        "summary": ev.get("summary", ""),
+                        "location": ev.get("location", "")
+                    })
+
+            # Sort by start time ascending if timestamps exist
+            try:
+                results.sort(key=lambda r: r.get("start_utc", ""))
+            except Exception:
+                pass
+
+            return results
+
+        # --- Load or create candidate list + iterator index ----------------------
+        candidates = cancel_ctx.get("candidates")
+        if candidates is None:
+            debug_print("cancel_appt_iterate: 🔍 Fetching candidate appointments for caller")
+            candidates = _fetch_candidates()
+            cancel_ctx["candidates"] = candidates
+            cancel_ctx["iter_index"] = 0
+
+        idx = int(cancel_ctx.get("iter_index", 0))
+
+        # --- If no candidates, decide end path (apology vs reschedule→booking) ---
+        if not candidates:
+            if cancel_ctx.get("reschedule") is True:
+                debug_print("cancel_appt_iterate: 🚫 No appointments found → reschedule path → booking")
+                session_data[call_sid]["stage"] = "booking"
+                gather = make_gather(
+                    "I couldn't find any upcoming appointments to cancel. "
+                    "Would you like to book a new appointment? Please say the doctor's name to begin."
+                )
+                resp.append(gather)
+                return str(resp)
+            else:
+                debug_print("cancel_appt_iterate: 🚫 No appointments found → apologizing and hanging up")
+                resp.say(gpt_speak("I couldn't find any upcoming appointments on file. Please call us if you need more help. Goodbye."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            debug_print(f"cancel_appt_get_date_time: 📅 Doctor calendar ID → {calendar_id}")
-
-            # 🔎 Optional: Pre-fetch the matching event
-            phone = session_data[call_sid]["cancel"].get("phone")
-            try:
-                matching_event = get_upcoming_events(calendar_id, phone, utc_start, utc_end, creds, debug=True)
-            except Exception as e:
-                debug_print(f"cancel_appt_get_date_time: ❌ get_upcoming_events raised → {e}")
-                matching_event = None
-
-            session_data[call_sid]["cancel"]["matching_event"] = matching_event
-            if matching_event:
-                debug_print("cancel_appt_get_date_time: ✅ Matching event found and stored")
+        # --- Pull current candidate ---------------------------------------------
+        if idx >= len(candidates):
+            # exhausted list
+            if cancel_ctx.get("reschedule") is True:
+                debug_print("cancel_appt_iterate: 📦 All appointments checked → reschedule path → booking")
+                session_data[call_sid]["stage"] = "booking"
+                gather = make_gather(
+                    "We’ve checked all your upcoming appointments. Would you like to book a new time now? "
+                    "Please say the doctor's name to begin."
+                )
+                resp.append(gather)
+                return str(resp)
             else:
-                debug_print("cancel_appt_get_date_time: 🚫 No matching event found at this step")
+                debug_print("cancel_appt_iterate: 📦 All appointments checked → no match → apologize + hangup")
+                resp.say(gpt_speak("I couldn't find an appointment to cancel. Please call us if you need more help. Goodbye."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
 
-            # ▶️ Step 4: Move to confirmation stage
+        cand = candidates[idx]
+        doc_name   = cand.get("doctor_name", "the doctor")
+        when_friendly = cand.get("friendly", "")
+        summary    = cand.get("summary", "")
+        location   = cand.get("location", "")
+
+        # --- Read out the candidate and ask for confirmation ---------------------
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
+        speech_text = (speech_result or "").strip().lower()
+
+        # Interpret user response (if any on this pass)
+        yes_tokens = {"yes", "yeah", "yep", "yup", "correct", "sure", "affirmative"}
+        no_tokens  = {"no", "nope", "nah", "negative"}
+        repeat_tokens = {"repeat", "again", "one more time"}
+
+        answered_yes = (dtmf_digits == "1") or any(tok in speech_text for tok in yes_tokens)
+        answered_no  = (dtmf_digits == "2") or any(tok in speech_text for tok in no_tokens)
+        asked_repeat = (dtmf_digits == "3") or any(tok in speech_text for tok in repeat_tokens)
+
+        # If user already answered on this same turn, act on it
+        if answered_yes:
+            debug_print(f"cancel_appt_iterate: ✅ User chose YES for {when_friendly} with {doc_name}")
+            cancel_ctx["matching_event"] = cand
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
-            debug_print("cancel_appt_get_date_time: ✅ Session updated, moving to cancel_appt_confirm")
-            return voice()
-
-        except Exception as e:
-            debug_print(f"cancel_appt_get_date_time: ❌ Failed to convert time or search calendar → {e}")
-            resp.say(gpt_speak("Sorry, I couldn't process the date and time correctly."), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
+            resp.redirect("/voice")
             return str(resp)
 
+        if answered_no:
+            cancel_ctx["iter_index"] = idx + 1
+            debug_print(f"cancel_appt_iterate: ↘️ User chose NO → advancing to index {cancel_ctx['iter_index']}")
+            resp.redirect("/voice")
+            return str(resp)
 
+        if asked_repeat:
+            debug_print("cancel_appt_iterate: 🔁 User asked to repeat the current appointment details")
+            # fall through to read the same candidate again
 
+        # Speak current candidate details and prompt
+        prompt_lines = [
+            f"I found an appointment on {when_friendly} with {doc_name}."
+        ]
+        if summary:
+            prompt_lines.append(f"The subject is {summary}.")
+        if location:
+            prompt_lines.append(f"Location: {location}.")
+        prompt_lines.append("Should I cancel this one? Say yes or no. You can press 1 for yes, 2 for no, or 3 to hear it again.")
+        prompt = " ".join(prompt_lines)
+
+        debug_print(f"cancel_appt_iterate: 🔊 Prompting candidate idx {idx}/{len(candidates)-1} → {prompt}")
+        gather = make_gather(prompt, hints="yes no repeat")
+        resp.append(gather)
+        return str(resp)
 
 
 
