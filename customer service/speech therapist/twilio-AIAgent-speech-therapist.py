@@ -1536,124 +1536,387 @@ from datetime import datetime
 # Path under the existing appointment_data folder
 # ----------------------------------------------------------------------
 
-import os
-import json
+# =============================================================================
+# Human-readable customer "DB" in ONE file (appointment_data/customers.json)
+# - Each customer is exactly ONE block of 12 lines (no JSON lines).
+# - Match key: (Phone, DOB)
+# - New customer  -> append a block.
+# - Existing      -> update that block IN PLACE (no duplicate).
+# - PAN/CVV are MASKED in the file.
+# - All scans/updates are simple sequential text processing.
+# =============================================================================
+import os, re
 from datetime import datetime
 
+# ---------- Config ----------
 DB_FOLDER = "appointment_data"
-DB_FILE = os.path.join(DB_FOLDER, "customers.jsonl")
+DB_FILE   = os.path.join(DB_FOLDER, "customers.json")  # human-readable, not JSON
 
+# ---------- Logging helper ----------
+try:
+    debug_print  # type: ignore # will raise if not defined
+except NameError:  # minimal fallback so this module is self-contained
+    def debug_print(*args, **kwargs):
+        print(*args, **kwargs)
+
+# ---------- Init ----------
 def init_db():
-    """Ensure appointment_data folder and JSONL DB file exist."""
+    """Ensure DB folder/file exist (creates empty file if missing)."""
     os.makedirs(DB_FOLDER, exist_ok=True)
     if not os.path.exists(DB_FILE):
-        with open(DB_FILE, "w", encoding="utf-8") as f:
-            pass  # empty file
+        with open(DB_FILE, "w", encoding="utf-8"):
+            pass
 
-def _normalize_phone(phone: str) -> str:
-    """Keep digits only."""
-    return "".join(ch for ch in (phone or "") if ch.isdigit())
+# ---------- Sanitizers / formatters ----------
+def _oneline(s: str) -> str:
+    """Collapse whitespace/newlines to single spaces; trim."""
+    return re.sub(r"\s+", " ", (s or "").strip())
 
+def _normalize_phone(s: str) -> str:
+    """
+    Keep digits only; if NANP 11-digit starting with '1', strip leading '1'.
+    Returns 10-digit for US numbers where applicable; no validation beyond that.
+    """
+    d = "".join(ch for ch in (s or "") if ch.isdigit())
+    return d[1:] if len(d) == 11 and d.startswith("1") else d
+
+def _mask_pan(n: str) -> str:
+    """Mask a PAN for storage/logs (keep last 4)."""
+    n = (n or "").strip()
+    return ("*" * max(0, len(n) - 4)) + n[-4:] if n else ""
+
+def _mask_all(n: str) -> str:
+    """Mask entire sensitive string (e.g., CVV)."""
+    return "*" * len((n or "").strip())
+
+def _block_title(new: bool) -> str:
+    return "insert_customer: ✅ Added new customer" if new \
+           else "insert_customer: ℹ️ Existing customer — updated last_seen_at"
+
+def _render_block_lines(new: bool, rec: dict) -> list[str]:
+    """
+    Render the 12-line, human-readable block for a customer.
+    PAN/CVV are MASKED here so the file never stores raw values.
+    """
+    return [
+        _block_title(new),
+        f"Phone: {rec.get('phone') or '—'}",
+        f"DOB: {rec.get('dob') or '—'}",
+        f"First Name: {rec.get('first_name') or '—'}",
+        f"Last Name: {rec.get('last_name') or '—'}",
+        f"Address: {rec.get('address') or '—'}",
+        f"CC Name: {rec.get('cc_name') or '—'}",
+        f"CC Number: {_mask_pan(rec.get('cc_number'))}",
+        f"CC Exp: {rec.get('cc_exp') or '—'}",
+        f"CC CVV: {_mask_all(rec.get('cc_cvv'))}",
+        f"Created At: {rec.get('created_at') or '—'}",
+        f"Last Seen At: {rec.get('last_seen_at') or '—'}",
+    ]
+
+# ---------- File parsing helpers ----------
+def _iter_blocks(lines: list[str]):
+    """
+    Yield (start_idx, end_idx_exclusive, block_lines).
+    A block starts at a line beginning with 'insert_customer:' and ends
+    right before the next such line (or EOF).
+    """
+    start = None
+    for i, ln in enumerate(lines):
+        if ln.startswith("insert_customer:"):
+            if start is not None:
+                yield (start, i, lines[start:i])
+            start = i
+    if start is not None:
+        yield (start, len(lines), lines[start:])
+
+def _get_value(block_lines: list[str], label: str) -> str | None:
+    """Fetch 'Label: value' from a block."""
+    prefix = f"{label}:"
+    for ln in block_lines:
+        if ln.startswith(prefix):
+            return ln.split(":", 1)[1].strip()
+    return None
+
+def _extract_phone_dob(block_lines: list[str]) -> tuple[str | None, str | None]:
+    """Get (Phone, DOB) from a block."""
+    return _get_value(block_lines, "Phone"), _get_value(block_lines, "DOB")
+
+# ---------- Public API ----------
 def customer_search(phone: str, dob: str) -> bool:
     """
-    Sequential search in customers.jsonl
-    Returns True if (phone, dob) exists, otherwise False.
+    Sequentially scan the human-readable file and return True if a block
+    exists with matching (Phone, DOB). Simple, O(n) pass.
     """
     phone_norm = _normalize_phone(phone)
-    dob = (dob or "").strip()
+    dob_clean  = _oneline(dob)
 
     if not os.path.exists(DB_FILE):
         return False
 
     with open(DB_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if _normalize_phone(rec.get("phone", "")) == phone_norm and (rec.get("dob", "") or "").strip() == dob:
-                return True
+        lines = [ln.rstrip("\n") for ln in f]
+
+    for _, _, blk in _iter_blocks(lines):
+        b_phone, b_dob = _extract_phone_dob(blk)
+        if _normalize_phone(b_phone) == phone_norm and (b_dob or "") == dob_clean:
+            return True
     return False
 
-import os, json, re
-from datetime import datetime
-
-def _oneline(s: str) -> str:
-    """Collapse all whitespace/newlines to single spaces and trim."""
-    return re.sub(r"\s+", " ", (s or "").strip())
-
-def _update_existing_timestamp(phone_norm: str, dob_clean: str) -> bool:
-    """Rewrite JSONL, updating last_seen_at for the matching customer."""
+def _update_existing_block_in_place(phone_norm: str, dob_clean: str, updates: dict) -> bool:
+    """
+    Edit the matching block in place:
+      - Always bump 'Last Seen At' to now
+      - If updates contain non-empty values, refresh:
+          First Name, Last Name, Address, CC Name, CC Number, CC Exp, CC CVV
+      - Preserve original 'Created At' and title line
+    Returns True if a block was updated.
+    """
     if not os.path.exists(DB_FILE):
         return False
-    changed = False
-    tmp = DB_FILE + ".tmp"
+
+    with open(DB_FILE, "r", encoding="utf-8") as f:
+        lines = [ln.rstrip("\n") for ln in f]
+
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(DB_FILE, "r", encoding="utf-8") as fin, open(tmp, "w", encoding="utf-8") as fout:
-        for line in fin:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                # keep malformed lines as-is
-                fout.write(line + "\n")
-                continue
-            if _normalize_phone(rec.get("phone", "")) == phone_norm and (rec.get("dob", "") or "") == dob_clean:
-                rec["last_seen_at"] = now
+    changed = False
+    out: list[str] = []
+    i = 0
+
+    while i < len(lines):
+        ln = lines[i]
+        if ln.startswith("insert_customer:"):
+            start = i
+            i += 1
+            while i < len(lines) and not lines[i].startswith("insert_customer:"):
+                i += 1
+            block = lines[start:i]
+
+            b_phone, b_dob = _extract_phone_dob(block)
+            if _normalize_phone(b_phone) == phone_norm and (b_dob or "") == dob_clean:
+                # Pull existing values
+                cur = {
+                    "title":       block[0],
+                    "phone":       _get_value(block, "Phone") or "",
+                    "dob":         _get_value(block, "DOB") or "",
+                    "first_name":  _get_value(block, "First Name") or "",
+                    "last_name":   _get_value(block, "Last Name") or "",
+                    "address":     _get_value(block, "Address") or "",
+                    "cc_name":     _get_value(block, "CC Name") or "",
+                    "cc_number":   _get_value(block, "CC Number") or "",  # masked in file
+                    "cc_exp":      _get_value(block, "CC Exp") or "",
+                    "cc_cvv":      _get_value(block, "CC CVV") or "",     # masked in file
+                    "created_at":  _get_value(block, "Created At") or "—",
+                    "last_seen_at": now,
+                }
+
+                # Apply non-empty updates (sanitize to one line)
+                def pick(new_val, old_val):
+                    new_val = _oneline(new_val)
+                    return new_val if new_val else old_val
+
+                cur["first_name"] = pick(updates.get("first_name"), cur["first_name"])
+                cur["last_name"]  = pick(updates.get("last_name"),  cur["last_name"])
+                cur["address"]    = pick(updates.get("address"),    cur["address"])
+                cur["cc_name"]    = pick(updates.get("cc_name"),    cur["cc_name"])
+                if _oneline(updates.get("cc_number")):
+                    cur["cc_number"] = updates["cc_number"]
+                if _oneline(updates.get("cc_exp")):
+                    cur["cc_exp"] = updates["cc_exp"]
+                if _oneline(updates.get("cc_cvv")):
+                    cur["cc_cvv"] = updates["cc_cvv"]
+
+                # Re-render; keep original title text
+                new_block = _render_block_lines(new=True, rec=cur)
+                new_block[0] = cur["title"]
+                out.extend(new_block)
                 changed = True
-            # write compact, single-line JSON
-            fout.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n")
-    os.replace(tmp, DB_FILE)
+            else:
+                out.extend(block)
+        else:
+            out.append(ln)
+            i += 1
+
+    if changed:
+        with open(DB_FILE, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + ("\n" if out else ""))
+
     return changed
 
 def insert_customer(phone: str, dob: str, first_name: str, last_name: str, address: str,
                     cc_name: str, cc_number: str, cc_exp: str, cc_cvv: str) -> bool:
     """
-    Inserts a new customer into appointment_data/customers.jsonl if not present.
-    - New: 'created_at' and 'last_seen_at' = now.
-    - Existing: update 'last_seen_at' and return False (no new insert).
-    Ensures each record is a single JSON line (no embedded newlines).
+    Append/Update a customer in the single human-readable file:
+      • NEW customer → append one 12-line block (masked PAN/CVV).
+      • EXISTING     → update that block IN PLACE (no duplicate) and bump 'Last Seen At'.
+    Returns:
+      True  -> new block appended
+      False -> existing block updated in place
     """
     init_db()
 
     phone_norm = _normalize_phone(phone)
-    dob_clean = _oneline(dob)
+    dob_clean  = _oneline(dob)
 
-    # If exists, just update last_seen_at
+    # Existing? Update in place (no append)
     if customer_search(phone_norm, dob_clean):
-        _update_existing_timestamp(phone_norm, dob_clean)
-        print(f"ℹ️ Customer exists; updated last_seen_at: {phone_norm} / {dob_clean}")
+        _update_existing_block_in_place(
+            phone_norm, dob_clean,
+            updates={
+                "first_name": first_name,
+                "last_name":  last_name,
+                "address":    address,
+                "cc_name":    cc_name,
+                "cc_number":  cc_number,
+                "cc_exp":     cc_exp,
+                "cc_cvv":     cc_cvv,
+            }
+        )
+        debug_print("\n".join([
+            "insert_customer: ℹ️ Existing customer — updated in place (no duplicate)",
+            f"Phone: {phone_norm}",
+            f"DOB: {dob_clean}",
+        ]))
         return False
 
+    # New record → append block
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    record = {
-        "phone": phone_norm,
-        "dob": dob_clean,
-        "first_name": _oneline(first_name),
-        "last_name": _oneline(last_name),
-        "address": _oneline(address),
-        "cc_name": _oneline(cc_name),
-        "cc_number": _oneline(cc_number),
-        "cc_exp": _oneline(cc_exp),   # format MM/YY
-        "cc_cvv": _oneline(cc_cvv),
-        "created_at": now,
+    rec = {
+        "phone":       phone_norm,
+        "dob":         dob_clean,
+        "first_name":  _oneline(first_name),
+        "last_name":   _oneline(last_name),
+        "address":     _oneline(address),
+        "cc_name":     _oneline(cc_name),
+        "cc_number":   _oneline(cc_number),  # will be masked by renderer
+        "cc_exp":      _oneline(cc_exp),
+        "cc_cvv":      _oneline(cc_cvv),     # will be masked by renderer
+        "created_at":  now,
         "last_seen_at": now
     }
 
-    # Append compact, one-line JSON
     with open(DB_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+        f.write("\n".join(_render_block_lines(new=True, rec=rec)) + "\n")
 
-    print(f"✅ Added new customer with CC info: {record['first_name']} {record['last_name']}")
+    debug_print("\n".join([
+        "insert_customer: ✅ Added new customer",
+        f"Phone: {rec['phone']}",
+        f"DOB: {rec['dob']}",
+        f"First Name: {rec['first_name']}",
+        f"Last Name: {rec['last_name']}",
+        f"Address: {rec['address']}",
+        f"CC Name: {rec['cc_name']}",
+        f"CC Number: {_mask_pan(rec['cc_number'])}",
+        f"CC Exp: {rec['cc_exp']}",
+        f"CC CVV: {_mask_all(rec['cc_cvv'])}",
+        f"Created At: {rec['created_at']}",
+        f"Last Seen At: {rec['last_seen_at']}",
+    ]))
+
     return True
 
-# 
 
+def _normalize_mmyy(s: str) -> str:
+    """Return 'MM/YY' from inputs like 'MMYY', 'M/YY', 'MM/YY'. Leave empty if unusable."""
+    s = (s or "").strip()
+    if not s:
+        return ""
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if len(digits) == 4:  # e.g., '0229'
+        mm, yy = digits[:2], digits[2:]
+    else:
+        # Try to parse formats with slash; e.g., '2/29', '02/29'
+        parts = s.split("/")
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            mm = parts[0].zfill(2)
+            yy = parts[1][-2:].zfill(2)
+        else:
+            return ""
+    # Basic month guard
+    try:
+        m = int(mm)
+        if not (1 <= m <= 12):
+            return ""
+    except ValueError:
+        return ""
+    return f"{mm}/{yy}"
+
+def update_customer_cc(
+    phone: str,
+    dob: str,
+    cc_name: str | None = None,
+    cc_number: str | None = None,
+    cc_exp: str | None = None,   # accepts 'MMYY' or 'MM/YY'
+    cc_cvv: str | None = None
+) -> bool:
+    """
+    Update ONLY the CC fields for an existing customer (matched by Phone + DOB).
+    - Edits the single block IN PLACE; does not append/duplicate.
+    - Always bumps 'Last Seen At'.
+    - Fields left as None are NOT changed.
+    Returns:
+      True  -> updated successfully
+      False -> no matching customer found (nothing changed)
+    """
+    init_db()
+
+    phone_norm = _normalize_phone(phone)
+    dob_clean  = _oneline(dob)
+
+    if not phone_norm or not dob_clean:
+        debug_print("update_customer_cc: ❌ phone or dob missing/blank")
+        return False
+
+    # Prepare updates dict (only include non-empty values so we don't overwrite)
+    updates: dict[str, str] = {}
+
+    if cc_name is not None and _oneline(cc_name):
+        updates["cc_name"] = _oneline(cc_name)
+
+    if cc_number is not None and _oneline(cc_number):
+        # Do NOT mask here; _update_existing_block_in_place -> _render_block_lines will mask on write.
+        updates["cc_number"] = "".join(ch for ch in cc_number if ch.isdigit())
+
+    if cc_exp is not None and _oneline(cc_exp):
+        norm_exp = _normalize_mmyy(cc_exp)
+        if norm_exp:
+            updates["cc_exp"] = norm_exp
+        else:
+            debug_print(f"update_customer_cc: ⚠️ ignoring invalid expiration '{cc_exp}'")
+
+    if cc_cvv is not None and _oneline(cc_cvv):
+        updates["cc_cvv"] = "".join(ch for ch in cc_cvv if ch.isdigit())
+
+    if not updates:
+        debug_print("update_customer_cc: ℹ️ no CC fields provided to update")
+        return False
+
+    changed = _update_existing_block_in_place(phone_norm, dob_clean, updates)
+    if not changed:
+        debug_print("\n".join([
+            "update_customer_cc: ❌ no matching customer found",
+            f"Phone: {phone_norm}",
+            f"DOB: {dob_clean}",
+        ]))
+        return False
+
+    # Log (masked)
+    def _mask_pan(n: str) -> str:
+        n = n or ""
+        return ("*" * max(0, len(n) - 4)) + n[-4:] if n else ""
+    def _mask_all(n: str) -> str:
+        return "*" * len((n or "").strip())
+
+    debug_print("\n".join([
+        "update_customer_cc: ✅ CC info updated",
+        f"Phone: {phone_norm}",
+        f"DOB: {dob_clean}",
+        f"CC Name: {updates.get('cc_name', '—') if 'cc_name' in updates else '—'}",
+        f"CC Number: {_mask_pan(updates.get('cc_number')) if 'cc_number' in updates else '—'}",
+        f"CC Exp: {updates.get('cc_exp', '—') if 'cc_exp' in updates else '—'}",
+        f"CC CVV: {_mask_all(updates.get('cc_cvv')) if 'cc_cvv' in updates else '—'}",
+    ]))
+
+    return True
 
 
 
@@ -2370,40 +2633,56 @@ def voice():
 
 
 
-
-
     elif stage == "collect_first_name":
         # ----------------------------------------------------------------------
         # 🧍 Stage: Collect First Name
+        #  - Accept speech, normalize gently (letters, spaces, hyphen, apostrophe)
+        #  - Do NOT wipe other customer fields
+        #  - Re-prompt on empty/unclear input
         # ----------------------------------------------------------------------
         import re
+
+        # Buckets
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid].setdefault("customer", {})
+
+        # Raw speech
         first_name_raw = (speech_result or "").strip()
-        debug_print(f"📛 collect_first_name : Collected first name (raw): {first_name_raw}")
+        debug_print(f"📛 collect_first_name: raw='{first_name_raw}'")
 
-        # Normalize: strip punctuation except hyphen/apostrophe, collapse spaces
-        first_name = re.sub(r"[^\w'\- ]+", "", first_name_raw).strip()
-        first_name = re.sub(r"\s+", " ", first_name)
-        debug_print(f"📛 collect_first_name : Normalized first name: {first_name}")
+        # Heuristic: if they say "my name is ...", keep the tail
+        text = first_name_raw
+        lowered = first_name_raw.lower()
+        for cue in ("my name is", "this is", "i am", "i'm"):
+            if cue in lowered:
+                # take substring after the cue
+                idx = lowered.rfind(cue)
+                text = first_name_raw[idx + len(cue):].strip()
+                break
 
-        if not first_name or len(first_name.split()) > 2:
-            # ⚠️ If unclear or too long, ask again
-            gather = make_gather("I didn't catch that clearly. Please say your first name again.")
+        # Normalize: keep letters (basic latin + accents), space, hyphen, apostrophe
+        # Then collapse spaces
+        text = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ' -]", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        debug_print(f"📛 collect_first_name: normalized='{text}'")
+
+        # Validate
+        if not text or len(text) > 40 or len(text.split()) > 2:
+            gather = make_gather("I didn't catch that clearly. Please say just your first name.")
             resp.append(gather)
-            # fallback so we don't dead-end on silence
             resp.say(gpt_speak("I didn't get the first name."), VOICE)
             resp.redirect("/voice")
             return str(resp)
 
-        # ✅ Update in place; DO NOT replace the entire customer dict
-        session_data.setdefault(call_sid, {})
-        session_data[call_sid].setdefault("customer", {})
-        session_data[call_sid]["customer"]["first_name"] = first_name
-        debug_print(f"collect_first_name: 🧾 customer now → {session_data[call_sid]['customer']}")
+        # Save without wiping other fields
+        session_data[call_sid]["customer"]["first_name"] = text
+        debug_print(f"collect_first_name: ✅ saved first_name='{text}'")
 
+        # Next
         session_data[call_sid]["stage"] = "collect_last_name"
-
         gather = make_gather("Thank you. Now, what is your last name?")
         resp.append(gather)
+        # safety line if gather times out
         resp.say(gpt_speak("I didn't get the last name."), VOICE)
         resp.redirect("/voice")
         return str(resp)
@@ -2413,43 +2692,64 @@ def voice():
 
 
     elif stage == "collect_last_name":
-        try:
-            import re
-            last_raw = (speech_result or "").strip()
-            debug_print(f"👤 collect_last_name (raw): {last_raw}")
+        # ----------------------------------------------------------------------
+        # 👤 Stage: Collect Last Name
+        #  - Accept speech, normalize gently (letters, spaces, hyphen, apostrophe)
+        #  - Do NOT wipe other customer fields
+        #  - Re-prompt on empty/unclear input
+        #  - After success: if a waiting stage is set (return_stage), go there;
+        #    otherwise proceed to collect_address.
+        # ----------------------------------------------------------------------
+        import re
 
-            # Normalize: strip punctuation except hyphen/apostrophe, collapse spaces
-            last = re.sub(r"[^\w'\- ]+", "", last_raw).strip()
-            last = re.sub(r"\s+", " ", last)
-            debug_print(f"👤 collect_last_name (normalized): {last}")
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid].setdefault("customer", {})
 
-            if not last:
-                gather = make_gather("Sorry, I didn't catch your last name. Please repeat it.")
-                resp.append(gather)
-                resp.say(gpt_speak("I didn't get the last name."), VOICE)
-                resp.redirect("/voice")
-                return str(resp)
+        last_raw = (speech_result or "").strip()
+        debug_print(f"👤 collect_last_name: raw='{last_raw}'")
 
-            # ✅ Ensure customer bucket exists and update (no overwrite)
-            session_data.setdefault(call_sid, {})
-            session_data[call_sid].setdefault("customer", {})
-            session_data[call_sid]["customer"]["last_name"] = last
-            session_data[call_sid]["stage"] = "collect_address"
-            debug_print(f"✅ Stored last name: {last}; customer → {session_data[call_sid]['customer']}")
+        # Heuristic strip like first name (handle “last name is …” just in case)
+        text = last_raw
+        lowered = last_raw.lower()
+        for cue in ("last name is", "my last name is"):
+            if cue in lowered:
+                idx = lowered.rfind(cue)
+                text = last_raw[idx + len(cue):].strip()
+                break
 
-            # Prompt for address
-            gather = make_gather("Got it. What is your full address, please?")
+        # Normalize
+        text = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ' -]", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        debug_print(f"👤 collect_last_name: normalized='{text}'")
+
+        if not text or len(text) > 60 or len(text.split()) > 3:
+            gather = make_gather("Sorry, please say just your last name.")
             resp.append(gather)
-            resp.say(gpt_speak("I didn't hear the address."), VOICE)
+            resp.say(gpt_speak("I didn't get the last name."), VOICE)
             resp.redirect("/voice")
             return str(resp)
 
-        except Exception as e:
-            debug_print(f"❌ Exception in collect_last_name stage: {e}")
-            resp.say(gpt_speak("Sorry, there was an error. Let's try again later."), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
+        # Save without wiping other fields
+        session_data[call_sid]["customer"]["last_name"] = text
+        debug_print(f"collect_last_name: ✅ saved last_name='{text}'")
+
+        # Optional handoff: if some stage is waiting for a name, jump back there
+        return_stage = session_data[call_sid].pop("return_stage", None)
+        if return_stage:
+            session_data[call_sid]["stage"] = return_stage
+            debug_print(f"collect_last_name: 🔁 Returning to waiting stage → {return_stage}")
+            resp.redirect("/voice")
             return str(resp)
+
+        # Default flow: proceed to address
+        session_data[call_sid]["stage"] = "collect_address"
+        gather = make_gather("Got it. What is your full address, please?")
+        resp.append(gather)
+        # safety line if gather times out
+        resp.say(gpt_speak("I didn't hear the address."), VOICE)
+        resp.redirect("/voice")
+        return str(resp)
+
 
 
 
@@ -2459,26 +2759,19 @@ def voice():
     elif stage == "collect_address":
         # ----------------------------------------------------------------------
         # 🏠 Stage: Collect Customer Address (INFO ONLY)
-        # Purpose:
-        #   - Capture the address text and stash it in the session.
-        #   - Do NOT create any calendar events here.
-        #   - Hand off to collect_cc; book_appt_confirm will run after CC is collected.
         # ----------------------------------------------------------------------
         import re
 
         address_raw = (speech_result or "").strip()
         debug_print(f"collect_address: 📬 Collected address (raw): {address_raw}")
 
-        # Normalize: collapse whitespace, trim trailing punctuation
         address = re.sub(r"\s+", " ", address_raw).strip()
-        address = re.sub(r"[.,;\-–—\s]+$", "", address)  # remove trailing punctuation
+        address = re.sub(r"[.,;\-–—\s]+$", "", address)
         debug_print(f"collect_address: 📬 Normalized address: {address}")
 
-        # Ensure session buckets exist
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
 
-        # If no usable address, re-prompt and stay here
         if not address or len(address) < 5:
             gather = make_gather("Sorry, I didn't catch your full address. Please say your street, city, state, and zip.")
             resp.append(gather)
@@ -2486,10 +2779,9 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # Save address; keep everything else untouched
         session_data[call_sid]["customer"]["address"] = address
 
-        # 🔒 Require phone + DOB before moving to CC
+        # Require phone + DOB before CC
         def _normalize_10(d):
             d = "".join(ch for ch in (d or "") if ch.isdigit())
             return d[1:] if len(d) == 11 and d.startswith("1") else d
@@ -2519,7 +2811,6 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # ✅ Both present → proceed to CC
         session_data[call_sid]["stage"] = "collect_cc"
         debug_print("collect_address: 🔁 Redirecting to /voice to run collect_cc")
         resp.redirect("/voice")
@@ -2530,26 +2821,29 @@ def voice():
     
     
     elif stage == "collect_cc":
-    # ----------------------------------------------------------------------
-    # 💳 Stage: collect_cc
-    # Purpose:
-    #   - Collect credit card info in three mini-steps:
-    #       (1) Card number (13–19 digits, Luhn-checked)
-    #       (2) Expiration (MMYY or MMYYYY) → stored as 'MM/YY' and must be current/future
-    #       (3) CVV (3–4 digits)
-    #   - Stores under session_data[call_sid]["customer"]: cc_number, cc_exp, cc_cvv, cc_name
-    #   - Auto-advances to book_appt_confirm upon success (no extra prompt)
-    # Notes:
-    #   - Uses make_gather() so silence handling is consistent (DTMF + speech, finish on '#').
-    #   - Speech digits supported via spoken→digit normalization; DTMF preferred for reliability.
-    #   - Guards: requires phone (10-digit) and DOB before collecting CC.
-    #   - Logs: PAN/CVV masked to avoid leaking sensitive data.
-    # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # 💳 Stage: collect_cc
+        # Purpose:
+        #   - Collect credit card info in three mini-steps:
+        #       (1) Card number (13–19 digits, Luhn-checked)
+        #       (2) Expiration (MMYY or MMYYYY) → stored as 'MM/YY' and must be current/future
+        #       (3) CVV (3–4 digits)
+        #   - Stores under session_data[call_sid]["customer"]:
+        #       cc_number, cc_exp, cc_cvv, cc_name
+        #   - Auto-advances to book_appt_confirm upon success (no extra prompt)
+        # Notes:
+        #   - Uses make_gather() (speech + DTMF, finishOnKey="#").
+        #   - Speech digits supported via spoken→digit normalization; DTMF preferred.
+        #   - Guards: requires phone (10-digit) and DOB before collecting CC.
+        #   - Logs: PAN/CVV masked to avoid leaking sensitive data.
+        #   - New: voice-friendly partial capture (e.g., 15-of-16 digits) and
+        #          escalation to “please type it” after repeated speech failures.
+        # ----------------------------------------------------------------------
         import re
+        from datetime import datetime as _dt
 
-        # Luhn mod-10
+        # --- Luhn mod-10 -------------------------------------------------------
         def luhn_check(number: str) -> bool:
-            """Return True if 'number' passes Luhn mod-10 check."""
             s = 0
             alt = False
             for ch in number[::-1]:
@@ -2564,7 +2858,7 @@ def voice():
                 alt = not alt
             return (s % 10) == 0
 
-        # Voice → digits (supports "double"/"triple", common homophones)
+        # --- Voice → digits (supports "double"/"triple", common homophones) ----
         def normalize_spoken_digits(raw: str) -> str:
             if not raw:
                 return ""
@@ -2592,14 +2886,14 @@ def voice():
                 i += 1
             return "".join(out)
 
-        # Maskers for logging
+        # --- Maskers for logging ------------------------------------------------
         def _mask_pan(n: str) -> str:
             n = n or ""
             return ("*" * max(0, len(n) - 4)) + n[-4:] if n else ""
         def _mask_all(n: str) -> str:
             return "*" * len(n or "")
 
-        # Ensure session buckets exist
+        # --- Ensure session buckets exist --------------------------------------
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
         customer = session_data[call_sid]["customer"]
@@ -2626,8 +2920,10 @@ def voice():
         # Mini-step tracker: 1=number, 2=exp, 3=cvv
         cc_step = session_data[call_sid].get("cc_step", 1)
 
-        # Retry counter for CC flow
+        # Retries + speech assistance + partial buffer for PAN
         session_data[call_sid]["retry_cc"] = session_data[call_sid].get("retry_cc", 0)
+        session_data[call_sid]["cc_speech_tries"] = session_data[call_sid].get("cc_speech_tries", 0)
+        cc_partial = session_data[call_sid].get("cc_partial", "")
 
         # Pull inputs
         try:
@@ -2666,23 +2962,50 @@ def voice():
         # Step 1: Card Number (13–19)
         # -------------------------------
         if cc_step == 1:
-            digits = get_digits()
+            new_digits = get_digits()
+            # Support partial carry-over for speech (e.g., caller pauses)
+            digits = (cc_partial + new_digits) if (cc_partial or new_digits) else ""
+            # Avoid runaway length (keep max 19)
+            if digits and len(digits) > 19:
+                digits = digits[:19]
+
             if not digits:
                 if _reprompt(
                     "Please enter your card number now, then press pound.",
                     hints="zero one two three four five six seven eight nine double triple"
                 ): return str(resp)
 
-            if not (13 <= len(digits) <= 19) or not luhn_check(digits):
-                debug_print(f"collect_cc: ❌ Invalid card number: '{_mask_pan(digits)}' (len={len(digits)})")
+            # If we heard 15 digits via speech, ask for the last single digit
+            if len(digits) == 15 and not dtmf_digits:
+                session_data[call_sid]["cc_partial"] = digits
+                debug_print(f"collect_cc: 🧩 Heard 15 digits {_mask_pan(digits)}; asking for the last digit")
                 if _reprompt(
-                    "That card number doesn't look right. Please re-enter the full card number, then press pound.",
-                    hints="zero one two three four five six seven eight nine double triple"
+                    "I heard fifteen digits. Please say or type the last single digit now, then press pound.",
+                    hints="zero one two three four five six seven eight nine"
                 ): return str(resp)
+
+            # Luhn failure → if speech, escalate to “please type it” after 2 tries
+            if not (13 <= len(digits) <= 19) or not luhn_check(digits):
+                session_data[call_sid]["cc_speech_tries"] += (0 if dtmf_digits else 1)
+                escalate = session_data[call_sid]["cc_speech_tries"] >= 2 and not dtmf_digits
+                debug_print(f"collect_cc: ❌ Invalid card number: '{_mask_pan(digits)}' (len={len(digits)}), escalate={escalate}")
+                if escalate:
+                    if _reprompt(
+                        "That number didn’t sound clear. Please TYPE the full card number now, then press pound.",
+                        hints="zero one two three four five six seven eight nine"
+                    ): return str(resp)
+                else:
+                    if _reprompt(
+                        "That card number doesn't look right. Please re-enter the full card number, then press pound.",
+                        hints="zero one two three four five six seven eight nine double triple"
+                    ): return str(resp)
 
             # Save and advance
             customer["cc_number"] = digits
             session_data[call_sid]["cc_step"] = 2
+            # clear helpers for next steps
+            session_data[call_sid]["cc_partial"] = ""
+            session_data[call_sid]["cc_speech_tries"] = 0
             debug_print(f"collect_cc: ✅ Saved card number {_mask_pan(digits)}")
 
             gather = make_gather(
@@ -2721,8 +3044,7 @@ def voice():
                 yy = yy[-2:]
 
             # Reject past month
-            from datetime import datetime
-            now = datetime.now()
+            now = _dt.now()
             exp_year = 2000 + int(yy)
             exp_cmp  = exp_year * 100 + mm
             now_cmp  = now.year * 100 + now.month
@@ -2760,7 +3082,7 @@ def voice():
 
             customer["cc_cvv"] = digits
 
-            # Default the cardholder name from collected name, if not set
+            # Default cardholder name from collected name, if not set
             if not customer.get("cc_name"):
                 name = customer.get("name") or " ".join(
                     p for p in [customer.get("first_name"), customer.get("last_name")] if p
@@ -2769,7 +3091,7 @@ def voice():
 
             debug_print(f"collect_cc: ✅ Saved CVV (len={len(digits)}); cc_name='{customer.get('cc_name')}'")
 
-            # Clear step tracker and jump straight to confirmation
+            # Clear step tracker and jump to confirmation
             session_data[call_sid].pop("cc_step", None)
             session_data[call_sid]["stage"] = "book_appt_confirm"
             debug_print("collect_cc: ➡️ Auto-advancing to book_appt_confirm")
@@ -2783,107 +3105,165 @@ def voice():
             return str(resp)
 
 
+
     
 
-   # -----------------------------------------------------------------
+     # -----------------------------------------------------------------
+    # ✅ Stage: book_appt_confirm
+    # Purpose:
+    #   - Finalize the appointment using data gathered in the session.
+    #   - Guards:
+    #       • must have a doctor_id (calendar id resolved to a friendly name)
+    #       • must have a computed appointment_time start (UTC ISO)
+    #       • must have customer with a valid 10-digit phone + DOB
+    #   - Effects:
+    #       • writes/updates the human-readable customer DB (insert_customer)
+    #       • creates/saves the calendar event (confirm_appointment_by_name)
+    #       • speaks a confirmation + sends an SMS (if save succeeded)
+    #   - Privacy:
+    #       • credit card values are always masked in logs
+    #   - Flow resilience:
+    #       • if phone/DOB missing/invalid, we set `return_stage="book_appt_confirm"`
+    #         then jump to the proper collector; when that stage completes, we jump back here.
+    # -----------------------------------------------------------------
     elif stage == "book_appt_confirm":
         debug_print("book_appt_confirm: 📍 Stage entered")
 
-        # 🆔 Doctor info
+        # -------------------------------
+        # 1) Doctor resolution
+        # -------------------------------
         doctor_id = session_data[call_sid].get("doctor_id")
         debug_print(f"book_appt_confirm: 🧩 Raw doctor_id from session → {doctor_id}")
+
+        if not doctor_id:
+            # If somehow doctor_id was lost, send user back to doctor selection flow
+            debug_print("book_appt_confirm: ❌ doctor_id missing → redirecting to booking (doctor selection)")
+            session_data[call_sid]["stage"] = "booking"
+            gather = make_gather("I lost the doctor selection. Please say the name of the doctor you'd like to book with.")
+            resp.append(gather)
+            return str(resp)
+
         doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
         debug_print(f"book_appt_confirm: 👨‍⚕️ Resolved doctor_name → {doctor_name}")
 
-        # 🕐 Appointment info
+        # -------------------------------
+        # 2) Appointment time (UTC ISO)
+        # -------------------------------
         appointment_time = session_data[call_sid].get("appointment_time", {}).get("start")
         debug_print(f"book_appt_confirm: 🕓 Raw appointment_time UTC → {appointment_time}")
-        formatted_time = ""
-        if appointment_time:
-            from datetime import datetime
-            import pytz
-            try:
-                dt_utc = datetime.fromisoformat(appointment_time.replace("Z", "+00:00"))
-                tz = pytz.timezone("America/Chicago")
-                dt_local = dt_utc.astimezone(tz)
-                formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
-                debug_print(f"book_appt_confirm: 📆 Formatted appointment time (local) → {formatted_time}")
-            except Exception as e:
-                debug_print(f"book_appt_confirm: ⚠️ Failed to parse appointment time → {e}")
-                resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
-                resp.hangup()
-                return str(resp)
-        else:
+        if not appointment_time:
             debug_print("book_appt_confirm: ❌ No appointment time found in session data")
-            resp.say(gpt_speak("Appointment time missing. Goodbye!"), VOICE)
+            resp.say(gpt_speak("Appointment time is missing. Let's try again later. Goodbye!"), VOICE)
             resp.hangup()
             return str(resp)
 
-        # 🧍 Customer info
-        customer = session_data[call_sid].get("customer", {})
+        # For voice/SMS we show a local-friendly string; keep UTC for writing
+        formatted_time = ""
+        try:
+            from datetime import datetime
+            import pytz
+            # Normalize Z suffix for fromisoformat
+            dt_utc = datetime.fromisoformat(appointment_time.replace("Z", "+00:00"))
+            tz = pytz.timezone("America/Chicago")
+            dt_local = dt_utc.astimezone(tz)
+            # Linux supports %-d / %-I; if not, fall back to portable format
+            try:
+                formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
+            except Exception:
+                formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").lstrip("0").replace(" 0", " ")
+            debug_print(f"book_appt_confirm: 📆 Formatted appointment time (local) → {formatted_time}")
+        except Exception as e:
+            debug_print(f"book_appt_confirm: ⚠️ Failed to parse/format appointment time → {e}")
+            resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+            resp.hangup()
+            return str(resp)
+
+        # -------------------------------
+        # 3) Customer info + masking utils
+        # -------------------------------
+        customer = session_data[call_sid].get("customer", {}) or {}
         debug_print(f"book_appt_confirm: 🧾 Raw customer object → {customer}")
 
-        customer_name = customer.get("name", "")
-        customer_phone = customer.get("phone", "")
-        customer_dob = customer.get("dob", "")  
+        customer_name    = customer.get("name", "")  # optional combined name
+        customer_phone   = customer.get("phone", "")
+        customer_dob     = customer.get("dob", "")
         customer_address = customer.get("address", "")
 
-        # 💳 New credit card fields
-        cc_name = customer.get("cc_name", "")
+        cc_name   = customer.get("cc_name", "")
         cc_number = customer.get("cc_number", "")
-        cc_exp = customer.get("cc_exp", "")       # MM/YY
-        cc_cvv = customer.get("cc_cvv", "")
+        cc_exp    = customer.get("cc_exp", "")
+        cc_cvv    = customer.get("cc_cvv", "")
 
-        # Masked logging for CC/PII
-        def _mask(s, keep_last=4):
+        def _mask_tail(s: str, keep_last: int = 4) -> str:
             s = s or ""
-            return ("*" * max(0, len(s) - keep_last)) + s[-keep_last:]
+            return ("*" * max(0, len(s) - keep_last)) + s[-keep_last:] if s else ""
+
+        def _mask_all(s: str) -> str:
+            return "*" * len((s or ""))
+
         debug_print(f"book_appt_confirm: 👤 Name → {customer_name}")
         debug_print(f"book_appt_confirm: 📞 Phone → {customer_phone}")
         debug_print(f"book_appt_confirm: 🎂 DOB → {customer_dob}")
         debug_print(f"book_appt_confirm: 🏠 Address → {customer_address}")
         debug_print(f"book_appt_confirm: 💳 CC Name → {cc_name}")
-        debug_print(f"book_appt_confirm: 💳 CC Number → { _mask(cc_number) }")
+        debug_print(f"book_appt_confirm: 💳 CC Number → { _mask_tail(cc_number) }")
         debug_print(f"book_appt_confirm: 💳 CC Exp → {cc_exp}")
-        debug_print(f"book_appt_confirm: 💳 CC CVV → { _mask(cc_cvv, keep_last=0) }")
+        debug_print(f"book_appt_confirm: 💳 CC CVV → { _mask_all(cc_cvv) }")
 
-        # 🔒 Require valid phone (10 digits; allow leading 1) and DOB before confirming
-        def _normalize_10(d):
+        # -------------------------------
+        # 4) Guard: require valid 10-digit phone + DOB
+        #    If missing, bounce to collector and auto-return here
+        # -------------------------------
+        def _normalize_10(d: str) -> str:
             d = "".join(ch for ch in (d or "") if ch.isdigit())
             return d[1:] if len(d) == 11 and d.startswith("1") else d
+
         digits_phone = _normalize_10(customer_phone)
 
         if len(digits_phone) != 10:
             debug_print("book_appt_confirm: ❌ Missing/invalid phone → redirecting to collect_phone")
+            session_data[call_sid]["return_stage"] = "book_appt_confirm"  # come back here after phone is captured
             session_data[call_sid]["stage"] = "collect_phone"
             gather = make_gather(
                 "Before we confirm your appointment, I need your ten digit phone number including area code. "
-                "You can say it or type the digits and press pound."
+                "You can say it or type the digits, then press pound.",
+                hints="zero one two three four five six seven eight nine"
             )
             resp.append(gather)
+            resp.redirect("/voice")
             return str(resp)
 
         if not customer_dob:
             debug_print("book_appt_confirm: ❌ Missing DOB → redirecting to collect_dob")
+            session_data[call_sid]["return_stage"] = "book_appt_confirm"  # come back here after DOB is captured
             session_data[call_sid]["stage"] = "collect_dob"
             gather = make_gather(
                 "Before we confirm, please provide your date of birth. "
                 "You can say it, or enter two digits for month, two for day, and four for year, then press pound."
             )
             resp.append(gather)
+            resp.redirect("/voice")
             return str(resp)
 
-        # 🗃️ Insert/ensure customer in JSONL DB
+        # -------------------------------
+        # 5) Upsert customer record in the single-file DB
+        #    • insert_customer() now writes/updates human-readable blocks (no duplicates)
+        #    • phone is normalized; CC data may be empty (will be masked when written)
+        # -------------------------------
         try:
             first_name = (customer.get("first_name") or "").strip()
-            last_name = (customer.get("last_name") or "").strip()
+            last_name  = (customer.get("last_name") or "").strip()
+
+            # Derive names from combined 'name' if needed
             if not first_name and customer_name:
                 parts = customer_name.strip().split()
                 first_name = parts[0]
-                last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
-            init_db()
+                last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+            init_db()  # ensure file exists
+
             inserted = insert_customer(
-                phone=digits_phone,          # use normalized
+                phone=digits_phone,          # normalized 10-digit
                 dob=customer_dob,
                 first_name=first_name,
                 last_name=last_name,
@@ -2893,18 +3273,20 @@ def voice():
                 cc_exp=cc_exp,
                 cc_cvv=cc_cvv
             )
-            debug_print(f"book_appt_confirm: 🗃️ insert_customer result → {'inserted' if inserted else 'already exists'}")
+            debug_print(f"book_appt_confirm: 🗃️ insert_customer result → {'inserted' if inserted else 'updated existing'}")
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ insert_customer failed → {e}")
 
-        # 📥 Save appointment (only after phone/DOB guard)
+        # -------------------------------
+        # 6) Save the appointment in Calendar
+        #    If this fails, keep the caller in flow (ask for a new time).
+        # -------------------------------
         appointment_saved = False
         try:
-            # Prefer a non-empty name
-            effective_name = customer_name or " ".join([n for n in [first_name, last_name] if n]).strip()
+            effective_name = (customer_name or " ".join(n for n in [first_name, last_name] if n)).strip()
             confirm_appointment_by_name(
                 doctor_name=doctor_name,
-                phone=digits_phone,          # normalized digits
+                phone=digits_phone,      # normalized digits
                 dob=customer_dob,
                 name=effective_name,
                 address=customer_address,
@@ -2912,11 +3294,13 @@ def voice():
                 calendar_id=doctor_id
             )
             appointment_saved = True
-            debug_print(f"book_appt_confirm: ✅ Appointment saved/search done for {doctor_name} (Calendar ID: {doctor_id})")
+            debug_print(f"book_appt_confirm: ✅ Appointment saved for {doctor_name} (Calendar ID: {doctor_id})")
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ Failed to save appointment → {e}")
 
-        # 🗣️ Voice confirmation message (only if saved)
+        # -------------------------------
+        # 7) Output to caller + SMS (only if we saved successfully)
+        # -------------------------------
         if appointment_saved:
             confirmation_message = (
                 f"Your appointment with {doctor_name} has been successfully booked."
@@ -2925,16 +3309,8 @@ def voice():
             )
             debug_print(f"book_appt_confirm: 🗣️ Speaking confirmation message → {confirmation_message}")
             resp.say(gpt_speak(confirmation_message), VOICE)
-        else:
-            # keep user in flow if failure
-            debug_print("book_appt_confirm: ❌ Save failed — reprompting for time.")
-            session_data[call_sid]["stage"] = "ask_time_date"
-            gather = make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, August 14th at 10 AM.")
-            resp.append(gather)
-            return str(resp)
 
-        # 📩 Send SMS confirmation
-        if digits_phone:
+            # SMS is sent only if we actually saved the event
             try:
                 e164_phone = f"+1{digits_phone}"
                 sms_text = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
@@ -2949,16 +3325,18 @@ def voice():
                 debug_print(f"book_appt_confirm: 📤 SMS sent to {e164_phone}, SID: {message.sid}")
             except Exception as e:
                 debug_print(f"book_appt_confirm: ❌ SMS send failed → {e}")
-        else:
-            debug_print("book_appt_confirm: ⚠️ No phone number provided — skipping SMS.")
 
-        # 📞 End call
-        resp.hangup()
+            # End call and clean session only after success path
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            debug_print("book_appt_confirm: 🧼 Session data cleared")
+            return str(resp)
 
-        # 🧹 Clear session
-        session_data.pop(call_sid, None)
-        debug_print("book_appt_confirm: 🧼 Session data cleared")
-
+        # If we got here, appointment save failed; keep caller in flow
+        debug_print("book_appt_confirm: ❌ Save failed — reprompting for a new time")
+        session_data[call_sid]["stage"] = "ask_time_date"
+        gather = make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, August 14th at 10 AM.")
+        resp.append(gather)
         return str(resp)
 
 
