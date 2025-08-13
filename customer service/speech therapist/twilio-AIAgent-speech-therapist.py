@@ -3125,7 +3125,7 @@ def voice():
     #   - Flow resilience:
     #       • if phone/DOB missing/invalid, we set `return_stage="book_appt_confirm"`
     #         then jump to the proper collector; when that stage completes, we jump back here.
-    # -----------------------------------------------------------------
+# -----------------------------------------------------------------
     elif stage == "book_appt_confirm":
         debug_print("book_appt_confirm: 📍 Stage entered")
 
@@ -3343,6 +3343,8 @@ def voice():
 
 
 
+
+
     
     elif stage == "cancel_appointment":
         # ----------------------------------------------------------------------
@@ -3476,6 +3478,127 @@ def voice():
             "Thanks. Now, please tell me the date and time of the appointment you want to cancel. "
             "For example, say July 3rd at 9 AM."
         )
+        resp.append(gather)
+        return str(resp)
+
+
+
+
+    elif stage == "cancel_appt_get_dob":
+        # ----------------------------------------------------------------------
+        # ❌ Stage: cancel_appt_get_dob
+        # Purpose:
+        #   - Collect and validate the caller's Date of Birth for appointment
+        #     cancellation lookup/verification.
+        #   - Accepts speech (e.g., "July third nineteen fifty six") OR DTMF
+        #     as MMDDYYYY (e.g., 07031956#).
+        #   - Stores DOB as ISO (YYYY-MM-DD) under session_data[call_sid]["customer"]["dob"].
+        #   - Requires a 10-digit phone on file before proceeding; if missing,
+        #     redirects to collect_phone and returns here afterward.
+        # Flow after success:
+        #   - Sets stage -> "cancel_appt_confirm" (you should implement that to
+        #     locate & cancel the appointment using phone+dob [+ optional doctor_id]).
+        # Resilience:
+        #   - 3 retries on parse errors with polite reprompts.
+        #   - Consistent "can't hear you" behavior via make_gather_dob().
+        # ----------------------------------------------------------------------
+        debug_print("cancel_appt_get_dob: 📍 Stage entered")
+
+        # Ensure buckets exist
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid].setdefault("customer", {})
+
+        # --- Guard: require 10-digit phone first -------------------------------
+        def _normalize_10(d: str) -> str:
+            d = "".join(ch for ch in (d or "") if ch.isdigit())
+            return d[1:] if len(d) == 11 and d.startswith("1") else d
+
+        phone_norm = _normalize_10(session_data[call_sid]["customer"].get("phone"))
+        if len(phone_norm) != 10:
+            debug_print("cancel_appt_get_dob: ❌ phone missing/invalid → redirecting to collect_phone")
+            # Set return path so collect_phone bounces back here once done
+            session_data[call_sid]["return_stage"] = "cancel_appt_get_dob"
+            session_data[call_sid]["stage"] = "collect_phone"
+            gather = make_gather(
+                "To cancel your appointment, please provide your ten digit phone number including area code. "
+                "You can say it, or type the digits and press pound.",
+                hints="zero one two three four five six seven eight nine"
+            )
+            resp.append(gather)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # --- Pull inputs (DTMF preferred if provided by Twilio) ----------------
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
+        speech_text = (speech_result or "").strip()
+        debug_print(f"cancel_appt_get_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
+
+        # --- Attempt to parse DOB (speech or keypad) ---------------------------
+        dt = parse_dob_input(speech_text, dtmf_digits)
+        if not dt:
+            session_data[call_sid]["retry_cancel_dob"] = session_data[call_sid].get("retry_cancel_dob", 0) + 1
+            r = session_data[call_sid]["retry_cancel_dob"]
+            debug_print(f"cancel_appt_get_dob: ❌ Parse failed. Retry={r}")
+
+            if r >= 3:
+                resp.say(gpt_speak("Sorry, I couldn’t understand your date of birth. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            prompt_text = (
+                "Please say your date of birth to locate your appointment, for example July third nineteen fifty six, "
+                "or type two digits for month, two for day, and four for year, then press pound. "
+                "For example, 07031956#."
+            )
+            # Use your DOB gather helper if available; otherwise fall back to make_gather
+            try:
+                gather = make_gather_dob(prompt_text)
+            except Exception:
+                gather = make_gather(prompt_text)
+            resp.append(gather)
+            return str(resp)
+
+        # --- Validate reasonable DOB range -------------------------------------
+        try:
+            from datetime import date
+            today = date.today()
+            min_date = date(1900, 1, 1)
+            dob_date = dt.date()
+            if not (min_date <= dob_date <= today):
+                debug_print(f"cancel_appt_get_dob: ⚠️ DOB out of range → {dob_date.isoformat()}")
+                session_data[call_sid]["retry_cancel_dob"] = session_data[call_sid].get("retry_cancel_dob", 0) + 1
+                prompt_text = (
+                    "That doesn't sound like a valid birth date. Please say it again, "
+                    "or type two digits for month, two for day, and four for year, then press pound. "
+                    "For example, 07031956#."
+                )
+                try:
+                    gather = make_gather_dob(prompt_text)
+                except Exception:
+                    gather = make_gather(prompt_text)
+                resp.append(gather)
+                return str(resp)
+        except Exception as e:
+            debug_print(f"cancel_appt_get_dob: ⚠️ Validation error → {e}")
+
+        # --- Store ISO DOB and advance -----------------------------------------
+        iso_dob = dt.strftime("%Y-%m-%d")
+        session_data[call_sid]["customer"]["dob"] = iso_dob
+        debug_print(f"cancel_appt_get_dob: ✅ Stored DOB → {iso_dob}")
+
+        # Advance to the confirmation/lookup stage of your cancel flow
+        session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
+        debug_print("cancel_appt_get_dob: ➡️ Next stage → cancel_appt_confirm")
+
+        # If you already know the appointment time, you can mention it; otherwise generic prompt
+        next_prompt = (
+            "Thanks. I found your details. Do you want me to cancel your appointment now?"
+        )
+        gather = make_gather(next_prompt)
         resp.append(gather)
         return str(resp)
 
