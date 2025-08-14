@@ -1969,10 +1969,37 @@ def update_customer_cc(
 
     return True
 
+"""
+session_data[call_sid]["cancel"]["candidates"] = [
+  {
+    "event_id": "abc123",
+    "calendar_id": "doctor-a@group.calendar.google.com",
+    "doctor_name": "Dr. Ada Lovelace",
+    "start_utc": "2025-08-12T10:00:00+00:00",
+    "end_utc":   "2025-08-12T10:30:00+00:00",
+    "friendly":  "Tuesday, August 12 at 5:00 AM",
+    "summary":   "Therapy Session",
+    "location":  "123 Clinic St., Suite 5",
+    "phone":     "4694633276",
+    "dob":       "1956-07-03",
+    "raw_event": { /* optional raw subset */ }
+  },
+  {
+    "event_id": "def456",
+    "calendar_id": "doctor-b@group.calendar.google.com",
+    "doctor_name": "Dr. Alan Turing",
+    "start_utc": "2025-08-15T15:30:00+00:00",
+    "end_utc":   "2025-08-15T16:00:00+00:00",
+    "friendly":  "Friday, August 15 at 10:30 AM",
+    "summary":   "",
+    "location":  "",
+    "phone":     "4694633276",
+    "dob":       "1956-07-03"
+  }
+]
 
 
-
-
+"""
 
 def find_future_events_for_caller(
     calendars,
