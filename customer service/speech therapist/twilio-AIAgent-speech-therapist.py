@@ -2685,14 +2685,31 @@ def voice():
 
 
 
-    
+    # ----------------------------------------------------------------------
+# 🎂 Stage: collect_dob
+# Purpose:
+#   - Accept DOB via speech (e.g., “July third 1990”) or keypad (MMDDYYYY#).
+#   - Parse and validate reasonable date range.
+#   - Store DOB as ISO (YYYY-MM-DD) in session.
+#   - On failure, re-prompt with the SHORT prompt (DOB_PROMPT_SHORT).
+# Integration points:
+#   - Uses: parse_dob_input(), make_gather_dob(), debug_print, session_data, call_sid
+#   - Next stage: ask_time_date (always, after successful DOB store)
+# ----------------------------------------------------------------------
     elif stage == "collect_dob":
         # ----------------------------------------------------------------------
-        # 🎂 Stage: Collect Date of Birth (DOB)
+        # 🔊 Short, centralized prompts
+        #   Put these near your other constants so every stage uses the same text.
         # ----------------------------------------------------------------------
+        DOB_PROMPT_SHORT = (
+            "Please say your birth date, for example 'July third 1990'. "
+            "Or type MMDDYYYY then press pound, for example 07031990#."
+        )
+        TIME_PROMPT_SHORT = "Please say the date and time, for example 'August 12 at 5 PM'."
+
         debug_print("collect_dob: 📍 Stage entered")
 
-        # Pull DTMF if present, otherwise use speech
+        # 1) Pull DTMF if present (Twilio sends digits on the same webhook), otherwise use speech.
         try:
             dtmf_digits = (request.values.get("Digits") or "").strip()
         except Exception:
@@ -2701,29 +2718,27 @@ def voice():
         speech_text = (speech_result or "").strip()
         debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
 
-        # Parse DOB input
+        # 2) Parse DOB input (helper handles speech and/or MMDDYYYY)
         dt = parse_dob_input(speech_text, dtmf_digits)
         if not dt:
+            # Retry counter (so we don’t loop forever)
             session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
             r = session_data[call_sid]["retry_dob"]
             debug_print(f"collect_dob: ❌ Parse failed. Retry={r}")
 
             if r >= 3:
+                # Fail out cleanly if user can’t provide a DOB we can parse
                 resp.say(gpt_speak("Sorry, I couldn’t understand your date of birth. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            prompt_text = (
-                "Please say your date of birth, for example July third nineteen ninety, "
-                "or type two digits for month, two digits for day, and four digits for year, then press pound. "
-                "For example, 07031990#."
-            )
-            gather = make_gather_dob(prompt_text)
+            # Re-prompt using short, consistent copy
+            gather = make_gather_dob(DOB_PROMPT_SHORT)
             resp.append(gather)
             return str(resp)
 
-        # Validate DOB range
+        # 3) Validate DOB sanity window (e.g., 1900..today)
         try:
             from datetime import date
             today = date.today()
@@ -2731,158 +2746,29 @@ def voice():
             dob_date = dt.date()
             if not (min_date <= dob_date <= today):
                 debug_print(f"collect_dob: ⚠️ DOB out of range → {dob_date.isoformat()}")
+
                 session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-                prompt_text = (
-                    "That doesn't sound like a valid birth date. Please say it again, "
-                    "or type two digits for month, two digits for day, and four digits for year, then press pound. "
-                    "For example, 07031990#."
-                )
-                gather = make_gather_dob(prompt_text)
+                gather = make_gather_dob(DOB_PROMPT_SHORT)
                 resp.append(gather)
                 return str(resp)
         except Exception as e:
+            # Do not fail the call; just log and continue to store parsed value
             debug_print(f"collect_dob: ⚠️ Validation error → {e}")
 
-        # Store ISO DOB
+        # 4) Store ISO DOB in session
         iso_dob = dt.strftime("%Y-%m-%d")
         session_data[call_sid].setdefault("customer", {})
         session_data[call_sid]["customer"]["dob"] = iso_dob
         debug_print(f"collect_dob: ✅ Stored DOB → {iso_dob}")
 
-        # ✅ Always move to ask_time_date next
+        # 5) Always move to ask_time_date next (your booking flow expects this)
         session_data[call_sid]["stage"] = "ask_time_date"
         debug_print("collect_dob: ➡️ Next stage → ask_time_date")
 
-        # Prompt for appointment time/date
-        gather = make_gather(
-            "Thanks. What time and date would you like to book your appointment?"
-        )
+        # 6) Prompt for appointment time/date using the short prompt
+        gather = make_gather("Thanks. " + TIME_PROMPT_SHORT)
         resp.append(gather)
         return str(resp)
-
-
-    elif stage == "ask_time_date":
-        # ----------------------------------------------------------------------
-        # 📍 Stage: ask_time_date
-        # ----------------------------------------------------------------------
-        debug_print(f"🗣️ Received spoken time: {speech_result}")
-        time_info = smart_parse_time(speech_result)
-
-        if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
-            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
-            retry_count = session_data[call_sid]["retry_time"]
-            debug_print(f"⚠️ Time parsing failed. Retry count: {retry_count}")
-
-            if retry_count >= 3:
-                debug_print("❌ Max retries reached. Ending call.")
-                resp.say(gpt_speak("Sorry, I still couldn't understand the time. Please try again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            gather = make_gather("Please say the date and time again, for example, July 3rd at 9 AM.")
-            resp.append(gather)
-            # fallback to avoid dead-end
-            resp.say(gpt_speak("I didn't get the date and time."), VOICE)
-            resp.redirect("/voice")
-            return str(resp)
-
-        # ✅ Valid date and time extracted
-        spoken_day, spoken_time = time_info
-        debug_print(f"📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
-        session_data[call_sid]["spoken_day"] = spoken_day
-        session_data[call_sid]["spoken_time"] = spoken_time
-
-        try:
-            appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
-            session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
-            debug_print(f"📆 Appointment requested → Start: {appointment_start}, End: {appointment_end}")
-        except Exception as e:
-            debug_print(f"❌ Failed to build appointment time range from '{spoken_day}' and '{spoken_time}': {e}")
-            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
-
-            if session_data[call_sid]["retry_time"] >= 3:
-                debug_print("❌ Max retries reached during build_timeslot_range.")
-                resp.say(gpt_speak("Sorry, I couldn’t understand the time you mentioned. Please try again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            gather = make_gather("I didn't catch that clearly. Please repeat the date and time, like July 3rd at 9 AM.")
-            resp.append(gather)
-            resp.say(gpt_speak("I still didn't get the date and time."), VOICE)
-            resp.redirect("/voice")
-            return str(resp)
-
-        # 🔎 Check availability
-        doctor_id = session_data.get(call_sid, {}).get("doctor_id")
-        if not doctor_id:
-            debug_print("⚠️ No doctor_id in session. Returning to booking stage.")
-            session_data[call_sid]["stage"] = "booking"
-            gather = make_gather("Please say the name of the doctor you'd like to book with.")
-            resp.append(gather)
-            resp.say(gpt_speak("I didn't hear the doctor name."), VOICE)
-            resp.redirect("/voice")
-            return str(resp)
-
-        calendar_id = doctor_id
-        debug_print(f"👨‍⚕️ Checking calendar ID: {calendar_id}")
-
-        if not is_time_slot_available(calendar_id, appointment_start, appointment_end, creds):
-            debug_print("❌ Requested time slot is not available")
-
-            alts = get_next_available_slots(calendar_id, creds, limit=3, duration_minutes=APPOINTMENT_DURATION_MINUTES)
-
-            if alts:
-                options = " or ".join([slot["friendly"] for slot in alts])
-                prompt = f"That time is not available. Would you like to book on {options}?"
-                debug_print(f"💡 Offering alternatives: {options}")
-            else:
-                prompt = "That time is not available, and I couldn't find any open slots soon. Please try again later."
-                debug_print("⚠️ No alternative slots found.")
-
-            gather = make_gather(prompt)
-            resp.append(gather)
-            resp.say(gpt_speak("I didn't get your choice."), VOICE)
-            resp.redirect("/voice")
-            return str(resp)
-
-        # ✅ Slot is free → Check if customer exists
-        debug_print("✅ Slot is available. Checking customer existence...")
-        customer = session_data[call_sid].get("customer", {})
-        # normalize phone the same way your DB/search expects
-        phone_norm = "".join(ch for ch in (customer.get("phone", "") or "") if ch.isdigit())
-        if len(phone_norm) == 11 and phone_norm.startswith("1"):
-            phone_norm = phone_norm[1:]
-        dob_val = customer.get("dob", "")
-
-        try:
-            if phone_norm and dob_val and customer_search(phone_norm, dob_val):
-                debug_print("📋 Customer exists — skipping info collection, going to book_appt_confirm.")
-                session_data[call_sid]["stage"] = "book_appt_confirm"
-                # auto-run confirm now (no yes/no that could contradict)
-                try:
-                    from flask import url_for
-                    resp.redirect(url_for("voice"))
-                except Exception:
-                    resp.redirect(request.path)
-                return str(resp)
-            else:
-                debug_print("🆕 Customer not found — proceeding to first name collection.")
-                session_data[call_sid]["stage"] = "collect_first_name"
-                gather = make_gather("Thanks. What is your first name?")
-                resp.append(gather)
-                resp.say(gpt_speak("I didn't catch the first name."), VOICE)
-                resp.redirect("/voice")
-                return str(resp)
-        except Exception as e:
-            debug_print(f"⚠️ Error during customer_search: {e}")
-            session_data[call_sid]["stage"] = "collect_first_name"
-            gather = make_gather("Thanks. What is your first name?")
-            resp.append(gather)
-            resp.say(gpt_speak("I didn't catch the first name."), VOICE)
-            resp.redirect("/voice")
-            return str(resp)
 
 
 
