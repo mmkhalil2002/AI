@@ -49,6 +49,8 @@ MAX_TIME_SELECTION_ATTEMPTS = int(os.getenv("MAX_TIME_SELECTION_ATTEMPTS", 3))
 # Example: [0,1,2,3,4] for Mon–Fri in US; [0,1,2,3,5] for Sun–Thu (skip Friday)
 # 0 = Monday, 1 = Tuesday, 2 = Wednesday, 3 = Thursday, 4 = Friday, 5 = Saturday, 6 = Sunday
 MAX_SILENCE_RETRIES = int(os.getenv("MAX_SILENCE_RETRIES", 3))
+
+MAX_GET_PHONE_RETRIES = int(os.getenv("MAX_GET_PHONE_RETRIES", 3))
 WORKING_DAYS = [0, 1, 2, 3, 4]  # Adjust based on your local week
 
 
@@ -2626,6 +2628,40 @@ def voice():
 
         session_data.setdefault(call_sid, {}).setdefault("customer", {})
         session_data[call_sid]["retry_phone"] = session_data[call_sid].get("retry_phone", 0)
+        """
+        re.sub(pattern, repl, string, count=0)
+            pattern → regex pattern to search for.
+
+            repl → what to replace it with.
+
+            string → the original text.
+
+            count (optional) → how many occurrences to replace (default = all).
+            d = re.sub(r"\D", "", raw_digits or "")
+                    raw_digits or "" → if raw_digits is None, use "" instead.
+
+                    \D = regex for “any character that is NOT a digit”.
+
+                    re.sub(r"\D", "", ...) → replace all non-digits with "" (delete them).
+                    Example
+                    "(312) 555-0199" → "3125550199"
+                    "+1-800-123-4567" → "18001234567"
+            if len(d) == 11 and d.startswith("1"):
+                    d = d[1:]
+                            If the number is 11 digits long and starts with "1",
+                            → Strip off the leading "1".
+
+                This is because "1" is the US country code.
+                ✅ Example:
+                      "18001234567" → "8001234567"
+                return d if len(d) == 10 else ""
+                    If the result is exactly 10 digits → return it (valid US number).
+                    Otherwise → return empty string "" (invalid phone).
+                    ✅ Example:
+                    "3125550199" → valid, returned as "3125550199".
+                    "5550199" → too short, returns "".
+                    "441234567890" → UK number, not 10 digits, returns "".
+        """
 
         def _validate_normalize_us_phone(raw_digits: str) -> str:
             d = re.sub(r"\D", "", raw_digits or "")
@@ -2654,7 +2690,7 @@ def voice():
             if not heard_some:
                 session_data[call_sid]["retry_phone"] += 1
 
-            if session_data[call_sid]["retry_phone"] >= 5:
+            if session_data[call_sid]["retry_phone"] >= MAX_GET_PHONE_RETRIES:
                 debug_print("collect_phone: max retries reached")
                 resp.say(gpt_speak("Sorry, I couldn’t capture a valid phone number. Please call again later."), VOICE)
                 resp.hangup()
