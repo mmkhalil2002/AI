@@ -1644,7 +1644,10 @@ def _block_title(new: bool) -> str:
     return "insert_customer: ✅ Added new customer" if new \
            else "insert_customer: ℹ️ Existing customer — updated last_seen_at"
 
-def _render_block_lines(new: bool, rec: dict) -> list[str]:
+from typing import Any
+
+def _render_block_lines(new: bool, rec: Dict[str, Any]) -> List[str]:
+
     """
     Render the 12-line, human-readable block for a customer.
     PAN/CVV are MASKED here so the file never stores raw values.
