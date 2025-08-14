@@ -1668,7 +1668,10 @@ def _render_block_lines(new: bool, rec: Dict[str, Any]) -> List[str]:
     ]
 
 # ---------- File parsing helpers ----------
-def _iter_blocks(lines: list[str]):
+
+from typing import List, Dict, Any, Iterable, Iterator
+
+def _iter_blocks(lines: Iterable[str]) -> Iterator[List[str]]:
     """
     Yield (start_idx, end_idx_exclusive, block_lines).
     A block starts at a line beginning with 'insert_customer:' and ends
