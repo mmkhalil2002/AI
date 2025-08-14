@@ -2569,16 +2569,16 @@ def voice():
                         friendly_clean = friendly.lower().translate(str.maketrans('', '', string.punctuation)).strip()
                         if extracted_clean in friendly_clean or friendly_clean in extracted_clean:
                             matched_id = doc_id
-                            print(f"✅ Matched via GPT fallback: {friendly}")
+                            debug_print(f"✅ Matched via GPT fallback: {friendly}")
                             break
             except Exception as e:
-                print(f"⚠️ GPT fallback failed: {e}")
+                debug_print(f"⚠️ GPT fallback failed: {e}")
 
         # ------------------------------------------------------------------
         # ❌ 3. Still no match → Retry logic
         # ------------------------------------------------------------------
         if matched_id is None:
-            print(f"❌ No doctor match for: '{spoken_clean}'")
+            debug_print(f"❌ No doctor match for: '{spoken_clean}'")
             session_data[call_sid]["retry_booking"] += 1
             retries = session_data[call_sid]["retry_booking"]
 
@@ -3499,7 +3499,7 @@ def voice():
 
         # 🆕 Check if nothing was heard → immediate re-prompt
         if not selected_text:
-            print("⚠️ cancel_appointment: No speech detected — re-prompting user to say the doctor's name.")
+            debug_print("⚠️ cancel_appointment: No speech detected — re-prompting user to say the doctor's name.")
             doctor_list = ", ".join(googleid_dr_name_map.values())
             retry_prompt = (
                 f"I can't hear you. Available doctors are: {doctor_list}. "
@@ -3511,11 +3511,67 @@ def voice():
             ))
             return str(resp)
 
+        """
+        str.maketrans(x, y, z)
+   
+            x = characters to replace
+
+            y = characters they should become (must be the same length as x)
+
+            z = characters to delete completely
+
+            str.maketrans('', '', string.punctuation)
+            The first '' = “no characters to replace”
+
+            The second '' = “no replacement characters either”
+
+            The third argument string.punctuation = “delete every punctuation character”
+            .translate(str.maketrans('', '', string.punctuation))
+
+            string.punctuation is a built-in constant containing all common punctuation symbols:
+
+            !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
+
+
+            str.maketrans('', '', string.punctuation) builds a translation table that says:
+            “delete all punctuation characters.”
+
+            .translate(...) applies that rule to the string.
+
+            Example: "hello, world!" → "hello world"
+
+            Purpose: Normalizes input by stripping away punctuation so "Dr. Smith" and "Dr Smith" compare the same.
+            .strip()
+
+            Removes leading and trailing whitespace (spaces, tabs, newlines).
+
+            Example: " hello world " → "hello world"
+
+            Purpose: Ensures clean edges when matching text.
+
+        """
         selected_clean = selected_text.lower().translate(str.maketrans('', '', string.punctuation)).strip()
-        print(f"🗣️ Received doctor name: {selected_clean}")
+        debug_print(f"🗣️ Received doctor name: {selected_clean}")
         matched_id = None
 
         # 🔍 Step 1: Try partial substring match
+        """
+             General pattern
+
+            If partial_matches looks like:
+
+                    [ (value_A, score_A), (value_B, score_B), ... ]
+
+            Then:
+
+                    partial_matches[0][0] → "value_A" (the string)
+
+                    partial_matches[0][1] → score_A (the similarity score)
+
+                    partial_matches[1][0] → "value_B"
+
+                    partial_matches[1][1] → score_B
+        """
         partial_matches = []
         for doc_id, friendly_name in googleid_dr_name_map.items():
             friendly_clean = friendly_name.lower().translate(str.maketrans('', '', string.punctuation)).strip()
@@ -3524,7 +3580,7 @@ def voice():
 
         if len(partial_matches) == 1:
             matched_id = partial_matches[0][0]
-            print(f"✅ Partial match found: {partial_matches[0][1]}")
+            debug_print(f"✅ cancel_appointment: Dr Name {partial_matches[0][0]} Partial match score: {partial_matches[0][1]}")
 
         # 🤖 Step 2: GPT fallback
         if not matched_id:
