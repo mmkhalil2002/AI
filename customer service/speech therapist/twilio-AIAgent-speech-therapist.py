@@ -77,11 +77,13 @@ else:
 
 ## print debug
 
-def debug_print(*args, **kwargs):
-    if DEBUG:
-        print(*args, **kwargs)
 
-
+def debug_print(msg: str) -> None:
+    """Your app already defines this; keep here for completeness if not imported."""
+    try:
+        print(msg)
+    except Exception:
+        pass
 
 
 
@@ -1243,127 +1245,93 @@ def normalize_phone_digits(phone: str) -> str:
     return ''.join(ch for ch in (phone or "") if ch.isdigit())
 
 
-
-from dateutil import parser
+# ===== local doctor JSON cancellation (by doctor+phone+dob+utc_start) =====
 import os
 import json
-import os, json
-from dateutil import parser as dtparser
-def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str, dob: str = None) -> bool:
+from typing import Any, Dict
+
+def cancel_appointment_by_name(doctor_name: str, phone: str, dob: str, utc_start: str) -> bool:
     """
-    Remove a doctor's appointment by exact UTC start time and phone,
-    and (optionally) DOB. If DOB is provided, it must match too.
-
-    Matching rules:
-      - Always require: normalized(phone) == appt.phone AND utc_start == appt.time (both UTC ISO)
-      - Additionally require: normalized(dob) == appt.dob (if dob is provided)
-
-    All times are normalized to UTC ISO (e.g., 'YYYY-MM-DDTHH:MM:SS+00:00') before comparison.
-    Keeps all other appointments intact. Returns True if ≥1 appointment removed.
+    Remove a single appointment from appointment_data/doctors/<doctor>.json
+    matching ALL of:
+      • phone (10-digit normalized)
+      • dob (exact string match; expected ISO YYYY-MM-DD)
+      • time (exact UTC ISO match)
+    Returns True if a record was removed, else False.
     """
-    import os, json
-    from datetime import timezone
-    try:
-        import dateutil.parser as dtparser
-    except Exception:
-        # If your code already imports dtparser elsewhere, you may remove this.
-        raise
-
     def normalize_phone_digits(s: str) -> str:
-        return "".join(ch for ch in (s or "") if ch.isdigit())
+        d = "".join(ch for ch in (s or "") if ch.isdigit())
+        return d[1:] if len(d) == 11 and d.startswith("1") else d
 
-    def normalize_dob(s: str) -> str:
-        """
-        Keep simple ISO-like 'YYYY-MM-DD' if present.
-        - Trims whitespace
-        - If a full datetime was stored, use the date portion before 'T'
-        - Returns lower-cased, trimmed string (though digits/hyphens only expected)
-        """
-        s = (s or "").strip()
-        if "T" in s:
-            s = s.split("T", 1)[0].strip()
-        return s
+    def get_doctor_filename(name: str) -> str:
+        try:
+            return _get_doctor_filename(name)  # if your app already defines this
+        except Exception:
+            safe = "".join(c for c in (name or "") if c.isalnum() or c in (" ", "-", "_")).strip().replace(" ", "_")
+            if not safe.endswith(".json"):
+                safe += ".json"
+            return os.path.join("appointment_data", "doctors", safe)
 
-    def normalize_utc_iso(s: str) -> str:
-        """
-        Parse any ISO-ish string and return strict UTC ISO string with +00:00 offset.
-        """
-        dt = dtparser.isoparse(s)
-        dt_utc = dt.astimezone(timezone.utc)
-        return dt_utc.isoformat()
-
-    key = sanitize_filename(doctor_name).replace(".json", "")
+    from dateutil import parser as dtparser
     full_path = get_doctor_filename(doctor_name)
-    phone_digits = normalize_phone_digits(phone)
-    dob_norm = normalize_dob(dob) if dob else None
+    phone10 = normalize_phone_digits(phone)
+    dob_str = (dob or "").strip()
 
-    debug_print(f"🩺 cancel_appointment_by_name → doctor={doctor_name}, phone={phone_digits}, dob={dob_norm or '∅'}, utc_start={utc_start}")
+    debug_print(f"cancel_appointment_by_name: doctor='{doctor_name}' phone='{phone10}' dob='{dob_str}' utc='{utc_start}'")
 
-    if not os.path.exists(full_path):
-        debug_print(f"⚠️ File not found: {full_path}")
+    if not (os.path.exists(full_path) and phone10 and dob_str and utc_start):
         return False
 
-    # Load the doctor's JSON list
+    # load list
     try:
         with open(full_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            if not isinstance(data, list):
-                debug_print(f"❌ JSON not a list for {full_path}")
-                return False
+        if not isinstance(data, list):
+            return False
     except Exception as e:
-        debug_print(f"❌ Read error {full_path} → {e}")
+        debug_print(f"cancel_appointment_by_name: read error → {e}")
         return False
 
-    # Normalize the target UTC time once
+    # normalize target UTC
     try:
-        target_norm = normalize_utc_iso(utc_start)
+        target_norm = dtparser.isoparse(utc_start).astimezone().astimezone(tz=None).isoformat()
     except Exception as e:
-        debug_print(f"❌ utc_start parse error → {e}")
+        debug_print(f"cancel_appointment_by_name: utc parse error → {e}")
         return False
 
-    kept, removed = [], 0
+    kept = []
+    removed = 0
     for appt in data:
+        if not isinstance(appt, dict):
+            kept.append(appt)
+            continue
         ap_phone = normalize_phone_digits(appt.get("phone", ""))
-        ap_time_raw = appt.get("time", "")
-        ap_dob_raw = appt.get("dob", "") or appt.get("date_of_birth", "")
-        ap_dob_norm = normalize_dob(ap_dob_raw)
-
-        # Normalize appt time; skip malformed records (keep them)
+        ap_dob   = (appt.get("dob", "") or "").strip()
+        ap_time_raw = (appt.get("time") or appt.get("start") or "").strip()
         try:
-            ap_time_norm = normalize_utc_iso(ap_time_raw)
-        except Exception as e:
-            debug_print(f"⚠️ skip invalid appt time '{ap_time_raw}' → {e}")
+            ap_time_norm = dtparser.isoparse(ap_time_raw).astimezone().astimezone(tz=None).isoformat()
+        except Exception:
             kept.append(appt)
             continue
 
-        # Match rule: phone & time must match; if caller provided DOB, that must match too
-        base_match = (ap_phone == phone_digits and ap_time_norm == target_norm)
-        dob_ok = (True if dob_norm is None else (ap_dob_norm == dob_norm))
-
-        if base_match and dob_ok:
+        if ap_phone == phone10 and ap_dob == dob_str and ap_time_norm == target_norm:
             removed += 1
-            debug_print(f"🗑️ Removing appt → phone={ap_phone}, time={ap_time_norm}, dob={ap_dob_norm or '∅'}")
-            # don't append → this record is deleted
         else:
             kept.append(appt)
 
     if removed == 0:
-        msg = f"⚠️ No appointment found for phone={phone_digits} time={target_norm}"
-        if dob_norm is not None:
-            msg += f" dob={dob_norm}"
-        debug_print(msg)
+        debug_print("cancel_appointment_by_name: no matching record found")
         return False
 
-    # Write updated file + refresh in-memory cache if you keep one
     try:
         with open(full_path, "w", encoding="utf-8") as f:
-            json.dump(kept, f, indent=2)
-        doctor_appointments[key] = kept
-        debug_print(f"✅ Deleted {removed} appt(s) from {full_path}")
+            json.dump(kept, f, indent=2, ensure_ascii=False)
+        debug_print(f"cancel_appointment_by_name: ✅ deleted {removed} appt(s)")
         return True
     except Exception as e:
-        debug_print(f"❌ Write error {full_path} → {e}")
+        debug_print(f"cancel_appointment_by_name: write error → {e}")
         return False
+
 
 
 
@@ -1611,17 +1579,36 @@ except NameError:  # minimal fallback so this module is self-contained
         print(*args, **kwargs)
 
 # ---------- Init ----------
-def init_db():
-    """Ensure DB folder/file exist (creates empty file if missing)."""
+def init_db() -> None:
+    """
+    Ensure appointment_data folder exists and customers.json is a dict file.
+    Creates an empty {} if missing or invalid.
+    """
     os.makedirs(DB_FOLDER, exist_ok=True)
     if not os.path.exists(DB_FILE):
-        with open(DB_FILE, "w", encoding="utf-8"):
-            pass
+        with open(DB_FILE, "w", encoding="utf-8") as f:
+            json.dump({}, f, indent=2)
+        return
+
+    # Validate existing file is a JSON object; if not, reset to {}
+    try:
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("customers.json must be a JSON object")
+    except Exception:
+        with open(DB_FILE, "w", encoding="utf-8") as f:
+            json.dump({}, f, indent=2)
+
+
 
 # ---------- Sanitizers / formatters ----------
 def _oneline(s: str) -> str:
-    """Collapse whitespace/newlines to single spaces; trim."""
+    """Compact whitespace/newlines to a single line."""
+    import re
     return re.sub(r"\s+", " ", (s or "").strip())
+
+
 
 def _normalize_phone(s: str) -> str:
     """
@@ -1686,7 +1673,15 @@ def _iter_blocks(lines: Iterable[str]) -> Iterator[List[str]]:
     if start is not None:
         yield (start, len(lines), lines[start:])
 
-def _get_value(block_lines: list[str], label: str) -> str | None:
+
+        # add near the top of the file
+from typing import Optional, List
+
+# change this:
+# def _get_value(block_lines: list[str], label: str) -> str | None:
+
+# to this:
+def _get_value(block_lines: List[str], label: str) -> Optional[str]:
     """Fetch 'Label: value' from a block."""
     prefix = f"{label}:"
     for ln in block_lines:
@@ -1699,25 +1694,53 @@ def _extract_phone_dob(block_lines: list[str]) -> tuple[str | None, str | None]:
     return _get_value(block_lines, "Phone"), _get_value(block_lines, "DOB")
 
 # ---------- Public API ----------
+
+def _normalize_phone10(phone: str) -> str:
+    """
+    Keep digits only, drop leading US '1' if present, and return 10-digit phone or ''.
+    """
+    d = "".join(ch for ch in (phone or "") if ch.isdigit())
+    if len(d) == 11 and d.startswith("1"):
+        d = d[1:]
+    return d if len(d) == 10 else ""
+
+def _load_customers() -> Dict[str, Dict[str, Any]]:
+    """Read the customers map from disk (already ensured by init_db)."""
+    try:
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception as e:
+        debug_print(f"customers.json read error → {e}")
+    return {}
+
+
+def _key(phone10: str, dob_iso: str) -> str:
+    """Stable map key to prevent duplicates."""
+    return f"{phone10}|{dob_iso or ''}"
+
 def customer_search(phone: str, dob: str) -> bool:
     """
-    Sequentially scan the human-readable file and return True if a block
-    exists with matching (Phone, DOB). Simple, O(n) pass.
+    Return True if a customer (phone|dob) exists in customers.json, else False.
     """
-    phone_norm = _normalize_phone(phone)
-    dob_clean  = _oneline(dob)
-
-    if not os.path.exists(DB_FILE):
+    init_db()
+    phone10 = _normalize_phone10(phone)
+    dob_iso = (dob or "").strip()
+    if not phone10:
         return False
+    data = _load_customers()
+    exists = _key(phone10, dob_iso) in data
+    debug_print(f"customer_search: phone={phone10} dob={dob_iso or '∅'} → {exists}")
+    return exists
 
-    with open(DB_FILE, "r", encoding="utf-8") as f:
-        lines = [ln.rstrip("\n") for ln in f]
 
-    for _, _, blk in _iter_blocks(lines):
-        b_phone, b_dob = _extract_phone_dob(blk)
-        if _normalize_phone(b_phone) == phone_norm and (b_dob or "") == dob_clean:
-            return True
-    return False
+def _save_customers(data: Dict[str, Dict[str, Any]]) -> None:
+    """Write the customers map to disk in readable (pretty) form."""
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
 
 def _update_existing_block_in_place(phone_norm: str, dob_clean: str, updates: dict) -> bool:
     """
@@ -1799,77 +1822,82 @@ def _update_existing_block_in_place(phone_norm: str, dob_clean: str, updates: di
 
     return changed
 
-def insert_customer(phone: str, dob: str, first_name: str, last_name: str, address: str,
-                    cc_name: str, cc_number: str, cc_exp: str, cc_cvv: str) -> bool:
+
+def insert_customer(
+    phone: str,
+    dob: str,
+    first_name: str,
+    last_name: str,
+    address: str,
+    cc_name: str,
+    cc_number: str,
+    cc_exp: str,
+    cc_cvv: str,
+) -> bool:
     """
-    Append/Update a customer in the single human-readable file:
-      • NEW customer → append one 12-line block (masked PAN/CVV).
-      • EXISTING     → update that block IN PLACE (no duplicate) and bump 'Last Seen At'.
-    Returns:
-      True  -> new block appended
-      False -> existing block updated in place
+    Insert or update a customer in customers.json (single pretty JSON dict):
+      • If (phone|dob) exists: update 'last_seen_at' only; return False.
+      • If new: create record with 'created_at' and 'last_seen_at'; return True.
+    Never duplicates because the map key is unique.
+    All values are stored on one logical line each (pretty JSON with indent=2).
     """
     init_db()
+    phone10 = _normalize_phone10(phone)
+    dob_iso = (dob or "").strip()
+    if not phone10:
+        raise ValueError("insert_customer: invalid phone (must normalize to 10 digits)")
 
-    phone_norm = _normalize_phone(phone)
-    dob_clean  = _oneline(dob)
+    data = _load_customers()
+    key = _key(phone10, dob_iso)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Existing? Update in place (no append)
-    if customer_search(phone_norm, dob_clean):
-        _update_existing_block_in_place(
-            phone_norm, dob_clean,
-            updates={
-                "first_name": first_name,
-                "last_name":  last_name,
-                "address":    address,
-                "cc_name":    cc_name,
-                "cc_number":  cc_number,
-                "cc_exp":     cc_exp,
-                "cc_cvv":     cc_cvv,
-            }
-        )
-        debug_print("\n".join([
-            "insert_customer: ℹ️ Existing customer — updated in place (no duplicate)",
-            f"Phone: {phone_norm}",
-            f"DOB: {dob_clean}",
-        ]))
+    if key in data:
+        # existing → just refresh last_seen_at
+        data[key]["last_seen_at"] = now
+        _save_customers(data)
+        debug_print(f"insert_customer: ℹ️ exists; updated last_seen_at for {key}")
         return False
 
-    # New record → append block
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    rec = {
-        "phone":       phone_norm,
-        "dob":         dob_clean,
-        "first_name":  _oneline(first_name),
-        "last_name":   _oneline(last_name),
-        "address":     _oneline(address),
-        "cc_name":     _oneline(cc_name),
-        "cc_number":   _oneline(cc_number),  # will be masked by renderer
-        "cc_exp":      _oneline(cc_exp),
-        "cc_cvv":      _oneline(cc_cvv),     # will be masked by renderer
-        "created_at":  now,
-        "last_seen_at": now
+    # new record
+    rec: Dict[str, Any] = {
+        "phone": phone10,
+        "dob": dob_iso,
+        "first_name": _oneline(first_name),
+        "last_name": _oneline(last_name),
+        "address": _oneline(address),
+        # store CC fields if captured (can be empty strings)
+        "cc_name": _oneline(cc_name),
+        "cc_number": _oneline(cc_number),
+        "cc_exp": _oneline(cc_exp),   # MM/YY
+        "cc_cvv": _oneline(cc_cvv),
+        "created_at": now,
+        "last_seen_at": now,
     }
+    data[key] = rec
+    _save_customers(data)
 
-    with open(DB_FILE, "a", encoding="utf-8") as f:
-        f.write("\n".join(_render_block_lines(new=True, rec=rec)) + "\n")
+    # mask PAN/CVV in logs
+    pan = rec.get("cc_number", "")
+    masked_pan = ("*" * max(0, len(pan) - 4)) + pan[-4:] if pan else ""
+    cvv = rec.get("cc_cvv", "")
+    masked_cvv = "*" * len(cvv) if cvv else ""
 
-    debug_print("\n".join([
-        "insert_customer: ✅ Added new customer",
-        f"Phone: {rec['phone']}",
-        f"DOB: {rec['dob']}",
-        f"First Name: {rec['first_name']}",
-        f"Last Name: {rec['last_name']}",
-        f"Address: {rec['address']}",
-        f"CC Name: {rec['cc_name']}",
-        f"CC Number: {_mask_pan(rec['cc_number'])}",
-        f"CC Exp: {rec['cc_exp']}",
-        f"CC CVV: {_mask_all(rec['cc_cvv'])}",
-        f"Created At: {rec['created_at']}",
-        f"Last Seen At: {rec['last_seen_at']}",
-    ]))
-
+    debug_print(
+        "insert_customer: ✅ Added new customer\n"
+        f"Phone: {rec['phone']}\n"
+        f"DOB: {rec['dob'] or '∅'}\n"
+        f"First Name: {rec['first_name']}\n"
+        f"Last Name: {rec['last_name']}\n"
+        f"Address: {rec['address']}\n"
+        f"CC Name: {rec.get('cc_name','')}\n"
+        f"CC Number: {masked_pan}\n"
+        f"CC Exp: {rec.get('cc_exp','')}\n"
+        f"CC CVV: {masked_cvv}\n"
+        f"Created At: {rec['created_at']}\n"
+        f"Last Seen At: {rec['last_seen_at']}"
+    )
     return True
+
 
 
 def _normalize_mmyy(s: str) -> str:
@@ -1897,84 +1925,58 @@ def _normalize_mmyy(s: str) -> str:
         return ""
     return f"{mm}/{yy}"
 
-def update_customer_cc(
+def update_cc_info(
     phone: str,
     dob: str,
-    cc_name: str | None = None,
-    cc_number: str | None = None,
-    cc_exp: str | None = None,   # accepts 'MMYY' or 'MM/YY'
-    cc_cvv: str | None = None
+    *,
+    cc_name: Optional[str] = None,
+    cc_number: Optional[str] = None,
+    cc_exp: Optional[str] = None,
+    cc_cvv: Optional[str] = None,
 ) -> bool:
     """
-    Update ONLY the CC fields for an existing customer (matched by Phone + DOB).
-    - Edits the single block IN PLACE; does not append/duplicate.
-    - Always bumps 'Last Seen At'.
-    - Fields left as None are NOT changed.
-    Returns:
-      True  -> updated successfully
-      False -> no matching customer found (nothing changed)
+    Update the customer's CC fields in customers.json (by phone|dob).
+    Returns True if updated, False if no such customer.
     """
     init_db()
-
-    phone_norm = _normalize_phone(phone)
-    dob_clean  = _oneline(dob)
-
-    if not phone_norm or not dob_clean:
-        debug_print("update_customer_cc: ❌ phone or dob missing/blank")
+    phone10 = _normalize_phone10(phone)
+    dob_iso = (dob or "").strip()
+    if not phone10:
         return False
 
-    # Prepare updates dict (only include non-empty values so we don't overwrite)
-    updates: dict[str, str] = {}
-
-    if cc_name is not None and _oneline(cc_name):
-        updates["cc_name"] = _oneline(cc_name)
-
-    if cc_number is not None and _oneline(cc_number):
-        # Do NOT mask here; _update_existing_block_in_place -> _render_block_lines will mask on write.
-        updates["cc_number"] = "".join(ch for ch in cc_number if ch.isdigit())
-
-    if cc_exp is not None and _oneline(cc_exp):
-        norm_exp = _normalize_mmyy(cc_exp)
-        if norm_exp:
-            updates["cc_exp"] = norm_exp
-        else:
-            debug_print(f"update_customer_cc: ⚠️ ignoring invalid expiration '{cc_exp}'")
-
-    if cc_cvv is not None and _oneline(cc_cvv):
-        updates["cc_cvv"] = "".join(ch for ch in cc_cvv if ch.isdigit())
-
-    if not updates:
-        debug_print("update_customer_cc: ℹ️ no CC fields provided to update")
+    data = _load_customers()
+    key = _key(phone10, dob_iso)
+    if key not in data:
         return False
 
-    changed = _update_existing_block_in_place(phone_norm, dob_clean, updates)
-    if not changed:
-        debug_print("\n".join([
-            "update_customer_cc: ❌ no matching customer found",
-            f"Phone: {phone_norm}",
-            f"DOB: {dob_clean}",
-        ]))
-        return False
+    rec = data[key]
+    if cc_name is not None:
+        rec["cc_name"] = _oneline(cc_name)
+    if cc_number is not None:
+        rec["cc_number"] = _oneline(cc_number)
+    if cc_exp is not None:
+        rec["cc_exp"] = _oneline(cc_exp)
+    if cc_cvv is not None:
+        rec["cc_cvv"] = _oneline(cc_cvv)
 
-    # Log (masked)
-    def _mask_pan(n: str) -> str:
-        n = n or ""
-        return ("*" * max(0, len(n) - 4)) + n[-4:] if n else ""
-    def _mask_all(n: str) -> str:
-        return "*" * len((n or "").strip())
+    rec["last_seen_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _save_customers(data)
 
-    debug_print("\n".join([
-        "update_customer_cc: ✅ CC info updated",
-        f"Phone: {phone_norm}",
-        f"DOB: {dob_clean}",
-        f"CC Name: {updates.get('cc_name', '—') if 'cc_name' in updates else '—'}",
-        f"CC Number: {_mask_pan(updates.get('cc_number')) if 'cc_number' in updates else '—'}",
-        f"CC Exp: {updates.get('cc_exp', '—') if 'cc_exp' in updates else '—'}",
-        f"CC CVV: {_mask_all(updates.get('cc_cvv')) if 'cc_cvv' in updates else '—'}",
-    ]))
+    pan = rec.get("cc_number", "")
+    masked_pan = ("*" * max(0, len(pan) - 4)) + pan[-4:] if pan else ""
+    masked_cvv = "*" * len(rec.get("cc_cvv", ""))
 
+    debug_print(
+        "update_cc_info: ✅ updated\n"
+        f"Phone: {phone10}\n"
+        f"DOB: {dob_iso or '∅'}\n"
+        f"CC Name: {rec.get('cc_name','')}\n"
+        f"CC Number: {masked_pan}\n"
+        f"CC Exp: {rec.get('cc_exp','')}\n"
+        f"CC CVV: {masked_cvv}\n"
+        f"Last Seen At: {rec['last_seen_at']}"
+    )
     return True
-
 
 
 
@@ -2531,22 +2533,12 @@ def voice():
         return str(resp)
 
 
+    # ===== collect_phone (stage) =====
     elif stage == "collect_phone":
-        # ----------------------------------------------------------------------
-        # ☎️ Stage: Collect Phone Number (after DOB)
-        # Purpose:
-        #   - Prefer SPEECH input first (e.g., "four six nine ...").
-        #   - If speech is missing/invalid, FALL BACK to KEYPAD (DTMF) digits.
-        #   - Normalize to 10-digit US number (strip leading '1').
-        #   - On failure, re-prompt using make_gather with longer wait and hints.
-        # ----------------------------------------------------------------------
+        # Collect a 10-digit US phone via speech or DTMF, stay here until valid.
         import re
 
-        # ✅ Ensure session buckets exist (prevents KeyError: 'customer')
-        session_data.setdefault(call_sid, {})
-        session_data[call_sid].setdefault("customer", {})
-
-        # Retry counter
+        session_data.setdefault(call_sid, {}).setdefault("customer", {})
         session_data[call_sid]["retry_phone"] = session_data[call_sid].get("retry_phone", 0)
 
         def _validate_normalize_us_phone(raw_digits: str) -> str:
@@ -2555,61 +2547,49 @@ def voice():
                 d = d[1:]
             return d if len(d) == 10 else ""
 
-        # 🎙️ 1) Try SPEECH first
+        # Try speech first
         speech_text = (speech_result or "").strip()
-        debug_print(f"📱 collect_phone (speech raw): '{speech_text}'")
+        debug_print(f"collect_phone: speech='{speech_text}'")
         speech_digits = re.sub(r"\D", "", speech_text)
-        debug_print(f"📞 From speech → digits_only: '{speech_digits}', length={len(speech_digits)}")
         normalized = _validate_normalize_us_phone(speech_digits)
 
-        # 🔢 2) If speech didn’t yield a valid 10-digit number, try DTMF fallback
+        # Fallback to DTMF if speech invalid
         if not normalized:
             try:
                 dtmf_digits = (request.values.get("Digits") or "").strip()
             except Exception:
                 dtmf_digits = ""
-            debug_print(f"🎛️ collect_phone (DTMF raw): '{dtmf_digits}'")
-            dtmf_only = re.sub(r"\D", "", dtmf_digits)
-            normalized = _validate_normalize_us_phone(dtmf_only)
-            if normalized:
-                debug_print(f"📟 Using DTMF fallback → normalized='{normalized}', length=10")
+            debug_print(f"collect_phone: dtmf='{dtmf_digits}'")
+            normalized = _validate_normalize_us_phone(dtmf_digits)
 
-        # ❌ Still invalid → Re-prompt and stay in collect_phone
         if not normalized:
-            # Soft retry: don't increment if caller started but hasn't finished (some digits heard)
-            heard_some = len(speech_digits) > 0 or len(dtmf_digits if 'dtmf_digits' in locals() else "") > 0
+            # soft retry (don’t bump counter if caller started input)
+            heard_some = bool(speech_digits or (locals().get("dtmf_digits", "")))
             if not heard_some:
                 session_data[call_sid]["retry_phone"] += 1
 
-            debug_print(f"❌ Phone invalid/missing. heard_some={heard_some} retries={session_data[call_sid]['retry_phone']}")
-
             if session_data[call_sid]["retry_phone"] >= 5:
-                debug_print("⛔ collect_phone: max retries reached.")
+                debug_print("collect_phone: max retries reached")
                 resp.say(gpt_speak("Sorry, I couldn’t capture a valid phone number. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-prompt with longer wait + digit hints; tell them they can press '#'
             gather = make_gather(
                 "Please provide your ten digit phone number including area code. "
                 "You can say it clearly with short pauses, or type the digits and press pound.",
                 hints="zero one two three four five six seven eight nine double triple"
             )
             resp.append(gather)
-            # Post-gather fallback so the call never dead-ends on silence
             resp.say(gpt_speak("I didn't get the phone number."), VOICE)
             resp.redirect("/voice")
             return str(resp)
 
-        # ✅ 3) Save validated 10-digit number and proceed
-        debug_print(f"✅ Valid phone number accepted (10-digit): {normalized}")
+        # valid → store and move on
         session_data[call_sid]["customer"]["phone"] = normalized
-
-        # 📅 Go to DOB collection next
+        debug_print(f"collect_phone: ✅ accepted={normalized}")
         session_data[call_sid]["stage"] = "collect_dob"
 
-        # 🎂 Prompt for DOB (using make_gather with clearer keypad option)
         gather = make_gather(
             "Thank you. Please say your date of birth, for example, January fifteenth nineteen eighty five. "
             "Or enter two digits for month, two for day, and four for year, then press pound."
@@ -2823,124 +2803,51 @@ def voice():
 
 
 
-
+# ===== collect_first_name (stage) =====
     elif stage == "collect_first_name":
-        # ----------------------------------------------------------------------
-        # 🧍 Stage: Collect First Name
-        #  - Accept speech, normalize gently (letters, spaces, hyphen, apostrophe)
-        #  - Do NOT wipe other customer fields
-        #  - Re-prompt on empty/unclear input
-        # ----------------------------------------------------------------------
-        import re
+        # Capture first name and merge into existing customer bucket.
+        first_name = (speech_result or "").strip()
+        debug_print(f"collect_first_name: raw='{first_name}'")
 
-        # Buckets
-        session_data.setdefault(call_sid, {})
-        session_data[call_sid].setdefault("customer", {})
-
-        # Raw speech
-        first_name_raw = (speech_result or "").strip()
-        debug_print(f"📛 collect_first_name: raw='{first_name_raw}'")
-
-        # Heuristic: if they say "my name is ...", keep the tail
-        text = first_name_raw
-        lowered = first_name_raw.lower()
-        for cue in ("my name is", "this is", "i am", "i'm"):
-            if cue in lowered:
-                # take substring after the cue
-                idx = lowered.rfind(cue)
-                text = first_name_raw[idx + len(cue):].strip()
-                break
-
-        # Normalize: keep letters (basic latin + accents), space, hyphen, apostrophe
-        # Then collapse spaces
-        text = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ' -]", "", text)
-        text = re.sub(r"\s+", " ", text).strip()
-        debug_print(f"📛 collect_first_name: normalized='{text}'")
-
-        # Validate
-        if not text or len(text) > 40 or len(text.split()) > 2:
-            gather = make_gather("I didn't catch that clearly. Please say just your first name.")
+        if not first_name or len(first_name.split()) > 2:
+            gather = make_gather("I didn't catch that clearly. Please say your first name again.")
             resp.append(gather)
-            resp.say(gpt_speak("I didn't get the first name."), VOICE)
-            resp.redirect("/voice")
             return str(resp)
 
-        # Save without wiping other fields
-        session_data[call_sid]["customer"]["first_name"] = text
-        debug_print(f"collect_first_name: ✅ saved first_name='{text}'")
-
-        # Next
+        session_data.setdefault(call_sid, {}).setdefault("customer", {})
+        session_data[call_sid]["customer"]["first_name"] = first_name
         session_data[call_sid]["stage"] = "collect_last_name"
+
         gather = make_gather("Thank you. Now, what is your last name?")
         resp.append(gather)
-        # safety line if gather times out
-        resp.say(gpt_speak("I didn't get the last name."), VOICE)
-        resp.redirect("/voice")
         return str(resp)
 
 
-
-
-
+# ===== collect_last_name (stage) =====
     elif stage == "collect_last_name":
-        # ----------------------------------------------------------------------
-        # 👤 Stage: Collect Last Name
-        #  - Accept speech, normalize gently (letters, spaces, hyphen, apostrophe)
-        #  - Do NOT wipe other customer fields
-        #  - Re-prompt on empty/unclear input
-        #  - After success: if a waiting stage is set (return_stage), go there;
-        #    otherwise proceed to collect_address.
-        # ----------------------------------------------------------------------
-        import re
+        try:
+            last = (speech_result or "").strip()
+            debug_print(f"collect_last_name: raw='{last}'")
 
-        session_data.setdefault(call_sid, {})
-        session_data[call_sid].setdefault("customer", {})
+            if not last:
+                gather = make_gather("Sorry, I didn't catch your last name. Please repeat it.")
+                resp.append(gather)
+                return str(resp)
 
-        last_raw = (speech_result or "").strip()
-        debug_print(f"👤 collect_last_name: raw='{last_raw}'")
+            session_data.setdefault(call_sid, {}).setdefault("customer", {})
+            session_data[call_sid]["customer"]["last_name"] = last
+            session_data[call_sid]["stage"] = "collect_address"
 
-        # Heuristic strip like first name (handle “last name is …” just in case)
-        text = last_raw
-        lowered = last_raw.lower()
-        for cue in ("last name is", "my last name is"):
-            if cue in lowered:
-                idx = lowered.rfind(cue)
-                text = last_raw[idx + len(cue):].strip()
-                break
-
-        # Normalize
-        text = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ' -]", "", text)
-        text = re.sub(r"\s+", " ", text).strip()
-        debug_print(f"👤 collect_last_name: normalized='{text}'")
-
-        if not text or len(text) > 60 or len(text.split()) > 3:
-            gather = make_gather("Sorry, please say just your last name.")
+            gather = make_gather("Got it. What is your full address, please?")
             resp.append(gather)
-            resp.say(gpt_speak("I didn't get the last name."), VOICE)
-            resp.redirect("/voice")
             return str(resp)
 
-        # Save without wiping other fields
-        session_data[call_sid]["customer"]["last_name"] = text
-        debug_print(f"collect_last_name: ✅ saved last_name='{text}'")
-
-        # Optional handoff: if some stage is waiting for a name, jump back there
-        return_stage = session_data[call_sid].pop("return_stage", None)
-        if return_stage:
-            session_data[call_sid]["stage"] = return_stage
-            debug_print(f"collect_last_name: 🔁 Returning to waiting stage → {return_stage}")
-            resp.redirect("/voice")
+        except Exception as e:
+            debug_print(f"collect_last_name: exception → {e}")
+            resp.say(gpt_speak("Sorry, there was an error. Let's try again later."), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
             return str(resp)
-
-        # Default flow: proceed to address
-        session_data[call_sid]["stage"] = "collect_address"
-        gather = make_gather("Got it. What is your full address, please?")
-        resp.append(gather)
-        # safety line if gather times out
-        resp.say(gpt_speak("I didn't hear the address."), VOICE)
-        resp.redirect("/voice")
-        return str(resp)
-
 
 
 
@@ -3317,144 +3224,78 @@ def voice():
     #       • if phone/DOB missing/invalid, we set `return_stage="book_appt_confirm"`
     #         then jump to the proper collector; when that stage completes, we jump back here.
 # -----------------------------------------------------------------
+   # ===== book_appt_confirm (stage) =====
     elif stage == "book_appt_confirm":
         debug_print("book_appt_confirm: 📍 Stage entered")
 
-        # -------------------------------
-        # 1) Doctor resolution
-        # -------------------------------
+        # Doctor info
         doctor_id = session_data[call_sid].get("doctor_id")
-        debug_print(f"book_appt_confirm: 🧩 Raw doctor_id from session → {doctor_id}")
-
-        if not doctor_id:
-            # If somehow doctor_id was lost, send user back to doctor selection flow
-            debug_print("book_appt_confirm: ❌ doctor_id missing → redirecting to booking (doctor selection)")
-            session_data[call_sid]["stage"] = "booking"
-            gather = make_gather("I lost the doctor selection. Please say the name of the doctor you'd like to book with.")
-            resp.append(gather)
-            return str(resp)
-
         doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
-        debug_print(f"book_appt_confirm: 👨‍⚕️ Resolved doctor_name → {doctor_name}")
+        debug_print(f"book_appt_confirm: doctor_id={doctor_id} name={doctor_name}")
 
-        # -------------------------------
-        # 2) Appointment time (UTC ISO)
-        # -------------------------------
+        # Appointment time
         appointment_time = session_data[call_sid].get("appointment_time", {}).get("start")
-        debug_print(f"book_appt_confirm: 🕓 Raw appointment_time UTC → {appointment_time}")
-        if not appointment_time:
-            debug_print("book_appt_confirm: ❌ No appointment time found in session data")
-            resp.say(gpt_speak("Appointment time is missing. Let's try again later. Goodbye!"), VOICE)
-            resp.hangup()
-            return str(resp)
-
-        # For voice/SMS we show a local-friendly string; keep UTC for writing
+        debug_print(f"book_appt_confirm: utc_start={appointment_time}")
         formatted_time = ""
-        try:
-            from datetime import datetime
-            import pytz
-            # Normalize Z suffix for fromisoformat
-            dt_utc = datetime.fromisoformat(appointment_time.replace("Z", "+00:00"))
-            tz = pytz.timezone("America/Chicago")
-            dt_local = dt_utc.astimezone(tz)
-            # Linux supports %-d / %-I; if not, fall back to portable format
+        if appointment_time:
             try:
-                formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
-            except Exception:
-                formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").lstrip("0").replace(" 0", " ")
-            debug_print(f"book_appt_confirm: 📆 Formatted appointment time (local) → {formatted_time}")
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ Failed to parse/format appointment time → {e}")
-            resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+                from datetime import datetime
+                import pytz
+                dt_utc = datetime.fromisoformat(appointment_time.replace("Z", "+00:00"))
+                dt_local = dt_utc.astimezone(pytz.timezone("America/Chicago"))
+                try:
+                    formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
+                except Exception:
+                    formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: time parse error → {e}")
+                resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+                resp.hangup()
+                return str(resp)
+        else:
+            resp.say(gpt_speak("Appointment time missing. Goodbye!"), VOICE)
             resp.hangup()
             return str(resp)
 
-        # -------------------------------
-        # 3) Customer info + masking utils
-        # -------------------------------
-        customer = session_data[call_sid].get("customer", {}) or {}
-        debug_print(f"book_appt_confirm: 🧾 Raw customer object → {customer}")
+        # Customer info
+        customer = session_data[call_sid].get("customer", {})
+        customer_name   = (customer.get("name") or "").strip()
+        customer_phone  = (customer.get("phone") or "").strip()
+        customer_dob    = (customer.get("dob") or "").strip()
+        customer_address= (customer.get("address") or "").strip()
+        cc_name   = (customer.get("cc_name") or "").strip()
+        cc_number = (customer.get("cc_number") or "").strip()
+        cc_exp    = (customer.get("cc_exp") or "").strip()
+        cc_cvv    = (customer.get("cc_cvv") or "").strip()
 
-        customer_name    = customer.get("name", "")  # optional combined name
-        customer_phone   = customer.get("phone", "")
-        customer_dob     = customer.get("dob", "")
-        customer_address = customer.get("address", "")
-
-        cc_name   = customer.get("cc_name", "")
-        cc_number = customer.get("cc_number", "")
-        cc_exp    = customer.get("cc_exp", "")
-        cc_cvv    = customer.get("cc_cvv", "")
-
-        def _mask_tail(s: str, keep_last: int = 4) -> str:
-            s = s or ""
-            return ("*" * max(0, len(s) - keep_last)) + s[-keep_last:] if s else ""
-
-        def _mask_all(s: str) -> str:
-            return "*" * len((s or ""))
-
-        debug_print(f"book_appt_confirm: 👤 Name → {customer_name}")
-        debug_print(f"book_appt_confirm: 📞 Phone → {customer_phone}")
-        debug_print(f"book_appt_confirm: 🎂 DOB → {customer_dob}")
-        debug_print(f"book_appt_confirm: 🏠 Address → {customer_address}")
-        debug_print(f"book_appt_confirm: 💳 CC Name → {cc_name}")
-        debug_print(f"book_appt_confirm: 💳 CC Number → { _mask_tail(cc_number) }")
-        debug_print(f"book_appt_confirm: 💳 CC Exp → {cc_exp}")
-        debug_print(f"book_appt_confirm: 💳 CC CVV → { _mask_all(cc_cvv) }")
-
-        # -------------------------------
-        # 4) Guard: require valid 10-digit phone + DOB
-        #    If missing, bounce to collector and auto-return here
-        # -------------------------------
-        def _normalize_10(d: str) -> str:
-            d = "".join(ch for ch in (d or "") if ch.isdigit())
-            return d[1:] if len(d) == 11 and d.startswith("1") else d
-
-        digits_phone = _normalize_10(customer_phone)
-
-        if len(digits_phone) != 10:
-            debug_print("book_appt_confirm: ❌ Missing/invalid phone → redirecting to collect_phone")
-            session_data[call_sid]["return_stage"] = "book_appt_confirm"  # come back here after phone is captured
+        # Normalize phone to 10-digit for storage/calendar/SMS
+        phone10 = _normalize_phone10(customer_phone)
+        if len(phone10) != 10:
+            debug_print("book_appt_confirm: ❌ invalid/missing phone; redirecting to collect_phone")
             session_data[call_sid]["stage"] = "collect_phone"
-            gather = make_gather(
-                "Before we confirm your appointment, I need your ten digit phone number including area code. "
-                "You can say it or type the digits, then press pound.",
-                hints="zero one two three four five six seven eight nine"
-            )
+            gather = make_gather("Before we confirm your appointment, I need your ten digit phone number including area code. You can say it or type the digits and press pound.")
             resp.append(gather)
-            resp.redirect("/voice")
             return str(resp)
-
         if not customer_dob:
-            debug_print("book_appt_confirm: ❌ Missing DOB → redirecting to collect_dob")
-            session_data[call_sid]["return_stage"] = "book_appt_confirm"  # come back here after DOB is captured
+            debug_print("book_appt_confirm: ❌ missing DOB; redirecting to collect_dob")
             session_data[call_sid]["stage"] = "collect_dob"
-            gather = make_gather(
-                "Before we confirm, please provide your date of birth. "
-                "You can say it, or enter two digits for month, two for day, and four for year, then press pound."
-            )
+            gather = make_gather("Before we confirm, please provide your date of birth. You can say it, or enter two digits for month, two for day, and four for year, then press pound.")
             resp.append(gather)
-            resp.redirect("/voice")
             return str(resp)
 
-        # -------------------------------
-        # 5) Upsert customer record in the single-file DB
-        #    • insert_customer() now writes/updates human-readable blocks (no duplicates)
-        #    • phone is normalized; CC data may be empty (will be masked when written)
-        # -------------------------------
+        # Derive first/last if only full name present
+        first_name = (customer.get("first_name") or "").strip()
+        last_name  = (customer.get("last_name") or "").strip()
+        if not first_name and customer_name:
+            parts = customer_name.split()
+            first_name = parts[0]
+            last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+        # Insert/update customer record
         try:
-            first_name = (customer.get("first_name") or "").strip()
-            last_name  = (customer.get("last_name") or "").strip()
-
-            # Derive names from combined 'name' if needed
-            if not first_name and customer_name:
-                parts = customer_name.strip().split()
-                first_name = parts[0]
-                last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
-
-            init_db()  # ensure file exists
-
+            init_db()
             inserted = insert_customer(
-                phone=digits_phone,          # normalized 10-digit
+                phone=phone10,
                 dob=customer_dob,
                 first_name=first_name,
                 last_name=last_name,
@@ -3464,20 +3305,17 @@ def voice():
                 cc_exp=cc_exp,
                 cc_cvv=cc_cvv
             )
-            debug_print(f"book_appt_confirm: 🗃️ insert_customer result → {'inserted' if inserted else 'updated existing'}")
+            debug_print(f"book_appt_confirm: customers DB → {'inserted' if inserted else 'seen/updated'}")
         except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ insert_customer failed → {e}")
+            debug_print(f"book_appt_confirm: insert_customer failed → {e}")
 
-        # -------------------------------
-        # 6) Save the appointment in Calendar
-        #    If this fails, keep the caller in flow (ask for a new time).
-        # -------------------------------
+        # Create the appointment in your system
         appointment_saved = False
         try:
-            effective_name = (customer_name or " ".join(n for n in [first_name, last_name] if n)).strip()
+            effective_name = customer_name or " ".join([n for n in [first_name, last_name] if n]).strip()
             confirm_appointment_by_name(
                 doctor_name=doctor_name,
-                phone=digits_phone,      # normalized digits
+                phone=phone10,
                 dob=customer_dob,
                 name=effective_name,
                 address=customer_address,
@@ -3485,49 +3323,38 @@ def voice():
                 calendar_id=doctor_id
             )
             appointment_saved = True
-            debug_print(f"book_appt_confirm: ✅ Appointment saved for {doctor_name} (Calendar ID: {doctor_id})")
+            debug_print("book_appt_confirm: ✅ appointment saved")
         except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ Failed to save appointment → {e}")
+            debug_print(f"book_appt_confirm: save failed → {e}")
 
-        # -------------------------------
-        # 7) Output to caller + SMS (only if we saved successfully)
-        # -------------------------------
+        # Voice confirmation only if saved
         if appointment_saved:
-            confirmation_message = (
-                f"Your appointment with {doctor_name} has been successfully booked."
-                f"{' on ' + formatted_time if formatted_time else ''} "
-                "We look forward to seeing you. Goodbye!"
-            )
-            debug_print(f"book_appt_confirm: 🗣️ Speaking confirmation message → {confirmation_message}")
-            resp.say(gpt_speak(confirmation_message), VOICE)
-
-            # SMS is sent only if we actually saved the event
-            try:
-                e164_phone = f"+1{digits_phone}"
-                sms_text = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
-                if formatted_time:
-                    sms_text += f" on {formatted_time}"
-                sms_text += ". Thank you for choosing Epic Therapist Clinic."
-                message = client.messages.create(
-                    body=sms_text,
-                    from_=TWILIO_PHONE_NUMBER,
-                    to=e164_phone
-                )
-                debug_print(f"book_appt_confirm: 📤 SMS sent to {e164_phone}, SID: {message.sid}")
-            except Exception as e:
-                debug_print(f"book_appt_confirm: ❌ SMS send failed → {e}")
-
-            # End call and clean session only after success path
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            debug_print("book_appt_confirm: 🧼 Session data cleared")
+            msg = f"Your appointment with {doctor_name} has been successfully booked."
+            if formatted_time:
+                msg += f" on {formatted_time}"
+            msg += " We look forward to seeing you. Goodbye!"
+            resp.say(gpt_speak(msg), VOICE)
+        else:
+            session_data[call_sid]["stage"] = "ask_time_date"
+            gather = make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, August 14th at 10 AM.")
+            resp.append(gather)
             return str(resp)
 
-        # If we got here, appointment save failed; keep caller in flow
-        debug_print("book_appt_confirm: ❌ Save failed — reprompting for a new time")
-        session_data[call_sid]["stage"] = "ask_time_date"
-        gather = make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, August 14th at 10 AM.")
-        resp.append(gather)
+        # SMS confirmation (best-effort)
+        try:
+            e164 = f"+1{phone10}"
+            sms_text = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
+            if formatted_time:
+                sms_text += f" on {formatted_time}"
+            sms_text += ". Thank you for choosing Epic Therapist Clinic."
+            message = client.messages.create(body=sms_text, from_=TWILIO_PHONE_NUMBER, to=e164)
+            debug_print(f"book_appt_confirm: SMS sent to {e164}, SID={message.sid}")
+        except Exception as e:
+            debug_print(f"book_appt_confirm: SMS failed → {e}")
+
+        resp.hangup()
+        session_data.pop(call_sid, None)
+        debug_print("book_appt_confirm: session cleared")
         return str(resp)
 
 
@@ -4168,11 +3995,7 @@ def voice():
 
 
 
-
-
-   
-    elif stage == "cancel_appt_confirm":
-        # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
         # 📌 Stage: cancel_appt_confirm
         #
         # What this does now (updated):
@@ -4210,9 +4033,11 @@ def voice():
         #   • Calendar deletion is best-effort; local JSON removal is primary.
         # ----------------------------------------------------------------------
 
+   
+    # ===== cancel_appt_confirm (stage) =====
+    elif stage == "cancel_appt_confirm":
         debug_print("📍 Stage: cancel_appt_confirm")
 
-        # ---------- pull context safely ----------
         cancel_ctx  = session_data[call_sid].setdefault("cancel", {})
         phone       = (cancel_ctx.get("phone") or "").strip()
         doctor      = (cancel_ctx.get("doctor") or "").strip()
@@ -4221,35 +4046,17 @@ def voice():
         utc_start   = (cancel_ctx.get("utc_start") or "").strip()
         utc_end     = (cancel_ctx.get("utc_end") or "").strip()
         calendar_id = (cancel_ctx.get("calendar_id") or "").strip()
-        dob         = (cancel_ctx.get("dob")
-                    or session_data[call_sid].get("customer", {}).get("dob")
-                    or "").strip()
+        dob         = (cancel_ctx.get("dob") or session_data[call_sid].get("customer", {}).get("dob") or "").strip()
 
-        # If iterate stage provided a normalized candidate, prefer its fields.
         cand = cancel_ctx.get("matching_event") or {}
         if cand:
-            # Use candidate values when present (they are already normalized).
             doctor    = cand.get("doctor_name", doctor) or doctor
             utc_start = cand.get("start_utc",   utc_start) or utc_start
             utc_end   = cand.get("end_utc",     utc_end) or utc_end
-            # Phone/DOB from candidate should match, but don't overwrite if empty.
             phone     = cand.get("phone") or phone
             dob       = cand.get("dob")   or dob
 
-        debug_print(f"📱 Phone: {phone}")
-        debug_print(f"👨‍⚕️ Doctor: {doctor}")
-        debug_print(f"🗓️ Day/Time (spoken): {spoken_day}, {spoken_time}")
-        debug_print(f"🌍 UTC window: {utc_start} → {utc_end or '∅'}")
-        debug_print(f"📅 Calendar ID: {calendar_id or '∅'}")
-        debug_print(f"🎂 DOB (for cancellation match): {dob or '∅'}")
-
-        # ---------- helpers ----------
-        def _normalize_10(d):
-            d = "".join(ch for ch in (d or "") if ch.isdigit())
-            return d[1:] if len(d) == 11 and d.startswith("1") else d
-
         def _friendly_from_iso(utc_iso: str, tz_name: str = "America/Chicago") -> str:
-            """Render a UTC ISO string into a caller-friendly local phrase."""
             try:
                 from dateutil import parser as dtparser
                 import pytz
@@ -4262,111 +4069,71 @@ def voice():
             except Exception:
                 return utc_iso or (spoken_day and f"{spoken_day} at {spoken_time}") or "the scheduled time"
 
-        # Normalize phone for local JSON match
-        phone10 = _normalize_10(phone)
+        phone10 = _normalize_phone10(phone)
 
-        # ---------- PRIMARY: local JSON cancellation (doctor name + phone + dob + exact UTC) ----------
+        # Primary: local JSON cancel (doctor + phone10 + dob + utc_start)
         local_ok = False
         if doctor and phone10 and dob and utc_start:
             try:
-                local_ok = cancel_appointment_by_name(
-                    doctor_name=doctor,
-                    phone=phone10,
-                    dob=dob,
-                    utc_start=utc_start
-                )
-                if local_ok:
-                    debug_print("🧹 Local JSON: appointment removed (doctor+phone+dob+time matched).")
-                else:
-                    debug_print("⚠️ Local JSON: no matching record found to remove.")
+                local_ok = cancel_appointment_by_name(doctor_name=doctor, phone=phone10, dob=dob, utc_start=utc_start)
             except Exception as e:
-                debug_print(f"❌ Local JSON cancel failed → {e}")
+                debug_print(f"cancel_appt_confirm: local cancel failed → {e}")
         else:
-            # Missing key info to target an exact record in local storage
-            debug_print("⚠️ Missing doctor/phone/dob/utc_start → cannot cancel locally.")
+            debug_print("cancel_appt_confirm: insufficient info for local cancel (need doctor, phone, dob, utc_start)")
 
-        # ---------- SECONDARY (best-effort): Google Calendar deletion ----------
-        # We try this if we have a calendar_id; lack of it does not block local success.
+        # Secondary: best-effort Google Calendar delete
         gcal_ok = False
-        if calendar_id:
+        if calendar_id and utc_start:
             try:
-                # If iterate provided a GC event id (rare), use it; otherwise search a tight window by phone.
-                event_id = None
-                if isinstance(cand, dict):
-                    event_id = cand.get("event_id")  # some flows may carry this
+                from datetime import timedelta, timezone
+                from dateutil import parser as dtparser
+                from googleapiclient.discovery import build
 
-                if not event_id:
-                    # Re-query calendar narrowly around utc_start to find a matching event for this phone.
-                    # Use your helper (assumed to filter by phone) with a 1-hour window around utc_start.
-                    from datetime import datetime, timedelta, timezone
-                    from dateutil import parser as dtparser
-                    if utc_start:
-                        start_dt = dtparser.isoparse(utc_start)
-                        # small ±30m window to find the exact event
-                        win_start = (start_dt - timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
-                        win_end   = (start_dt + timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
-                    else:
-                        # fallback tiny window: now to now+1h (unlikely path)
-                        now = datetime.now(timezone.utc)
-                        win_start = now.isoformat()
-                        win_end   = (now + timedelta(hours=1)).isoformat()
+                start_dt = dtparser.isoparse(utc_start)
+                win_start = (start_dt - timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
+                win_end   = (start_dt + timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
 
-                    try:
-                        matched = get_upcoming_events(calendar_id, phone10, win_start, win_end, creds, debug=True)
-                        # normalize to single event dict
-                        if isinstance(matched, list) and matched:
-                            event_to_cancel = matched[0]
-                        elif isinstance(matched, dict):
-                            event_to_cancel = matched
-                        else:
-                            event_to_cancel = None
-
-                        if event_to_cancel:
-                            event_id = event_to_cancel.get("id")
-                    except Exception as e:
-                        debug_print(f"⚠️ Calendar search error → {e}")
-                        event_to_cancel = None
-                        event_id = None
-
-                if event_id:
-                    from googleapiclient.discovery import build
-                    service = build("calendar", "v3", credentials=creds)
-                    service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
-                    gcal_ok = True
-                    debug_print(f"🗑️ Deleted Google Calendar event id={event_id}")
+                matched = get_upcoming_events(calendar_id, phone10, win_start, win_end, creds, debug=True)
+                if isinstance(matched, list) and matched:
+                    ev = matched[0]
+                elif isinstance(matched, dict):
+                    ev = matched
                 else:
-                    debug_print("ℹ️ No Google Calendar event id found to delete (skipping).")
+                    ev = None
 
+                if ev and ev.get("id"):
+                    service = build("calendar", "v3", credentials=creds)
+                    service.events().delete(calendarId=calendar_id, eventId=ev["id"]).execute()
+                    gcal_ok = True
+                    debug_print(f"cancel_appt_confirm: 🗑️ GCal event deleted id={ev['id']}")
+                else:
+                    debug_print("cancel_appt_confirm: no GCal event found in ±30m window")
             except Exception as e:
-                debug_print(f"❌ Calendar delete failed → {e}")
+                debug_print(f"cancel_appt_confirm: GCal delete failed → {e}")
         else:
-            debug_print("ℹ️ No calendar_id provided; skipping Google Calendar deletion.")
+            debug_print("cancel_appt_confirm: skipping GCal delete (no calendar_id or utc_start)")
 
-        # ---------- Speak outcome to caller ----------
+        # Speak outcome
         if local_ok or gcal_ok:
             friendly = _friendly_from_iso(utc_start)
             resp.say(gpt_speak(f"Your appointment with {doctor} on {friendly} has been cancelled. Thank you!"), VOICE)
         else:
             resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time to cancel."), VOICE)
 
-        # ---------- Optional: reschedule after cancel ----------
+        # Optional reschedule
         if session_data[call_sid].get("reschedule_after_cancel"):
-            debug_print("🔁 Reschedule requested; transitioning to booking.")
+            debug_print("cancel_appt_confirm: reschedule requested → booking")
             session_data[call_sid]["stage"] = "booking"
             session_data[call_sid].pop("cancel", None)
-
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
-            gather = make_gather(
-                "Now, please tell me which doctor you'd like to reschedule with.",
-                hints=doctor_list_str
-            )
+            gather = make_gather("Now, please tell me which doctor you'd like to reschedule with.", hints=doctor_list_str)
             resp.append(gather)
             return str(resp)
 
-        # ---------- End flow: clear session & hang up ----------
+        # End call
         session_data.pop(call_sid, None)
-        debug_print("🧼 Session data cleared after cancellation.")
         resp.hangup()
+        debug_print("cancel_appt_confirm: session cleared")
         return str(resp)
 
 
