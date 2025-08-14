@@ -1632,33 +1632,111 @@ def _block_title(new: bool) -> str:
            else "insert_customer: ℹ️ Existing customer — updated last_seen_at"
 
 from typing import Any
+from typing import Any, Optional, List, Dict, Tuple, Iterator
+
+# BEFORE:
+# def _render_block_lines(new: bool, rec: dict) -> list[str]:
+# AFTER (3.8-safe):
+from typing import Any, Dict, List
 
 def _render_block_lines(new: bool, rec: Dict[str, Any]) -> List[str]:
+    """
+    Build a fixed-length, human-readable *12-line* block that summarizes a single
+    customer record. This block is intended for logs or plaintext exports only.
+    Your canonical, machine-readable store remains `customers.json`.
 
+    SECURITY:
+      - PAN (credit card number) and CVV are **masked** here so that raw values
+        are never written to a human-readable file. Masking functions are:
+          • _mask_pan(...)  → shows last 4 digits (e.g., ************7026)
+          • _mask_all(...)  → masks entire string (e.g., ***)
+      - Never mutate `rec`; this function is read-only.
+
+    OUTPUT CONTRACT:
+      - Returns a list of **exactly 12 strings**, in a strict, known order:
+          0: Title line (varies with `new`)
+          1: Phone
+          2: DOB
+          3: First Name
+          4: Last Name
+          5: Address
+          6: CC Name
+          7: CC Number (masked)
+          8: CC Exp
+          9: CC CVV (masked)
+         10: Created At
+         11: Last Seen At
+      - Each line follows the form "Label: Value".
+      - Missing/empty values are rendered as an em dash '—' to keep layout stable.
+
+    PARAMETERS:
+      new : bool
+          If True, the title line should reflect a "new customer" (e.g., something
+          like "insert_customer: ✅ Added new customer"). If False, use a generic
+          on-file title. The exact wording comes from `_block_title(new)`.
+      rec : Dict[str, Any]
+          The customer record dictionary (already normalized); expected keys:
+            'phone', 'dob', 'first_name', 'last_name', 'address',
+            'cc_name', 'cc_number', 'cc_exp', 'cc_cvv',
+            'created_at', 'last_seen_at'
+          Any key may be missing/empty; we display '—' in that case.
+
+    RETURNS:
+      List[str] : The 12 lines described above, suitable for joining with '\n'
+                  and writing to a log file.
+
+    NOTE:
+      - This renderer is intentionally dumb and side-effect free: it does not perform
+        validation or formatting beyond masking and fallback to '—'.
+      - Keep the labels and order stable; other utility functions may rely on
+        parsing these lines by position/label (e.g., _iter_blocks / _get_value).
     """
-    Render the 12-line, human-readable block for a customer.
-    PAN/CVV are MASKED here so the file never stores raw values.
-    """
-    return [
-        _block_title(new),
-        f"Phone: {rec.get('phone') or '—'}",
-        f"DOB: {rec.get('dob') or '—'}",
-        f"First Name: {rec.get('first_name') or '—'}",
-        f"Last Name: {rec.get('last_name') or '—'}",
-        f"Address: {rec.get('address') or '—'}",
-        f"CC Name: {rec.get('cc_name') or '—'}",
-        f"CC Number: {_mask_pan(rec.get('cc_number'))}",
-        f"CC Exp: {rec.get('cc_exp') or '—'}",
-        f"CC CVV: {_mask_all(rec.get('cc_cvv'))}",
-        f"Created At: {rec.get('created_at') or '—'}",
-        f"Last Seen At: {rec.get('last_seen_at') or '—'}",
+
+    # Pull values from the record. We deliberately don’t mutate or normalize here;
+    # we only render whatever the caller provided, swapping empty/None for '—'.
+    phone        = rec.get("phone") or "—"
+    dob          = rec.get("dob") or "—"
+    first_name   = rec.get("first_name") or "—"
+    last_name    = rec.get("last_name") or "—"
+    address      = rec.get("address") or "—"
+    cc_name      = rec.get("cc_name") or "—"
+    cc_number    = _mask_pan(rec.get("cc_number"))  # show only last 4 digits
+    cc_exp       = rec.get("cc_exp") or "—"
+    cc_cvv       = _mask_all(rec.get("cc_cvv"))     # mask entire CVV
+    created_at   = rec.get("created_at") or "—"
+    last_seen_at = rec.get("last_seen_at") or "—"
+
+    # Assemble the 12-line block in a consistent order.
+    # Line 0 is a dynamic title provided by `_block_title(new)`.
+    lines: List[str] = [
+        _block_title(new),             # 0  → e.g., "insert_customer: ✅ Added new customer" or "Customer on file"
+        f"Phone: {phone}",             # 1
+        f"DOB: {dob}",                 # 2
+        f"First Name: {first_name}",   # 3
+        f"Last Name: {last_name}",     # 4
+        f"Address: {address}",         # 5
+        f"CC Name: {cc_name}",         # 6
+        f"CC Number: {cc_number}",     # 7 (masked)
+        f"CC Exp: {cc_exp}",           # 8
+        f"CC CVV: {cc_cvv}",           # 9 (masked)
+        f"Created At: {created_at}",   # 10
+        f"Last Seen At: {last_seen_at}"# 11
     ]
+
+    # Optional defensive check (keep as comment to avoid runtime overhead):
+    # assert len(lines) == 12, "Rendered block must contain exactly 12 lines"
+
+    return lines
+
 
 # ---------- File parsing helpers ----------
 
 from typing import List, Dict, Any, Iterable, Iterator
-
-def _iter_blocks(lines: Iterable[str]) -> Iterator[List[str]]:
+# BEFORE:
+# def _iter_blocks(lines: list[str]):
+# AFTER (3.8-safe):
+def _iter_blocks(lines: List[str]) -> Iterator[List[str]]:
+    # ... keep your existing body ...
     """
     Yield (start_idx, end_idx_exclusive, block_lines).
     A block starts at a line beginning with 'insert_customer:' and ends
@@ -1681,7 +1759,11 @@ from typing import Optional, List
 # def _get_value(block_lines: list[str], label: str) -> str | None:
 
 # to this:
+# BEFORE:
+# def _get_value(block_lines: list[str], label: str) -> str | None:
+# AFTER (3.8-safe):
 def _get_value(block_lines: List[str], label: str) -> Optional[str]:
+    # ... keep your existing body ...
     """Fetch 'Label: value' from a block."""
     prefix = f"{label}:"
     for ln in block_lines:
@@ -1689,7 +1771,11 @@ def _get_value(block_lines: List[str], label: str) -> Optional[str]:
             return ln.split(":", 1)[1].strip()
     return None
 
-def _extract_phone_dob(block_lines: list[str]) -> tuple[str | None, str | None]:
+# BEFORE:
+# def _extract_phone_dob(block_lines: list[str]) -> tuple[str | None, str | None]:
+# AFTER (3.8-safe):
+def _extract_phone_dob(block_lines: List[str]) -> Tuple[Optional[str], Optional[str]]:
+    # ... keep your existing body ...
     """Get (Phone, DOB) from a block."""
     return _get_value(block_lines, "Phone"), _get_value(block_lines, "DOB")
 
