@@ -1249,24 +1249,63 @@ import os
 import json
 import os, json
 from dateutil import parser as dtparser
+def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str, dob: str = None) -> bool:
+    """
+    Remove a doctor's appointment by exact UTC start time and phone,
+    and (optionally) DOB. If DOB is provided, it must match too.
 
-def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str) -> bool:
+    Matching rules:
+      - Always require: normalized(phone) == appt.phone AND utc_start == appt.time (both UTC ISO)
+      - Additionally require: normalized(dob) == appt.dob (if dob is provided)
+
+    All times are normalized to UTC ISO (e.g., 'YYYY-MM-DDTHH:MM:SS+00:00') before comparison.
+    Keeps all other appointments intact. Returns True if ≥1 appointment removed.
     """
-    Remove a doctor's appointment by exact UTC time and phone.
-    All times normalized to ISO UTC before comparison.
-    Keeps other appointments intact.
-    """
+    import os, json
+    from datetime import timezone
+    try:
+        import dateutil.parser as dtparser
+    except Exception:
+        # If your code already imports dtparser elsewhere, you may remove this.
+        raise
+
+    def normalize_phone_digits(s: str) -> str:
+        return "".join(ch for ch in (s or "") if ch.isdigit())
+
+    def normalize_dob(s: str) -> str:
+        """
+        Keep simple ISO-like 'YYYY-MM-DD' if present.
+        - Trims whitespace
+        - If a full datetime was stored, use the date portion before 'T'
+        - Returns lower-cased, trimmed string (though digits/hyphens only expected)
+        """
+        s = (s or "").strip()
+        if "T" in s:
+            s = s.split("T", 1)[0].strip()
+        return s
+
+    def normalize_utc_iso(s: str) -> str:
+        """
+        Parse any ISO-ish string and return strict UTC ISO string with +00:00 offset.
+        """
+        dt = dtparser.isoparse(s)
+        dt_utc = dt.astimezone(timezone.utc)
+        return dt_utc.isoformat()
+
     key = sanitize_filename(doctor_name).replace(".json", "")
     full_path = get_doctor_filename(doctor_name)
     phone_digits = normalize_phone_digits(phone)
+    dob_norm = normalize_dob(dob) if dob else None
 
-    debug_print(f"🩺 cancel_appointment_by_name → doctor={doctor_name}, phone={phone_digits}, utc_start={utc_start}")
+    debug_print(f"🩺 cancel_appointment_by_name → doctor={doctor_name}, phone={phone_digits}, dob={dob_norm or '∅'}, utc_start={utc_start}")
+
     if not os.path.exists(full_path):
         debug_print(f"⚠️ File not found: {full_path}")
         return False
 
+    # Load the doctor's JSON list
     try:
-        with open(full_path, "r") as f:
+        with open(full_path, "r", encoding="utf-8") as f:
             data = json.load(f)
             if not isinstance(data, list):
                 debug_print(f"❌ JSON not a list for {full_path}")
@@ -1275,9 +1314,9 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str) -> 
         debug_print(f"❌ Read error {full_path} → {e}")
         return False
 
-    # normalize target UTC
+    # Normalize the target UTC time once
     try:
-        target_norm = dtparser.isoparse(utc_start).astimezone().astimezone(tz=None).isoformat()
+        target_norm = normalize_utc_iso(utc_start)
     except Exception as e:
         debug_print(f"❌ utc_start parse error → {e}")
         return False
@@ -1286,25 +1325,38 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str) -> 
     for appt in data:
         ap_phone = normalize_phone_digits(appt.get("phone", ""))
         ap_time_raw = appt.get("time", "")
+        ap_dob_raw = appt.get("dob", "") or appt.get("date_of_birth", "")
+        ap_dob_norm = normalize_dob(ap_dob_raw)
+
+        # Normalize appt time; skip malformed records (keep them)
         try:
-            ap_time_norm = dtparser.isoparse(ap_time_raw).astimezone().astimezone(tz=None).isoformat()
+            ap_time_norm = normalize_utc_iso(ap_time_raw)
         except Exception as e:
             debug_print(f"⚠️ skip invalid appt time '{ap_time_raw}' → {e}")
             kept.append(appt)
             continue
 
-        if ap_phone == phone_digits and ap_time_norm == target_norm:
+        # Match rule: phone & time must match; if caller provided DOB, that must match too
+        base_match = (ap_phone == phone_digits and ap_time_norm == target_norm)
+        dob_ok = (True if dob_norm is None else (ap_dob_norm == dob_norm))
+
+        if base_match and dob_ok:
             removed += 1
-            debug_print(f"🗑️ Removing appt → phone={ap_phone}, time={ap_time_norm}")
+            debug_print(f"🗑️ Removing appt → phone={ap_phone}, time={ap_time_norm}, dob={ap_dob_norm or '∅'}")
+            # don't append → this record is deleted
         else:
             kept.append(appt)
 
     if removed == 0:
-        debug_print(f"⚠️ No appointment found for phone={phone_digits} time={target_norm}")
+        msg = f"⚠️ No appointment found for phone={phone_digits} time={target_norm}"
+        if dob_norm is not None:
+            msg += f" dob={dob_norm}"
+        debug_print(msg)
         return False
 
+    # Write updated file + refresh in-memory cache if you keep one
     try:
-        with open(full_path, "w") as f:
+        with open(full_path, "w", encoding="utf-8") as f:
             json.dump(kept, f, indent=2)
         doctor_appointments[key] = kept
         debug_print(f"✅ Deleted {removed} appt(s) from {full_path}")
@@ -1312,7 +1364,6 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, utc_start: str) -> 
     except Exception as e:
         debug_print(f"❌ Write error {full_path} → {e}")
         return False
-
 
 
 
@@ -4006,113 +4057,115 @@ def voice():
 
 
     elif stage == "cancel_appt_confirm":
-        # ----------------------------------------------------------------------
-        # 📌 Purpose:
-        # This stage is the **final step** of the cancellation process.
-        #
-        # Flow:
-        # 1. Retrieve all cancellation details from `session_data`:
-        #    - Phone number, doctor, spoken date/time, UTC time window, and calendar ID.
-        # 2. If no calendar ID is available → end the call with an error message.
-        # 3. Use a pre-fetched matching event if available, otherwise query
-        #    Google Calendar now for the appointment.
-        # 4. If the appointment is found:
-        #    - Delete it from Google Calendar.
-        #    - Remove it from the local JSON mapping for the doctor.
-        #    - Confirm the cancellation to the caller using a friendly spoken date/time.
-        # 5. If no matching appointment is found → inform the caller.
-        # 6. If the user requested rescheduling after canceling:
-        #    - Transition to the booking stage and prompt for the doctor’s name.
-        # 7. If not rescheduling → clear session and end call.
-        #
-        # Notes:
-        # - This stage **finalizes the cancellation** by removing the calendar entry
-        #   and optionally initiating a new booking flow.
-        # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 📌 Stage: cancel_appt_confirm
+    #
+    # Finalize the cancellation:
+    #   1) Read details from session: phone, doctor, spoken day/time, UTC window, calendar_id, dob.
+    #   2) Use a pre-fetched matching event if present; otherwise query for an event in the window.
+    #   3) If found:
+    #        - Delete from Google Calendar (by eventId).
+    #        - Delete from local doctor JSON via cancel_appointment_by_name(doctor, phone, utc_start, dob).
+    #        - Speak a friendly confirmation time back to caller.
+    #   4) If not found:
+    #        - Inform the caller no matching appt could be located.
+    #   5) If reschedule flag is set, jump to booking; otherwise clear session and hang up.
+    # ----------------------------------------------------------------------
+    debug_print("📍 Stage: cancel_appt_confirm")
 
-        debug_print("📍 Stage: cancel_appt_confirm")
+    cancel_ctx  = session_data[call_sid].get("cancel", {})
+    phone       = cancel_ctx.get("phone")
+    doctor      = cancel_ctx.get("doctor")
+    spoken_day  = cancel_ctx.get("day")
+    spoken_time = cancel_ctx.get("time")
+    utc_start   = cancel_ctx.get("utc_start")
+    utc_end     = cancel_ctx.get("utc_end")
+    calendar_id = cancel_ctx.get("calendar_id")
+    dob         = cancel_ctx.get("dob") or session_data[call_sid].get("customer", {}).get("dob")
 
-        phone       = session_data[call_sid]["cancel"].get("phone")
-        doctor      = session_data[call_sid]["cancel"].get("doctor")
-        spoken_day  = session_data[call_sid]["cancel"].get("day")
-        spoken_time = session_data[call_sid]["cancel"].get("time")
-        utc_start   = session_data[call_sid]["cancel"].get("utc_start")
-        utc_end     = session_data[call_sid]["cancel"].get("utc_end")
-        calendar_id = session_data[call_sid]["cancel"].get("calendar_id")
+    debug_print(f"📱 Phone: {phone}")
+    debug_print(f"👨‍⚕️ Doctor: {doctor}")
+    debug_print(f"🗓️ Day/Time: {spoken_day}, {spoken_time}")
+    debug_print(f"🌍 UTC window: {utc_start} → {utc_end}")
+    debug_print(f"📅 Calendar ID: {calendar_id}")
+    debug_print(f"🎂 DOB (for cancellation match): {dob or '∅'}")
 
-        debug_print(f"📱 Phone: {phone}")
-        debug_print(f"👨‍⚕️ Doctor: {doctor}")
-        debug_print(f"🗓️ Day/Time: {spoken_day}, {spoken_time}")
-        debug_print(f"🌍 UTC window: {utc_start} → {utc_end}")
-        debug_print(f"📅 Calendar ID: {calendar_id}")
-
-        # ❌ If no calendar ID → cannot proceed
-        if not calendar_id:
-            resp.say(gpt_speak("Sorry, I couldn't find the doctor's calendar. Please try again later."), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            return str(resp)
-
-        # Use pre-fetched match or search now
-        event_to_cancel = session_data[call_sid]["cancel"].get("matching_event")
-        if not event_to_cancel:
-            event_to_cancel = get_upcoming_events(calendar_id, phone, utc_start, utc_end, creds, debug=True)
-
-        if event_to_cancel:
-            event_id = event_to_cancel.get("id")
-            try:
-                # Delete from Google Calendar
-                service = build("calendar", "v3", credentials=creds)
-                service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
-                debug_print(f"🗑️ Deleted calendar event id={event_id}")
-
-                # Friendly time for TTS
-                from dateutil import parser as dtparser
-                try:
-                    start_str = event_to_cancel.get("start", {}).get("dateTime", "") or event_to_cancel.get("start", {}).get("date", "")
-                    dt = dtparser.parse(start_str)
-                    import pytz
-                    friendly = dt.astimezone(pytz.timezone("America/Chicago")).strftime("%B %-d at %-I:%M %p")
-                except Exception:
-                    friendly = f"{spoken_day} at {spoken_time}"
-
-                # Remove from JSON mapping
-                try:
-                    removed = cancel_appointment_by_name(doctor, phone, utc_start)
-                    if removed:
-                        debug_print(f"🧹 Removed mapping from {doctor}.json")
-                    else:
-                        debug_print(f"⚠️ No JSON mapping found to remove for the exact UTC time.")
-                except Exception as e:
-                    debug_print(f"⚠️ JSON remove error → {e}")
-
-                # Confirm cancellation to caller
-                resp.say(gpt_speak(f"Your appointment with {doctor} on {friendly} has been cancelled. Thank you!"), VOICE)
-
-            except Exception as e:
-                debug_print(f"❌ Calendar delete failed → {e}")
-                resp.say(gpt_speak("Sorry, something went wrong while cancelling your appointment."), VOICE)
-        else:
-            debug_print("🚫 No matching appointment found to cancel.")
-            resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time."), VOICE)
-
-        # 🔁 If rescheduling after cancel
-        if session_data[call_sid].get("reschedule_after_cancel"):
-            debug_print("🔁 Reschedule requested; transitioning to booking.")
-            session_data[call_sid]["stage"] = "booking"
-            session_data[call_sid].pop("cancel", None)
-
-            doctor_list_str = ", ".join(googleid_dr_name_map.values())
-            gather = make_gather("Now, please tell me which doctor you'd like to reschedule with.", hints=doctor_list_str)
-            resp.append(gather)
-            return str(resp)
-
-        # 🧼 End cancellation flow
+    # ❌ If no calendar ID → cannot proceed with Google Calendar deletion
+    if not calendar_id:
+        resp.say(gpt_speak("Sorry, I couldn't find the doctor's calendar. Please try again later."), VOICE)
+        resp.hangup()
         session_data.pop(call_sid, None)
-        debug_print("🧼 Session data cleared after cancellation.")
         return str(resp)
 
+    # Use pre-fetched match or search now (normalize possible list return)
+    event_to_cancel = cancel_ctx.get("matching_event")
+    if not event_to_cancel:
+        try:
+            fetched = get_upcoming_events(calendar_id, phone, utc_start, utc_end, creds, debug=True)
+            if isinstance(fetched, list):
+                event_to_cancel = fetched[0] if fetched else None
+            else:
+                event_to_cancel = fetched
+        except Exception as e:
+            debug_print(f"❌ Error fetching event for cancel → {e}")
+            event_to_cancel = None
 
+    if event_to_cancel:
+        event_id = event_to_cancel.get("id")
+        try:
+            # 🗑️ Delete from Google Calendar
+            service = build("calendar", "v3", credentials=creds)
+            service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+            debug_print(f"🗑️ Deleted calendar event id={event_id}")
+
+            # 🎙️ Friendly local time to speak back
+            from dateutil import parser as dtparser
+            try:
+                start_str = (
+                    (event_to_cancel.get("start") or {}).get("dateTime", "")
+                    or (event_to_cancel.get("start") or {}).get("date", "")
+                )
+                dt = dtparser.parse(start_str)
+                import pytz
+                friendly = dt.astimezone(pytz.timezone("America/Chicago")).strftime("%B %-d at %-I:%M %p")
+            except Exception:
+                friendly = f"{spoken_day} at {spoken_time}"
+
+            # 🧹 Remove from local JSON mapping (now with DOB match)
+            try:
+                removed = cancel_appointment_by_name(doctor_name=doctor, phone=phone, utc_start=utc_start, dob=dob)
+                if removed:
+                    debug_print(f"🧹 Local mapping removed for {doctor} using phone+dob+time")
+                else:
+                    debug_print(f"⚠️ Local JSON had no matching record (phone+dob+time) to remove.")
+            except Exception as e:
+                debug_print(f"⚠️ Local JSON remove error → {e}")
+
+            # ✅ Confirm to caller
+            resp.say(gpt_speak(f"Your appointment with {doctor} on {friendly} has been cancelled. Thank you!"), VOICE)
+
+        except Exception as e:
+            debug_print(f"❌ Calendar delete failed → {e}")
+            resp.say(gpt_speak("Sorry, something went wrong while cancelling your appointment."), VOICE)
+    else:
+        debug_print("🚫 No matching appointment found to cancel.")
+        resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time."), VOICE)
+
+    # 🔁 If rescheduling after cancel
+    if session_data[call_sid].get("reschedule_after_cancel"):
+        debug_print("🔁 Reschedule requested; transitioning to booking.")
+        session_data[call_sid]["stage"] = "booking"
+        session_data[call_sid].pop("cancel", None)
+
+        doctor_list_str = ", ".join(googleid_dr_name_map.values())
+        gather = make_gather("Now, please tell me which doctor you'd like to reschedule with.", hints=doctor_list_str)
+        resp.append(gather)
+        return str(resp)
+
+    # 🧼 End cancellation flow
+    session_data.pop(call_sid, None)
+    debug_print("🧼 Session data cleared after cancellation.")
+    return str(resp)
 
 
 
