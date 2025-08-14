@@ -1973,6 +1973,296 @@ def update_customer_cc(
 
 
 
+
+def find_future_events_for_caller(
+    calendars,
+    phone: str,
+    dob: str = None,
+    creds=None,
+    *,
+    start_utc: str = None,
+    end_utc: str = None,
+    horizon_days: int = 90,
+    limit: int = 25,
+    tz_name: str = "America/Chicago",
+    dr_map: dict = None,          # fallback to global googleid_dr_name_map if None
+    debug: bool = False,
+):
+    """
+    Fetch upcoming Google Calendar events for the caller, filtered by phone (required)
+    and optional DOB. Returns a list of normalized 'candidate' dicts ready for
+    cancellation iteration or confirmation.
+
+    Return schema for each candidate:
+        {
+          "event_id": str,       # GC event id
+          "calendar_id": str,    # calendar we found it in
+          "doctor_name": str,    # friendly name from map
+          "start_utc": str,      # ISO UTC start
+          "end_utc": str,        # ISO UTC end
+          "friendly": str,       # local time phrase for TTS
+          "summary": str,        # optional GC title
+          "location": str,       # optional GC location
+          "phone": str,          # normalized phone we extracted from event
+          "dob": str,            # ISO DOB we extracted from event
+          # "raw_event": dict    # only present if debug=True
+        }
+    """
+    import re                                             # regex utils for parsing description text and DOB formats
+    from datetime import datetime, timedelta, timezone    # for time windows and UTC handling
+    from googleapiclient.discovery import build           # Google Calendar API client
+    try:
+        from dateutil import parser as dtparser           # robust ISO-ish datetime parsing
+    except Exception:
+        raise                                             # bubble up if dateutil is missing
+
+    # --------- small helpers (scoped to this function) ---------
+
+    def debug_print_safe(msg: str):
+        """Call your app's debug_print if available; otherwise fall back to print."""
+        try:
+            debug_print(msg)                              # prefer your injected logger
+        except Exception:
+            print(msg)                                    # safe fallback in isolated contexts
+
+    def _normalize_phone_digits(s: str) -> str:
+        """Keep only digits; strip leading '1' from 11-digit US numbers → 10 digits."""
+        d = "".join(ch for ch in (s or "") if ch.isdigit())         # remove non-digits
+        return d[1:] if len(d) == 11 and d.startswith("1") else d   # normalize US style
+
+    def _normalize_dob(s: str) -> str:
+        """
+        Normalize DOB to ISO 'YYYY-MM-DD' when possible.
+        - Trim whitespace.
+        - If a datetime-like string is passed, keep only date part before 'T'.
+        - Accept 'YYYY-MM-DD', 'MM/DD/YYYY', 'MM-DD-YYYY'; otherwise return as-is.
+        """
+        s = (s or "").strip()                                       # clean input
+        if not s:
+            return ""                                                # no DOB available
+        if "T" in s:                                                 # drop time portion if present
+            s = s.split("T", 1)[0].strip()
+        m = re.match(r"^\s*(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\s*$", s)  # try MM/DD/YYYY or MM-DD-YYYY
+        if m:
+            mm, dd, yyyy = m.groups()
+            try:
+                return f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"       # standardize
+            except Exception:
+                return s                                                    # fallback unchanged
+        if re.match(r"^\d{4}\-\d{2}\-\d{2}$", s):                            # already ISO date
+            return s
+        return s                                                             # unknown pattern → return as-is
+
+    def _to_utc_iso(dt_like: str) -> str:
+        """Parse any ISO-ish datetime/date string and return strict UTC ISO with +00:00 offset."""
+        dt = dtparser.isoparse(dt_like)                           # parse flexible ISO formats
+        return dt.astimezone(timezone.utc).isoformat()            # convert to UTC and serialize
+
+    def _event_dt_to_utc_iso(ev_when: dict, key: str) -> str:
+        """
+        From a Google event's 'start'/'end' dict, prefer 'dateTime' else 'date' (all-day).
+        Return UTC ISO string or raise if missing.
+        """
+        val = (ev_when or {}).get("dateTime") or (ev_when or {}).get("date")  # pick available field
+        if not val:
+            raise ValueError("Missing event time")                             # invalid event payload
+        return _to_utc_iso(val)                                                # normalize to UTC
+
+    def _to_local_friendly(utc_iso: str) -> str:
+        """Render a UTC ISO timestamp into a local (tz_name) speech-friendly string."""
+        import pytz
+        try:
+            dt_utc = dtparser.isoparse(utc_iso)                                # parse ISO
+            local = dt_utc.astimezone(pytz.timezone(tz_name))                   # convert to clinic TZ
+            try:
+                return local.strftime("%A, %B %-d at %-I:%M %p")               # GNU/Unix
+            except Exception:
+                return local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")  # Windows-friendly
+        except Exception:
+            return utc_iso                                                      # fallback: return raw ISO
+
+    def _extract_phone_dob_from_event(ev: dict) -> tuple[str, str]:
+        """
+        Pull phone and DOB from event metadata.
+        Priority:
+          1) extendedProperties.private.phone / .dob
+          2) description: parse digits & common date patterns
+        Return: (normalized_phone, normalized_dob)
+        """
+        phone_found, dob_found = "", ""                                         # defaults
+
+        # Try GCal extendedProperties first (if your create routine stored these)
+        extp = (ev.get("extendedProperties") or {}).get("private") or {}        # safe dict
+        if isinstance(extp, dict):
+            phone_found = _normalize_phone_digits(extp.get("phone") or extp.get("Phone") or "")
+            dob_found   = _normalize_dob(extp.get("dob") or extp.get("DOB") or "")
+
+        # Fallback to parsing the description body if still missing
+        if (not phone_found) or (not dob_found):
+            desc = ev.get("description") or ""                                  # free-text notes
+            digits = "".join(ch for ch in desc if ch.isdigit())                 # all digits in description
+            if not phone_found and len(digits) >= 10:
+                phone_found = _normalize_phone_digits(digits[-10:])             # take last 10 as US phone
+            m = re.search(r"\b(\d{4}\-\d{2}\-\d{2})\b", desc)                   # look for YYYY-MM-DD
+            if not dob_found and m:
+                dob_found = _normalize_dob(m.group(1))
+            else:
+                m2 = re.search(r"\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\b", desc)  # or MM/DD/YYYY
+                if not dob_found and m2:
+                    dob_found = _normalize_dob(m2.group(0))
+
+        return phone_found, dob_found                                           # return normalized values
+
+    # --------- normalize/prepare inputs ---------
+
+    # Ensure 'calendars' is a list; accept a single id, tuple, or any iterable.
+    if isinstance(calendars, (str, bytes)):
+        calendars = [calendars]                                                 # single → list
+    elif isinstance(calendars, tuple):
+        calendars = list(calendars)                                             # tuple → list
+    elif not isinstance(calendars, list):
+        calendars = list(calendars or [])                                       # generic iterable → list
+
+    # Prefer provided doctor map; otherwise use global mapping if present.
+    try:
+        dr_map = dr_map or googleid_dr_name_map                                 # global fallback
+    except NameError:
+        dr_map = {}                                                             # empty if global missing
+
+    phone_norm_input = _normalize_phone_digits(phone)                           # normalize caller phone
+    dob_norm_input   = _normalize_dob(dob) if dob else ""                       # normalize DOB if provided
+
+    # Build time window for the search:
+    # - lower bound (timeMin): now (UTC) unless a start_utc is provided
+    # - upper bound (timeMax): start + horizon_days unless end_utc is provided
+    now_utc = datetime.now(timezone.utc)                                        # current time in UTC
+    if start_utc:
+        try:
+            time_min = _to_utc_iso(start_utc)                                   # normalize provided lower bound
+        except Exception:
+            time_min = now_utc.isoformat()                                      # fallback to now if invalid
+    else:
+        time_min = now_utc.isoformat()                                          # default lower bound = now
+
+    if end_utc:
+        try:
+            time_max = _to_utc_iso(end_utc)                                     # normalize provided upper bound
+        except Exception:
+            time_max = (now_utc + timedelta(days=horizon_days)).isoformat()     # fallback to horizon
+    else:
+        time_max = (now_utc + timedelta(days=horizon_days)).isoformat()         # default upper bound
+
+    if debug:
+        debug_print_safe(f"find_future_events_for_caller: 📞 phone={phone_norm_input} dob={dob_norm_input or '∅'}")
+        debug_print_safe(f"find_future_events_for_caller: ⏱️ timeMin={time_min} timeMax={time_max}")
+        debug_print_safe(f"find_future_events_for_caller: 🗓️ calendars={calendars}")
+
+    # Create Google Calendar API service client using provided creds
+    service = build("calendar", "v3", credentials=creds)
+
+    results = []                                                                # will hold normalized candidates
+
+    # Iterate each calendar (doctor); stop when we hit 'limit' total results
+    for cal_id in calendars:
+        if len(results) >= limit:
+            break                                                               # respect global cap
+
+        page_token = None                                                       # GC pagination token
+        fetched = 0                                                             # count of raw events fetched for this cal
+
+        while True:
+            if len(results) >= limit:
+                break                                                           # stop early if we filled results
+
+            try:
+                # Request a page of events for this calendar within [timeMin, timeMax]
+                resp = service.events().list(
+                    calendarId=cal_id,
+                    timeMin=time_min,
+                    timeMax=time_max,
+                    singleEvents=True,                                          # expand recurring events
+                    orderBy="startTime",                                        # chronological order
+                    pageToken=page_token,
+                    maxResults=min(250, max(10, limit - len(results))),         # sensible page size
+                ).execute()
+            except Exception as e:
+                if debug:
+                    debug_print_safe(f"find_future_events_for_caller: ❌ list error for {cal_id} → {e}")
+                break                                                           # skip this calendar on error
+
+            items = resp.get("items", []) or []                                 # raw events for this page
+            fetched += len(items)                                               # track how many retrieved
+
+            for ev in items:
+                # Normalize event start/end to UTC; skip malformed
+                try:
+                    start_utc_iso = _event_dt_to_utc_iso(ev.get("start"), "start")
+                    end_utc_iso   = _event_dt_to_utc_iso(ev.get("end"), "end")
+                except Exception as e:
+                    if debug:
+                        debug_print_safe(f"find_future_events_for_caller: ⚠️ skip malformed times → {e}")
+                    continue                                                    # skip bad event timestamps
+
+                # Try to pull phone/DOB from event metadata/description
+                ev_phone, ev_dob = _extract_phone_dob_from_event(ev)
+                ev_phone_norm = _normalize_phone_digits(ev_phone)               # normalize for comparison
+                ev_dob_norm   = _normalize_dob(ev_dob)
+
+                # Filter: phone must match; if caller supplied DOB, that must match too
+                if ev_phone_norm != phone_norm_input:
+                    continue                                                    # wrong person → skip
+                if dob_norm_input and ev_dob_norm != dob_norm_input:
+                    continue                                                    # DOB mismatch → skip
+
+                # Resolve friendly doctor name from mapping (fallback label if unknown)
+                doctor_name = dr_map.get(cal_id, "the doctor")
+
+                # Render a human-friendly local time (e.g., "Tuesday, August 12 at 9:00 AM")
+                friendly = _to_local_friendly(start_utc_iso)
+
+                # Build normalized candidate (what your iterator & confirm stages expect)
+                cand = {
+                    "event_id": ev.get("id", ""),                               # GC event id
+                    "calendar_id": cal_id,                                      # which calendar
+                    "doctor_name": doctor_name,                                 # friendly doctor label
+                    "start_utc": start_utc_iso,                                 # normalized UTC start
+                    "end_utc": end_utc_iso,                                     # normalized UTC end
+                    "friendly": friendly,                                       # human-readable local time
+                    "summary": ev.get("summary", "") or "",                     # optional title
+                    "location": ev.get("location", "") or "",                   # optional location
+                    "phone": ev_phone_norm,                                     # the matched phone
+                    "dob": ev_dob_norm,                                         # the matched DOB (possibly empty)
+                }
+                if debug:
+                    cand["raw_event"] = ev                                      # include raw payload when debugging
+
+                results.append(cand)                                            # add to output list
+                if len(results) >= limit:
+                    break                                                       # hit global cap → stop inner loop
+
+            page_token = resp.get("nextPageToken")                               # move to next page if any
+            if not page_token:
+                break                                                            # no more pages for this calendar
+
+        if debug:
+            debug_print_safe(
+                f"find_future_events_for_caller: ✅ calendar={cal_id} fetched={fetched}, kept={len(results)} total"
+            )
+
+    # Sort results chronologically by UTC start; ignore errors gracefully
+    try:
+        results.sort(key=lambda r: r["start_utc"])                               # earliest first
+    except Exception:
+        pass                                                                     # leave unsorted if something odd
+
+    if debug:
+        debug_print_safe(f"find_future_events_for_caller: ✅ returning {len(results)} candidate(s)")
+
+    return results                                                               # list[dict] normalized events
+
+
+
+
 #app = Flask(__name__)
 
 from flask import request
