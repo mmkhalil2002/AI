@@ -2685,19 +2685,167 @@ def voice():
 
 
 
-    # ----------------------------------------------------------------------
-# 🎂 Stage: collect_dob
-# Purpose:
-#   - Accept DOB via speech (e.g., “July third 1990”) or keypad (MMDDYYYY#).
-#   - Parse and validate reasonable date range.
-#   - Store DOB as ISO (YYYY-MM-DD) in session.
-#   - On failure, re-prompt with the SHORT prompt (DOB_PROMPT_SHORT).
-# Integration points:
-#   - Uses: parse_dob_input(), make_gather_dob(), debug_print, session_data, call_sid
-#   - Next stage: ask_time_date (always, after successful DOB store)
 # ----------------------------------------------------------------------
+# 📅 Stage: ask_time_date
+# Purpose:
+#   - Parse spoken date/time (e.g., “August 12 at 5 PM”).
+#   - Compute a UTC timeslot window for the appointment.
+#   - Check provider availability; if busy, offer next available options.
+#   - If free:
+#       * If (phone + dob) exists in DB → skip name collection and go to confirm.
+#       * Else → collect first name.
+# Prompts:
+#   - Uses TIME_PROMPT_SHORT when re-prompting.
+# Integration points:
+#   - Uses: smart_parse_time(), build_timeslot_range(), is_time_slot_available(),
+#           get_next_available_slots(), customer_search(), make_gather()
+#   - Globals referenced: APPOINTMENT_DURATION_MINUTES, googleid_dr_name_map, creds
+# ----------------------------------------------------------------------
+    elif stage == "ask_time_date":
+        debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
+
+        # 1) Parse (day, time) from the caller’s phrase
+        time_info = smart_parse_time(speech_result)
+        if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
+            # Retry parsing up to 3 times
+            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
+            retry_count = session_data[call_sid]["retry_time"]
+            debug_print(f"ask_time_date: ⚠️ Time parse failed. Retry={retry_count}")
+
+            if retry_count >= 3:
+                debug_print("ask_time_date: ⛔ Max retries reached.")
+                resp.say(gpt_speak("Sorry, I still couldn't understand the time. Please try again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            # Use short, consistent re-prompt
+            gather = make_gather(TIME_PROMPT_SHORT)
+            resp.append(gather)
+            return str(resp)
+
+        # Unpack parsed components
+        spoken_day, spoken_time = time_info
+        debug_print(f"ask_time_date: 📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
+
+        session_data[call_sid]["spoken_day"] = spoken_day
+        session_data[call_sid]["spoken_time"] = spoken_time
+
+        # 2) Convert to concrete UTC timeslot (start/end)
+        try:
+            appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
+            session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
+            debug_print(f"ask_time_date: ⏰ Built slot → Start: {appointment_start}, End: {appointment_end}")
+        except Exception as e:
+            debug_print(f"ask_time_date: ❌ build_timeslot_range failed → {e}")
+            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
+
+            if session_data[call_sid]["retry_time"] >= 3:
+                debug_print("ask_time_date: ⛔ Max retries reached during slot build.")
+                resp.say(gpt_speak("Sorry, I couldn’t understand the time you mentioned. Please try again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            gather = make_gather(TIME_PROMPT_SHORT)
+            resp.append(gather)
+            return str(resp)
+
+        # 3) Check the doctor’s calendar availability for this slot
+        doctor_id = session_data[call_sid]["doctor_id"]
+        calendar_id = doctor_id
+        debug_print(f"ask_time_date: 👨‍⚕️ Checking calendar → {calendar_id}")
+
+        if not is_time_slot_available(calendar_id, appointment_start, appointment_end, creds):
+            debug_print("ask_time_date: ❌ Slot not available")
+
+            # Find nearby alternatives (friendly strings already included by helper)
+            alts = get_next_available_slots(
+                calendar_id,
+                creds,
+                limit=3,
+                duration_minutes=APPOINTMENT_DURATION_MINUTES
+            )
+
+        # We’re inside ask_time_date after detecting the requested slot is busy.
+        # `alts` is the list returned by get_next_available_slots(...).
+        # Each element is a dict shaped like:
+        #   {"start": "<UTC-iso>", "end": "<UTC-iso>", "friendly": "August 12 at 8:30 AM"}
+        if alts:
+            # Build a single human-friendly sentence from the candidate slots.
+            # We extract the preformatted "friendly" label from each slot and join
+            # them with " or " so it reads naturally in speech:
+            #   e.g., "August 12 at 8:30 AM or August 12 at 9:00 AM or August 12 at 9:30 AM"
+            options = " or ".join([slot["friendly"] for slot in alts])
+
+            # Create a concise prompt that offers those alternative times back to the caller.
+            # Keep it short so TTS is clear and easy to respond to.
+            prompt = f"That time is not available. Would you like {options}?"
+
+            # Debug log: record exactly which options we’re offering. This helps you
+            # verify the availability logic and what the user actually heard.
+            debug_print(f"ask_time_date: 💡 Offering alternatives → {options}")
+        else:
+            # If the calendar API returns no suitable alternatives (e.g., fully booked),
+            # inform the user plainly. Avoid offering to wait on the line, just advise
+            # to try again later or call the front desk (you can customize this text).
+            prompt = "That time is not available, and I couldn't find open slots soon. Please try again later."
+
+            # Debug log: we reached a terminal branch with no choices to present.
+            debug_print("ask_time_date: ⚠️ No alternatives found")
+
+
+            gather = make_gather(prompt)
+            resp.append(gather)
+            return str(resp)
+
+        # 4) Slot is available → decide whether to confirm or collect name details
+        debug_print("ask_time_date: ✅ Slot available; checking if customer exists")
+
+        customer = session_data[call_sid].get("customer", {})
+        customer_phone = customer.get("phone", "")
+        customer_dob   = customer.get("dob", "")
+
+        try:
+            # If we have both phone & DOB and the customer exists → go straight to confirmation
+            if customer_phone and customer_dob and customer_search(customer_phone, customer_dob):
+                debug_print("ask_time_date: 📋 Customer on file — skip name collection")
+                session_data[call_sid]["stage"] = "book_appt_confirm"
+                # Short confirm prompt to keep flow moving
+                gather = make_gather("I found your details on file. Shall I confirm this appointment now?")
+                resp.append(gather)
+                return str(resp)
+            else:
+                # Otherwise collect name (first → last → address → cc → confirm)
+                debug_print("ask_time_date: 🆕 Customer not found → collecting first name")
+                session_data[call_sid]["stage"] = "collect_first_name"
+                gather = make_gather("Thanks. What is your first name?")
+                resp.append(gather)
+                return str(resp)
+        except Exception as e:
+            # If lookup errors out, fall back to collecting the name
+            debug_print(f"ask_time_date: ⚠️ customer_search error → {e}")
+            session_data[call_sid]["stage"] = "collect_first_name"
+            gather = make_gather("Thanks. What is your first name?")
+            resp.append(gather)
+            return str(resp)
+
+
+
+
+    # ----------------------------------------------------------------------
+    # 🎂 Stage: collect_dob
+    # Purpose:
+    #   - Accept DOB via speech (e.g., “July third 1990”) or keypad (MMDDYYYY#).
+    #   - Parse and validate reasonable date range.
+    #   - Store DOB as ISO (YYYY-MM-DD) in session.
+    #   - On failure, re-prompt with the SHORT prompt (DOB_PROMPT_SHORT).
+    # Integration points:
+    #   - Uses: parse_dob_input(), make_gather_dob(), debug_print, session_data, call_sid
+    #   - Next stage: ask_time_date (always, after successful DOB store)
+    # ----------------------------------------------------------------------
     elif stage == "collect_dob":
-        # ----------------------------------------------------------------------
+            # ----------------------------------------------------------------------
         # 🔊 Short, centralized prompts
         #   Put these near your other constants so every stage uses the same text.
         # ----------------------------------------------------------------------
