@@ -1973,6 +1973,140 @@ def update_customer_cc(
 
 
 
+def get_doctor_appts_for(doctor_name: str, phone: str, dob: str = None) -> list:
+    """
+    Read appointment_data/doctors/<doctor_name>.json and return all
+    appointment dicts that match the given caller:
+      - phone is REQUIRED (normalized to 10 digits; strips leading 1)
+      - dob is OPTIONAL (normalized to YYYY-MM-DD if possible)
+
+    Returned list is sorted chronologically by start time if present.
+    Uses debug_print for logging (falls back to print if unavailable).
+    """
+
+    import os, json, re
+    from dateutil import parser as dtparser
+
+    # ---------- local helpers (self-contained) ----------
+
+    def _dbg(msg: str):
+        try:
+            debug_print(msg)
+        except Exception:
+            print(msg)
+
+    def _normalize_phone_digits(s: str) -> str:
+        """Keep only digits; if 11-digit US starting with '1', strip to 10 digits."""
+        d = "".join(ch for ch in (s or "") if ch.isdigit())
+        return d[1:] if len(d) == 11 and d.startswith("1") else d
+
+    def _normalize_dob_iso(s: str) -> str:
+        """
+        Normalize to 'YYYY-MM-DD' when possible.
+        Accepts:
+          - 'YYYY-MM-DD' (kept)
+          - 'MM/DD/YYYY' or 'MM-DD-YYYY' (converted)
+          - empty/unknown → ''
+        """
+        s = (s or "").strip()
+        if not s:
+            return ""
+        if "T" in s:
+            s = s.split("T", 1)[0].strip()
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+            return s
+        m = re.match(r"^\s*(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})\s*$", s)
+        if m:
+            mm, dd, yyyy = m.groups()
+            try:
+                return f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
+            except Exception:
+                return s
+        return s
+
+    def _get_doctor_filename(name: str) -> str:
+        """Prefer your app's get_doctor_filename; fallback to sanitized file path."""
+        try:
+            return get_doctor_filename(name)  # existing app helper if present
+        except Exception:
+            safe = "".join(c for c in (name or "") if c.isalnum() or c in (" ", "-", "_")).strip()
+            safe = safe.replace(" ", "_")
+            if not safe.endswith(".json"):
+                safe += ".json"
+            return os.path.join("appointment_data", "doctors", safe)
+
+    def _extract_start_iso(appt: dict) -> str:
+        """Prefer 'start' then 'time' field; may be empty if not present."""
+        return (appt.get("start") or appt.get("time") or "").strip()
+
+    # ---------- normalize inputs ----------
+    phone10 = _normalize_phone_digits(phone)
+    dob_iso = _normalize_dob_iso(dob) if dob else ""
+
+    if len(phone10) != 10:
+        _dbg(f"get_doctor_appts_for: ❌ invalid phone '{phone}' → normalized '{phone10}'")
+        return []
+
+    path = _get_doctor_filename(doctor_name)
+    if not os.path.exists(path):
+        _dbg(f"get_doctor_appts_for: ⚠️ file not found → {path}")
+        return []
+
+    # ---------- load and filter ----------
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        _dbg(f"get_doctor_appts_for: ❌ read/parse error for {path} → {e}")
+        return []
+
+    if not isinstance(data, list):
+        _dbg(f"get_doctor_appts_for: ❌ JSON not a list in {path}")
+        return []
+
+    matches = []
+    for appt in data:
+        if not isinstance(appt, dict):
+            continue
+        ap_phone = _normalize_phone_digits(appt.get("phone", ""))
+        if ap_phone != phone10:
+            continue
+        if dob_iso:
+            ap_dob = _normalize_dob_iso(appt.get("dob", ""))
+            if ap_dob != dob_iso:
+                continue
+        matches.append(appt)
+
+    # ---------- sort by start time if available ----------
+    def _sort_key(a: dict):
+        raw = _extract_start_iso(a)
+        try:
+            return dtparser.isoparse(raw)
+        except Exception:
+            return None
+
+    try:
+        matches.sort(key=lambda a: (_sort_key(a) is None, _sort_key(a)))
+    except Exception:
+        pass
+
+    _dbg(f"get_doctor_appts_for: ✅ doctor='{doctor_name}' phone='{phone10}' dob='{dob_iso or '∅'}' → {len(matches)} appt(s)")
+    return matches
+
+
+# ----------------------------------------------------------------------
+# backward-compat alias (typo): some code may call get_docotor_appt_for
+# ----------------------------------------------------------------------
+def get_docotor_appt_for(doctor_name: str, phone: str, dob: str = None) -> list:
+    """
+    Alias for get_doctor_appts_for (typo compatibility).
+    """
+    return get_doctor_appts_for(doctor_name, phone, dob)
+
+
+
+
+
 #app = Flask(__name__)
 
 from flask import request
