@@ -3163,6 +3163,7 @@ def voice():
         try:
             # ✅ Use the stricter helper (FreeBusy + events fallback + padding + debug)
             slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
+            
         except Exception as e:
             debug_print(f"ask_time_date: ⚠️ Availability check error → {e}")
             slot_available = False
@@ -3867,8 +3868,7 @@ def voice():
         debug_print(f"book_appt_confirm: 🔎 final availability check → cal={calendar_id} {appointment_start}→{appointment_end}")
         try:
             try:
-                # Prefer strict helper if present
-                slot_free = is_time_slot_available_strict(calendar_id, appointment_start, appointment_end, creds)  # type: ignore[name-defined]
+                slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)  # type: ignore[name-defined]
             except NameError:
                 slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
         except Exception as e:
