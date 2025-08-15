@@ -268,24 +268,56 @@ Role	    Meaning
 
 "assistant"	Represents a reply from the AI assistant — used to simulate ongoing dialogue or give memory context.
 """
+
 def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, creds) -> bool:
     """
     Check if the given time range is free on the doctor's calendar.
     Returns True if available, False if already booked.
+
+    Logs (via debug_print):
+      - the calendar and window being checked
+      - how many events were returned
+      - for each event: id, start, end
+      - final verdict (FREE/BUSY)
     """
     from googleapiclient.discovery import build
 
-    service = build("calendar", "v3", credentials=creds)
-    events_result = service.events().list(
-        calendarId=calendar_id,
-        timeMin=start_time,
-        timeMax=end_time,
-        singleEvents=True,
-        orderBy="startTime"
-    ).execute()
+    debug_print(
+        f"is_time_slot_available: 🔎 cal='{calendar_id}' "
+        f"window={start_time}→{end_time}"
+    )
 
-    events = events_result.get("items", [])
-    return len(events) == 0  # True if no conflicts
+    try:
+        service = build("calendar", "v3", credentials=creds)
+        events_result = service.events().list(
+            calendarId=calendar_id,
+            timeMin=start_time,          # RFC3339 / ISO 8601
+            timeMax=end_time,            # RFC3339 / ISO 8601
+            singleEvents=True,
+            showDeleted=False,
+            orderBy="startTime",
+            maxResults=250,
+        ).execute()
+
+        events = events_result.get("items", [])
+        debug_print(f"is_time_slot_available: ℹ️ events count={len(events)}")
+
+        # Print id, start, end for each event
+        for ev in events:
+            ev_id = ev.get("id", "")
+            start_raw = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
+            end_raw   = ev.get("end",   {}).get("dateTime") or ev.get("end",   {}).get("date")
+            debug_print(f"is_time_slot_available:   • id={ev_id} start={start_raw} end={end_raw}")
+
+        available = (len(events) == 0)
+        debug_print(f"is_time_slot_available: {'✅ FREE' if available else '❌ BUSY'}")
+        return available
+
+    except Exception as e:
+        debug_print(f"is_time_slot_available: ❗ error during events.list → {e}")
+        # Safer to fail closed to avoid double-booking
+        return False
+
 
 
 from datetime import datetime, timedelta
@@ -785,7 +817,29 @@ def gpt_speak(prompt):
         if prompt in prompt_cache:
             print("🔁 Returning cached GPT response.")
             return prompt_cache[prompt]
+        """
+            Role	    Meaning
+            "system"	Sets up the assistant’s behavior, tone, and expertise (e.g., polite receptionist, helpful tutor).
+                Only one system message is typically needed.
+                You can use the following informal structure:
+                You are a [tone] [role] for a [domain]. Your job is to [main task]. Respond in a [language/style], and [behavior instruction or limitation].
+                    Part	                 Description	                         Example
+                    [tone]	                 Personality trait or attitude	        friendly, polite, professional
+                    [role]    	            What the assistant should act as	    AI assistant, receptionist, customer support agent
+                    [domain]	            The industry or context                 therapist clinic, restaurant, medical office
+                    [main task]     	    Main job or expected function	        help users book appointments, take orders
+                    [language/style]	    Language or tone of responses           Egyptian Araic, concise English, cheerful tone
+                    [behavior/limitation]	Optional — any constraint or control    don’t give medical advice, wait for confirmation
+           "user"    Represents input from the end user — the prompt/question you're asking.
+                      If you're building a voice bot (as you are), the "user" input is usually:
+                    request.values.get("SpeechResult", "")
+                    So you should assume it’s spoken language and keep the assistant ready for less formal wording, e.g.:
+                    "I want to talk to the doctor."
+                     "Book me a session at 5."
+                     "               I need help."
 
+            "assistant"	Represents a reply from the AI assistant — used to simulate ongoing dialogue or give memory context.
+        """
         try:
             # Send request to OpenAI ChatGPT API
             response = client.chat.completions.create(
@@ -3975,6 +4029,9 @@ def voice():
 
             debug_print(f"book_appt_confirm: 📝 creating Google event (slot id) id={safe_id} cal={calendar_id} "
                         f"{appointment_start}→{appointment_end}")
+            #
+            # insert event in google
+            #
             ev = service.events().insert(
                 calendarId=calendar_id,
                 body=event_body,
