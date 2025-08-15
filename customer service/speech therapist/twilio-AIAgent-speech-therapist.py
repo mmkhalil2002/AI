@@ -2800,45 +2800,63 @@ def voice():
         calendar_id = doctor_id
         debug_print(f"ask_time_date: 👨‍⚕️ Checking calendar → {calendar_id}")
 
-        if not is_time_slot_available(calendar_id, appointment_start, appointment_end, creds):
+        slot_available = False
+        try:
+            slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
+        except Exception as e:
+            # Be defensive: if availability check fails, treat as not available but do not crash
+            debug_print(f"ask_time_date: ⚠️ Availability check error → {e}")
+            slot_available = False
+
+        if not slot_available:
             debug_print("ask_time_date: ❌ Slot not available")
 
             # Find nearby alternatives (friendly strings already included by helper)
-            alts = get_next_available_slots(
-                calendar_id,
-                creds,
-                limit=3,
-                duration_minutes=APPOINTMENT_DURATION_MINUTES
-            )
+            alts = []
+            try:
+                alts = get_next_available_slots(
+                    calendar_id,
+                    creds,
+                    limit=3,
+                    duration_minutes=APPOINTMENT_DURATION_MINUTES
+                ) or []
+            except Exception as e:
+                debug_print(f"ask_time_date: ⚠️ get_next_available_slots error → {e}")
+                alts = []
 
-        # We’re inside ask_time_date after detecting the requested slot is busy.
-        # `alts` is the list returned by get_next_available_slots(...).
-        # Each element is a dict shaped like:
-        #   {"start": "<UTC-iso>", "end": "<UTC-iso>", "friendly": "August 12 at 8:30 AM"}
-        if alts:
-            # Build a single human-friendly sentence from the candidate slots.
-            # We extract the preformatted "friendly" label from each slot and join
-            # them with " or " so it reads naturally in speech:
-            #   e.g., "August 12 at 8:30 AM or August 12 at 9:00 AM or August 12 at 9:30 AM"
-            options = " or ".join([slot["friendly"] for slot in alts])
+            # We’re inside ask_time_date after detecting the requested slot is busy.
+            # `alts` is the list returned by get_next_available_slots(...).
+            # Each element is a dict shaped like:
+            #   {"start": "<UTC-iso>", "end": "<UTC-iso>", "friendly": "August 12 at 8:30 AM"}
+            if alts:
+                # Build a single human-friendly sentence from the candidate slots.
+                # We extract the preformatted "friendly" label from each slot and join
+                # them with " or " so it reads naturally in speech:
+                #   e.g., "August 12 at 8:30 AM or August 12 at 9:00 AM or August 12 at 9:30 AM"
+                try:
+                    options = " or ".join([slot.get("friendly") or "" for slot in alts if slot.get("friendly")])
+                except Exception as e:
+                    debug_print(f"ask_time_date: ⚠️ options build error → {e}")
+                    options = ""
 
-            # Create a concise prompt that offers those alternative times back to the caller.
-            # Keep it short so TTS is clear and easy to respond to.
-            prompt = f"That time is not available. Would you like {options}?"
+                # Create a concise prompt that offers those alternative times back to the caller.
+                # Keep it short so TTS is clear and easy to respond to.
+                if options:
+                    prompt = f"That time is not available. Would you like {options}?"
+                    debug_print(f"ask_time_date: 💡 Offering alternatives → {options}")
+                else:
+                    prompt = "That time is not available. Please say another time, for example, 'today at 3:30 PM'."
+                    debug_print("ask_time_date: ⚠️ Alternatives missing friendly labels")
 
-            # Debug log: record exactly which options we’re offering. This helps you
-            # verify the availability logic and what the user actually heard.
-            debug_print(f"ask_time_date: 💡 Offering alternatives → {options}")
-        else:
-            # If the calendar API returns no suitable alternatives (e.g., fully booked),
-            # inform the user plainly. Avoid offering to wait on the line, just advise
-            # to try again later or call the front desk (you can customize this text).
-            prompt = "That time is not available, and I couldn't find open slots soon. Please try again later."
+            else:
+                # If the calendar API returns no suitable alternatives (e.g., fully booked),
+                # inform the user plainly. Avoid offering to wait on the line, just advise
+                # to try again later or call the front desk (you can customize this text).
+                prompt = "That time is not available, and I couldn't find open slots soon. Please try again later."
+                # Debug log: we reached a terminal branch with no choices to present.
+                debug_print("ask_time_date: ⚠️ No alternatives found")
 
-            # Debug log: we reached a terminal branch with no choices to present.
-            debug_print("ask_time_date: ⚠️ No alternatives found")
-
-
+            # Always gather after offering (or failing to offer) alternatives
             gather = make_gather(prompt)
             resp.append(gather)
             return str(resp)
@@ -2873,7 +2891,6 @@ def voice():
             gather = make_gather("Thanks. What is your first name?")
             resp.append(gather)
             return str(resp)
-
 
 
 
