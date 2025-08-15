@@ -2389,9 +2389,15 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
 
     start_dt = isoparse(start_iso)
     end_dt   = isoparse(end_iso)
-    # ±60s guard for edge cases where event starts/ends exactly at boundary
+    # ±60s guard for edge cases where an event starts/ends exactly at boundaries
     tmin = (start_dt - timedelta(seconds=60)).isoformat()
     tmax = (end_dt   + timedelta(seconds=60)).isoformat()
+
+    debug_print(
+        "is_time_slot_available: 🔎 Checking "
+        f"calendar='{calendar_id}' window={start_iso}→{end_iso} "
+        f"(padded {tmin}→{tmax})"
+    )
 
     # ---- 1) FreeBusy (preferred) ----
     try:
@@ -2403,17 +2409,18 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
         }).execute()
 
         busy = (fb.get("calendars", {}).get(calendar_id, {}) or {}).get("busy", []) or []
-        for b in busy:
-            try:
-                debug_print(f"is_time_slot_available_strict: BUSY (freebusy) {b.get('start')} → {b.get('end')}")
-            except Exception:
-                pass
         if busy:
+            debug_print(f"is_time_slot_available: 🚫 FreeBusy shows {len(busy)} busy block(s)")
+            for b in busy:
+                debug_print(f"  BUSY (freebusy) {b.get('start')} → {b.get('end')}")
+            debug_print("is_time_slot_available: ❌ Slot NOT available (FreeBusy)")
             return False
+        else:
+            debug_print("is_time_slot_available: ✅ FreeBusy shows NO busy blocks in padded window")
     except Exception as e:
-        debug_print(f"is_time_slot_available: ⚠️ FreeBusy error → {e}")
+        debug_print(f"is_time_slot_available: ⚠️ FreeBusy error → {e} (will check events().list)")
 
-    # ---- 2) Fallback: events().list with explicit overlap test ----
+    # ---- 2) Fallback/double-check: events().list with explicit overlap test ----
     try:
         items = service.events().list(
             calendarId=calendar_id,
@@ -2424,6 +2431,8 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
             orderBy="startTime",
             maxResults=250,
         ).execute().get("items", [])
+
+        debug_print(f"is_time_slot_available: ℹ️ events().list returned {len(items)} item(s) in padded window")
 
         for ev in items:
             if ev.get("status") == "cancelled":
@@ -2442,16 +2451,21 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
 
             # Overlap rule: (start < ev_end) AND (end > ev_start)
             if start_dt < ee and end_dt > es:
+                title = ev.get("summary", "")
                 debug_print(
-                    "is_time_slot_available: BUSY (events) "
-                    f"{es.isoformat()} → {ee.isoformat()} title='{ev.get('summary','')}'"
+                    "is_time_slot_available: 🚫 BUSY (events overlap) "
+                    f"{es.isoformat()} → {ee.isoformat()} title='{title}'"
                 )
+                debug_print("is_time_slot_available: ❌ Slot NOT available (events overlap)")
                 return False
+
+        debug_print("is_time_slot_available: ✅ No overlapping events found via events().list")
     except Exception as e:
         # Safer to fail closed than double-book if both checks error out.
-        debug_print(f"is_time_slot_available: ⚠️ events.list error → {e}")
+        debug_print(f"is_time_slot_available: ❗ events.list error → {e}; treating as NOT available (fail-closed)")
         return False
 
+    debug_print("is_time_slot_available: ✅ Slot FREE (final)")
     return True
 
 
@@ -3748,36 +3762,54 @@ def voice():
         doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
         debug_print(f"book_appt_confirm: doctor_id={doctor_id} name={doctor_name}")
 
-        # Appointment time
-        appointment_time = session_data[call_sid].get("appointment_time", {}).get("start")
-        debug_print(f"book_appt_confirm: utc_start={appointment_time}")
-        formatted_time = ""
-        if appointment_time:
-            try:
-                from datetime import datetime
-                import pytz
-                dt_utc = datetime.fromisoformat(appointment_time.replace("Z", "+00:00"))
-                dt_local = dt_utc.astimezone(pytz.timezone("America/Chicago"))
-                try:
-                    formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
-                except Exception:
-                    formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
-            except Exception as e:
-                debug_print(f"book_appt_confirm: time parse error → {e}")
-                resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
-                resp.hangup()
-                return str(resp)
-        else:
+        # Appointment time (we prefer BOTH start and end; fall back if end missing)
+        appt_payload = session_data[call_sid].get("appointment_time", {})
+        appointment_start = (appt_payload or {}).get("start")
+        appointment_end   = (appt_payload or {}).get("end")
+        debug_print(f"book_appt_confirm: utc_start={appointment_start} utc_end={appointment_end}")
+
+        if not appointment_start:
+            debug_print("book_appt_confirm: ❌ missing appointment_start")
             resp.say(gpt_speak("Appointment time missing. Goodbye!"), VOICE)
+            resp.hangup()
+            return str(resp)
+
+        # Format a caller-friendly local time string for voice/SMS
+        formatted_time = ""
+        try:
+            from datetime import datetime, timedelta
+            import pytz
+            dt_utc = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
+            dt_local = dt_utc.astimezone(pytz.timezone("America/Chicago"))
+            try:
+                formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
+            except Exception:
+                formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
+        except Exception as e:
+            debug_print(f"book_appt_confirm: time parse/format error → {e}")
+            resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+            resp.hangup()
+            return str(resp)
+
+        # If end is missing, compute it from configured duration
+        try:
+            if not appointment_end:
+                dur_min = int(APPOINTMENT_DURATION_MINUTES) if 'APPOINTMENT_DURATION_MINUTES' in globals() else 30
+                end_dt  = dt_utc + timedelta(minutes=dur_min)
+                appointment_end = end_dt.replace(tzinfo=pytz.UTC).isoformat()
+                debug_print(f"book_appt_confirm: computed utc_end={appointment_end} (duration={dur_min}m)")
+        except Exception as e:
+            debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
+            resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
             resp.hangup()
             return str(resp)
 
         # Customer info
         customer = session_data[call_sid].get("customer", {})
-        customer_name   = (customer.get("name") or "").strip()
-        customer_phone  = (customer.get("phone") or "").strip()
-        customer_dob    = (customer.get("dob") or "").strip()
-        customer_address= (customer.get("address") or "").strip()
+        customer_name    = (customer.get("name") or "").strip()
+        customer_phone   = (customer.get("phone") or "").strip()
+        customer_dob     = (customer.get("dob") or "").strip()
+        customer_address = (customer.get("address") or "").strip()
         cc_name   = (customer.get("cc_name") or "").strip()
         cc_number = (customer.get("cc_number") or "").strip()
         cc_exp    = (customer.get("cc_exp") or "").strip()
@@ -3805,6 +3837,7 @@ def voice():
             parts = customer_name.split()
             first_name = parts[0]
             last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
+        effective_name = customer_name or " ".join([n for n in [first_name, last_name] if n]).strip()
 
         # Insert/update customer record
         try:
@@ -3824,32 +3857,144 @@ def voice():
         except Exception as e:
             debug_print(f"book_appt_confirm: insert_customer failed → {e}")
 
-        # Create the appointment in your system
-        appointment_saved = False
+        # -----------------------------
+        # FINAL AVAILABILITY RE-CHECK
+        # (Avoid race-condition double-booking.)
+        # -----------------------------
+        calendar_id = doctor_id
+        debug_print(f"book_appt_confirm: 🔎 final availability check → cal={calendar_id} {appointment_start}→{appointment_end}")
         try:
-            effective_name = customer_name or " ".join([n for n in [first_name, last_name] if n]).strip()
+            try:
+                # Prefer strict helper if present
+                slot_free = is_time_slot_available_strict(calendar_id, appointment_start, appointment_end, creds)  # type: ignore[name-defined]
+            except NameError:
+                slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
+        except Exception as e:
+            debug_print(f"book_appt_confirm: ⚠️ availability check error → {e}")
+            slot_free = False  # fail-closed to avoid double booking
+
+        if not slot_free:
+            debug_print("book_appt_confirm: ❌ Slot NOT free at final check; fetching 3 alternatives")
+            # Suggest next 3 free options and send user back to ask_time_date
+            try:
+                alts = get_next_available_slots(
+                    calendar_id,
+                    creds,
+                    from_start_iso=appointment_start,
+                    duration_minutes=int(APPOINTMENT_DURATION_MINUTES) if 'APPOINTMENT_DURATION_MINUTES' in globals() else 30,
+                    limit=3,
+                    tz_name="America/Chicago",
+                    work_hours=((8,12),(13,17)),
+                    slot_step_minutes=30,
+                    search_days=14
+                ) or []
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ⚠️ get_next_available_slots error → {e}")
+                alts = []
+
+            if alts:
+                options = " or ".join([a.get("friendly","") for a in alts if a.get("friendly")])
+                debug_print(f"book_appt_confirm: 💡 Alternatives → {options}")
+                session_data[call_sid]["stage"] = "ask_time_date"
+                gather = make_gather(f"That time is no longer available. Would you like {options}?")
+                resp.append(gather)
+                return str(resp)
+            else:
+                debug_print("book_appt_confirm: ⚠️ No alternatives found; reprompting generically")
+                session_data[call_sid]["stage"] = "ask_time_date"
+                gather = make_gather("That time is no longer available. Please say another date and time, for example, 'tomorrow at 3:30 PM'.")
+                resp.append(gather)
+                return str(resp)
+
+        # ---------------------------------------
+        # CREATE the event in Google Calendar
+        # ---------------------------------------
+        appointment_saved_internal = False
+        appointment_saved_google   = False
+        google_event_id = None
+        google_event_link = None
+
+        # Save/confirm in your internal system (if this writes to your DB/files)
+        try:
             confirm_appointment_by_name(
                 doctor_name=doctor_name,
                 phone=phone10,
                 dob=customer_dob,
                 name=effective_name,
                 address=customer_address,
-                utc_start=appointment_time,
-                calendar_id=doctor_id
+                utc_start=appointment_start,
+                calendar_id=calendar_id
             )
-            appointment_saved = True
-            debug_print("book_appt_confirm: ✅ appointment saved")
+            appointment_saved_internal = True
+            debug_print("book_appt_confirm: ✅ internal appointment saved")
         except Exception as e:
-            debug_print(f"book_appt_confirm: save failed → {e}")
+            debug_print(f"book_appt_confirm: ❌ internal save failed → {e}")
 
-        # Voice confirmation only if saved
-        if appointment_saved:
-            msg = f"Your appointment with {doctor_name} has been successfully booked."
+        # Create Google Calendar event
+        try:
+            from googleapiclient.discovery import build
+            import hashlib, re as _re
+
+            service = build("calendar", "v3", credentials=creds)
+
+            # Idempotent event ID (stable per doctor/phone/start)
+            raw_id = f"appt-{calendar_id}-{phone10}-{appointment_start}"
+            # Normalize to allowed chars [a-z0-9-_] and lower-case
+            safe_id = _re.sub(r"[^a-zA-Z0-9_-]", "-", raw_id).lower()
+            # Google allows long IDs but keep it reasonable
+            if len(safe_id) < 5:
+                safe_id = hashlib.md5(raw_id.encode("utf-8")).hexdigest()
+
+            # Compose event body (UTC dateTimes; 'opaque' blocks the time)
+            event_body = {
+                "id": safe_id,
+                "summary": f"Appointment: {doctor_name} x {effective_name or 'Patient'}",
+                "description": (
+                    f"Patient: {effective_name or 'N/A'}\n"
+                    f"Phone: ({phone10[:3]}) {phone10[3:6]}-{phone10[6:]}\n"
+                    f"DOB: {customer_dob}\n"
+                    f"Address: {customer_address or 'N/A'}"
+                ),
+                "start": {"dateTime": appointment_start, "timeZone": "UTC"},
+                "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
+                "transparency": "opaque",
+                "extendedProperties": {
+                    "private": {
+                        "phone10": phone10,
+                        "dob": customer_dob,
+                        "source": "voice-bot",
+                        "call_sid": call_sid
+                    }
+                },
+            }
+
+            debug_print(f"book_appt_confirm: 📝 creating Google event id={safe_id}")
+            ev = service.events().insert(
+                calendarId=calendar_id,
+                body=event_body,
+                sendUpdates="none"
+            ).execute()
+
+            google_event_id = ev.get("id")
+            google_event_link = ev.get("htmlLink")
+            debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id} link={google_event_link}")
+            appointment_saved_google = True
+
+        except Exception as e:
+            debug_print(f"book_appt_confirm: ❌ Google Calendar insert failed → {e}")
+            appointment_saved_google = False
+
+        # Voice confirmation only if BOTH internal + Google succeed
+        if appointment_saved_internal and appointment_saved_google:
+            msg = f"Your appointment with {doctor_name} has been successfully booked"
             if formatted_time:
                 msg += f" on {formatted_time}"
-            msg += " We look forward to seeing you. Goodbye!"
+            msg += ". We look forward to seeing you. Goodbye!"
+            debug_print("book_appt_confirm: 🎉 success → speaking confirmation")
             resp.say(gpt_speak(msg), VOICE)
         else:
+            # If Google failed, roll back voice flow to let user pick another time
+            debug_print("book_appt_confirm: ❌ booking incomplete (internal or Google). Returning to ask_time_date.")
             session_data[call_sid]["stage"] = "ask_time_date"
             gather = make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, August 14th at 10 AM.")
             resp.append(gather)
@@ -3863,18 +4008,14 @@ def voice():
                 sms_text += f" on {formatted_time}"
             sms_text += ". Thank you for choosing Epic Therapist Clinic."
             message = client.messages.create(body=sms_text, from_=TWILIO_PHONE_NUMBER, to=e164)
-            debug_print(f"book_appt_confirm: SMS sent to {e164}, SID={message.sid}")
+            debug_print(f"book_appt_confirm: 📩 SMS sent to {e164}, SID={message.sid}")
         except Exception as e:
-            debug_print(f"book_appt_confirm: SMS failed → {e}")
+            debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
 
         resp.hangup()
         session_data.pop(call_sid, None)
-        debug_print("book_appt_confirm: session cleared")
+        debug_print("book_appt_confirm: ✅ session cleared and call ended")
         return str(resp)
-
-
-
-
 
 
 
