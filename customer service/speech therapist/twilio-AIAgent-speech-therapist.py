@@ -2739,6 +2739,14 @@ def voice():
 # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
+        # ----------------------------------------------------------------------
+        # Prompt constants
+        # ----------------------------------------------------------------------
+        TIME_PROMPT_SHORT = (
+            "That doesn't sound like a valid date or time. "
+            "Please say the appointment time again, for example, "
+            "'August 12th at 5 PM'."
+        )
 
         # 1) Parse (day, time) from the caller’s phrase
         time_info = smart_parse_time(speech_result)
