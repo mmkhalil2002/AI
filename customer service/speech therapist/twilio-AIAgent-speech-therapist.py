@@ -2405,8 +2405,8 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
         busy = (fb.get("calendars", {}).get(calendar_id, {}) or {}).get("busy", []) or []
         for b in busy:
             try:
-                debug_print(f"is_time_slot_available: BUSY (freebusy) {b.get('start')} → {b.get('end')}")
-            except Exception:strict
+                debug_print(f"is_time_slot_available_strict: BUSY (freebusy) {b.get('start')} → {b.get('end')}")
+            except Exception:
                 pass
         if busy:
             return False
