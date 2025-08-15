@@ -540,48 +540,158 @@ import os
 from openai import OpenAI
 from openai import APIConnectionError, AuthenticationError, RateLimitError
 
+#  this routine should be update in arabic  
 
-def smart_parse_time(text):
-    import dateparser
-    import re
-    from datetime import datetime
+import re
+from datetime import datetime
+import calendar
 
-    if not text:
+# -----------------------------------------------------------------------------
+# smart_parse_time
+# Returns a tuple: (spoken_day, spoken_time)
+#   spoken_day  → string like "Wednesday, August 6"
+#   spoken_time → string like "5:00 AM"
+#
+# Special handling:
+# - Phrases like "6 at 5 a.m." (no month/weekday) are interpreted as:
+#       day=6 of the CURRENT month, at 5:00 AM
+# - Ordinals ok: "6th at 5", "on the 6th at 5 pm"
+# - Normalizes "a.m." / "p.m." → "AM"/"PM"
+# - Common month typos: "augest" / "agust" → "august"; "sep" → "september", etc.
+# - Still supports normal "August 6 at 5 AM", "Aug 6 5pm", etc.
+# -----------------------------------------------------------------------------
+def smart_parse_time(speech: str):
+    if not speech or not str(speech).strip():
         return None
 
-    original_text = text
+    raw = speech.strip().lower()
 
-    # 🧽 Normalize "2 30", "2, 30" → "2:30"
-    text = re.sub(r"\b(\d{1,2})[,\s]+(\d{2})\b", r"\1:\2", text)
+    # -------- normalize am/pm variants (a.m., p.m., weird spacing) --------
+    raw = re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", raw)
+    raw = re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", raw)
 
-    # 🧽 Remove ordinal suffixes like "3rd", "22nd" → "3", "22"
-    text = re.sub(r"(\d+)(st|nd|rd|th)", r"\1", text, flags=re.IGNORECASE)
+    # -------- normalize common month typos/abbreviations (extend as needed) --------
+    MONTH_FIXES = {
+        "augest": "august", "agust": "august", "sept": "september", "sep": "september",
+        "oct.": "october", "nov.": "november", "dec.": "december", "jan.": "january",
+        "feb.": "february", "mar.": "march", "apr.": "april", "jun.": "june", "jul.": "july",
+    }
+    # word-boundary replacements to avoid mangling other words
+    for wrong, right in MONTH_FIXES.items():
+        raw = re.sub(rf"\b{re.escape(wrong)}\b", right, raw)
 
-    # 🧼 Trim and fix isolated time (e.g., "2:30")
-    text = re.sub(r"\s+", " ", text.strip())
-    if re.match(r"^\d{1,2}:\d{2}$", text):
-        text = "at " + text
+    # Collapse extra whitespace (makes regexes simpler)
+    raw = re.sub(r"\s+", " ", raw).strip()
 
-    print(f"🧽 Cleaned time input: {text} (original was: {original_text})")
+    # Helpers to pretty-case and weekday-name
+    def _month_name_cap(mnum: int) -> str:
+        return calendar.month_name[mnum]  # "August"
 
-    # 🧠 Parse using dateparser
-    dt = dateparser.parse(text, settings={"PREFER_DATES_FROM": "future"})
+    def _weekday_name(year: int, month_num: int, day_num: int) -> str:
+        # Day-of-week doesn't depend on tz; using current year gives a readable weekday
+        try:
+            dt = datetime(year, month_num, day_num)
+            return dt.strftime("%A")  # "Wednesday"
+        except Exception:
+            return ""
 
-    if not dt:
-        return None
-
+    # Current context (assume current month/year if not spoken)
     now = datetime.now()
+    current_month_num = now.month
+    current_year = now.year
 
-    # 🛠 Ensure current year if user mentioned a month name
-    if re.search(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b", text, re.IGNORECASE):
-        dt = dt.replace(year=now.year)
+    # ------------- Pattern A: "<day> at <time>" (no month mentioned) -------------
+    # Examples: "6 at 5", "6 at 5 pm", "6th at 5 a.m.", "on the 6 at 5"
+    m = re.match(
+        r"^(?:on\s+the\s+|on\s+|the\s+)?(?P<day>\d{1,2})(?:st|nd|rd|th)?\s*(?:at|@)\s*"
+        r"(?P<hour>\d{1,2})(?::(?P<min>\d{2}))?\s*(?P<ampm>am|pm)?\s*$",
+        raw
+    )
+    if m:
+        day = int(m.group("day"))
+        hour = int(m.group("hour"))
+        minute = int(m.group("min") or 0)
+        ampm = m.group("ampm")
 
-    # ✅ Return (day, time) as clean strings
-    spoken_day = dt.strftime("%A, %B %-d")  # e.g., "Monday, July 3"
-    spoken_time = dt.strftime("%-I:%M %p")  # e.g., "9:00 AM"
+        # Validate ranges quickly; if unrealistic, bail to other patterns
+        if not (1 <= day <= 31 and 0 <= hour <= 23 and 0 <= minute <= 59):
+            return None
 
-    return spoken_day, spoken_time
+        # If caller didn't say AM/PM and hour is 1..12, we can't guess safely → ask later layer to reprompt
+        # But since your pipeline expects a time string, assume AM if missing (your stage will still sanity-check).
+        mer = "AM" if (ampm or "").lower() != "pm" else "PM"
+        if ampm is None and 1 <= hour <= 12:
+            mer = "AM"
+        elif ampm is None and hour == 0:
+            hour, mer = 12, "AM"
+        elif ampm is None and hour > 12:
+            # e.g., "18" → 6 PM; convert to 12-hour for your formatter
+            hour -= 12
+            mer = "PM"
+        else:
+            mer = ampm.upper() if ampm else mer
 
+        # Build outputs using the CURRENT month as the default (prevents "6" → "June 15")
+        month_num = current_month_num
+        month_name = _month_name_cap(month_num)
+        weekday = _weekday_name(current_year, month_num, min(day, 28) if day > 28 else day)  # safe weekday best-effort
+
+        spoken_day = f"{weekday}, {month_name} {day}".strip(", ")
+        spoken_time = f"{hour}:{minute:02d} {mer}"
+        return (spoken_day, spoken_time)
+
+    # ------------- Pattern B: "<month> <day> at <time>" (normal explicit month) -------------
+    # Examples: "august 6 at 5 am", "aug 6 5pm"
+    m = re.match(
+        r"^(?P<month>(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+        r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?))\s+"
+        r"(?P<day>\d{1,2})(?:st|nd|rd|th)?(?:\s+at)?\s+"
+        r"(?P<hour>\d{1,2})(?::(?P<min>\d{2}))?\s*(?P<ampm>am|pm)?\s*$",
+        raw
+    )
+    if m:
+        month_word = m.group("month")
+        # Normalize month word to a month number (1..12)
+        MONTHS = {
+            "january":1,"jan":1,"february":2,"feb":2,"march":3,"mar":3,"april":4,"apr":4,"may":5,
+            "june":6,"jun":6,"july":7,"jul":7,"august":8,"aug":8,"september":9,"sep":9,"october":10,"oct":10,
+            "november":11,"nov":11,"december":12,"dec":12
+        }
+        month_num = MONTHS[month_word]
+        day = int(m.group("day"))
+        hour = int(m.group("hour"))
+        minute = int(m.group("min") or 0)
+        ampm = (m.group("ampm") or "").lower()
+
+        if not (1 <= day <= 31 and 0 <= hour <= 23 and 0 <= minute <= 59):
+            return None
+
+        # Convert to 12-hour display with AM/PM if needed
+        if ampm == "pm" and 1 <= hour <= 11:
+            mer = "PM"
+        elif ampm == "am":
+            mer = "AM"
+        else:
+            # If not provided, assume AM for 1..12; or convert >12 to PM
+            if 1 <= hour <= 12:
+                mer = "AM"
+            elif hour == 0:
+                hour, mer = 12, "AM"
+            else:
+                hour -= 12
+                mer = "PM"
+
+        month_name = _month_name_cap(month_num)
+        weekday = _weekday_name(current_year, month_num, min(day, 28) if day > 28 else day)
+
+        spoken_day = f"{weekday}, {month_name} {day}".strip(", ")
+        spoken_time = f"{hour}:{minute:02d} {mer}"
+        return (spoken_day, spoken_time)
+
+    # ------------- Pattern C: fallback to your old logic (if you have one) -------------
+    # If you have an existing parser, call it here; otherwise return None to trigger
+    # your "missing date/time" prompts upstream.
+    return None
 
 
 
