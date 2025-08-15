@@ -289,73 +289,148 @@ def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, cre
 
 
 from datetime import datetime, timedelta
-from typing import List, Dict
-import pytz
+from dateutil.parser import isoparse
+from dateutil.tz import gettz
+from googleapiclient.discovery import build
 
-def get_next_available_slots(calendar_id: str, creds, limit: int = 3, duration_minutes: int = 30) -> List[Dict]:
+def get_next_available_slots(
+    calendar_id: str,
+    creds,
+    *,
+    from_start_iso: str,
+    duration_minutes: int = 30,
+    limit: int = 3,
+    tz_name: str = "America/Chicago",
+    # Working hours per day (local time) — tuples of (start_hour, end_hour) in 24h.
+    # You can make this a dict keyed by weekday if you need different hours per day.
+    work_hours=( (8, 17), ),  # 8:00–17:00 local; multiple windows supported, e.g., ((8,12),(13,17))
+    slot_step_minutes: int = 30,   # align suggestions to a 30-minute grid
+    search_days: int = 14          # scan forward up to 14 days
+) -> list:
     """
-    Return a list of the next `limit` available time slots for a doctor.
-    Each slot is a dictionary with 'start', 'end', and 'friendly' keys.
+    Return a list of up to `limit` free slots after `from_start_iso` *for this doctor*.
+    Each element: {"start": "<UTC-iso>", "end": "<UTC-iso>", "friendly": "Friday, August 15 at 8:30 AM"}
+
+    Strategy:
+      - Work in the doctor's LOCAL TZ for grid/working-hours alignment; convert to UTC for FreeBusy.
+      - For each day in the search window:
+          - Query FreeBusy once for the full working window(s).
+          - Subtract busy intervals and scan the free timeline on a fixed grid (slot_step_minutes).
+          - Return the first `limit` non-overlapping slots of `duration_minutes`.
     """
-    from googleapiclient.discovery import build
-
-    print(f"🔍 Starting search for next {limit} available slots.")
-    print(f"📅 Duration per slot: {duration_minutes} minutes")
-
     service = build("calendar", "v3", credentials=creds)
+    tz_local = gettz(tz_name)
 
-    now = datetime.utcnow().replace(second=0, microsecond=0)
-    tz = pytz.timezone("America/Chicago")
-    now_local = now.astimezone(tz)
-    print(f"🕒 Current local time (Chicago): {now_local}")
+    # ---------- helpers ----------
+    def _round_up(dt: datetime, minutes: int) -> datetime:
+        """Round dt up to the next multiple of `minutes`."""
+        q = (dt.minute // minutes) * minutes
+        base = dt.replace(minute=q, second=0, microsecond=0)
+        if base < dt:
+            base += timedelta(minutes=minutes)
+        return base
 
-    # 🔁 Start from the next rounded-up duration boundary (e.g., 9:00, 9:30, etc.)
-    minute = (now_local.minute // duration_minutes + 1) * duration_minutes
-    rounded_start = now_local.replace(minute=0) + timedelta(minutes=minute)
-    if rounded_start.minute >= 60:
-        rounded_start += timedelta(hours=1)
-        rounded_start = rounded_start.replace(minute=0)
+    def _merge_intervals(intervals):
+        """Merge overlapping (start_dt, end_dt) intervals (both timezone-aware)."""
+        if not intervals:
+            return []
+        intervals = sorted(intervals, key=lambda x: x[0])
+        merged = [intervals[0]]
+        for s, e in intervals[1:]:
+            ms, me = merged[-1]
+            if s <= me:
+                merged[-1] = (ms, max(me, e))
+            else:
+                merged.append((s, e))
+        return merged
 
-    print(f"⏱️ First slot to check (rounded): {rounded_start.strftime('%Y-%m-%d %H:%M')}")
+    def _friendly(local_start: datetime) -> str:
+        """Readable label like 'Friday, August 15 at 8:30 AM' (use local tz)."""
+        return local_start.strftime("%A, %B %#d at %-I:%M %p") if hasattr(local_start, "strftime") else \
+               local_start.strftime("%A, %B %d at %I:%M %p")
+        # Note: %#d / %-I flags vary by OS; the fallback still works cross-platform.
 
-    suggestions = []
-    checked_slots = 0
-    MAX_LOOKAHEAD_HOURS = 72  # ⏩ Max time range to scan
+    # ---------- seed / context ----------
+    start_utc = isoparse(from_start_iso)                # timezone-aware UTC
+    start_local = start_utc.astimezone(tz_local)        # align to local grid/hours
+    results = []
 
-    while len(suggestions) < limit and checked_slots < (MAX_LOOKAHEAD_HOURS * 60) // duration_minutes:
-        end_slot = rounded_start + timedelta(minutes=duration_minutes)
-        time_min = rounded_start.isoformat()
-        time_max = end_slot.isoformat()
+    # Scan forward day by day until we find `limit` slots or exhaust `search_days`
+    for day_offset in range(search_days):
+        day_local = (start_local if day_offset == 0 else
+                     (start_local + timedelta(days=day_offset)).replace(hour=0, minute=0, second=0, microsecond=0))
 
-        print(f"🔎 Checking slot: {time_min} → {time_max} ...")
+        # Handle each working window (you can pass multiple windows, e.g., morning & afternoon)
+        for wh_start_hour, wh_end_hour in work_hours:
+            # Local working-window bounds for that day
+            window_start_local = day_local.replace(hour=wh_start_hour, minute=0, second=0, microsecond=0)
+            window_end_local   = day_local.replace(hour=wh_end_hour,   minute=0, second=0, microsecond=0)
 
-        try:
-            events_result = service.events().list(
-                calendarId=calendar_id,
-                timeMin=time_min,
-                timeMax=time_max,
-                singleEvents=True
-            ).execute()
-        except Exception as e:
-            print(f"❌ Error while querying events: {e}")
-            break
+            # If it's the first day and we're already past start of window, start from NOW (rounded)
+            if day_offset == 0 and start_local > window_start_local:
+                window_start_local = _round_up(start_local, slot_step_minutes)
 
-        if not events_result.get("items", []):
-            friendly = rounded_start.strftime("%B %-d at %-I:%M %p")
-            print(f"✅ Slot available: {friendly}")
-            suggestions.append({
-                "start": time_min,
-                "end": time_max,
-                "friendly": friendly
-            })
-        else:
-            print(f"❌ Slot is busy ({len(events_result.get('items', []))} events)")
+            # Convert to UTC for FreeBusy query
+            window_start_utc = window_start_local.astimezone(gettz("UTC"))
+            window_end_utc   = window_end_local.astimezone(gettz("UTC"))
+            if window_start_utc >= window_end_utc:
+                continue  # skip invalid windows
 
-        rounded_start += timedelta(minutes=duration_minutes)
-        checked_slots += 1
+            # ---- Query FreeBusy once for the whole window ----
+            fb = service.freebusy().query(body={
+                "timeMin": window_start_utc.isoformat(),
+                "timeMax": window_end_utc.isoformat(),
+                "items": [{"id": calendar_id}],
+                "timeZone": "UTC",
+            }).execute()
 
-    print(f"📦 Found {len(suggestions)} available slots after checking {checked_slots} candidates.")
-    return suggestions
+            busy_list = (fb.get("calendars", {}).get(calendar_id, {}) or {}).get("busy", []) or []
+
+            # Convert busy intervals to LOCAL TZ for easier local grid checks
+            busy_intervals_local = []
+            for b in busy_list:
+                try:
+                    bs = isoparse(b["start"]).astimezone(tz_local)
+                    be = isoparse(b["end"]).astimezone(tz_local)
+                    # Keep only overlaps with the working window
+                    if be > window_start_local and bs < window_end_local:
+                        busy_intervals_local.append( (max(bs, window_start_local), min(be, window_end_local)) )
+                except Exception:
+                    continue
+            busy_intervals_local = _merge_intervals(busy_intervals_local)
+
+            # ---- Scan the local working window on a fixed grid ----
+            cur = _round_up(window_start_local, slot_step_minutes)
+            slot_delta = timedelta(minutes=duration_minutes)
+            while cur + slot_delta <= window_end_local:
+                # Check overlap against merged busy intervals (in LOCAL tz)
+                overlap = False
+                for bs, be in busy_intervals_local:
+                    if cur < be and (cur + slot_delta) > bs:
+                        overlap = True
+                        # Jump ahead to the end of this busy block aligned to grid to speed scanning
+                        cur = _round_up(be, slot_step_minutes)
+                        break
+                if overlap:
+                    continue
+
+                # Candidate is free → record it (convert start/end to UTC ISO; keep friendly local label)
+                start_local_slot = cur
+                end_local_slot   = cur + slot_delta
+                start_utc_slot   = start_local_slot.astimezone(gettz("UTC"))
+                end_utc_slot     = end_local_slot.astimezone(gettz("UTC"))
+                results.append({
+                    "start": start_utc_slot.isoformat(),
+                    "end":   end_utc_slot.isoformat(),
+                    "friendly": _friendly(start_local_slot),
+                })
+                if len(results) >= limit:
+                    return results
+
+                # Move to next grid tick
+                cur += timedelta(minutes=slot_step_minutes)
+
+    return results  # may be empty if no free time found in the window
 
 
 
@@ -2905,6 +2980,21 @@ def voice():
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
 
         # ----------------------------------------------------------------------
+        # (Light) speech cleanup before parsing
+        # Normalize common AM/PM variants and trim trailing punctuation.
+        # NOTE: If you use a more advanced parser elsewhere, you can remove this.
+        # ----------------------------------------------------------------------
+        try:
+            _raw = (speech_result or "").strip()
+            # Normalize a.m./p.m. → am/pm (handles "a.m.", "A . M", etc.)
+            _raw = re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", _raw, flags=re.IGNORECASE)
+            _raw = re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", _raw, flags=re.IGNORECASE)
+            # Strip a single trailing sentence punctuation mark (".", "!", "?")
+            _raw = re.sub(r"[.!?]\s*$", "", _raw)
+        except Exception:
+            _raw = (speech_result or "")
+
+        # ----------------------------------------------------------------------
         # Prompt constants
         # Keep these short and consistent so callers learn the pattern quickly.
         # ----------------------------------------------------------------------
@@ -2953,13 +3043,14 @@ def voice():
 
         # 1) Parse (day, time) from the caller’s phrase
         #    Expect a tuple like: ("Friday, August 15", "5:00 AM") or similar.
-        time_info = smart_parse_time(speech_result)
+        #    NOTE: if you have an Arabic-aware parser, call it here instead.
+        time_info = smart_parse_time(_raw)
 
         # --- Branch A: parser returned nothing useful (None / wrong type / wrong length) ---
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
             # Before generic retry: try to be *specific* about what’s missing using heuristics.
-            need_date = not _has_date_token(speech_result)
-            need_time = not _has_time_token(speech_result)
+            need_date = not _has_date_token(_raw)
+            need_time = not _has_time_token(_raw)
 
             if need_date and need_time:
                 prompt = PROMPT_NEED_BOTH
@@ -3052,7 +3143,7 @@ def voice():
 
         slot_available = False
         try:
-            # ✅ Use FreeBusy helper (with ±1s guard)
+            # ✅ Use FreeBusy helper (with ±1s guard) inside is_time_slot_available
             slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
         except Exception as e:
             # Be defensive: if availability check fails, treat as not available but do not crash
@@ -3060,12 +3151,61 @@ def voice():
             slot_available = False
 
         if not slot_available:
-            # Busy → keep it simple: ask for another date+time (no alternatives).
-            prompt = (
-                "That time is not available for the doctor. "
-                "Please say another date and time, for example, 'tomorrow at 3:30 PM'."
-            )
-            debug_print("ask_time_date: ❌ Slot busy → prompting for another time")
+            debug_print("ask_time_date: ❌ Slot not available")
+
+            # Find nearby alternatives (friendly strings already included by helper).
+            # EXPECTED return from helper:
+            #   [{"start":"<UTC-iso>","end":"<UTC-iso>","friendly":"Friday, August 15 at 8:30 AM"}, ...]
+            alts = []
+            try:
+                # If you have a simpler signature in your project, adapt this call.
+                # The key is: same DOCTOR calendar, next 3 free slots after requested time.
+                alts = get_next_available_slots(
+                    calendar_id,
+                    creds,
+                    from_start_iso=appointment_start,              # start searching from the requested time
+                    duration_minutes=APPOINTMENT_DURATION_MINUTES, # keep consistent with your appointment length
+                    limit=3,
+                    tz_name="America/Chicago",                     # set to your clinic timezone
+                    work_hours=((8,12),(13,17)),                   # example split shift; change to your hours
+                    slot_step_minutes=30,
+                    search_days=14
+                ) or []
+            except Exception as e:
+                # If alternatives lookup fails, we still continue with a simple re-ask prompt.
+                debug_print(f"ask_time_date: ⚠️ get_next_available_slots error → {e}")
+                alts = []
+
+            # We’re inside ask_time_date after detecting the requested slot is busy.
+            # `alts` is the list returned by get_next_available_slots(...).
+            # Each element is a dict shaped like:
+            #   {"start": "<UTC-iso>", "end": "<UTC-iso>", "friendly": "Friday, August 15 at 8:30 AM"}
+            if alts:
+                # Build a single human-friendly sentence from the candidate slots.
+                # We extract the preformatted "friendly" label from each slot and join
+                # them with " or " so it reads naturally in speech:
+                #   e.g., "Friday, August 15 at 8:30 AM or Friday, August 15 at 9:00 AM or Friday, August 15 at 9:30 AM"
+                try:
+                    options = " or ".join([slot.get("friendly") for slot in alts if slot.get("friendly")])
+                except Exception as e:
+                    debug_print(f"ask_time_date: ⚠️ options build error → {e}")
+                    options = ""
+
+                # Create a concise prompt that offers those alternative times back to the caller.
+                # Keep it short so TTS is clear and easy to respond to.
+                if options:
+                    prompt = f"That time is not available. Would you like {options}?"
+                    debug_print(f"ask_time_date: 💡 Offering alternatives → {options}")
+                else:
+                    prompt = "That time is not available. Please say another time, for example, 'today at 3:30 PM'."
+                    debug_print("ask_time_date: ⚠️ Alternatives missing friendly labels")
+            else:
+                # If the calendar has no suitable alternatives in the search window,
+                # inform the user plainly.
+                prompt = "That time is not available, and I couldn't find open slots soon. Please say another date and time."
+                debug_print("ask_time_date: ⚠️ No alternatives found")
+
+            # Always gather after offering (or failing to offer) alternatives
             gather = make_gather(prompt)
             resp.append(gather)
             return str(resp)
@@ -3100,6 +3240,9 @@ def voice():
             gather = make_gather("Thanks. What is your first name?")
             resp.append(gather)
             return str(resp)
+
+
+
 
 
 
