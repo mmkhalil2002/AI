@@ -2201,6 +2201,89 @@ def get_docotor_appt_for(doctor_name: str, phone: str, dob: str = None) -> list:
 
 
 
+def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds) -> bool:
+    """
+    Check whether a specific timeslot is free in a doctor's Google Calendar.
+
+    Parameters:
+      calendar_id : str
+          The Google Calendar ID for the doctor (each doctor has their own calendar).
+      start_iso   : str
+          Requested appointment start time in ISO-8601 format, e.g. "2025-08-15T10:00:00Z".
+      end_iso     : str
+          Requested appointment end time in ISO-8601 format, e.g. "2025-08-15T10:30:00Z".
+      creds       : Google API credentials
+          An authorized credentials object (from OAuth2 or service account) that
+          allows your code to query the Google Calendar API.
+
+    Returns:
+      True if the slot is FREE (no overlapping events found).
+      False if the slot is BUSY (one or more events overlap).
+    """
+
+    # Import here so this helper can live in its own file without forcing
+    # all callers to import heavy Google/dateutil modules if they don’t use it.
+    from googleapiclient.discovery import build
+    from dateutil.parser import isoparse
+
+    # Build a Google Calendar service client using the provided credentials.
+    service = build("calendar", "v3", credentials=creds)
+
+    # Ask Google Calendar for all events that overlap the requested interval.
+    # - timeMin = lower bound of query (our requested start)
+    # - timeMax = upper bound of query (our requested end)
+    # - singleEvents=True → expands recurring events into individual instances
+    # - showDeleted=False → ignore cancelled events
+    # - orderBy="startTime" → events returned sorted by start time
+    items = service.events().list(
+        calendarId=calendar_id,
+        timeMin=start_iso,
+        timeMax=end_iso,
+        singleEvents=True,
+        showDeleted=False,
+        maxResults=50,
+        orderBy="startTime",
+    ).execute().get("items", [])
+
+    # Parse the requested start/end into datetime objects for overlap tests.
+    req_start = isoparse(start_iso)
+    req_end   = isoparse(end_iso)
+
+    # Iterate over each event returned by Google Calendar.
+    for ev in items:
+        # Skip events that are explicitly cancelled.
+        if ev.get("status") == "cancelled":
+            continue
+
+        # Extract the event's start and end times.
+        # Google Calendar API can return:
+        #   - "dateTime": full ISO timestamp (most common for timed events)
+        #   - "date": all-day events (no specific time)
+        ev_start_raw = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
+        ev_end_raw   = ev.get("end", {}).get("dateTime")   or ev.get("end", {}).get("date")
+
+        # If either is missing, skip this event (invalid or all-day without times).
+        if not ev_start_raw or not ev_end_raw:
+            continue
+
+        # Convert event start/end into datetime objects.
+        ev_start = isoparse(ev_start_raw)
+        ev_end   = isoparse(ev_end_raw)
+
+        # ---- Overlap rule ----
+        # Two intervals overlap if:
+        #   (requested_start < event_end) AND (requested_end > event_start)
+        # Example:
+        #   requested 10:00–10:30
+        #   event     10:15–10:45  → overlap = True
+        if req_start < ev_end and req_end > ev_start:
+            return False  # Found a conflict → slot is NOT available.
+
+    # If we get here, no events overlapped.
+    return True
+
+
+
 
 
 #app = Flask(__name__)
@@ -2739,8 +2822,10 @@ def voice():
 # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
+
         # ----------------------------------------------------------------------
         # Prompt constants
+        # Keep this short and consistent so callers learn the pattern quickly.
         # ----------------------------------------------------------------------
         TIME_PROMPT_SHORT = (
             "That doesn't sound like a valid date or time. "
@@ -2749,6 +2834,7 @@ def voice():
         )
 
         # 1) Parse (day, time) from the caller’s phrase
+        #    Expect a tuple like: ("Friday, August 15", "5:00 AM") or similar.
         time_info = smart_parse_time(speech_result)
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
             # Retry parsing up to 3 times
@@ -2758,6 +2844,7 @@ def voice():
 
             if retry_count >= 3:
                 debug_print("ask_time_date: ⛔ Max retries reached.")
+                # TTS apology + hang up; clear session so we don't leak state
                 resp.say(gpt_speak("Sorry, I still couldn't understand the time. Please try again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
@@ -2776,12 +2863,14 @@ def voice():
         session_data[call_sid]["spoken_time"] = spoken_time
 
         # 2) Convert to concrete UTC timeslot (start/end)
+        #    build_timeslot_range should return ISO strings (UTC) for start/end.
         try:
             appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
             session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
             debug_print(f"ask_time_date: ⏰ Built slot → Start: {appointment_start}, End: {appointment_end}")
         except Exception as e:
             debug_print(f"ask_time_date: ❌ build_timeslot_range failed → {e}")
+            # Increment and check retry counter here as well
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
 
             if session_data[call_sid]["retry_time"] >= 3:
@@ -2796,12 +2885,14 @@ def voice():
             return str(resp)
 
         # 3) Check the doctor’s calendar availability for this slot
+        #    NOTE: This is a per-doctor check — only the selected doctor's calendar matters.
         doctor_id = session_data[call_sid]["doctor_id"]
         calendar_id = doctor_id
         debug_print(f"ask_time_date: 👨‍⚕️ Checking calendar → {calendar_id}")
 
         slot_available = False
         try:
+            # Simple overlap check on the doctor’s Google Calendar
             slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
         except Exception as e:
             # Be defensive: if availability check fails, treat as not available but do not crash
@@ -2811,7 +2902,9 @@ def voice():
         if not slot_available:
             debug_print("ask_time_date: ❌ Slot not available")
 
-            # Find nearby alternatives (friendly strings already included by helper)
+            # Find nearby alternatives (friendly strings already included by helper).
+            # alts should be a list like:
+            #   [{"start":"<UTC-iso>","end":"<UTC-iso>","friendly":"Aug 12 at 8:30 AM"}, ...]
             alts = []
             try:
                 alts = get_next_available_slots(
@@ -2821,6 +2914,7 @@ def voice():
                     duration_minutes=APPOINTMENT_DURATION_MINUTES
                 ) or []
             except Exception as e:
+                # If alternatives lookup fails, we still continue with a simple re-ask prompt.
                 debug_print(f"ask_time_date: ⚠️ get_next_available_slots error → {e}")
                 alts = []
 
@@ -2845,12 +2939,12 @@ def voice():
                     prompt = f"That time is not available. Would you like {options}?"
                     debug_print(f"ask_time_date: 💡 Offering alternatives → {options}")
                 else:
+                    # If something went wrong building the options string, fall back to a generic re-ask.
                     prompt = "That time is not available. Please say another time, for example, 'today at 3:30 PM'."
                     debug_print("ask_time_date: ⚠️ Alternatives missing friendly labels")
-
             else:
                 # If the calendar API returns no suitable alternatives (e.g., fully booked),
-                # inform the user plainly. Avoid offering to wait on the line, just advise
+                # inform the user plainly. Avoid offering to wait on the line; just advise
                 # to try again later or call the front desk (you can customize this text).
                 prompt = "That time is not available, and I couldn't find open slots soon. Please try again later."
                 # Debug log: we reached a terminal branch with no choices to present.
