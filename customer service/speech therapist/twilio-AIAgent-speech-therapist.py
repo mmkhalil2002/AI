@@ -2375,9 +2375,11 @@ def get_docotor_appt_for(doctor_name: str, phone: str, dob: str = None) -> list:
 # =============================================================================
 def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds) -> bool:
     """
-    Return True if there is NO overlapping event on this doctor's calendar.
-    Uses Google Calendar FreeBusy API (more reliable than events.list for availability).
-    Adds a ±1s boundary guard to avoid off-by-one inclusivity issues.
+    Return True if NO overlapping event exists on this doctor's calendar.
+    - Primary check: Google Calendar FreeBusy (robust for availability).
+    - Fallback: events().list with explicit overlap test.
+    - Adds ±60s guard to catch edge-inclusive events.
+    - Emits debug lines showing what blocked the slot when busy.
     """
     from googleapiclient.discovery import build
     from dateutil.parser import isoparse
@@ -2385,38 +2387,72 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
 
     service = build("calendar", "v3", credentials=creds)
 
-    # --- Small boundary guard: widen by ±1 second to capture edge overlaps ---
     start_dt = isoparse(start_iso)
     end_dt   = isoparse(end_iso)
-    tmin = (start_dt - timedelta(seconds=1)).isoformat()
-    tmax = (end_dt   + timedelta(seconds=1)).isoformat()
+    # ±60s guard for edge cases where event starts/ends exactly at boundary
+    tmin = (start_dt - timedelta(seconds=60)).isoformat()
+    tmax = (end_dt   + timedelta(seconds=60)).isoformat()
 
-    body = {
-        "timeMin": tmin,
-        "timeMax": tmax,
-        "items": [{"id": calendar_id}],
-        "timeZone": "UTC",
-    }
-
+    # ---- 1) FreeBusy (preferred) ----
     try:
-        fb = service.freebusy().query(body=body).execute()
-        cal = fb.get("calendars", {}).get(calendar_id, {})
-        busy = cal.get("busy", []) or []
+        fb = service.freebusy().query(body={
+            "timeMin": tmin,
+            "timeMax": tmax,
+            "items": [{"id": calendar_id}],
+            "timeZone": "UTC",
+        }).execute()
 
-        # Debug what FreeBusy actually returned (helps explain rejections).
-        try:
-            for b in busy:
-                debug_print(f"is_time_slot_available: BUSY → {b.get('start')} → {b.get('end')}")
-        except Exception:
-            pass
-
-        # If FreeBusy reports any busy block, the slot isn't available.
-        return len(busy) == 0
-
+        busy = (fb.get("calendars", {}).get(calendar_id, {}) or {}).get("busy", []) or []
+        for b in busy:
+            try:
+                debug_print(f"is_time_slot_available: BUSY (freebusy) {b.get('start')} → {b.get('end')}")
+            except Exception:strict
+                pass
+        if busy:
+            return False
     except Exception as e:
-        # Failsafe: if FreeBusy errors, default to not available (safer than double-booking).
         debug_print(f"is_time_slot_available: ⚠️ FreeBusy error → {e}")
+
+    # ---- 2) Fallback: events().list with explicit overlap test ----
+    try:
+        items = service.events().list(
+            calendarId=calendar_id,
+            timeMin=tmin,
+            timeMax=tmax,
+            singleEvents=True,
+            showDeleted=False,
+            orderBy="startTime",
+            maxResults=250,
+        ).execute().get("items", [])
+
+        for ev in items:
+            if ev.get("status") == "cancelled":
+                continue
+            # 'transparent' events shouldn't block availability; 'opaque' (default) does.
+            if ev.get("transparency") == "transparent":
+                continue
+
+            ev_start_raw = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
+            ev_end_raw   = ev.get("end",   {}).get("dateTime") or ev.get("end",   {}).get("date")
+            if not ev_start_raw or not ev_end_raw:
+                continue
+
+            es = isoparse(ev_start_raw)
+            ee = isoparse(ev_end_raw)
+
+            # Overlap rule: (start < ev_end) AND (end > ev_start)
+            if start_dt < ee and end_dt > es:
+                debug_print(
+                    "is_time_slot_available: BUSY (events) "
+                    f"{es.isoformat()} → {ee.isoformat()} title='{ev.get('summary','')}'"
+                )
+                return False
+    except Exception as e:
+        # Safer to fail closed than double-book if both checks error out.
+        debug_print(f"is_time_slot_available: ⚠️ events.list error → {e}")
         return False
+
+    return True
 
 
 
@@ -2961,21 +2997,6 @@ def voice():
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
 
         # ----------------------------------------------------------------------
-        # (Light) speech cleanup before parsing
-        # Normalize common AM/PM variants and trim trailing punctuation.
-        # NOTE: If you use a more advanced parser elsewhere, you can remove this.
-        # ----------------------------------------------------------------------
-        try:
-            _raw = (speech_result or "").strip()
-            # Normalize a.m./p.m. → am/pm (handles "a.m.", "A . M", etc.)
-            _raw = re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", _raw, flags=re.IGNORECASE)
-            _raw = re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", _raw, flags=re.IGNORECASE)
-            # Strip a single trailing sentence punctuation mark (".", "!", "?")
-            _raw = re.sub(r"[.!?]\s*$", "", _raw)
-        except Exception:
-            _raw = (speech_result or "")
-
-        # ----------------------------------------------------------------------
         # Prompt constants
         # Keep these short and consistent so callers learn the pattern quickly.
         # ----------------------------------------------------------------------
@@ -3015,16 +3036,23 @@ def voice():
             weekdays = ("monday","tuesday","wednesday","thursday","friday","saturday","sunday",
                         "mon","tue","tues","wed","thu","thur","thurs","fri","sat","sun")
             keywords = ("today","tomorrow","tmrw","next","this","on","at","the")
-            # quick checks
             if any(m in s for m in months): return True
             if any(w in s for w in weekdays): return True
             if any(k in s for k in keywords): return True
             if "/" in s or "-" in s: return True  # dates like 8/15 or 08-15
             return False
 
+        # --- Minimal pre-clean for AM/PM variants & trailing punctuation ---
+        try:
+            _raw = (speech_result or "").strip()
+            _raw = re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", _raw, flags=re.IGNORECASE)
+            _raw = re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", _raw, flags=re.IGNORECASE)
+            _raw = re.sub(r"[.!?]\s*$", "", _raw)
+        except Exception:
+            _raw = (speech_result or "")
+
         # 1) Parse (day, time) from the caller’s phrase
         #    Expect a tuple like: ("Friday, August 15", "5:00 AM") or similar.
-        #    NOTE: if you have an Arabic-aware parser, call it here instead.
         time_info = smart_parse_time(_raw)
 
         # --- Branch A: parser returned nothing useful (None / wrong type / wrong length) ---
@@ -3040,7 +3068,6 @@ def voice():
             elif need_time:
                 prompt = PROMPT_NEED_TIME
             else:
-                # Couldn’t tell which part is missing → fall back to generic short prompt.
                 prompt = TIME_PROMPT_SHORT
 
             # Retry parsing up to 3 times
@@ -3067,7 +3094,6 @@ def voice():
         missing_time = _is_blank(spoken_time)
 
         if missing_date or missing_time:
-            # Be explicit about what we need from the caller.
             if missing_date and missing_time:
                 prompt = PROMPT_NEED_BOTH
             elif missing_date:
@@ -3095,14 +3121,12 @@ def voice():
         session_data[call_sid]["spoken_time"] = spoken_time
 
         # 2) Convert to concrete UTC timeslot (start/end)
-        #    build_timeslot_range should return ISO strings (UTC) for start/end.
         try:
             appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
             session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
             debug_print(f"ask_time_date: ⏰ Built slot → Start: {appointment_start}, End: {appointment_end}")
         except Exception as e:
             debug_print(f"ask_time_date: ❌ build_timeslot_range failed → {e}")
-            # Increment and check retry counter here as well
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
 
             if session_data[call_sid]["retry_time"] >= 3:
@@ -3117,17 +3141,15 @@ def voice():
             return str(resp)
 
         # 3) Check the doctor’s calendar availability for this slot (per-doctor only)
-        #    NOTE: This is a per-doctor check — only the selected doctor's calendar matters.
         doctor_id = session_data[call_sid]["doctor_id"]
         calendar_id = doctor_id
         debug_print(f"ask_time_date: 👨‍⚕️ Checking calendar → {calendar_id}")
 
         slot_available = False
         try:
-            # ✅ Use FreeBusy helper (with ±1s guard) inside is_time_slot_available
+            # ✅ Use the stricter helper (FreeBusy + events fallback + padding + debug)
             slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
         except Exception as e:
-            # Be defensive: if availability check fails, treat as not available but do not crash
             debug_print(f"ask_time_date: ⚠️ Availability check error → {e}")
             slot_available = False
 
@@ -3135,45 +3157,30 @@ def voice():
             debug_print("ask_time_date: ❌ Slot not available")
 
             # Find nearby alternatives (friendly strings already included by helper).
-            # EXPECTED return from helper:
-            #   [{"start":"<UTC-iso>","end":"<UTC-iso>","friendly":"Friday, August 15 at 8:30 AM"}, ...]
             alts = []
             try:
-                # If you have a simpler signature in your project, adapt this call.
-                # The key is: same DOCTOR calendar, next 3 free slots after requested time.
                 alts = get_next_available_slots(
                     calendar_id,
                     creds,
-                    from_start_iso=appointment_start,              # start searching from the requested time
-                    duration_minutes=APPOINTMENT_DURATION_MINUTES, # keep consistent with your appointment length
+                    from_start_iso=appointment_start,              # start searching from requested time
+                    duration_minutes=APPOINTMENT_DURATION_MINUTES, # your existing constant
                     limit=3,
-                    tz_name="America/Chicago",                     # set to your clinic timezone
-                    work_hours=((8,12),(13,17)),                   # example split shift; change to your hours
+                    tz_name="America/Chicago",                     # clinic tz
+                    work_hours=((8,12),(13,17)),                   # adjust to your schedule
                     slot_step_minutes=30,
                     search_days=14
                 ) or []
             except Exception as e:
-                # If alternatives lookup fails, we still continue with a simple re-ask prompt.
                 debug_print(f"ask_time_date: ⚠️ get_next_available_slots error → {e}")
                 alts = []
 
-            # We’re inside ask_time_date after detecting the requested slot is busy.
-            # `alts` is the list returned by get_next_available_slots(...).
-            # Each element is a dict shaped like:
-            #   {"start": "<UTC-iso>", "end": "<UTC-iso>", "friendly": "Friday, August 15 at 8:30 AM"}
             if alts:
-                # Build a single human-friendly sentence from the candidate slots.
-                # We extract the preformatted "friendly" label from each slot and join
-                # them with " or " so it reads naturally in speech:
-                #   e.g., "Friday, August 15 at 8:30 AM or Friday, August 15 at 9:00 AM or Friday, August 15 at 9:30 AM"
                 try:
                     options = " or ".join([slot.get("friendly") for slot in alts if slot.get("friendly")])
                 except Exception as e:
                     debug_print(f"ask_time_date: ⚠️ options build error → {e}")
                     options = ""
 
-                # Create a concise prompt that offers those alternative times back to the caller.
-                # Keep it short so TTS is clear and easy to respond to.
                 if options:
                     prompt = f"That time is not available. Would you like {options}?"
                     debug_print(f"ask_time_date: 💡 Offering alternatives → {options}")
@@ -3181,46 +3188,40 @@ def voice():
                     prompt = "That time is not available. Please say another time, for example, 'today at 3:30 PM'."
                     debug_print("ask_time_date: ⚠️ Alternatives missing friendly labels")
             else:
-                # If the calendar has no suitable alternatives in the search window,
-                # inform the user plainly.
                 prompt = "That time is not available, and I couldn't find open slots soon. Please say another date and time."
                 debug_print("ask_time_date: ⚠️ No alternatives found")
 
-            # Always gather after offering (or failing to offer) alternatives
             gather = make_gather(prompt)
             resp.append(gather)
             return str(resp)
 
         # 4) Slot is available → decide whether to confirm or collect name details
-        debug_print("ask_time_date: ✅ Slot free → proceed to customer lookup/confirmation")
+        debug_print("ask_time_date: ✅ Slot free (per strict check) → proceed to customer lookup/confirmation")
 
         customer = session_data[call_sid].get("customer", {})
         customer_phone = customer.get("phone", "")
         customer_dob   = customer.get("dob", "")
 
         try:
-            # If we have both phone & DOB and the customer exists → go straight to confirmation
             if customer_phone and customer_dob and customer_search(customer_phone, customer_dob):
                 debug_print("ask_time_date: 📋 Customer on file — skip name collection")
                 session_data[call_sid]["stage"] = "book_appt_confirm"
-                # Short confirm prompt to keep flow moving
                 gather = make_gather("I found your details on file. Shall I confirm this appointment now?")
                 resp.append(gather)
                 return str(resp)
             else:
-                # Otherwise collect name (first → last → address → cc → confirm)
                 debug_print("ask_time_date: 🆕 Customer not found → collecting first name")
                 session_data[call_sid]["stage"] = "collect_first_name"
                 gather = make_gather("Thanks. What is your first name?")
                 resp.append(gather)
                 return str(resp)
         except Exception as e:
-            # If lookup errors out, fall back to collecting the name
             debug_print(f"ask_time_date: ⚠️ customer_search error → {e}")
             session_data[call_sid]["stage"] = "collect_first_name"
             gather = make_gather("Thanks. What is your first name?")
             resp.append(gather)
             return str(resp)
+
 
 
 
