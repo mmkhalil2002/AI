@@ -3163,7 +3163,9 @@ def voice():
         try:
             # ✅ Use the stricter helper (FreeBusy + events fallback + padding + debug)
             slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
-            
+            if slot_available:
+                debug_print("ask_time_date: ✅ Slot free (first check) → proceed to customer lookup/confirmation")
+
         except Exception as e:
             debug_print(f"ask_time_date: ⚠️ Availability check error → {e}")
             slot_available = False
@@ -3221,7 +3223,7 @@ def voice():
             if customer_phone and customer_dob and customer_search(customer_phone, customer_dob):
                 debug_print("ask_time_date: 📋 Customer on file — skip name collection")
                 session_data[call_sid]["stage"] = "book_appt_confirm"
-                gather = make_gather("I found your details on file. Shall I confirm this appointment now?")
+                gather = make_gather("thank you for being a customer for the clinic. Shall I confirm this appointment now?")
                 resp.append(gather)
                 return str(resp)
             else:
@@ -3869,6 +3871,8 @@ def voice():
         try:
             try:
                 slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)  # type: ignore[name-defined]
+                if slot_free:
+                     debug_print(f"book_appt_confirm: 🔎✅ slot found → cal={calendar_id} {appointment_start}→{appointment_end}")
             except NameError:
                 slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
         except Exception as e:
