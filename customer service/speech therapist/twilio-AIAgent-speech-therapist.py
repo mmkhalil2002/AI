@@ -3784,6 +3784,7 @@ def voice():
             try:
                 formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
             except Exception:
+                # Windows-compatible fallback (remove leading zero from day/hour)
                 formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
         except Exception as e:
             debug_print(f"book_appt_confirm: time parse/format error → {e}")
@@ -3796,7 +3797,8 @@ def voice():
             if not appointment_end:
                 dur_min = int(APPOINTMENT_DURATION_MINUTES) if 'APPOINTMENT_DURATION_MINUTES' in globals() else 30
                 end_dt  = dt_utc + timedelta(minutes=dur_min)
-                appointment_end = end_dt.replace(tzinfo=pytz.UTC).isoformat()
+                import pytz as _pytz
+                appointment_end = end_dt.replace(tzinfo=_pytz.UTC).isoformat()
                 debug_print(f"book_appt_confirm: computed utc_end={appointment_end} (duration={dur_min}m)")
         except Exception as e:
             debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
@@ -3908,6 +3910,9 @@ def voice():
 
         # ---------------------------------------
         # CREATE the event in Google Calendar
+        # - Race-safe: per-slot event ID (doctor+start) → second insert gets 409.
+        # - PHI goes into extendedProperties.private, not description.
+        # - Post-insert verify to confirm slot is now busy (for rollout logs).
         # ---------------------------------------
         appointment_saved_internal = False
         appointment_saved_google   = False
@@ -3930,49 +3935,46 @@ def voice():
         except Exception as e:
             debug_print(f"book_appt_confirm: ❌ internal save failed → {e}")
 
-        # Create Google Calendar event
+        # --- Google Calendar reservation with per-slot ID + 409 handling ---
         try:
             from googleapiclient.discovery import build
+            from googleapiclient.errors import HttpError
             import hashlib, re as _re
 
             service = build("calendar", "v3", credentials=creds)
 
-            # Idempotent event ID (stable per doctor/phone/start)
-            raw_id = f"appt-{calendar_id}-{phone10}-{appointment_start}"
-            # Normalize to allowed chars [a-z0-9-_] and lower-case
+            # Per-slot ID = (doctor calendar + start time). Prevents race condition double-booking.
+            raw_id = f"slot-{calendar_id}-{appointment_start}"
             safe_id = _re.sub(r"[^a-zA-Z0-9_-]", "-", raw_id).lower()
-            # Google allows long IDs but keep it reasonable
             if len(safe_id) < 5:
                 safe_id = hashlib.md5(raw_id.encode("utf-8")).hexdigest()
 
-            # Compose event body (UTC dateTimes; 'opaque' blocks the time)
+            # Keep PHI out of 'description'; put details in extendedProperties.private.
             event_body = {
                 "id": safe_id,
-                "summary": f"Appointment: {doctor_name} x {effective_name or 'Patient'}",
-                "description": (
-                    f"Patient: {effective_name or 'N/A'}\n"
-                    f"Phone: ({phone10[:3]}) {phone10[3:6]}-{phone10[6:]}\n"
-                    f"DOB: {customer_dob}\n"
-                    f"Address: {customer_address or 'N/A'}"
-                ),
+                "summary": f"Appointment: {doctor_name}",
+                "description": "Clinic appointment",
                 "start": {"dateTime": appointment_start, "timeZone": "UTC"},
                 "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
-                "transparency": "opaque",
+                "transparency": "opaque",  # must block time
                 "extendedProperties": {
                     "private": {
+                        "patient_name": effective_name,
                         "phone10": phone10,
                         "dob": customer_dob,
+                        "address": customer_address or "",
                         "source": "voice-bot",
-                        "call_sid": call_sid
+                        "call_sid": call_sid,
                     }
                 },
             }
 
-            debug_print(f"book_appt_confirm: 📝 creating Google event id={safe_id}")
+            debug_print(f"book_appt_confirm: 📝 creating Google event (slot id) id={safe_id} cal={calendar_id} "
+                        f"{appointment_start}→{appointment_end}")
             ev = service.events().insert(
                 calendarId=calendar_id,
                 body=event_body,
-                sendUpdates="none"
+                sendUpdates="none",
             ).execute()
 
             google_event_id = ev.get("id")
@@ -3980,9 +3982,42 @@ def voice():
             debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id} link={google_event_link}")
             appointment_saved_google = True
 
+            # Optional: verify that the slot is now busy
+            try:
+                now_busy = not is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
+                debug_print(f"book_appt_confirm: 🔒 post-insert FreeBusy busy={now_busy}")
+            except Exception as ve:
+                debug_print(f"book_appt_confirm: ⚠️ post-insert verify failed → {ve}")
+
         except Exception as e:
-            debug_print(f"book_appt_confirm: ❌ Google Calendar insert failed → {e}")
+            # Try to detect HttpError.status (lib versions vary)
+            status = None
+            try:
+                from googleapiclient.errors import HttpError as _HttpError  # type: ignore
+                if isinstance(e, _HttpError):
+                    try:
+                        status = e.resp.status
+                    except Exception:
+                        try:
+                            status = e.status_code
+                        except Exception:
+                            status = None
+            except Exception:
+                pass
+
+            debug_print(f"book_appt_confirm: ❌ Google Calendar insert failed status={status} → {e}")
+            if status == 409:
+                debug_print("book_appt_confirm: 🚫 Slot already taken (409 conflict on per-slot id)")
             appointment_saved_google = False
+
+        # Optional consistency: if Google failed but internal save succeeded, roll back internal.
+        if appointment_saved_internal and not appointment_saved_google:
+            try:
+                # If you have a cancel method, call it here. Otherwise just log.
+                # cancel_internal_appointment(phone10, appointment_start, calendar_id)
+                debug_print("book_appt_confirm: 🔄 (optional) rollback internal save due to Google failure")
+            except Exception as rb_e:
+                debug_print(f"book_appt_confirm: ⚠️ rollback failed → {rb_e}")
 
         # Voice confirmation only if BOTH internal + Google succeed
         if appointment_saved_internal and appointment_saved_google:
@@ -3993,7 +4028,7 @@ def voice():
             debug_print("book_appt_confirm: 🎉 success → speaking confirmation")
             resp.say(gpt_speak(msg), VOICE)
         else:
-            # If Google failed, roll back voice flow to let user pick another time
+            # If Google failed or slot was taken, route back to pick another time
             debug_print("book_appt_confirm: ❌ booking incomplete (internal or Google). Returning to ask_time_date.")
             session_data[call_sid]["stage"] = "ask_time_date"
             gather = make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, August 14th at 10 AM.")
@@ -4019,7 +4054,8 @@ def voice():
 
 
 
-    
+
+
     elif stage == "cancel_appointment":
         # ----------------------------------------------------------------------
         # 🔄 Stage: Cancel Appointment — after the caller says the doctor’s name
