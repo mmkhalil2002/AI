@@ -90,17 +90,6 @@ def debug_print(msg: str) -> None:
 
 
 # --- retry counter utils ---
-def _retry_key(stage_name: str) -> str:
-    return f"retry_silence__{stage_name}"
-
-def _inc_retry(session_data, call_sid, stage_name) -> int:
-    key = _retry_key(stage_name)
-    session_data[call_sid][key] = session_data[call_sid].get(key, 0) + 1
-    return session_data[call_sid][key]
-
-def _reset_retry(session_data, call_sid, stage_name):
-    key = _retry_key(stage_name)
-    session_data[call_sid].pop(key, None)
 
 def make_gather(prompt_text: str, hints: str = ""):
     """
@@ -130,33 +119,7 @@ def make_gather(prompt_text: str, hints: str = ""):
 
 
 
-# --- silence handler ---
-def handle_silence_or_continue(
-    resp, session_data, call_sid, stage_name: str, speech_result: str, reprompt_text: str, hints: str = None
-):
-    """
-    If no speech was detected, reprompt and increment a per-stage counter.
-    Returns True if we handled the response (appended a Gather or hung up).
-    Returns False if normal stage logic should continue.
-    """
-    if speech_result and speech_result.strip():
-        _reset_retry(session_data, call_sid, stage_name)
-        return False
 
-    tries = _inc_retry(session_data, call_sid, stage_name)
-    debug_print(f"{stage_name}: ⚠️ No speech detected. Silence retries → {tries}/{MAX_SILENCE_RETRIES}")
-
-    if tries >= MAX_SILENCE_RETRIES:
-        debug_print(f"{stage_name}: ⛔ Max silence retries reached, ending call.")
-        resp.say(gpt_speak("Sorry, I still can't hear you. Please call back later."), VOICE)
-        resp.hangup()
-        session_data.pop(call_sid, None)
-        return True
-
-    reprompt = f"I can't hear you. {reprompt_text}"
-    gather = make_gather(reprompt, hints=hints)
-    resp.append(gather)
-    return True
 
 #################################################
 # Voice	          Description
