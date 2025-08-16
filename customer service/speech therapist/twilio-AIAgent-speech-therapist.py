@@ -245,29 +245,7 @@ So the full nested structure grows as the call progresses.
 
 """
 session_data = {}
-"""
-Role	    Meaning
-"system"	Sets up the assistant’s behavior, tone, and expertise (e.g., polite receptionist, helpful tutor).
-            Only one system message is typically needed.
-            You can use the following informal structure:
-            You are a [tone] [role] for a [domain]. Your job is to [main task]. Respond in a [language/style], and [behavior instruction or limitation].
-                 Part	                 Description	                         Example
-                [tone]	                 Personality trait or attitude	        friendly, polite, professional
-                [role]    	            What the assistant should act as	    AI assistant, receptionist, customer support agent
-                [domain]	            The industry or context                 therapist clinic, restaurant, medical office
-                [main task]     	    Main job or expected function	        help users book appointments, take orders
-                [language/style]	    Language or tone of responses           Egyptian Araic, concise English, cheerful tone
-                [behavior/limitation]	Optional — any constraint or control    don’t give medical advice, wait for confirmation
-"user"	    Represents input from the end user — the prompt/question you're asking.
-           If you're building a voice bot (as you are), the "user" input is usually:
-           request.values.get("SpeechResult", "")
-           So you should assume it’s spoken language and keep the assistant ready for less formal wording, e.g.:
-                 "I want to talk to the doctor."
-                "Book me a session at 5."
-"               I need help."
 
-"assistant"	Represents a reply from the AI assistant — used to simulate ongoing dialogue or give memory context.
-"""
 
 def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, creds) -> bool:
     """
@@ -277,15 +255,31 @@ def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, cre
     Logs (via debug_print):
       - the calendar and window being checked
       - how many events were returned
-      - for each event: id, start, end
+      - for each event: (one line) input_start, event_start, input_date, event_date
       - final verdict (FREE/BUSY)
     """
     from googleapiclient.discovery import build
+    from dateutil.parser import isoparse  # for parsing RFC3339/ISO datetimes to extract dates
 
     debug_print(
         f"is_time_slot_available: 🔎 cal='{calendar_id}' "
         f"window={start_time}→{end_time}"
     )
+
+    # Pre-parse input window once so we can also log the date-only view
+    try:
+        _in_start_dt = isoparse(start_time)
+        _in_start_date = _in_start_dt.date().isoformat()
+    except Exception:
+        _in_start_dt = None
+        _in_start_date = "?"
+
+    try:
+        _in_end_dt = isoparse(end_time)
+        _in_end_date = _in_end_dt.date().isoformat()
+    except Exception:
+        _in_end_dt = None
+        _in_end_date = "?"
 
     try:
         service = build("calendar", "v3", credentials=creds)
@@ -302,12 +296,23 @@ def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, cre
         events = events_result.get("items", [])
         debug_print(f"is_time_slot_available: ℹ️ events count={len(events)}")
 
-        # Print id, start, end for each event
+        # Print (one line) input_start, event_start, input_date, event_date for each event
         for ev in events:
-            ev_id = ev.get("id", "")
-            start_raw = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
-            end_raw   = ev.get("end",   {}).get("dateTime") or ev.get("end",   {}).get("date")
-            debug_print(f"is_time_slot_available:   • id={ev_id} start={start_raw} end={end_raw}")
+            event_start_raw = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
+            try:
+                _ev_start_dt = isoparse(event_start_raw) if event_start_raw else None
+                _ev_start_date = _ev_start_dt.date().isoformat() if _ev_start_dt else "?"
+            except Exception:
+                _ev_start_dt = None
+                _ev_start_date = "?"
+
+            debug_print(
+                "is_time_slot_available: • "
+                f"input_start={start_time} | "
+                f"event_start={event_start_raw} | "
+                f"input_date={_in_start_date} | "
+                f"event_date={_ev_start_date}"
+            )
 
         available = (len(events) == 0)
         debug_print(f"is_time_slot_available: {'✅ FREE' if available else '❌ BUSY'}")
