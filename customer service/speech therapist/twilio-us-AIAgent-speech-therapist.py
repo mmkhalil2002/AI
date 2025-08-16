@@ -1196,7 +1196,7 @@ def sanitize_filename(name: str) -> str:
 def get_doctor_filename(friendly_name: str) -> str:
     """Return full path for doctor's JSON file"""
     path = os.path.join(APPOINTMENT_TABLE_DIR, sanitize_filename(friendly_name))
-    print(f"[get_doctor_filename] Full path for '{friendly_name}' → {path}")
+    debug_print(f"[get_doctor_filename] Full path for '{friendly_name}' → {path}")
     return path
 
 # ------------------------
@@ -1263,10 +1263,7 @@ def confirm_appointment_by_name(
     import json
     from datetime import datetime, timezone
 
-    def _dbg(msg: str):
-        if debug:
-            print(f"[confirm_appointment_by_name] {msg}")
-
+    
     # -----------------------
     # Normalize phone digits
     # -----------------------
@@ -1330,7 +1327,7 @@ def confirm_appointment_by_name(
     # --------------------------
     filename = sanitize_filename(doctor_name).replace(".json", "")
     full_path = get_doctor_filename(doctor_name)
-    _dbg(f"🔍 File → {full_path}")
+    debug_print(f"🔍 File → {full_path}")
 
     # --------------------------
     # Load existing appointments
@@ -1342,13 +1339,13 @@ def confirm_appointment_by_name(
                 data = json.load(f)
             if isinstance(data, list):
                 appts = data
-                _dbg(f"✅ Loaded list with {len(appts)} appointment(s)")
+                debug_print(f"✅ Loaded list with {len(appts)} appointment(s)")
             else:
-                _dbg("⚠️ Root JSON was not a list; reinitializing")
+                debug_print("⚠️ Root JSON was not a list; reinitializing")
         except Exception as e:
-            _dbg(f"⚠️ Failed to parse JSON → {e}")
+            debug_print(f"⚠️ Failed to parse JSON → {e}")
     else:
-        _dbg("📂 No file found — starting new list")
+        debug_print("📂 No file found — starting new list")
 
     # -------------------------------------------------------
     # Search by phone (+ dob if provided) for duplicates/info
@@ -1364,7 +1361,7 @@ def confirm_appointment_by_name(
             if p == digits_only_phone:
                 matches.append((idx, appt))
 
-    _dbg(f"🔎 Search by phone+dob → {len(matches)} match(es) "
+    debug_print(f"🔎 Search by phone+dob → {len(matches)} match(es) "
          f"(phone={digits_only_phone}, dob={dob_iso or 'N/A'})")
 
     # -----------------------------------------------------------
@@ -1378,7 +1375,7 @@ def confirm_appointment_by_name(
             appt_time_iso = None
 
         if appt_time_iso == utc_start_iso and appt.get("calendar_id") == calendar_id:
-            _dbg("🔁 Exact duplicate detected — skipping append")
+            debug_print("🔁 Exact duplicate detected — skipping append")
             # Normalize record before returning
             appt_norm = dict(appt)
             appt_norm["phone"] = re.sub(r"\D", "", appt_norm.get("phone", ""))
@@ -1403,7 +1400,7 @@ def confirm_appointment_by_name(
         new_record["event_id"] = event_id
 
     appts.append(new_record)
-    _dbg(f"➕ Appended: {new_record}")
+    debug_print(f"➕ Appended: {new_record}")
 
     # -----------------------------
     # Save back to disk (+ cache)
@@ -1411,7 +1408,7 @@ def confirm_appointment_by_name(
     try:
         with open(full_path, "w") as f:
             json.dump(appts, f, indent=2)
-        _dbg(f"💾 Saved to {full_path}")
+        debug_print(f"💾 Saved to {full_path}")
 
         # Update in-memory cache if present
         try:
@@ -1421,7 +1418,7 @@ def confirm_appointment_by_name(
 
         return {"created": True, "record": new_record, "reason": None}
     except Exception as e:
-        _dbg(f"❌ Failed to write JSON → {e}")
+        debug_print(f"❌ Failed to write JSON → {e}")
         raise
 
 
@@ -1453,15 +1450,7 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, dob: str, utc_start
         d = "".join(ch for ch in (s or "") if ch.isdigit())
         return d[1:] if len(d) == 11 and d.startswith("1") else d
 
-    def get_doctor_filename(name: str) -> str:
-        try:
-            return _get_doctor_filename(name)  # if your app already defines this
-        except Exception:
-            safe = "".join(c for c in (name or "") if c.isalnum() or c in (" ", "-", "_")).strip().replace(" ", "_")
-            if not safe.endswith(".json"):
-                safe += ".json"
-            return os.path.join("appointment_data", "doctors", safe)
-
+   
     from dateutil import parser as dtparser
     full_path = get_doctor_filename(doctor_name)
     phone10 = normalize_phone_digits(phone)
@@ -2273,11 +2262,7 @@ def get_doctor_appts_for(doctor_name: str, phone: str, dob: str = None) -> list:
 
     # ---------- local helpers (self-contained) ----------
 
-    def _dbg(msg: str):
-        try:
-            debug_print(msg)
-        except Exception:
-            print(msg)
+    
 
     def _normalize_phone_digits(s: str) -> str:
         """Keep only digits; if 11-digit US starting with '1', strip to 10 digits."""
@@ -2308,16 +2293,6 @@ def get_doctor_appts_for(doctor_name: str, phone: str, dob: str = None) -> list:
                 return s
         return s
 
-    def _get_doctor_filename(name: str) -> str:
-        """Prefer your app's get_doctor_filename; fallback to sanitized file path."""
-        try:
-            return get_doctor_filename(name)  # existing app helper if present
-        except Exception:
-            safe = "".join(c for c in (name or "") if c.isalnum() or c in (" ", "-", "_")).strip()
-            safe = safe.replace(" ", "_")
-            if not safe.endswith(".json"):
-                safe += ".json"
-            return os.path.join("appointment_data", "doctors", safe)
 
     def _extract_start_iso(appt: dict) -> str:
         """Prefer 'start' then 'time' field; may be empty if not present."""
@@ -2328,12 +2303,12 @@ def get_doctor_appts_for(doctor_name: str, phone: str, dob: str = None) -> list:
     dob_iso = _normalize_dob_iso(dob) if dob else ""
 
     if len(phone10) != 10:
-        _dbg(f"get_doctor_appts_for: ❌ invalid phone '{phone}' → normalized '{phone10}'")
+        debug_print(f"get_doctor_appts_for: ❌ invalid phone '{phone}' → normalized '{phone10}'")
         return []
 
-    path = _get_doctor_filename(doctor_name)
+    path = get_doctor_filename(doctor_name)
     if not os.path.exists(path):
-        _dbg(f"get_doctor_appts_for: ⚠️ file not found → {path}")
+        debug_print(f"get_doctor_appts_for: ⚠️ file not found → {path}")
         return []
 
     # ---------- load and filter ----------
@@ -2341,11 +2316,11 @@ def get_doctor_appts_for(doctor_name: str, phone: str, dob: str = None) -> list:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception as e:
-        _dbg(f"get_doctor_appts_for: ❌ read/parse error for {path} → {e}")
+        debug_print(f"get_doctor_appts_for: ❌ read/parse error for {path} → {e}")
         return []
 
     if not isinstance(data, list):
-        _dbg(f"get_doctor_appts_for: ❌ JSON not a list in {path}")
+        debug_print(f"get_doctor_appts_for: ❌ JSON not a list in {path}")
         return []
 
     matches = []
@@ -2374,7 +2349,7 @@ def get_doctor_appts_for(doctor_name: str, phone: str, dob: str = None) -> list:
     except Exception:
         pass
 
-    _dbg(f"get_doctor_appts_for: ✅ doctor='{doctor_name}' phone='{phone10}' dob='{dob_iso or '∅'}' → {len(matches)} appt(s)")
+    debug_print(f"get_doctor_appts_for: ✅ doctor='{doctor_name}' phone='{phone10}' dob='{dob_iso or '∅'}' → {len(matches)} appt(s)")
     return matches
 
 
