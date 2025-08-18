@@ -2988,6 +2988,101 @@ def voice():
 
 
 
+
+
+
+
+
+
+
+    # ----------------------------------------------------------------------
+    # 🎂 Stage: collect_dob
+    # Purpose:
+    #   - Accept DOB via speech (e.g., “July third 1990”) or keypad (MMDDYYYY#).
+    #   - Parse and validate reasonable date range.
+    #   - Store DOB as ISO (YYYY-MM-DD) in session.
+    #   - On failure, re-prompt with the SHORT prompt (DOB_PROMPT_SHORT).
+    # Integration points:
+    #   - Uses: parse_dob_input(), make_gather_dob(), debug_print, session_data, call_sid
+    #   - Next stage: ask_time_date (always, after successful DOB store)
+    # ----------------------------------------------------------------------
+    elif stage == "collect_dob":
+            # ----------------------------------------------------------------------
+        # 🔊 Short, centralized prompts
+        #   Put these near your other constants so every stage uses the same text.
+        # ----------------------------------------------------------------------
+        DOB_PROMPT_SHORT = (
+            "Please say your birth date, for example 'July third 1990'. "
+            "Or type MMDDYYYY then press pound."
+        )
+        TIME_PROMPT_SHORT = "Please say the date and time, for example 'August 12 at 5 PM'."
+
+        debug_print("collect_dob: 📍 Stage entered")
+
+        # 1) Pull DTMF if present (Twilio sends digits on the same webhook), otherwise use speech.
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
+
+        speech_text = (speech_result or "").strip()
+        debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
+
+        # 2) Parse DOB input (helper handles speech and/or MMDDYYYY)
+        dt = parse_dob_input(speech_text, dtmf_digits)
+        if not dt:
+            # Retry counter (so we don’t loop forever)
+            session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
+            r = session_data[call_sid]["retry_dob"]
+            debug_print(f"collect_dob: ❌ Parse failed. Retry={r}")
+
+            if r >= 3:
+                # Fail out cleanly if user can’t provide a DOB we can parse
+                resp.say(gpt_speak("Sorry, I couldn’t understand your date of birth. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            # Re-prompt using short, consistent copy
+            gather = make_gather_dob(DOB_PROMPT_SHORT)
+            resp.append(gather)
+            return str(resp)
+
+        # 3) Validate DOB sanity window (e.g., 1900..today)
+        try:
+            from datetime import date
+            today = date.today()
+            min_date = date(1900, 1, 1)
+            dob_date = dt.date()
+            if not (min_date <= dob_date <= today):
+                debug_print(f"collect_dob: ⚠️ DOB out of range → {dob_date.isoformat()}")
+
+                session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
+                gather = make_gather_dob(DOB_PROMPT_SHORT)
+                resp.append(gather)
+                return str(resp)
+        except Exception as e:
+            # Do not fail the call; just log and continue to store parsed value
+            debug_print(f"collect_dob: ⚠️ Validation error → {e}")
+
+        # 4) Store ISO DOB in session
+        iso_dob = dt.strftime("%Y-%m-%d")
+        session_data[call_sid].setdefault("customer", {})
+        session_data[call_sid]["customer"]["dob"] = iso_dob
+        debug_print(f"collect_dob: ✅ Stored DOB → {iso_dob}")
+
+        # 5) Always move to ask_time_date next (your booking flow expects this)
+        session_data[call_sid]["stage"] = "ask_time_date"
+        debug_print("collect_dob: ➡️ Next stage → ask_time_date")
+
+        # 6) Prompt for appointment time/date using the short prompt
+        gather = make_gather("Thanks. " + TIME_PROMPT_SHORT)
+        resp.append(gather)
+        return str(resp)
+
+
+
+
 # ----------------------------------------------------------------------
 # 📅 Stage: ask_time_date
 # Purpose:
@@ -3236,96 +3331,6 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-
-
-
-
-
-
-    # ----------------------------------------------------------------------
-    # 🎂 Stage: collect_dob
-    # Purpose:
-    #   - Accept DOB via speech (e.g., “July third 1990”) or keypad (MMDDYYYY#).
-    #   - Parse and validate reasonable date range.
-    #   - Store DOB as ISO (YYYY-MM-DD) in session.
-    #   - On failure, re-prompt with the SHORT prompt (DOB_PROMPT_SHORT).
-    # Integration points:
-    #   - Uses: parse_dob_input(), make_gather_dob(), debug_print, session_data, call_sid
-    #   - Next stage: ask_time_date (always, after successful DOB store)
-    # ----------------------------------------------------------------------
-    elif stage == "collect_dob":
-            # ----------------------------------------------------------------------
-        # 🔊 Short, centralized prompts
-        #   Put these near your other constants so every stage uses the same text.
-        # ----------------------------------------------------------------------
-        DOB_PROMPT_SHORT = (
-            "Please say your birth date, for example 'July third 1990'. "
-            "Or type MMDDYYYY then press pound."
-        )
-        TIME_PROMPT_SHORT = "Please say the date and time, for example 'August 12 at 5 PM'."
-
-        debug_print("collect_dob: 📍 Stage entered")
-
-        # 1) Pull DTMF if present (Twilio sends digits on the same webhook), otherwise use speech.
-        try:
-            dtmf_digits = (request.values.get("Digits") or "").strip()
-        except Exception:
-            dtmf_digits = ""
-
-        speech_text = (speech_result or "").strip()
-        debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
-
-        # 2) Parse DOB input (helper handles speech and/or MMDDYYYY)
-        dt = parse_dob_input(speech_text, dtmf_digits)
-        if not dt:
-            # Retry counter (so we don’t loop forever)
-            session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-            r = session_data[call_sid]["retry_dob"]
-            debug_print(f"collect_dob: ❌ Parse failed. Retry={r}")
-
-            if r >= 3:
-                # Fail out cleanly if user can’t provide a DOB we can parse
-                resp.say(gpt_speak("Sorry, I couldn’t understand your date of birth. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            # Re-prompt using short, consistent copy
-            gather = make_gather_dob(DOB_PROMPT_SHORT)
-            resp.append(gather)
-            return str(resp)
-
-        # 3) Validate DOB sanity window (e.g., 1900..today)
-        try:
-            from datetime import date
-            today = date.today()
-            min_date = date(1900, 1, 1)
-            dob_date = dt.date()
-            if not (min_date <= dob_date <= today):
-                debug_print(f"collect_dob: ⚠️ DOB out of range → {dob_date.isoformat()}")
-
-                session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-                gather = make_gather_dob(DOB_PROMPT_SHORT)
-                resp.append(gather)
-                return str(resp)
-        except Exception as e:
-            # Do not fail the call; just log and continue to store parsed value
-            debug_print(f"collect_dob: ⚠️ Validation error → {e}")
-
-        # 4) Store ISO DOB in session
-        iso_dob = dt.strftime("%Y-%m-%d")
-        session_data[call_sid].setdefault("customer", {})
-        session_data[call_sid]["customer"]["dob"] = iso_dob
-        debug_print(f"collect_dob: ✅ Stored DOB → {iso_dob}")
-
-        # 5) Always move to ask_time_date next (your booking flow expects this)
-        session_data[call_sid]["stage"] = "ask_time_date"
-        debug_print("collect_dob: ➡️ Next stage → ask_time_date")
-
-        # 6) Prompt for appointment time/date using the short prompt
-        gather = make_gather("Thanks. " + TIME_PROMPT_SHORT)
-        resp.append(gather)
-        return str(resp)
 
 
 
