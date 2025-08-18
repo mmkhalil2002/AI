@@ -3462,9 +3462,9 @@ def voice():
         #   - Uses make_gather() (speech + DTMF, finishOnKey="#").
         #   - Speech digits supported via spoken→digit normalization; DTMF preferred.
         #   - Guards: requires phone (10-digit) and DOB before collecting CC.
-        #   - Logs: PAN/CVV masked to avoid leaking sensitive data.
-        #   - New: voice-friendly partial capture (e.g., 15-of-16 digits) and
-        #          escalation to “please type it” after repeated speech failures.
+        #   - LOGGING: Per your request, PAN/CVV are logged in full (NOT RECOMMENDED in production).
+        #   - Voice-friendly partial capture supported (e.g., 15-of-16 digits) with escalation
+        #     to “please type it” after repeated speech failures.
         # ----------------------------------------------------------------------
         import re
         from datetime import datetime as _dt
@@ -3513,13 +3513,6 @@ def voice():
                 i += 1
             return "".join(out)
 
-        # --- Maskers for logging ------------------------------------------------
-        def _mask_pan(n: str) -> str:
-            n = n or ""
-            return ("*" * max(0, len(n) - 4)) + n[-4:] if n else ""
-        def _mask_all(n: str) -> str:
-            return "*" * len(n or "")
-
         # --- Ensure session buckets exist --------------------------------------
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
@@ -3559,10 +3552,8 @@ def voice():
             dtmf_digits = ""
         speech_text = (speech_result or "").strip()
 
-        # Mask logs for step 1 (PAN)
-        masked_speech = "***" if cc_step == 1 and speech_text else speech_text
-        masked_dtmf = "***" if cc_step == 1 and dtmf_digits else dtmf_digits
-        debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{masked_dtmf}', speech='{masked_speech}'")
+        # Log raw inputs (no masking per request)
+        debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{dtmf_digits}', speech='{speech_text}'")
 
         # Prefer DTMF; if none, extract digits from speech (words → digits)
         def get_digits() -> str:
@@ -3605,7 +3596,7 @@ def voice():
             # If we heard 15 digits via speech, ask for the last single digit
             if len(digits) == 15 and not dtmf_digits:
                 session_data[call_sid]["cc_partial"] = digits
-                debug_print(f"collect_cc: 🧩 Heard 15 digits {_mask_pan(digits)}; asking for the last digit")
+                debug_print(f"collect_cc: 🧩 Heard 15 digits '{digits}'; asking for the last digit")
                 if _reprompt(
                     "I heard fifteen digits. Please say or type the last single digit now, then press pound.",
                     hints="zero one two three four five six seven eight nine"
@@ -3615,7 +3606,7 @@ def voice():
             if not (13 <= len(digits) <= 19) or not luhn_check(digits):
                 session_data[call_sid]["cc_speech_tries"] += (0 if dtmf_digits else 1)
                 escalate = session_data[call_sid]["cc_speech_tries"] >= 2 and not dtmf_digits
-                debug_print(f"collect_cc: ❌ Invalid card number: '{_mask_pan(digits)}' (len={len(digits)}), escalate={escalate}")
+                debug_print(f"collect_cc: ❌ Invalid card number: '{digits}' (len={len(digits)}), escalate={escalate}")
                 if escalate:
                     if _reprompt(
                         "That number didn’t sound clear. Please TYPE the full card number now, then press pound.",
@@ -3633,7 +3624,7 @@ def voice():
             # clear helpers for next steps
             session_data[call_sid]["cc_partial"] = ""
             session_data[call_sid]["cc_speech_tries"] = 0
-            debug_print(f"collect_cc: ✅ Saved card number {_mask_pan(digits)}")
+            debug_print(f"collect_cc: ✅ Saved card number '{digits}'")
 
             gather = make_gather(
                 "Thank you. Now enter the expiration as two digits for month and two digits for year. "
@@ -3701,7 +3692,7 @@ def voice():
         if cc_step == 3:
             digits = get_digits()
             if not (3 <= len(digits) <= 4) or not digits.isdigit():
-                debug_print(f"collect_cc: ❌ Invalid CVV length={len(digits)}")
+                debug_print(f"collect_cc: ❌ Invalid CVV '{digits}' length={len(digits)}")
                 if _reprompt(
                     "That security code doesn't look right. Please re-enter the three or four digit code, then press pound.",
                     hints="zero one two three four five six seven eight nine"
@@ -3716,7 +3707,7 @@ def voice():
                 )
                 customer["cc_name"] = name.strip() if name else None
 
-            debug_print(f"collect_cc: ✅ Saved CVV (len={len(digits)}); cc_name='{customer.get('cc_name')}'")
+            debug_print(f"collect_cc: ✅ Saved CVV '{digits}'; cc_name='{customer.get('cc_name')}'")
 
             # Clear step tracker and jump to confirmation
             session_data[call_sid].pop("cc_step", None)
