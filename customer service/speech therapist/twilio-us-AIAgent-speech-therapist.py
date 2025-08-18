@@ -3260,7 +3260,7 @@ def voice():
         # ----------------------------------------------------------------------
         DOB_PROMPT_SHORT = (
             "Please say your birth date, for example 'July third 1990'. "
-            "Or type MMDDYYYY then press pound, for example 07031990#."
+            "Or type MMDDYYYY then press pound."
         )
         TIME_PROMPT_SHORT = "Please say the date and time, for example 'August 12 at 5 PM'."
 
