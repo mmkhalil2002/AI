@@ -3220,7 +3220,7 @@ def voice():
             if customer_phone and customer_dob and customer_search(customer_phone, customer_dob):
                 debug_print("ask_time_date: 📋 Customer on file — skip name collection")
                 session_data[call_sid]["stage"] = "book_appt_confirm"
-                gather = make_gather("thank you for being a customer for the clinic. Shall I confirm this appointment now?")
+                gather = make_gather("thank you for being a valuable customer for the clinic. Shall I confirm this appointment now?")
                 resp.append(gather)
                 return str(resp)
             else:
