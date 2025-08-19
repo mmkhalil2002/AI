@@ -611,50 +611,41 @@ def build_timeslot_range(spoken_day: Union[str, date], spoken_time: Union[str, d
 ###########   smart parser ##########
 
 
-# -----------------------------------------------------------------------------
-# smart_parse_time
-# Returns a tuple: (spoken_day, spoken_time)
-#   spoken_day  → string like "Wednesday, August 6"
-#   spoken_time → string like "5:00 AM"
-#
-# Special handling:
-# - Phrases like "6 at 5 a.m." (no month/weekday) are interpreted as:
-#       day=6 of the CURRENT month, at 5:00 AM
-# - Ordinals ok: "6th at 5", "on the 6th at 5 pm"
-# - Normalizes "a.m." / "p.m." → "AM"/"PM"
-# - Common month typos: "augest" / "agust" → "august"; "sep" → "september", etc.
-# - Still supports normal "August 6 at 5 AM", "Aug 6 5pm", etc.
-# -----------------------------------------------------------------------------
-import re, calendar
-from datetime import datetime
-
-# --- Noisy-ASR tolerant fallback ---------------------------------------------
-def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago"):
-    """
-    Robust fallback for phrases like:
-      - 'August.  15 5:30 a.m.'
-      - 'August 1 5.  at 5:30 a.m.'
-      - 'augest 15 at 5 am' (typos)
-    Returns (spoken_day, spoken_time) like ("Friday, August 15", "5:30 AM"),
-    or None if not confident.
-    """
+# ---------------------------------------------------------------------------
+# Fallback parser that tolerates missing AM/PM and noisy ASR punctuation.
+# Returns ("Friday, August 15", "5:30 AM") or None.
+# ---------------------------------------------------------------------------
+def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
+                              default_meridiem: str = "AM"):
     import re, calendar
     from datetime import datetime, date
+
+    def _infer_meridiem(hh: int, mer: str) -> str:
+        # If caller said am/pm, use it. Otherwise infer.
+        if mer:
+            return mer.upper()
+        # Simple inference: default to AM when missing.
+        # (Tune here if you want smarter rules or clinic hours awareness.)
+        try:
+            debug_print(f"parse_time_fallback_noisy: ℹ️ inferring meridiem='{default_meridiem}' for hour={hh}")
+        except Exception:
+            pass
+        return (default_meridiem or "AM").upper()
 
     if not raw:
         return None
 
     s = raw.lower()
 
-    # 1) Normalize AM/PM variants & punctuation/spacing
+    # 1) normalize AM/PM variants & punctuation (keep colons so "5:30" survives)
     s = (s.replace("a.m.", "am").replace("p.m.", "pm")
            .replace("a. m.", "am").replace("p. m.", "pm")
            .replace("a. m", "am").replace("p. m", "pm")
            .replace("a m", "am").replace("p m", "pm"))
-    s = re.sub(r"[,\.\-]+", " ", s)       # dots/commas/dashes → space
+    s = re.sub(r"[,\.\-]+", " ", s)        # dots/commas/dashes → space
     s = re.sub(r"\s+", " ", s).strip()
 
-    # 2) Month mapping (tolerant of common typos)
+    # 2) tolerant month mapping (includes common typos)
     MONTHS = {
         "january":1,"jan":1,
         "february":2,"feb":2,
@@ -672,7 +663,7 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago"):
 
     tokens = s.split()
 
-    # 3) Find month token
+    # 3) find month
     month = None
     mi = -1
     for i, t in enumerate(tokens):
@@ -681,49 +672,93 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago"):
     if not month:
         return None
 
-    # 4) Day after month: first numeric 1..31; if none, try joining split digits "1 5"→15
-    import re as _re
+    # 4) day after month
     day = None
     for j in range(mi + 1, min(mi + 4, len(tokens))):
-        tj = _re.sub(r"\D", "", tokens[j])
+        tj = re.sub(r"\D", "", tokens[j])
         if tj.isdigit():
             val = int(tj)
             if 1 <= val <= 31:
-                day = val; break
+                day = val
+                di = j  # index for the day token
+                break
+    # also try joining split digits like "1 5"
     if day is None and mi + 2 < len(tokens):
-        a = _re.sub(r"\D", "", tokens[mi + 1])
-        b = _re.sub(r"\D", "", tokens[mi + 2])
+        a = re.sub(r"\D", "", tokens[mi + 1])
+        b = re.sub(r"\D", "", tokens[mi + 2])
         if len(a) == 1 and len(b) == 1 and a.isdigit() and b.isdigit():
             val = int(a + b)
             if 1 <= val <= 31:
                 day = val
+                di = mi + 2
     if day is None:
         return None
 
-    # 5) Time patterns in order of specificity
-    rest = " ".join(tokens[mi + 1:])
-    m = _re.search(r"\b(\d{1,2})\s*[: ]\s*(\d{2})\s*(am|pm)\b", rest)   # 5:30 am / 5 30 am
-    if m:
-        hh, mm, mer = int(m.group(1)), int(m.group(2)), m.group(3)
-        if not (1 <= hh <= 12 and 0 <= mm <= 59): return None
-        spoken_time = f"{hh}:{mm:02d} {mer.upper()}"
-    else:
-        m2 = _re.search(r"\b(\d{1,2})\s*(am|pm)\b", rest)                # 5 am
-        if m2:
-            hh, mer = int(m2.group(1)), m2.group(2)
-            if not (1 <= hh <= 12): return None
-            spoken_time = f"{hh}:00 {mer.upper()}"
-        else:
-            m3 = _re.search(r"\b(\d{3,4})\s*(am|pm)\b", rest)            # 530 am / 0930 pm
-            if not m3:
-                return None
-            digits, mer = m3.group(1), m3.group(2)
-            if len(digits) == 3: hh, mm = int(digits[0]), int(digits[1:])
-            else:                 hh, mm = int(digits[:2]), int(digits[2:])
-            if not (1 <= hh <= 12 and 0 <= mm <= 59): return None
-            spoken_time = f"{hh}:{mm:02d} {mer.upper()}"
+    # 5) time search in the text AFTER the day token (if we have it)
+    rest = " ".join(tokens[(di + 1) if 'di' in locals() else (mi + 1):])
 
-    # 6) Friendly "Weekday, Month Day"
+    # Try patterns in this order:
+    # (a) h:mm (with optional am/pm)      e.g., "5:30 am", "5:30"
+    # (b) h mm (with optional am/pm)      e.g., "5 30 am", "5 30"
+    # (c) hmm / hhmm (with optional am/pm) e.g., "530 am", "0530", "1730"
+    # (d) h (with optional am/pm)         e.g., "5 am", "5"
+    m = re.search(r"\b(\d{1,2})\s*:\s*(\d{1,2})(?:\s*(am|pm))?\b", rest)
+    if m:
+        hh, mm, mer = int(m.group(1)), int(m.group(2)), (m.group(3) or "").upper()
+        if not (1 <= hh <= 12 or 0 <= hh <= 23):  # allow 24h accidentally
+            return None
+        if not (0 <= mm <= 59):
+            return None
+        # If hour is 13-23, treat as 24h → convert to 12h with PM
+        if hh > 12:
+            mer = "PM"
+            hh = hh - 12
+        mer = _infer_meridiem(hh, mer)
+        spoken_time = f"{hh}:{mm:02d} {mer}"
+    else:
+        m2 = re.search(r"\b(\d{1,2})\s+(\d{2})(?:\s*(am|pm))?\b", rest)
+        if m2:
+            hh, mm, mer = int(m2.group(1)), int(m2.group(2)), (m2.group(3) or "").upper()
+            if not (1 <= hh <= 12 or 0 <= hh <= 23):
+                return None
+            if not (0 <= mm <= 59):
+                return None
+            if hh > 12:
+                mer = "PM"; hh -= 12
+            mer = _infer_meridiem(hh, mer)
+            spoken_time = f"{hh}:{mm:02d} {mer}"
+        else:
+            m3 = re.search(r"\b(\d{3,4})(?:\s*(am|pm))?\b", rest)
+            if m3:
+                digits, mer = m3.group(1), (m3.group(2) or "").upper()
+                if len(digits) == 3:  # HMM
+                    hh, mm = int(digits[0]), int(digits[1:])
+                else:                 # HHMM
+                    hh, mm = int(digits[:2]), int(digits[2:])
+                if not (0 <= mm <= 59):
+                    return None
+                # 24h acceptance: 00→12 AM, 13..23→ convert to PM
+                if hh == 0:
+                    hh, mer = 12, "AM"
+                elif 1 <= hh <= 12:
+                    mer = _infer_meridiem(hh, mer)
+                elif 13 <= hh <= 23:
+                    mer = "PM"; hh -= 12
+                else:
+                    return None
+                spoken_time = f"{hh}:{mm:02d} {mer}"
+            else:
+                m4 = re.search(r"\b(\d{1,2})(?:\s*(am|pm))?\b", rest)
+                if not m4:
+                    return None
+                hh, mer = int(m4.group(1)), (m4.group(2) or "").upper()
+                if hh == 0: hh, mer = 12, "AM"
+                if not (1 <= hh <= 12):
+                    return None
+                mer = _infer_meridiem(hh, mer)
+                spoken_time = f"{hh}:00 {mer}"
+
+    # 6) Friendly weekday label
     try:
         year = datetime.now().year
         dt = date(year, month, day)
@@ -733,10 +768,16 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago"):
     month_name = calendar.month_name[month]
     spoken_day = f"{weekday + ', ' if weekday else ''}{month_name} {day}"
 
+    try:
+        debug_print(f"parse_time_fallback_noisy: ✅ parsed → day='{spoken_day}' time='{spoken_time}'")
+    except Exception:
+        pass
     return (spoken_day, spoken_time)
 
-# --- Unified smart_parse_time with fallback -----------------------------------
-# If an older smart_parse_time already exists, capture it so we can reuse it.
+
+
+
+# Preserve any existing legacy parser so we can try it first
 try:
     _smart_parse_time_prev = smart_parse_time  # type: ignore[name-defined]
 except Exception:
@@ -746,44 +787,26 @@ def smart_parse_time(raw: str, *, tz_name: str = "America/Chicago"):
     """
     Unified parser:
       1) Try legacy smart_parse_time (if present).
-      2) If unusable, try tolerant fallback (handles 'August. 15 5:30 a.m.', 'augest 15 5 am', etc.)
+      2) If unusable, try tolerant fallback (handles missing AM/PM, '530', '5:30', etc.)
       3) Return (spoken_day, spoken_time) or None.
     """
-    # 1) legacy
     if _smart_parse_time_prev:
         try:
             v = _smart_parse_time_prev(raw)
             if isinstance(v, tuple) and len(v) == 2 and all(v):
-                try:
-                    debug_print("smart_parse_time: ✅ legacy parser")
-                except Exception:
-                    pass
+                try: debug_print("smart_parse_time: ✅ legacy parser"); except Exception: pass
                 return v
             else:
-                try:
-                    debug_print("smart_parse_time: ℹ️ legacy returned unusable → trying fallback")
-                except Exception:
-                    pass
+                try: debug_print("smart_parse_time: ℹ️ legacy unusable → trying fallback"); except Exception: pass
         except Exception as e:
-            try:
-                debug_print(f"smart_parse_time: ℹ️ legacy error → {e} ; trying fallback")
-            except Exception:
-                pass
+            try: debug_print(f"smart_parse_time: ℹ️ legacy error → {e} ; trying fallback"); except Exception: pass
 
-    # 2) fallback
-    v = parse_time_fallback_noisy(raw, tz_name=tz_name)
+    v = parse_time_fallback_noisy(raw, tz_name=tz_name, default_meridiem="AM")
     if v:
-        try:
-            debug_print(f"smart_parse_time: ✅ fallback parsed → day='{v[0]}' time='{v[1]}'")
-        except Exception:
-            pass
+        try: debug_print(f"smart_parse_time: ✅ fallback parsed → day='{v[0]}' time='{v[1]}'"); except Exception: pass
         return v
 
-    # 3) failure
-    try:
-        debug_print("smart_parse_time: ❌ both parsers failed")
-    except Exception:
-        pass
+    try: debug_print("smart_parse_time: ❌ both parsers failed"); except Exception: pass
     return None
 
 
