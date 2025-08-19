@@ -608,18 +608,8 @@ def build_timeslot_range(spoken_day: Union[str, date], spoken_time: Union[str, d
 
 
 
+###########   smart parser ##########
 
-
-
-import os
-from openai import OpenAI
-from openai import APIConnectionError, AuthenticationError, RateLimitError
-
-#  this routine should be update in arabic  
-
-import re
-from datetime import datetime
-import calendar
 
 # -----------------------------------------------------------------------------
 # smart_parse_time
@@ -638,116 +628,112 @@ import calendar
 import re, calendar
 from datetime import datetime
 
-def smart_parse_time(speech: str):
+# --- Noisy-ASR tolerant fallback ---------------------------------------------
+def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago"):
     """
-    Very simple parser for phrases like:
-      - 'August 15 at 5:00 a.m.'
-      - 'Aug 15 at 5 am'
-      - 'Aug 15th 5am'
-    Returns:
-      (spoken_day, spoken_time)  e.g. ('Friday, August 15', '5:00 AM')
-    or None if it can't confidently parse.
+    Robust fallback for phrases like:
+      - 'August.  15 5:30 a.m.'
+      - 'August 1 5.  at 5:30 a.m.'
+      - 'augest 15 at 5 am' (typos)
+    Returns (spoken_day, spoken_time) like ("Friday, August 15", "5:30 AM"),
+    or None if not confident.
     """
+    import re, calendar
+    from datetime import datetime, date
 
-    if not speech or not str(speech).strip():
+    if not raw:
         return None
 
-    raw = speech.strip()
+    s = raw.lower()
 
-    # --- normalize AM/PM variants and trailing punctuation ---
-    raw = re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", raw, flags=re.IGNORECASE)  # a.m., A . M, etc.
-    raw = re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", raw, flags=re.IGNORECASE)  # p.m., P . M, etc.
-    raw = re.sub(r"[.!?]\s*$", "", raw)                                    # trailing period/question/etc.
-    txt = re.sub(r"\s+", " ", raw).strip().lower()
+    # 1) Normalize AM/PM variants & punctuation/spacing
+    s = (s.replace("a.m.", "am").replace("p.m.", "pm")
+           .replace("a. m.", "am").replace("p. m.", "pm")
+           .replace("a. m", "am").replace("p. m", "pm")
+           .replace("a m", "am").replace("p m", "pm"))
+    s = re.sub(r"[,\.\-]+", " ", s)       # dots/commas/dashes → space
+    s = re.sub(r"\s+", " ", s).strip()
 
-    # --- fix common month typos/abbr (extend if you see more in logs) ---
-    fixes = {
-        "augt": "august", "agust": "august", "sept": "september",
-        "jan.": "jan", "feb.": "feb", "mar.": "mar", "apr.": "apr",
-        "jun.": "jun", "jul.": "jul", "aug.": "aug", "oct.": "oct",
-        "nov.": "nov", "dec.": "dec",
-    }
-    for wrong, right in fixes.items():
-        txt = re.sub(rf"\b{re.escape(wrong)}\b", right, txt)
-
-    # --- month/day/time regex (most common form) ---
-    # Examples matched:
-    #   august 15 at 5 am
-    #   aug 15 5am
-    #   aug 15th at 5:00 pm
-    months_re = (
-        r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
-        r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
-        r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
-    )
-    day_re   = r"(?P<day>\d{1,2})(?:st|nd|rd|th)?"
-    time_re  = r"(?P<hour>\d{1,2})(?::(?P<min>\d{2}))?\s*(?P<ampm>am|pm)?"
-
-    pattern = re.compile(
-        rf"^(?P<month>{months_re})\s+{day_re}\s*,?\s*(?:at\s+)?{time_re}$",
-        re.IGNORECASE
-    )
-
-    m = pattern.match(txt)
-    if not m:
-        # Optional: a minimal fallback without "at" (e.g., 'august 15 5am')
-        pattern_no_at = re.compile(
-            rf"^(?P<month>{months_re})\s+{day_re}\s+{time_re}$",
-            re.IGNORECASE
-        )
-        m = pattern_no_at.match(txt)
-
-    if not m:
-        return None
-
-    # --- extract pieces ---
-    month_word = m.group("month")
-    day        = int(m.group("day"))
-    hour       = int(m.group("hour"))
-    minute     = int(m.group("min") or 0)
-    ampm       = (m.group("ampm") or "").lower()
-
-    if not (1 <= day <= 31 and 0 <= hour <= 23 and 0 <= minute <= 59):
-        return None
-
-    # map month word → number
+    # 2) Month mapping (tolerant of common typos)
     MONTHS = {
-        "january":1,"jan":1,"february":2,"feb":2,"march":3,"mar":3,"april":4,"apr":4,"may":5,
-        "june":6,"jun":6,"july":7,"jul":7,"august":8,"aug":8,"september":9,"sep":9,"sept":9,
-        "october":10,"oct":10,"november":11,"nov":11,"december":12,"dec":12
+        "january":1,"jan":1,
+        "february":2,"feb":2,
+        "march":3,"mar":3,
+        "april":4,"apr":4,
+        "may":5,
+        "june":6,"jun":6,
+        "july":7,"jul":7,
+        "august":8,"aug":8,"augest":8,"augt":8,
+        "september":9,"sep":9,"sept":9,
+        "october":10,"oct":10,
+        "november":11,"nov":11,
+        "december":12,"dec":12,
     }
-    month_num = MONTHS.get(month_word)
-    if not month_num:
+
+    tokens = s.split()
+
+    # 3) Find month token
+    month = None
+    mi = -1
+    for i, t in enumerate(tokens):
+        if t in MONTHS:
+            month = MONTHS[t]; mi = i; break
+    if not month:
         return None
 
-    # --- normalize to 12-hour clock with AM/PM ---
-    if ampm == "pm" and 1 <= hour <= 11:
-        mer = "PM"
-    elif ampm == "am":
-        mer = "AM"
-        if hour == 0:
-            hour = 12
+    # 4) Day after month: first numeric 1..31; if none, try joining split digits "1 5"→15
+    import re as _re
+    day = None
+    for j in range(mi + 1, min(mi + 4, len(tokens))):
+        tj = _re.sub(r"\D", "", tokens[j])
+        if tj.isdigit():
+            val = int(tj)
+            if 1 <= val <= 31:
+                day = val; break
+    if day is None and mi + 2 < len(tokens):
+        a = _re.sub(r"\D", "", tokens[mi + 1])
+        b = _re.sub(r"\D", "", tokens[mi + 2])
+        if len(a) == 1 and len(b) == 1 and a.isdigit() and b.isdigit():
+            val = int(a + b)
+            if 1 <= val <= 31:
+                day = val
+    if day is None:
+        return None
+
+    # 5) Time patterns in order of specificity
+    rest = " ".join(tokens[mi + 1:])
+    m = _re.search(r"\b(\d{1,2})\s*[: ]\s*(\d{2})\s*(am|pm)\b", rest)   # 5:30 am / 5 30 am
+    if m:
+        hh, mm, mer = int(m.group(1)), int(m.group(2)), m.group(3)
+        if not (1 <= hh <= 12 and 0 <= mm <= 59): return None
+        spoken_time = f"{hh}:{mm:02d} {mer.upper()}"
     else:
-        # No AM/PM spoken: make a simple, consistent assumption
-        # (keep same rule you used before so behavior feels familiar)
-        if hour == 0:
-            hour, mer = 12, "AM"
-        elif 1 <= hour <= 12:
-            mer = "AM"
+        m2 = _re.search(r"\b(\d{1,2})\s*(am|pm)\b", rest)                # 5 am
+        if m2:
+            hh, mer = int(m2.group(1)), m2.group(2)
+            if not (1 <= hh <= 12): return None
+            spoken_time = f"{hh}:00 {mer.upper()}"
         else:
-            hour -= 12
-            mer = "PM"
+            m3 = _re.search(r"\b(\d{3,4})\s*(am|pm)\b", rest)            # 530 am / 0930 pm
+            if not m3:
+                return None
+            digits, mer = m3.group(1), m3.group(2)
+            if len(digits) == 3: hh, mm = int(digits[0]), int(digits[1:])
+            else:                 hh, mm = int(digits[:2]), int(digits[2:])
+            if not (1 <= hh <= 12 and 0 <= mm <= 59): return None
+            spoken_time = f"{hh}:{mm:02d} {mer.upper()}"
 
-    # --- build friendly outputs ---
-    year = datetime.now().year  # same-year inference (your build_timeslot_range can refine)
-    month_name = calendar.month_name[month_num]
-    # Use a safe weekday calc (let exceptions bubble up to your outer try/except if invalid date)
-    weekday = datetime(year, month_num, day).strftime("%A")
+    # 6) Friendly "Weekday, Month Day"
+    try:
+        year = datetime.now().year
+        dt = date(year, month, day)
+        weekday = dt.strftime("%A")
+    except Exception:
+        weekday = ""
+    month_name = calendar.month_name[month]
+    spoken_day = f"{weekday + ', ' if weekday else ''}{month_name} {day}"
 
-    spoken_day  = f"{weekday}, {month_name} {day}"
-    spoken_time = f"{hour}:{minute:02d} {mer}"
     return (spoken_day, spoken_time)
-
 
 
 
