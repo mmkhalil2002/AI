@@ -3601,22 +3601,20 @@ def voice():
         # Purpose:
         #   - Collect credit card info in three mini-steps:
         #       (1) Card number (13–19 digits, Luhn-checked)
-        #       (2) Expiration (MMYY or MMYYYY) → stored as 'MM/YY' (current/future)
+        #       (2) Expiration (MMYY or MMYYYY) → saved as 'MM/YY' (must be current/future)
         #       (3) CVV (3–4 digits)
         #   - Stores under session_data[call_sid]["customer"]:
         #       cc_number, cc_exp, cc_cvv, cc_name
-        #   - Auto-advances to book_appt_confirm upon success (no extra prompt)
+        #   - Auto-advances to book_appt_confirm upon success.
         # Notes:
-        #   - Uses make_gather() (speech + DTMF).
-        #   - Speech digits supported via spoken→digit normalization; DTMF preferred.
-        #   - Guards: requires phone (10-digit) and DOB before collecting CC.
-        #   - Logging is UNMASKED per your request (unsafe in production).
+        #   - Uses make_gather() (speech + DTMF). DTMF preferred; speech digits supported.
+        #   - Requires phone (10-digit) and DOB before collecting CC.
+        #   - Logging is UNMASKED here per your request (not recommended for prod).
         # ----------------------------------------------------------------------
 
         # --- Luhn mod-10 -------------------------------------------------------
         def luhn_check(number: str) -> bool:
-            s = 0
-            alt = False
+            s, alt = 0, False
             for ch in number[::-1]:
                 if not ch.isdigit():
                     return False
@@ -3629,7 +3627,7 @@ def voice():
                 alt = not alt
             return (s % 10) == 0
 
-        # --- Voice → digits (supports "double"/"triple", common homophones) ----
+        # --- Voice → digits (supports "double"/"triple", homophones) ----------
         def normalize_spoken_digits(raw: str) -> str:
             if not raw:
                 return ""
@@ -3698,17 +3696,12 @@ def voice():
 
         debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{dtmf_digits}', speech='{speech_text}'")
 
-        # Prefer DTMF; if none, extract digits from speech (words → digits)
-        # Bind `re` as a default argument to avoid closure scoping issues.
-        def get_digits(_re=re) -> str:
-            """
-            Prefer DTMF if present; otherwise convert spoken words to digits and
-            strip non-digits. `_re` default binds the regex module at def time,
-            avoiding 'free variable re' NameError even if imports move.
-            """
+        # Prefer DTMF; otherwise convert spoken words to digits, then strip non-digits.
+        # Use the module-level alias `re_mod` to avoid any closure/scoping issues.
+        def get_digits() -> str:
             if dtmf_digits:
-                return _re.sub(r"\D", "", dtmf_digits)
-            return _re.sub(r"\D", "", normalize_spoken_digits(speech_text))
+                return re_mod.sub(r"\D", "", dtmf_digits)
+            return re_mod.sub(r"\D", "", normalize_spoken_digits(speech_text))
 
         # Re-prompt helper with retry cap
         def _reprompt(prompt: str, hints: str):
@@ -3866,7 +3859,7 @@ def voice():
 
             # Immediately re-enter main handler so book_appt_confirm runs now
             try:
-                
+                from flask import url_for
                 resp.redirect(url_for("voice"))  # adjust endpoint name if different
             except Exception:
                 resp.redirect(request.path)      # fallback to current path
