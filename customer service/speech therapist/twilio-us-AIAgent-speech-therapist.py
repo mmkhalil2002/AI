@@ -4,18 +4,60 @@ import json
 #import openai
 import pickle
 import dateparser
-from flask import Flask, request
-from twilio.twiml.voice_response import VoiceResponse, Gather
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
+import  calendar
+import  re
+import openai
+import pytz
+import os
+import json
+
+from dateutil.parser import isoparse  # for parsing RFC3339/ISO datetimes to extract dates
+from datetime import datetime, date
+
 from datetime import datetime, timedelta
-#import Re
 from dotenv import load_dotenv
 from datetime import timedelta
 from datetime import datetime as _dt
 
+from datetime import datetime, timedelta
+from dateutil.tz import gettz
+from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
+from typing import Tuple
+from datetime import datetime, timedelta, date, time as dtime
+from typing import Tuple, Union
+from typing import Optional
+from typing import Any, Dict
+from dateutil import parser as dtparser
+from datetime import datetime
+from datetime import timedelta
+from datetime import datetime
+import pytz as _pytz
+from datetime import timedelta, timezone
 
 
+# BEFORE:
+# def _render_block_lines(new: bool, rec: dict) -> list[str]:
+# AFTER (3.8-safe):
+from typing import Any, Optional, List, Dict, Tuple, Iterator, Iterable
+
+from googleapiclient.discovery import build
+from google.oauth2 import service_account
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+
+from twilio.rest import Client as TwilioClient
+from twilio.twiml.voice_response import VoiceResponse, Gather
+from twilio.twiml.messaging_response import MessagingRespons
+from twilio.rest import Client
+
+
+from openai import OpenAI, APIConnectionError, AuthenticationError, RateLimitError
+from openai import OpenAIError  # Add this import at the top
+
+from flask import request
+from flask import url_for
+from flask import Flask, request
 # ---------------- Project Structure -----------------
 # speech_AI_agent/
 # speech_ai_agent.py
@@ -55,12 +97,20 @@ MAX_SILENCE_RETRIES = int(os.getenv("MAX_SILENCE_RETRIES", 3))
 MAX_GET_PHONE_RETRIES = int(os.getenv("MAX_GET_PHONE_RETRIES", 3))
 WORKING_DAYS = [0, 1, 2, 3, 4]  # Adjust based on your local week
 
+DB_FOLDER = "appointment_data"
+DB_FILE   = os.path.join(DB_FOLDER, "customers.json")  # human-readable, not JSON
+# Global working config
+WORKING_DAYS = [0, 2, 3, 4]  # Mon=0, Tue=1,... Friday=4
+WORKING_HOURS_START = 8  # 8:00 AM
+WORKING_HOURS_END = 17   # 5:00 PM
+LUNCH_BREAK_START = time(13, 0)  # 1:00 PM
+LUNCH_BREAK_END = time(14, 0)    # 2:00 PM
 
 USE_GPT = False
 DEBUG  = True
 
 if USE_GPT:
-    import openai
+    
 
     class OpenAIClient:
         def generate_text(self, prompt):
@@ -74,7 +124,7 @@ if USE_GPT:
     print("🔁 Using OpenAI client")
 
 else:
-    from twilio.rest import Client as TwilioClient
+   
 
     client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     print("📞 Using Twilio client")
@@ -155,8 +205,7 @@ with open("doctors_map.json") as f:
 #openai.api_key = "YOUR_OPENAI_API_KEY"
 
 # ---------------- Google Calendar Auth -----------------
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
+
 
 if not os.path.exists("token.pkl"):
     flow = InstalledAppFlow.from_client_secrets_file(
@@ -223,8 +272,7 @@ def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, cre
       - for each event: (one line) input_start, event_start, input_date, event_date
       - final verdict (FREE/BUSY)
     """
-    from googleapiclient.discovery import build
-    from dateutil.parser import isoparse  # for parsing RFC3339/ISO datetimes to extract dates
+    
 
     debug_print(
         f"is_time_slot_available: 🔎 cal='{calendar_id}' "
@@ -290,10 +338,7 @@ def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, cre
 
 
 
-from datetime import datetime, timedelta
-from dateutil.parser import isoparse
-from dateutil.tz import gettz
-from googleapiclient.discovery import build
+
 
 def get_next_available_slots(
     calendar_id: str,
@@ -437,23 +482,15 @@ def get_next_available_slots(
 
 
 
-from typing import List, Tuple
-from datetime import datetime, timedelta, time
-import pytz
 
-# Global working config
-WORKING_DAYS = [0, 2, 3, 4]  # Mon=0, Tue=1,... Friday=4
-WORKING_HOURS_START = 8  # 8:00 AM
-WORKING_HOURS_END = 17   # 5:00 PM
-LUNCH_BREAK_START = time(13, 0)  # 1:00 PM
-LUNCH_BREAK_END = time(14, 0)    # 2:00 PM
+
 
 def suggest_alternative_times(
     doctor_id: str,
     creds,
     num_options: int = 3
-) -> List[Tuple[str, str]]:
-    from googleapiclient.discovery import build
+    ) -> List[Tuple[str, str]]:
+    
     service = build("calendar", "v3", credentials=creds)
 
     now = datetime.utcnow().replace(tzinfo=pytz.UTC)
@@ -523,14 +560,10 @@ def format_time_for_speech(slot: Tuple[str, str]) -> str:
 
 
 
-from datetime import datetime, timedelta
-from typing import Tuple
-import re
 def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
     """
     Normalize input like '29th of July' to 'July 29'
     """
-    import re
     # Remove ordinal suffixes (e.g., "29th" → "29")
     day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day.strip(), flags=re.IGNORECASE)
 
@@ -549,9 +582,6 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
 
 
 
-from datetime import datetime, timedelta, date, time as dtime
-from typing import Tuple, Union
-import pytz, re
 
 def build_timeslot_range(spoken_day: Union[str, date], spoken_time: Union[str, dtime],
                          tolerance_minutes: int = 30) -> Tuple[str, str]:
@@ -642,8 +672,7 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
       - If AM/PM missing, uses `default_meridiem` (configurable; default "AM").
       - Converts 24-hour inputs (e.g., 17:30, 1730) to 12-hour + PM automatically.
     """
-    import re, calendar
-    from datetime import datetime, date
+    
 
     def _dbg(msg: str):
         try:
@@ -1006,12 +1035,12 @@ def gpt_speak(prompt):
 
     Performance: You still keep the quick dictionary check first; GPT is only called if the easy path fails.
 """
-from openai import OpenAI, APIConnectionError, AuthenticationError, RateLimitError
+
 
 # Initialize the OpenAI client (using the environment variable OPENAI_API_KEY)
 #client = OpenAI()
 
-from openai import OpenAIError  # Add this import at the top
+
 
 def extract_doctor_name(speech_text):
     """
@@ -1058,7 +1087,8 @@ def extract_doctor_name(speech_text):
         return speech_text.strip()
 
 
-import re
+
+
 
 
 def extract_phone_number(speech_text: str) -> str:
@@ -1076,7 +1106,6 @@ def extract_phone_number(speech_text: str) -> str:
     Returns:
         str: Cleaned phone number string (digits only), or empty string if invalid.
     """
-    import re
 
     if not speech_text:
         print("📞 extract_phone_number: Input is empty.")
@@ -1100,12 +1129,7 @@ def extract_phone_number(speech_text: str) -> str:
         print(f"❌ Invalid phone number length: {len(digits)} digits")
         return ""
 
-import re  # Import the regular expression module
-from datetime import datetime, timedelta
-#from googleapiclient.discovery import build
-from typing import Optional
-import pytz
-from googleapiclient.discovery import build
+
 
 def cancel_event_by_phone(
     calendar_id: str,
@@ -1331,8 +1355,7 @@ def cancel_event_by_phone(
 
 
 
-import os
-import json
+
 
 # 📁 Directory to store appointment data files
 APPOINTMENT_TABLE_DIR = "./appointment_data"
@@ -1379,8 +1402,7 @@ def load_doctor_appointments():
 # ------------------------
 # ➕ Add appointment
 # ------------------------
-import os
-import json
+
 
 def confirm_appointment_by_name(
     doctor_name: str,
@@ -1415,11 +1437,7 @@ def confirm_appointment_by_name(
         record: dict            # The record (new or existing)
         reason: str | None      # 'duplicate' if not created, else None
     """
-    import os
-    import re
-    import json
-    from datetime import datetime, timezone
-
+    
     
     # -----------------------
     # Normalize phone digits
@@ -1590,9 +1608,8 @@ def normalize_phone_digits(phone: str) -> str:
 
 
 # ===== local doctor JSON cancellation (by doctor+phone+dob+utc_start) =====
-import os
-import json
-from typing import Any, Dict
+
+
 
 def cancel_appointment_by_name(doctor_name: str, phone: str, dob: str, utc_start: str) -> bool:
     """
@@ -1608,7 +1625,7 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, dob: str, utc_start
         return d[1:] if len(d) == 11 and d.startswith("1") else d
 
    
-    from dateutil import parser as dtparser
+    
     full_path = get_doctor_filename(doctor_name)
     phone10 = normalize_phone_digits(phone)
     dob_str = (dob or "").strip()
@@ -1674,7 +1691,6 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, dob: str, utc_start
 
 
 
-from googleapiclient.discovery import build
 
 def list_events_in_window_utc(calendar_id: str, creds, utc_start: str, utc_end: str, debug: bool=False):
     """
@@ -1776,7 +1792,6 @@ def get_upcoming_events(calendar_id: str, phone: str, utc_start: str, utc_end: s
 ###    DOB  parsing and processing
 ##
 
-from datetime import datetime
 
 ORDINALS = {
     "first":"1","second":"2","third":"3","fourth":"4","fifth":"5","sixth":"6","seventh":"7","eighth":"8","ninth":"9","tenth":"10",
@@ -1800,8 +1815,6 @@ def _clean_ordinals(text: str) -> str:
     t = t.replace(",", " ").replace(".", " ").replace("  ", " ").strip()
     return t
 
-from typing import Optional
-from datetime import datetime
 
 def parse_dob_input(speech_text: str, dtmf_digits: str) -> Optional[datetime]:
     """
@@ -1839,7 +1852,7 @@ def parse_dob_input(speech_text: str, dtmf_digits: str) -> Optional[datetime]:
 
         # Forgiving natural language parse
         try:
-            from dateutil import parser as dtparser
+            
             dt = dtparser.parse(speech_text, dayfirst=False, fuzzy=True)
             return datetime(dt.year, dt.month, dt.day)
         except Exception:
@@ -1883,10 +1896,6 @@ def make_gather_dob(prompt_text: str):
 ############################################
 ##  Customer DB
 #############################################
-import os
-import json
-from datetime import datetime
-
 # ----------------------------------------------------------------------
 # Path under the existing appointment_data folder
 # ----------------------------------------------------------------------
@@ -1900,12 +1909,9 @@ from datetime import datetime
 # - PAN/CVV are MASKED in the file.
 # - All scans/updates are simple sequential text processing.
 # =============================================================================
-import os, re
-from datetime import datetime
 
 # ---------- Config ----------
-DB_FOLDER = "appointment_data"
-DB_FILE   = os.path.join(DB_FOLDER, "customers.json")  # human-readable, not JSON
+
 
 # ---------- Logging helper ----------
 try:
@@ -1941,7 +1947,6 @@ def init_db() -> None:
 # ---------- Sanitizers / formatters ----------
 def _oneline(s: str) -> str:
     """Compact whitespace/newlines to a single line."""
-    import re
     return re.sub(r"\s+", " ", (s or "").strip())
 
 
@@ -1967,13 +1972,7 @@ def _block_title(new: bool) -> str:
     return "insert_customer: ✅ Added new customer" if new \
            else "insert_customer: ℹ️ Existing customer — updated last_seen_at"
 
-from typing import Any
-from typing import Any, Optional, List, Dict, Tuple, Iterator
 
-# BEFORE:
-# def _render_block_lines(new: bool, rec: dict) -> list[str]:
-# AFTER (3.8-safe):
-from typing import Any, Dict, List
 
 def _render_block_lines(new: bool, rec: Dict[str, Any]) -> List[str]:
     """
@@ -2067,7 +2066,7 @@ def _render_block_lines(new: bool, rec: Dict[str, Any]) -> List[str]:
 
 # ---------- File parsing helpers ----------
 
-from typing import List, Dict, Any, Iterable, Iterator
+
 # BEFORE:
 # def _iter_blocks(lines: list[str]):
 # AFTER (3.8-safe):
@@ -2088,8 +2087,6 @@ def _iter_blocks(lines: List[str]) -> Iterator[List[str]]:
         yield (start, len(lines), lines[start:])
 
 
-        # add near the top of the file
-from typing import Optional, List
 
 # change this:
 # def _get_value(block_lines: list[str], label: str) -> str | None:
@@ -2414,8 +2411,7 @@ def get_doctor_appts_for(doctor_name: str, phone: str, dob: str = None) -> list:
     Uses debug_print for logging (falls back to print if unavailable).
     """
 
-    import os, json, re
-    from dateutil import parser as dtparser
+    
 
     # ---------- local helpers (self-contained) ----------
 
@@ -2535,9 +2531,7 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
     - Adds ±60s guard to catch edge-inclusive events.
     - Emits debug lines showing what blocked the slot when busy.
     """
-    from googleapiclient.discovery import build
-    from dateutil.parser import isoparse
-    from datetime import timedelta
+    
 
     service = build("calendar", "v3", credentials=creds)
 
@@ -2629,10 +2623,7 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
 
 #app = Flask(__name__)
 
-from flask import request
-from twilio.twiml.messaging_response import MessagingResponse
-import os
-from datetime import datetime
+
 
 @app.route("/sms", methods=["POST"])
 def sms_reply():
@@ -2674,7 +2665,7 @@ def sms_reply():
 @app.route("/transcription", methods=["POST"])
 def transcription():
         # Import the Twilio client to send SMS messages via Twilio's REST API
-        from twilio.rest import Client
+    
 
         # Initialize the Twilio client with your Account SID and Auth Token,
         # which are stored securely in environment variables
@@ -2704,7 +2695,6 @@ def transcription():
         # indicating that the webhook was successfully handled but there's no response content needed
         return "", 204
 
-import re  # Used for name normalization
 
 # 🔧 Helper function to normalize and clean names
 def normalize(text):
@@ -2936,7 +2926,7 @@ def voice():
         if "retry_booking" not in session_data[call_sid]:
             session_data[call_sid]["retry_booking"] = 0
 
-        import string
+        
 
         # 📻 Clean and normalize speech input
         spoken_text = speech_result.lower().strip() if speech_result else ""
@@ -3048,7 +3038,6 @@ def voice():
     # ===== collect_phone (stage) =====
     elif stage == "collect_phone":
         # Collect a 10-digit US phone via speech or DTMF, stay here until valid.
-        import re
 
         session_data.setdefault(call_sid, {}).setdefault("customer", {})
         session_data[call_sid]["retry_phone"] = session_data[call_sid].get("retry_phone", 0)
@@ -3207,7 +3196,6 @@ def voice():
 
         # 3) Validate DOB sanity window (e.g., 1900..today)
         try:
-            from datetime import date
             today = date.today()
             min_date = date(1900, 1, 1)
             dob_date = dt.date()
@@ -3549,7 +3537,6 @@ def voice():
         # ----------------------------------------------------------------------
         # 🏠 Stage: Collect Customer Address (INFO ONLY)
         # ----------------------------------------------------------------------
-        import re
 
         address_raw = (speech_result or "").strip()
         debug_print(f"collect_address: 📬 Collected address (raw): {address_raw}")
@@ -3879,7 +3866,7 @@ def voice():
 
             # Immediately re-enter main handler so book_appt_confirm runs now
             try:
-                from flask import url_for
+                
                 resp.redirect(url_for("voice"))  # adjust endpoint name if different
             except Exception:
                 resp.redirect(request.path)      # fallback to current path
@@ -3918,8 +3905,7 @@ def voice():
         # Human-friendly local time for voice/SMS (America/Chicago)
         formatted_time = ""
         try:
-            from datetime import datetime, timedelta
-            import pytz
+            
             dt_utc = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
             dt_local = dt_utc.astimezone(pytz.timezone("America/Chicago"))
             try:
@@ -3938,7 +3924,7 @@ def voice():
             try:
                 dur_min = int(APPOINTMENT_DURATION_MINUTES) if 'APPOINTMENT_DURATION_MINUTES' in globals() else 30
                 end_dt  = dt_utc + timedelta(minutes=dur_min)
-                import pytz as _pytz
+                
                 appointment_end = end_dt.replace(tzinfo=_pytz.UTC).isoformat()
                 debug_print(f"book_appt_confirm: computed utc_end={appointment_end} (duration={dur_min}m)")
             except Exception as e:
@@ -4060,7 +4046,6 @@ def voice():
         # Create Google Calendar event (simple: let Google assign the event ID)
         # ----------------------------------------------------------------------
         try:
-            from googleapiclient.discovery import build
             service = build("calendar", "v3", credentials=creds)
 
             event_body = {
@@ -4138,7 +4123,6 @@ def voice():
         #  4️⃣ Once matched, moves to the next stage to get the phone number.
         # ----------------------------------------------------------------------
 
-        import string
         selected_text = (speech_result or "").strip()
 
         # 🆕 Check if nothing was heard → immediate re-prompt
@@ -4402,7 +4386,6 @@ def voice():
 
         # --- Validate reasonable DOB range -------------------------------------
         try:
-            from datetime import date
             today = date.today()
             min_date = date(1900, 1, 1)
             dob_date = dt.date()
@@ -4616,8 +4599,6 @@ def voice():
         def _friendly_from_iso(utc_iso: str, tz_name: str = "America/Chicago") -> str:
             """Render a UTC ISO string into a caller-friendly local phrase."""
             try:
-                from dateutil import parser as dtparser
-                import pytz
                 dt_utc = dtparser.isoparse(utc_iso)
                 local = dt_utc.astimezone(pytz.timezone(tz_name))
                 try:
@@ -4697,7 +4678,6 @@ def voice():
 
             # Sort candidates chronologically by start_utc (if present)
             try:
-                from dateutil import parser as dtparser
                 candidates.sort(
                     key=lambda c: (c["start_utc"] == "", dtparser.isoparse(c["start_utc"]) if c["start_utc"] else None)
                 )
@@ -4878,8 +4858,6 @@ def voice():
 
         def _friendly_from_iso(utc_iso: str, tz_name: str = "America/Chicago") -> str:
             try:
-                from dateutil import parser as dtparser
-                import pytz
                 dt_utc = dtparser.isoparse(utc_iso)
                 local = dt_utc.astimezone(pytz.timezone(tz_name))
                 try:
@@ -4905,9 +4883,7 @@ def voice():
         gcal_ok = False
         if calendar_id and utc_start:
             try:
-                from datetime import timedelta, timezone
-                from dateutil import parser as dtparser
-                from googleapiclient.discovery import build
+                
 
                 start_dt = dtparser.isoparse(utc_start)
                 win_start = (start_dt - timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
