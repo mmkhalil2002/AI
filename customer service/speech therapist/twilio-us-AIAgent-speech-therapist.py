@@ -10,6 +10,8 @@ import openai
 import pytz
 import os
 import json
+import re as re_mod
+import pytz as _pytz
 
 from dateutil.parser import isoparse  # for parsing RFC3339/ISO datetimes to extract dates
 from datetime import datetime, date
@@ -32,8 +34,13 @@ from dateutil import parser as dtparser
 from datetime import datetime
 from datetime import timedelta
 from datetime import datetime
-import pytz as _pytz
 from datetime import timedelta, timezone
+from datetime import datetime as _dt
+from uuid import uuid4  # only used if CallSid is missing
+
+
+
+
 
 
 # BEFORE:
@@ -48,7 +55,7 @@ from google.auth.transport.requests import Request
 
 from twilio.rest import Client as TwilioClient
 from twilio.twiml.voice_response import VoiceResponse, Gather
-from twilio.twiml.messaging_response import MessagingRespons
+from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 
 
