@@ -4372,9 +4372,8 @@ def voice():
                 return str(resp)
 
             prompt_text = (
-                "Please say your date of birth to locate your appointment, for example July third nineteen fifty six, "
+                "Please say birth date, for example July third nineteen fifty six, "
                 "or type two digits for month, two for day, and four for year, then press pound. "
-                "For example, 07031956#."
             )
             # Use your DOB gather helper if available; otherwise fall back to make_gather
             try:
