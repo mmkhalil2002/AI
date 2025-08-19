@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 #import Re
 from dotenv import load_dotenv
 from datetime import timedelta
+from datetime import datetime as _dt
+
 
 
 # ---------------- Project Structure -----------------
@@ -3606,24 +3608,22 @@ def voice():
 
 
     
-    
     elif stage == "collect_cc":
         # ----------------------------------------------------------------------
         # 💳 Stage: collect_cc
         # Purpose:
         #   - Collect credit card info in three mini-steps:
         #       (1) Card number (13–19 digits, Luhn-checked)
-        #       (2) Expiration (MMYY or MMYYYY) → stored as 'MM/YY' (must be current/future)
+        #       (2) Expiration (MMYY or MMYYYY) → stored as 'MM/YY' (current/future)
         #       (3) CVV (3–4 digits)
         #   - Stores under session_data[call_sid]["customer"]:
         #       cc_number, cc_exp, cc_cvv, cc_name
         #   - Auto-advances to book_appt_confirm upon success (no extra prompt)
         # Notes:
-        #   - Uses make_gather() (speech + DTMF, finishOnKey="#").
+        #   - Uses make_gather() (speech + DTMF).
         #   - Speech digits supported via spoken→digit normalization; DTMF preferred.
         #   - Guards: requires phone (10-digit) and DOB before collecting CC.
-        #   - LOGGING: PAN/CVV are logged in full per your request (unsafe in prod).
-        #   - Voice-friendly partial capture with escalation to “please type it”.
+        #   - Logging is UNMASKED per your request (unsafe in production).
         # ----------------------------------------------------------------------
 
         # --- Luhn mod-10 -------------------------------------------------------
@@ -3712,10 +3712,16 @@ def voice():
         debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{dtmf_digits}', speech='{speech_text}'")
 
         # Prefer DTMF; if none, extract digits from speech (words → digits)
-        def get_digits() -> str:
+        # Bind `re` as a default argument to avoid closure scoping issues.
+        def get_digits(_re=re) -> str:
+            """
+            Prefer DTMF if present; otherwise convert spoken words to digits and
+            strip non-digits. `_re` default binds the regex module at def time,
+            avoiding 'free variable re' NameError even if imports move.
+            """
             if dtmf_digits:
-                return re.sub(r"\D", "", dtmf_digits)
-            return re.sub(r"\D", "", normalize_spoken_digits(speech_text))
+                return _re.sub(r"\D", "", dtmf_digits)
+            return _re.sub(r"\D", "", normalize_spoken_digits(speech_text))
 
         # Re-prompt helper with retry cap
         def _reprompt(prompt: str, hints: str):
@@ -3738,15 +3744,20 @@ def voice():
         if cc_step == 1:
             new_digits = get_digits()
             digits = (cc_partial + new_digits) if (cc_partial or new_digits) else ""
-            if digits and len(digits) > 19:
-                digits = digits[:19]
 
+            # If nothing heard yet, reprompt right away
             if not digits:
+                debug_print("collect_cc: ℹ️ no digits heard → reprompt")
                 if _reprompt(
                     "Please enter your card number now, then press pound.",
                     hints="zero one two three four five six seven eight nine double triple"
                 ): return str(resp)
 
+            # Keep max length sane
+            if len(digits) > 19:
+                digits = digits[:19]
+
+            # If we heard 15 digits via speech, ask for the last single digit
             if len(digits) == 15 and not dtmf_digits:
                 session_data[call_sid]["cc_partial"] = digits
                 debug_print(f"collect_cc: 🧩 Heard 15 digits '{digits}'; asking for the last digit")
@@ -3755,6 +3766,7 @@ def voice():
                     hints="zero one two three four five six seven eight nine"
                 ): return str(resp)
 
+            # Luhn validation
             if not (13 <= len(digits) <= 19) or not luhn_check(digits):
                 session_data[call_sid]["cc_speech_tries"] += (0 if dtmf_digits else 1)
                 escalate = session_data[call_sid]["cc_speech_tries"] >= 2 and not dtmf_digits
@@ -3770,6 +3782,7 @@ def voice():
                         hints="zero one two three four five six seven eight nine double triple"
                     ): return str(resp)
 
+            # Save and advance
             customer["cc_number"] = digits
             session_data[call_sid]["cc_step"] = 2
             session_data[call_sid]["cc_partial"] = ""
@@ -3787,7 +3800,7 @@ def voice():
             return str(resp)
 
         # -------------------------------
-        # Step 2: Expiration (MMYY/MMYYYY)
+        # Step 2: Expiration (MMYY/MMYYYY, must be current/future)
         # -------------------------------
         if cc_step == 2:
             digits = get_digits()
@@ -3807,9 +3820,11 @@ def voice():
                     hints="zero one two three four five six seven eight nine"
                 ): return str(resp)
 
+            # Normalize year to 2-digit (handle MMYYYY too)
             if len(yy) == 4:
                 yy = yy[-2:]
 
+            # Reject past month
             now = _dt.now()
             exp_year = 2000 + int(yy)
             exp_cmp  = exp_year * 100 + mm
@@ -3848,6 +3863,7 @@ def voice():
 
             customer["cc_cvv"] = digits
 
+            # Default cardholder name from collected name, if not set
             if not customer.get("cc_name"):
                 name = customer.get("name") or " ".join(
                     p for p in [customer.get("first_name"), customer.get("last_name")] if p
@@ -3856,16 +3872,19 @@ def voice():
 
             debug_print(f"collect_cc: ✅ Saved CVV '{digits}'; cc_name='{customer.get('cc_name')}'")
 
+            # Clear step tracker and jump to confirmation
             session_data[call_sid].pop("cc_step", None)
             session_data[call_sid]["stage"] = "book_appt_confirm"
             debug_print("collect_cc: ➡️ Auto-advancing to book_appt_confirm")
 
+            # Immediately re-enter main handler so book_appt_confirm runs now
             try:
                 from flask import url_for
-                resp.redirect(url_for("voice"))
+                resp.redirect(url_for("voice"))  # adjust endpoint name if different
             except Exception:
-                resp.redirect(request.path)
+                resp.redirect(request.path)      # fallback to current path
             return str(resp)
+
 
 
 
