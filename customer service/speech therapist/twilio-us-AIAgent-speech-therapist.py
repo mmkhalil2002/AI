@@ -4373,7 +4373,8 @@ def voice():
 
             prompt_text = (
                 "Please say birth date, for example July third nineteen fifty six, "
-                "or type two digits for month, two for day, and four for year, then press pound. "
+                #"or type two digits for month, two for day, and four for year, then press pound. "
+                "or type MMDDYYYY, then press pound. "
             )
             # Use your DOB gather helper if available; otherwise fall back to make_gather
             try:
