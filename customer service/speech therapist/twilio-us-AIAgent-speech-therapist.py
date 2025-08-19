@@ -735,6 +735,56 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago"):
 
     return (spoken_day, spoken_time)
 
+# --- Unified smart_parse_time with fallback -----------------------------------
+# If an older smart_parse_time already exists, capture it so we can reuse it.
+try:
+    _smart_parse_time_prev = smart_parse_time  # type: ignore[name-defined]
+except Exception:
+    _smart_parse_time_prev = None
+
+def smart_parse_time(raw: str, *, tz_name: str = "America/Chicago"):
+    """
+    Unified parser:
+      1) Try legacy smart_parse_time (if present).
+      2) If unusable, try tolerant fallback (handles 'August. 15 5:30 a.m.', 'augest 15 5 am', etc.)
+      3) Return (spoken_day, spoken_time) or None.
+    """
+    # 1) legacy
+    if _smart_parse_time_prev:
+        try:
+            v = _smart_parse_time_prev(raw)
+            if isinstance(v, tuple) and len(v) == 2 and all(v):
+                try:
+                    debug_print("smart_parse_time: ✅ legacy parser")
+                except Exception:
+                    pass
+                return v
+            else:
+                try:
+                    debug_print("smart_parse_time: ℹ️ legacy returned unusable → trying fallback")
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                debug_print(f"smart_parse_time: ℹ️ legacy error → {e} ; trying fallback")
+            except Exception:
+                pass
+
+    # 2) fallback
+    v = parse_time_fallback_noisy(raw, tz_name=tz_name)
+    if v:
+        try:
+            debug_print(f"smart_parse_time: ✅ fallback parsed → day='{v[0]}' time='{v[1]}'")
+        except Exception:
+            pass
+        return v
+
+    # 3) failure
+    try:
+        debug_print("smart_parse_time: ❌ both parsers failed")
+    except Exception:
+        pass
+    return None
 
 
 
