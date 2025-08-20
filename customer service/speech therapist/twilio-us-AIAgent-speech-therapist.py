@@ -12,6 +12,8 @@ import os
 import json
 import re as re_mod
 import pytz as _pytz
+import string  # <-- needed for string.punctuation
+
 
 from dateutil.parser import isoparse  # for parsing RFC3339/ISO datetimes to extract dates
 from datetime import datetime, date
@@ -37,6 +39,7 @@ from datetime import datetime
 from datetime import timedelta, timezone
 from datetime import datetime as _dt
 from uuid import uuid4  # only used if CallSid is missing
+
 
 
 
