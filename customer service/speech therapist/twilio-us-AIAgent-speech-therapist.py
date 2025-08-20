@@ -4431,13 +4431,14 @@ def voice():
 
 
     elif stage == "cancel_appt_get_date_time":
+    
         # ----------------------------------------------------------------------
         # ❌ Stage: cancel_appt_get_date_time
         # Goal:
         #   - If caller provides a date/time, parse it and validate against calendar(s).
-        #       • If a matching appointment is found → go to cancel_appt_confirm
-        #       • If not found / invalid → go to cancel_appt_iterate
-        #   - If caller does NOT provide date/time → go to cancel_appt_iterate
+        #       • If a matching appointment is found → cancel_appt_confirm
+        #       • If not found / invalid → cancel_appt_iterate
+        #   - If caller does NOT provide date/time → cancel_appt_iterate
         #
         # IMPORTANT: No DOB verification here. Any DOB checks happen in
         #            cancel_appt_get_dob. We only rely on phone (if available).
@@ -4477,25 +4478,90 @@ def voice():
         utter = (speech_result or "").strip()
         debug_print(f"cancel_appt_get_date_time: 🗣️ Raw speech input → '{utter}'")
 
-        # If no input given → immediately fall back to iterator flow
+        # Tiny helpers to detect presence of date/time clues (for better UX paths)
+        def _has_time_token(raw: str) -> bool:
+            s = (raw or "").lower()
+            return ("am" in s) or ("pm" in s) or (":" in s) or ("o'clock" in s) or ("oclock" in s) or any(
+                t in s.split() for t in ("noon", "midnight")
+            )
+
+        def _has_date_token(raw: str) -> bool:
+            s = (raw or "").lower()
+            months = ("january","february","march","april","may","june","july",
+                    "august","september","october","november","december",
+                    "jan","feb","mar","apr","jun","jul","aug","sep","sept","oct","nov","dec")
+            weekdays = ("monday","tuesday","wednesday","thursday","friday","saturday","sunday",
+                        "mon","tue","tues","wed","thu","thur","thurs","fri","sat","sun")
+            if any(m in s for m in months): return True
+            if any(w in s for w in weekdays): return True
+            if "/" in s or "-" in s: return True  # 8/15 or 08-15, etc.
+            return False
+
+        def _says_no(raw: str) -> bool:
+            s = (raw or "").lower()
+            return s in ("no", "nope", "nah") or "don't know" in s or "do not know" in s or "not sure" in s
+
+        def _says_yes(raw: str) -> bool:
+            s = (raw or "").lower()
+            return s in ("yes", "yeah", "yep", "sure", "ok", "okay")
+
+        # ------------------------------------------------------------------
+        # Decide high-level path based on what we heard
+        # ------------------------------------------------------------------
+
+        # If no input → immediately fall back to iterator flow
         if not utter:
-            debug_print("cancel_appt_get_date_time: 🚫 No date/time provided → falling back to cancel_appt_iterate")
+            debug_print("cancel_appt_get_date_time: 🚫 No input → falling back to cancel_appt_iterate")
             cancel_ctx["iter_index"] = 0
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
+            resp.say(gpt_speak("Okay. I’ll read your upcoming appointments."), VOICE)
             resp.redirect("/voice")
+            return str(resp)
+
+        # If caller explicitly says they don't have date/time → iterate
+        if _says_no(utter):
+            debug_print("cancel_appt_get_date_time: 🚫 Caller said NO (no date/time) → iterator")
+            cancel_ctx["iter_index"] = 0
+            session_data[call_sid]["stage"] = "cancel_appt_iterate"
+            resp.say(gpt_speak("No problem. I’ll list your upcoming appointments."), VOICE)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # If caller said "yes" but didn't include actual date/time, ask once for both
+        if _says_yes(utter) and not (_has_date_token(utter) and _has_time_token(utter)):
+            debug_print("cancel_appt_get_date_time: 👍 Caller said YES but no date/time provided → prompt for both")
+            gather = make_gather(
+                "Please say the appointment date and time, for example, 'August 15th at 5 PM'. "
+                "If you don’t know, say 'no'."
+            )
+            resp.append(gather)
             return str(resp)
 
         # --- Try to parse (no retry loop here) ----------------------------------
         time_info = smart_parse_time(utter)
         debug_print(f"cancel_appt_get_date_time: 🧠 smart_parse_time() returned → {time_info}")
 
+        # If parse failed, but we can tell what’s missing, be explicit then iterate
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
-            debug_print("cancel_appt_get_date_time: ❌ Could not parse date/time → going to iterator")
+            has_date = _has_date_token(utter)
+            has_time = _has_time_token(utter)
+
+            if has_date and not has_time:
+                debug_print("cancel_appt_get_date_time: ❌ Date without time → invalid for search → iterator")
+                resp.say(gpt_speak("That sounds like a date without a time. I’ll list your upcoming appointments."), VOICE)
+            elif has_time and not has_date:
+                debug_print("cancel_appt_get_date_time: ❌ Time without date → invalid for search → iterator")
+                resp.say(gpt_speak("That sounds like a time without a date. I’ll list your upcoming appointments."), VOICE)
+            else:
+                debug_print("cancel_appt_get_date_time: ❌ Could not parse date/time → iterator")
+                resp.say(gpt_speak("I couldn’t understand the date and time. I’ll list your upcoming appointments."), VOICE)
+
             cancel_ctx["iter_index"] = 0
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             resp.redirect("/voice")
             return str(resp)
 
+        # Parsed day/time successfully
         spoken_day, spoken_time = time_info
         debug_print(f"cancel_appt_get_date_time: 📆 Parsed → Day: {spoken_day}, Time: {spoken_time}")
 
@@ -4505,6 +4571,7 @@ def voice():
             debug_print(f"cancel_appt_get_date_time: ✅ UTC range → Start: {utc_start}, End: {utc_end}")
         except Exception as e:
             debug_print(f"cancel_appt_get_date_time: ❌ build_timeslot_range failed → {e} → iterator")
+            resp.say(gpt_speak("That didn’t look like a valid date and time. I’ll list your upcoming appointments."), VOICE)
             cancel_ctx["iter_index"] = 0
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             resp.redirect("/voice")
@@ -4555,10 +4622,15 @@ def voice():
 
         # No exact match at that date/time → iterate through appointments
         debug_print("cancel_appt_get_date_time: 🚫 No matching event at that date/time → falling back to cancel_appt_iterate")
+        resp.say(gpt_speak("I couldn’t find an appointment at that date and time. I’ll list your upcoming appointments."), VOICE)
         cancel_ctx["iter_index"] = 0
         session_data[call_sid]["stage"] = "cancel_appt_iterate"
         resp.redirect("/voice")
         return str(resp)
+
+
+
+
 
 
 
