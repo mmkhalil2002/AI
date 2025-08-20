@@ -153,28 +153,55 @@ def debug_print(msg: str) -> None:
 
 # --- retry counter utils ---
 
-def make_gather(prompt_text: str, hints: str = ""):
+def make_gather(
+    prompt: str,
+    *,
+    next_stage: str = None,        # ← NEW (optional)
+    hints: str = None,
+    input: str = "speech dtmf",
+    num_digits: int = None,
+    timeout: int = 6,
+    speech_timeout: str = "auto",
+    finish_on_key: str = "#",
+    barge_in: bool = True,
+    language: str = "en-US",
+    action: str = None
+):
     """
-    Standard gather (drop-in replacement):
-    - Accepts BOTH speech and DTMF globally.
-    - Caller can press '#' to finish input at any time.
-    - Uses project-wide SPEECH_INPUT_DURATION (increase this to ~20 if needed).
-    - speechTimeout='5' lets callers pause up to ~5s while reading digits.
+    Build a Twilio <Gather> with sane defaults.
+    If next_stage is provided, it will be appended to the action URL as
+    '?next_stage=...' so the /voice handler can switch stages on the next POST.
     """
+    try:
+        from flask import request, url_for
+        base_action = action or request.path or "/voice"
+        if next_stage:
+            sep = "&" if "?" in base_action else "?"
+            base_action = f"{base_action}{sep}next_stage={next_stage}"
+            try:
+                debug_print(f"make_gather: ↪️ action with next_stage → {base_action}")
+            except Exception:
+                pass
+    except Exception:
+        base_action = action or "/voice"
+
     g = Gather(
-        input="dtmf speech",
-        action="/voice",
+        input=input,
+        action=base_action,
         method="POST",
-        timeout=SPEECH_INPUT_DURATION,  # consider 20 for phone collection
-        speech_model="phone_call",
-        speechTimeout=PAUSE_BETWEEN_DIGITS,  # ← allow longer pauses between digits
-        bargeIn=True,
-        finishOnKey="#",
-        actionOnEmptyResult=True
+        timeout=timeout,
+        speech_timeout=speech_timeout,
+        hints=hints,
+        language=language,
+        finish_on_key=finish_on_key,
+        barge_in=barge_in,
+        num_digits=num_digits,
     )
-    if hints:
-        g.hints = hints
-    g.say(gpt_speak(prompt_text), VOICE)
+    # Keep your TTS wrapper and voice selection
+    try:
+        g.say(gpt_speak(prompt), VOICE)
+    except Exception:
+        g.say(prompt)
     return g
 
 
@@ -2715,33 +2742,61 @@ def normalize(text):
 @app.route("/voice", methods=["POST"])
 @app.route("/voice/", methods=["POST"])  # Accepts trailing slash
 def voice():
-    # Create a new TwiML VoiceResponse object to build the voice reply to the caller
+    """
+    /voice webhook entry point.
+
+    Flow managed by session_data[call_sid]["stage"] and optional ?next_stage=
+    query param appended by make_gather(..., next_stage="...").
+
+    Stages included here:
+      - intro: greet user and ask high-level intent
+      - intent: light NLP to route to the correct downstream stage
+
+    Other stages (ask_doctor, ask_time_date, cancel_appt_get_date_time, etc.)
+    remain in your existing stage machine and will be invoked by setting
+    session_data[call_sid]["stage"] accordingly.
+    """
+    # TwiML root
     resp = VoiceResponse()
-    
 
-    # Extract the unique call ID (SID) from the request parameters to track the session
-    call_sid = request.values.get("CallSid", "")
+    # --- local logger with fallback ---
+    def _dbg(msg: str):
+        try:
+            debug_print(msg)
+        except Exception:
+            print(msg)
 
-    # Retrieve the customer's speech input (transcribed by Twilio's Speech-to-Text)
-    speech_result = request.values.get("SpeechResult", "").strip()
-    print(f"📢 voice :speech_result: {speech_result}")
-    # Determine the current interaction stage (default to "intro" if not previously set)
-    stage = session_data.get(call_sid, {}).get("stage", "intro")
-    """
-    # What happens in this stage:
-    # The caller calls the clinic.
+    # --- Get/ensure call session id ---
+    call_sid = (request.values.get("CallSid") or request.form.get("CallSid") or "").strip()
+    if not call_sid:
+        call_sid = f"anon-{uuid4().hex[:12]}"
+        _dbg(f"voice: ⚠️ missing CallSid; using temp id {call_sid}")
 
-    # Twilio sends a webhook to your /voice endpoint.
+    # --- Ensure session bucket exists early ---
+    session_data.setdefault(call_sid, {})
+    sd = session_data[call_sid]
 
-    # You respond with a greeting prompt, dynamically generated using ChatGPT.
+    # --- Honor next_stage from previous <Gather> (appended as ?next_stage=...) ---
+    next_stage = (request.values.get("next_stage") or request.args.get("next_stage") or "").strip()
+    if next_stage:
+        prev = sd.get("stage")
+        sd["stage"] = next_stage
+        _dbg(f"voice: ↪️ next_stage from request → '{next_stage}' (was '{prev}')")
 
-    # You ask: “Would you like to book an appointment or leave a message?”
+    # --- Pull user inputs from Twilio ---
+    speech_result = (request.values.get("SpeechResult") or "").strip()
+    digits = (request.values.get("Digits") or "").strip()
+    _dbg(f"📢 voice :speech_result: {speech_result}")
+    if digits:
+        _dbg(f"📟 voice :digits: {digits}")
 
-    # The system listens for speech and sends the result back to the same endpoint (/voice) using a POST request.
+    # Keep last inputs for debugging
+    sd["last_speech"] = speech_result
+    sd["last_digits"] = digits
 
-    # The session progresses from "intro" to "intent" for next steps.
-    # If this is the start of the call, begin with the "intro" stage
-    """
+    # --- Determine current stage (default to intro) ---
+    stage = sd.get("stage", "intro")
+    _dbg(f"voice: 🎛️ stage='{stage}' call_sid={call_sid}")
     if stage == "intro":
 
         # Save the current session state as moving to the next stage ("intent")
