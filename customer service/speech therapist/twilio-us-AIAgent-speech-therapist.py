@@ -3498,7 +3498,7 @@ def voice():
             if customer_phone and customer_dob and customer_search(customer_phone, customer_dob):
                 debug_print("ask_time_date: 📋 Customer on file — skip name collection")
                 session_data[call_sid]["stage"] = "book_appt_confirm"
-                gather = make_gather("thank you for being a valuable customer for the EPIC clinic.")
+                gather = make_gather("thank you for being a valuable customer for the EPIC clinic. your appt has been confirmed")
                 resp.append(gather)
                 return str(resp)
             else:
@@ -4143,7 +4143,6 @@ def voice():
 
 
 
-
     elif stage == "cancel_appointment":
         # ----------------------------------------------------------------------
         # 🔄 Stage: Cancel Appointment — after the caller says the doctor’s name
@@ -4154,115 +4153,90 @@ def voice():
         #  4️⃣ Once matched, moves to the next stage to get the phone number.
         # ----------------------------------------------------------------------
 
+        # Ensure session buckets
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid].setdefault("cancel", {})
+
+        # Safe punctuation table (works even if 'string' wasn’t imported elsewhere)
+        try:
+            import string as _string
+            _PUNCT = _string.punctuation
+        except Exception:
+            _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
+
+        def _clean(s: str) -> str:
+            return (s or "").lower().translate(str.maketrans("", "", _PUNCT)).strip()
+
         selected_text = (speech_result or "").strip()
 
         # 🆕 Check if nothing was heard → immediate re-prompt
         if not selected_text:
-            debug_print("⚠️ cancel_appointment: No speech detected — re-prompting user to say the doctor's name.")
+            debug_print("cancel_appointment: ⚠️ No speech detected — re-prompting for doctor name.")
             doctor_list = ", ".join(googleid_dr_name_map.values())
             retry_prompt = (
                 f"I can't hear you. Available doctors are: {doctor_list}. "
                 "Please say the name of the doctor whose appointment you want to cancel."
             )
-            resp.append(make_gather(
-                prompt_text=retry_prompt,
-                next_stage="cancel_appointment"
-            ))
+            # Keep stage here and just re-prompt (no next_stage usage)
+            session_data[call_sid]["stage"] = "cancel_appointment"
+            resp.append(make_gather(prompt_text=retry_prompt))
             return str(resp)
 
-        """
-        str.maketrans(x, y, z)
-   
-            x = characters to replace
+        # ----------------------------------------------------------------------
+        # Why maketrans with '' and ''?
+        #
+        # str.maketrans(x, y, z)
+        #   x = characters to replace
+        #   y = characters they should become (must be same length as x)
+        #   z = characters to delete completely
+        #
+        # str.maketrans('', '', string.punctuation) =>
+        #   nothing to replace (''), nothing to map to (''),
+        #   and delete all punctuation (string.punctuation).
+        #
+        # "hello, world!" -> translate(...)-> "hello world" ; then .strip() trims edges.
+        # ----------------------------------------------------------------------
 
-            y = characters they should become (must be the same length as x)
-
-            z = characters to delete completely
-
-            str.maketrans('', '', string.punctuation)
-            The first '' = “no characters to replace”
-
-            The second '' = “no replacement characters either”
-
-            The third argument string.punctuation = “delete every punctuation character”
-            .translate(str.maketrans('', '', string.punctuation))
-
-            string.punctuation is a built-in constant containing all common punctuation symbols:
-
-            !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
-
-
-            str.maketrans('', '', string.punctuation) builds a translation table that says:
-            “delete all punctuation characters.”
-
-            .translate(...) applies that rule to the string.
-
-            Example: "hello, world!" → "hello world"
-
-            Purpose: Normalizes input by stripping away punctuation so "Dr. Smith" and "Dr Smith" compare the same.
-            .strip()
-
-            Removes leading and trailing whitespace (spaces, tabs, newlines).
-
-            Example: " hello world " → "hello world"
-
-            Purpose: Ensures clean edges when matching text.
-
-        """
-        selected_clean = selected_text.lower().translate(str.maketrans('', '', string.punctuation)).strip()
-        debug_print(f"🗣️ Received doctor name: {selected_clean}")
+        selected_clean = _clean(selected_text)
+        debug_print(f"cancel_appointment: 🗣️ Received doctor name → '{selected_clean}'")
         matched_id = None
 
         # 🔍 Step 1: Try partial substring match
-        """
-             General pattern
-
-            If partial_matches looks like:
-
-                    [ (value_A, score_A), (value_B, score_B), ... ]
-
-            Then:
-
-                    partial_matches[0][0] → "value_A" (the string)
-
-                    partial_matches[0][1] → score_A (the similarity score)
-
-                    partial_matches[1][0] → "value_B"
-
-                    partial_matches[1][1] → score_B
-        """
+        # partial_matches will be a list of (doc_id, friendly_name) tuples.
         partial_matches = []
         for doc_id, friendly_name in googleid_dr_name_map.items():
-            friendly_clean = friendly_name.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+            friendly_clean = _clean(friendly_name)
             if selected_clean in friendly_clean or friendly_clean in selected_clean:
                 partial_matches.append((doc_id, friendly_name))
 
         if len(partial_matches) == 1:
             matched_id = partial_matches[0][0]
-            debug_print(f"✅ cancel_appointment: Dr Name {partial_matches[0][0]} Partial match score: {partial_matches[0][1]}")
+            matched_name = partial_matches[0][1]
+            debug_print(f"cancel_appointment: ✅ Partial match → {matched_name} ({matched_id})")
 
-        # 🤖 Step 2: GPT fallback
+        # 🤖 Step 2: GPT fallback (only if not matched above)
         if not matched_id:
             try:
-                extracted_name = extract_doctor_name(speech_result)
-                print(f"🤖 GPT extracted name: {extracted_name}")
+                extracted_name = extract_doctor_name(selected_text)
+                debug_print(f"cancel_appointment: 🤖 GPT extracted name → '{extracted_name}'")
                 if extracted_name:
-                    extracted_clean = extracted_name.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+                    extracted_clean = _clean(extracted_name)
                     for doc_id, friendly_name in googleid_dr_name_map.items():
-                        friendly_clean = friendly_name.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+                        friendly_clean = _clean(friendly_name)
                         if extracted_clean in friendly_clean or friendly_clean in extracted_clean:
                             matched_id = doc_id
-                            print(f"✅ GPT matched: {friendly_name}")
+                            debug_print(f"cancel_appointment: ✅ GPT matched → {friendly_name} ({doc_id})")
                             break
             except Exception as e:
-                print(f"⚠️ GPT fallback in extract_doctor_name: {e}")
+                debug_print(f"cancel_appointment: ⚠️ GPT fallback in extract_doctor_name → {e}")
 
-        # ❌ Step 3: Still no match → retry
+        # ❌ Step 3: Still no match → retry (with cap)
         if not matched_id:
             retries = session_data[call_sid].get("retry_booking", 0)
             session_data[call_sid]["retry_booking"] = retries + 1
+            max_retries = globals().get("MAX_NUMBER_DR_RETRY", 3)
 
-            if retries >= MAX_NUMBER_DR_RETRY:
+            if retries >= max_retries:
                 resp.say(gpt_speak(
                     "I'm sorry, I still couldn't match that name with any doctor in our clinic. Please try again later. Goodbye."
                 ), VOICE)
@@ -4275,23 +4249,19 @@ def voice():
                 f"I didn't recognize that name. Available doctors are: {doctor_list}. "
                 "Please say the name again."
             )
-            resp.append(make_gather(
-                prompt_text=retry_prompt,
-                next_stage="cancel_appointment"
-            ))
+            session_data[call_sid]["stage"] = "cancel_appointment"
+            resp.append(make_gather(prompt_text=retry_prompt))
             return str(resp)
 
         # ✅ Step 4: Proceed with matched doctor
-        session_data[call_sid]["cancel"]["doctor"] = googleid_dr_name_map[matched_id]
         session_data[call_sid]["doctor_id"] = matched_id
+        session_data[call_sid]["cancel"]["doctor"] = googleid_dr_name_map.get(matched_id, "the doctor")
         session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"
 
         resp.append(make_gather(
-            prompt_text="Thanks. What phone number did you use when booking the appointment?",
-            next_stage="cancel_appt_by_phone_number"
+            prompt_text="Thanks. What phone number did you use when booking the appointment?"
         ))
         return str(resp)
-
 
 
     elif stage == "cancel_appt_by_phone_number":
@@ -4299,41 +4269,53 @@ def voice():
         # 📌 Purpose:
         # This stage collects the **phone number** associated with the
         # appointment the caller wants to cancel.
-        # 
+        #
         # Flow:
         # 1. Extract the phone number from the caller's speech.
         # 2. Validate the phone number (minimum length check).
         # 3. If invalid → prompt the user again using make_gather().
         # 4. If valid → store the number in session data and move on to
         #    ask for the date/time of the appointment to cancel.
-        # 
+        #
         # Notes:
         # - This ensures the cancellation request is linked to the correct
         #   appointment record in the system.
         # ----------------------------------------------------------------------
 
-        # 📞 Step 1: Extract phone number
-        phone = extract_phone_number(speech_result)
-        print(f"📱 Extracted phone → {phone}")
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid].setdefault("cancel", {})
 
-        # ❌ Step 2: If invalid phone, re-prompt
-        if not phone or len(phone) < 7:
-            gather = make_gather("I didn’t catch your phone number. Please say it again clearly.")
+        # 📞 Step 1: Extract phone number (use your existing helper)
+        phone_raw = (speech_result or "").strip()
+        phone = extract_phone_number(phone_raw)
+        debug_print(f"cancel_appt_by_phone_number: 📱 Extracted phone → '{phone}' (raw='{phone_raw}')")
+
+        # Normalize to 10 digits if possible (keeps your len>=7 guard too)
+        def _normalize_10(d: str) -> str:
+            d = "".join(ch for ch in (d or "") if ch.isdigit())
+            return d[1:] if len(d) == 11 and d.startswith("1") else d
+
+        phone10 = _normalize_10(phone)
+
+        # ❌ Step 2: If invalid phone, re-prompt (keep this stage)
+        if not phone10 or len(phone10) < 7:
+            debug_print("cancel_appt_by_phone_number: ❌ invalid/missing phone → reprompt")
+            session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"
+            gather = make_gather("I didn’t catch your phone number. Please say it again clearly, including the area code.")
             resp.append(gather)
             return str(resp)
 
         # ✅ Step 3: Store phone and move to next stage
-        session_data[call_sid]["cancel"]["phone"] = phone
+        session_data[call_sid]["cancel"]["phone"] = phone10
         session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
 
-        # 🗣️ Step 4: Ask for date/time of appointment
+        # 🗣️ Step 4: Ask for date/time of appointment to cancel
         gather = make_gather(
             "Thanks. Now, please tell me the date and time of the appointment you want to cancel. "
             "For example, say July 3rd at 9 AM."
         )
         resp.append(gather)
         return str(resp)
-
 
 
 
