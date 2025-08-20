@@ -4146,18 +4146,15 @@ def voice():
     elif stage == "cancel_appointment":
         # ----------------------------------------------------------------------
         # 🔄 Stage: Cancel Appointment — after the caller says the doctor’s name
-        # This stage:
-        #  1️⃣ Tries to match the spoken name to a doctor in our list.
-        #  2️⃣ If no match is found, it retries with GPT extraction.
-        #  3️⃣ If still no match, it re-prompts (with retry limits).
-        #  4️⃣ Once matched, moves to the next stage to get the phone number.
+        #  1) Try direct partial match against known doctors.
+        #  2) If no match, try GPT-based extraction.
+        #  3) If still no match, re-prompt (with retry cap).
+        #  4) On match, move to phone collection.
         # ----------------------------------------------------------------------
-
-        # Ensure session buckets
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("cancel", {})
 
-        # Safe punctuation table (works even if 'string' wasn’t imported elsewhere)
+        # Safe punctuation list even if 'string' isn't imported globally
         try:
             import string as _string
             _PUNCT = _string.punctuation
@@ -4165,11 +4162,12 @@ def voice():
             _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
 
         def _clean(s: str) -> str:
+            """lowercase + strip punctuation + trim spaces"""
             return (s or "").lower().translate(str.maketrans("", "", _PUNCT)).strip()
 
         selected_text = (speech_result or "").strip()
 
-        # 🆕 Check if nothing was heard → immediate re-prompt
+        # Nothing heard → re-prompt (no next_stage arg)
         if not selected_text:
             debug_print("cancel_appointment: ⚠️ No speech detected — re-prompting for doctor name.")
             doctor_list = ", ".join(googleid_dr_name_map.values())
@@ -4177,32 +4175,17 @@ def voice():
                 f"I can't hear you. Available doctors are: {doctor_list}. "
                 "Please say the name of the doctor whose appointment you want to cancel."
             )
-            # Keep stage here and just re-prompt (no next_stage usage)
             session_data[call_sid]["stage"] = "cancel_appointment"
-            resp.append(make_gather(prompt_text=retry_prompt))
+            resp.append(make_gather(retry_prompt))
             return str(resp)
-
-        # ----------------------------------------------------------------------
-        # Why maketrans with '' and ''?
-        #
-        # str.maketrans(x, y, z)
-        #   x = characters to replace
-        #   y = characters they should become (must be same length as x)
-        #   z = characters to delete completely
-        #
-        # str.maketrans('', '', string.punctuation) =>
-        #   nothing to replace (''), nothing to map to (''),
-        #   and delete all punctuation (string.punctuation).
-        #
-        # "hello, world!" -> translate(...)-> "hello world" ; then .strip() trims edges.
-        # ----------------------------------------------------------------------
 
         selected_clean = _clean(selected_text)
         debug_print(f"cancel_appointment: 🗣️ Received doctor name → '{selected_clean}'")
-        matched_id = None
 
-        # 🔍 Step 1: Try partial substring match
-        # partial_matches will be a list of (doc_id, friendly_name) tuples.
+        matched_id = None
+        matched_name = None
+
+        # 1) Partial substring match
         partial_matches = []
         for doc_id, friendly_name in googleid_dr_name_map.items():
             friendly_clean = _clean(friendly_name)
@@ -4210,11 +4193,10 @@ def voice():
                 partial_matches.append((doc_id, friendly_name))
 
         if len(partial_matches) == 1:
-            matched_id = partial_matches[0][0]
-            matched_name = partial_matches[0][1]
+            matched_id, matched_name = partial_matches[0]
             debug_print(f"cancel_appointment: ✅ Partial match → {matched_name} ({matched_id})")
 
-        # 🤖 Step 2: GPT fallback (only if not matched above)
+        # 2) GPT fallback
         if not matched_id:
             try:
                 extracted_name = extract_doctor_name(selected_text)
@@ -4224,13 +4206,13 @@ def voice():
                     for doc_id, friendly_name in googleid_dr_name_map.items():
                         friendly_clean = _clean(friendly_name)
                         if extracted_clean in friendly_clean or friendly_clean in extracted_clean:
-                            matched_id = doc_id
-                            debug_print(f"cancel_appointment: ✅ GPT matched → {friendly_name} ({doc_id})")
+                            matched_id, matched_name = doc_id, friendly_name
+                            debug_print(f"cancel_appointment: ✅ GPT matched → {matched_name} ({matched_id})")
                             break
             except Exception as e:
-                debug_print(f"cancel_appointment: ⚠️ GPT fallback in extract_doctor_name → {e}")
+                debug_print(f"cancel_appointment: ⚠️ GPT fallback error → {e}")
 
-        # ❌ Step 3: Still no match → retry (with cap)
+        # 3) Still no match → retry with cap
         if not matched_id:
             retries = session_data[call_sid].get("retry_booking", 0)
             session_data[call_sid]["retry_booking"] = retries + 1
@@ -4250,71 +4232,50 @@ def voice():
                 "Please say the name again."
             )
             session_data[call_sid]["stage"] = "cancel_appointment"
-            resp.append(make_gather(prompt_text=retry_prompt))
+            resp.append(make_gather(retry_prompt))
             return str(resp)
 
-        # ✅ Step 4: Proceed with matched doctor
+        # 4) Proceed with matched doctor → next stage: phone number
         session_data[call_sid]["doctor_id"] = matched_id
-        session_data[call_sid]["cancel"]["doctor"] = googleid_dr_name_map.get(matched_id, "the doctor")
+        session_data[call_sid]["cancel"]["doctor"] = matched_name or googleid_dr_name_map.get(matched_id, "the doctor")
         session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"
 
         resp.append(make_gather(
-            prompt_text="Thanks. What phone number did you use when booking the appointment?"
+            "Thanks. What phone number did you use when booking the appointment?"
         ))
         return str(resp)
 
 
     elif stage == "cancel_appt_by_phone_number":
         # ----------------------------------------------------------------------
-        # 📌 Purpose:
-        # This stage collects the **phone number** associated with the
-        # appointment the caller wants to cancel.
-        #
-        # Flow:
-        # 1. Extract the phone number from the caller's speech.
-        # 2. Validate the phone number (minimum length check).
-        # 3. If invalid → prompt the user again using make_gather().
-        # 4. If valid → store the number in session data and move on to
-        #    ask for the date/time of the appointment to cancel.
-        #
-        # Notes:
-        # - This ensures the cancellation request is linked to the correct
-        #   appointment record in the system.
+        # 📌 Collect the phone number used when booking, then move to date+time.
         # ----------------------------------------------------------------------
-
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("cancel", {})
 
-        # 📞 Step 1: Extract phone number (use your existing helper)
         phone_raw = (speech_result or "").strip()
         phone = extract_phone_number(phone_raw)
         debug_print(f"cancel_appt_by_phone_number: 📱 Extracted phone → '{phone}' (raw='{phone_raw}')")
 
-        # Normalize to 10 digits if possible (keeps your len>=7 guard too)
         def _normalize_10(d: str) -> str:
             d = "".join(ch for ch in (d or "") if ch.isdigit())
             return d[1:] if len(d) == 11 and d.startswith("1") else d
 
         phone10 = _normalize_10(phone)
 
-        # ❌ Step 2: If invalid phone, re-prompt (keep this stage)
         if not phone10 or len(phone10) < 7:
             debug_print("cancel_appt_by_phone_number: ❌ invalid/missing phone → reprompt")
             session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"
-            gather = make_gather("I didn’t catch your phone number. Please say it again clearly, including the area code.")
-            resp.append(gather)
+            resp.append(make_gather("I didn’t catch your phone number. Please say it again clearly, including the area code."))
             return str(resp)
 
-        # ✅ Step 3: Store phone and move to next stage
         session_data[call_sid]["cancel"]["phone"] = phone10
         session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
 
-        # 🗣️ Step 4: Ask for date/time of appointment to cancel
-        gather = make_gather(
+        resp.append(make_gather(
             "Thanks. Now, please tell me the date and time of the appointment you want to cancel. "
             "For example, say July 3rd at 9 AM."
-        )
-        resp.append(gather)
+        ))
         return str(resp)
 
 
@@ -4331,11 +4292,10 @@ def voice():
         #   - Requires a 10-digit phone on file before proceeding; if missing,
         #     redirects to collect_phone and returns here afterward.
         # Flow after success:
-        #   - Sets stage -> "cancel_appt_confirm" (you should implement that to
-        #     locate & cancel the appointment using phone+dob [+ optional doctor_id]).
+        #   - Sets stage -> "cancel_appt_get_date_time" (we’ll ask for the appt’s date+time next).
         # Resilience:
-        #   - 3 retries on parse errors with polite reprompts.
-        #   - Consistent "can't hear you" behavior via make_gather_dob().
+        #   - 3 retries on parse or validation errors with polite reprompts.
+        #   - Consistent "can't hear you" behavior via make_gather_dob() when available.
         # ----------------------------------------------------------------------
         debug_print("cancel_appt_get_dob: 📍 Stage entered")
 
@@ -4343,7 +4303,18 @@ def voice():
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
 
-        # --- Guard: require 10-digit phone first -------------------------------
+        # Local import guard for date
+        try:
+            from datetime import date
+        except Exception:
+            # Fallback: simple shim if import ever fails (highly unlikely)
+            debug_print("cancel_appt_get_dob: ⚠️ could not import 'date' from datetime")
+            class _FakeDate:  # minimal stub to avoid NameError
+                @staticmethod
+                def today(): return None
+            date = _FakeDate  # type: ignore
+
+        # --- Guard: require 10-digit phone first ---------------------------------
         def _normalize_10(d: str) -> str:
             d = "".join(ch for ch in (d or "") if ch.isdigit())
             return d[1:] if len(d) == 11 and d.startswith("1") else d
@@ -4363,7 +4334,7 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # --- Pull inputs (DTMF preferred if provided by Twilio) ----------------
+        # --- Pull inputs (DTMF preferred if provided by Twilio) -------------------
         try:
             dtmf_digits = (request.values.get("Digits") or "").strip()
         except Exception:
@@ -4371,7 +4342,8 @@ def voice():
         speech_text = (speech_result or "").strip()
         debug_print(f"cancel_appt_get_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
 
-        # --- Attempt to parse DOB (speech or keypad) ---------------------------
+        # --- Attempt to parse DOB (speech or keypad) ------------------------------
+        # parse_dob_input should return a datetime (or None on failure)
         dt = parse_dob_input(speech_text, dtmf_digits)
         if not dt:
             session_data[call_sid]["retry_cancel_dob"] = session_data[call_sid].get("retry_cancel_dob", 0) + 1
@@ -4386,25 +4358,31 @@ def voice():
 
             prompt_text = (
                 "Please say birth date, for example July third nineteen fifty six, "
-                #"or type two digits for month, two for day, and four for year, then press pound. "
-                "or type MMDDYYYY, then press pound. "
+                "or type MMDDYYYY, then press pound."
             )
-            # Use your DOB gather helper if available; otherwise fall back to make_gather
             try:
-                gather = make_gather_dob(prompt_text)
+                gather = make_gather_dob(prompt_text)  # if you have a specialized DOB gather
             except Exception:
-                gather = make_gather(prompt_text)
+                gather = make_gather(prompt_text, hints="zero one two three four five six seven eight nine")
             resp.append(gather)
             return str(resp)
 
-        # --- Validate reasonable DOB range -------------------------------------
+        # --- Validate reasonable DOB range ----------------------------------------
         try:
             today = date.today()
             min_date = date(1900, 1, 1)
             dob_date = dt.date()
             if not (min_date <= dob_date <= today):
-                debug_print(f"cancel_appt_get_dob: ⚠️ DOB out of range → {dob_date.isoformat()}")
                 session_data[call_sid]["retry_cancel_dob"] = session_data[call_sid].get("retry_cancel_dob", 0) + 1
+                r = session_data[call_sid]["retry_cancel_dob"]
+                debug_print(f"cancel_appt_get_dob: ⚠️ DOB out of range → {dob_date.isoformat()} Retry={r}")
+
+                if r >= 3:
+                    resp.say(gpt_speak("Sorry, that birth date still doesn’t look valid. Please call again later."), VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    return str(resp)
+
                 prompt_text = (
                     "That doesn't sound like a valid birth date. Please say it again, "
                     "or type two digits for month, two for day, and four for year, then press pound. "
@@ -4413,29 +4391,13 @@ def voice():
                 try:
                     gather = make_gather_dob(prompt_text)
                 except Exception:
-                    gather = make_gather(prompt_text)
+                    gather = make_gather(prompt_text, hints="zero one two three four five six seven eight nine")
                 resp.append(gather)
                 return str(resp)
         except Exception as e:
             debug_print(f"cancel_appt_get_dob: ⚠️ Validation error → {e}")
 
-        # --- Store ISO DOB and advance -----------------------------------------
-        iso_dob = dt.strftime("%Y-%m-%d")
-        session_data[call_sid]["customer"]["dob"] = iso_dob
-        debug_print(f"cancel_appt_get_dob: ✅ Stored DOB → {iso_dob}")
-
-        # Advance to the confirmation/lookup stage of your cancel flow
-        session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
-        debug_print("cancel_appt_get_dob: ➡️ Next stage → cancel_appt_confirm")
-
-        # If you already know the appointment time, you can mention it; otherwise generic prompt
-        next_prompt = (
-            "Thanks. I found your details. Do you want me to cancel your appointment now?"
-        )
-        gather = make_gather(next_prompt)
-        resp.append(gather)
-        return str(resp)
-
+        # --- Store ISO DOB and advance ----------------------------
 
 
 
