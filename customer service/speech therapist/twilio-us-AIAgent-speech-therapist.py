@@ -3314,7 +3314,7 @@ def voice():
         def _has_time_token(raw: str) -> bool:
             """Heuristic: if parse fully failed, check if caller likely said a time."""
             s = (raw or "").lower()
-            return ("am" in s) or ("pm" in s) or (":" in s) or ("o'clock" in s) or ("oclock" in s)
+            return ("am" in s) or ("pm" in s) or (":" in s) or ("o'clock" in s) or ("oclock" in s) or re.search(r"\b\d{3,4}\b", s) is not None
 
         def _has_date_token(raw: str) -> bool:
             """Heuristic: if parse fully failed, check for month/weekday/date words."""
@@ -3331,6 +3331,12 @@ def voice():
             if "/" in s or "-" in s: return True  # dates like 8/15 or 08-15
             return False
 
+        # Ensure we have 're' available even if not globally imported
+        try:
+            import re
+        except Exception:
+            pass
+
         # --- Minimal pre-clean for AM/PM variants & trailing punctuation ---
         try:
             _raw = (speech_result or "").strip()
@@ -3339,6 +3345,17 @@ def voice():
             _raw = re.sub(r"[.!?]\s*$", "", _raw)
         except Exception:
             _raw = (speech_result or "")
+
+        # 0) Guard: doctor must be chosen (per-doctor calendar)
+        doctor_id = session_data.get(call_sid, {}).get("doctor_id")
+        if not doctor_id:
+            debug_print("ask_time_date: ❌ no doctor selected → sending user to pick a doctor")
+            session_data.setdefault(call_sid, {})["stage"] = "choose_doctor"
+            gather = make_gather("Which doctor would you like to see?")
+            resp.append(gather)
+            return str(resp)
+
+        calendar_id = doctor_id
 
         # 1) Parse (day, time) from the caller’s phrase
         #    Expect a tuple like: ("Friday, August 15", "5:00 AM") or similar.
@@ -3360,6 +3377,7 @@ def voice():
                 prompt = TIME_PROMPT_SHORT
 
             # Retry parsing up to 3 times
+            session_data.setdefault(call_sid, {})
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
             retry_count = session_data[call_sid]["retry_time"]
             debug_print(f"ask_time_date: ⚠️ Time parse failed (no tuple). Retry={retry_count} — prompt='{prompt}'")
@@ -3413,6 +3431,8 @@ def voice():
         try:
             appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
             session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
+            # Reset retry counter after a successful parse/build
+            session_data[call_sid]["retry_time"] = 0
             debug_print(f"ask_time_date: ⏰ Built slot → Start: {appointment_start}, End: {appointment_end}")
         except Exception as e:
             debug_print(f"ask_time_date: ❌ build_timeslot_range failed → {e}")
@@ -3430,8 +3450,6 @@ def voice():
             return str(resp)
 
         # 3) Check the doctor’s calendar availability for this slot (per-doctor only)
-        doctor_id = session_data[call_sid]["doctor_id"]
-        calendar_id = doctor_id
         debug_print(f"ask_time_date: 👨‍⚕️ Checking calendar → {calendar_id}")
 
         slot_available = False
@@ -3440,7 +3458,6 @@ def voice():
             slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
             if slot_available:
                 debug_print("ask_time_date: ✅ Slot free (first check) → proceed to customer lookup/confirmation")
-
         except Exception as e:
             debug_print(f"ask_time_date: ⚠️ Availability check error → {e}")
             slot_available = False
@@ -3451,11 +3468,12 @@ def voice():
             # Find nearby alternatives (friendly strings already included by helper).
             alts = []
             try:
+                dur_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
                 alts = get_next_available_slots(
                     calendar_id,
                     creds,
                     from_start_iso=appointment_start,              # start searching from requested time
-                    duration_minutes=APPOINTMENT_DURATION_MINUTES, # your existing constant
+                    duration_minutes=dur_minutes,
                     limit=3,
                     tz_name="America/Chicago",                     # clinic tz
                     work_hours=((8,12),(13,17)),                   # adjust to your schedule
@@ -3491,29 +3509,33 @@ def voice():
         debug_print("ask_time_date: ✅ Slot free (per strict check) → proceed to customer lookup/confirmation")
 
         customer = session_data[call_sid].get("customer", {})
-        customer_phone = customer.get("phone", "")
-        customer_dob   = customer.get("dob", "")
+        customer_phone = (customer.get("phone") or "").strip()
+        customer_dob   = (customer.get("dob") or "").strip()
 
         try:
+            # If we have both phone & DOB and the customer exists → go straight to booking stage
             if customer_phone and customer_dob and customer_search(customer_phone, customer_dob):
                 debug_print("ask_time_date: 📋 Customer on file — skip name collection")
+                # 🚩 IMPORTANT: actually transition to book_appt_confirm so it can reserve Google Calendar.
                 session_data[call_sid]["stage"] = "book_appt_confirm"
-                gather = make_gather("thank you for being a valuable customer for the EPIC clinic. your appt has been confirmed")
-                resp.append(gather)
+                session_data[call_sid]["auto_confirm"] = True  # optional: let confirm stage know it can auto-book
+                debug_print("ask_time_date: ➡️ Redirecting to book_appt_confirm (auto_confirm=True)")
+                resp.redirect("/voice")  # immediately re-enter handler; book_appt_confirm will execute now
                 return str(resp)
             else:
+                # Otherwise collect name (first → last → address → cc → confirm)
                 debug_print("ask_time_date: 🆕 Customer not found → collecting first name")
                 session_data[call_sid]["stage"] = "collect_first_name"
                 gather = make_gather("Thanks. What is your first name?")
                 resp.append(gather)
                 return str(resp)
         except Exception as e:
+            # If lookup errors out, fall back to collecting the name
             debug_print(f"ask_time_date: ⚠️ customer_search error → {e}")
             session_data[call_sid]["stage"] = "collect_first_name"
             gather = make_gather("Thanks. What is your first name?")
             resp.append(gather)
             return str(resp)
-
 
 
 
