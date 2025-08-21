@@ -2935,6 +2935,7 @@ def voice():
         return str(resp)
 
 
+
     elif stage == "intent":
         # ----------------------------------------------------------------------
         # 🎯 Intent detection stage: figure out if the caller wants to:
@@ -3086,50 +3087,22 @@ def voice():
         # 📍 Booking flow: the caller has just been asked to name a doctor.
         # Our task here is to identify which doctor they said and, if successful,
         # proceed to ask what time they’d like to book.
-        #
-        # 🆕 Silent mode handling:
-        #   - If we hear neither SpeechResult nor Digits, re-prompt up to 3 times.
-        #   - Uses per-stage counter: session_data[call_sid]["silence_booking"].
-        #   - Keeps behavior consistent with other stages.
         # ----------------------------------------------------------------------
 
         if "retry_booking" not in session_data[call_sid]:
             session_data[call_sid]["retry_booking"] = 0
 
-        # Pull Digits too (some carriers send empty speech on silence)
+        # ✅ Safe punctuation constant (avoid using `string` directly)
         try:
-            dtmf_digits = (request.values.get("Digits") or "").strip()
+            from string import punctuation as _PUNCT
         except Exception:
-            dtmf_digits = ""
-
-        # 🆕 Silent mode: nothing heard (no speech and no digits) → re-prompt with cap 3
-        if not (speech_result or dtmf_digits):
-            tries = session_data[call_sid].get("silence_booking", 0) + 1
-            session_data[call_sid]["silence_booking"] = tries
-            debug_print(f"booking: 🤐 no input heard (tries={tries})")
-
-            if tries >= 3:
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            doctor_list_str = ", ".join(googleid_dr_name_map.values())
-            prompt = (
-                "I didn't hear you. Please say the name of the doctor you'd like to book with, "
-                "for example 'Alfred Hitchcock'."
-            )
-            gather = make_gather(prompt, hints=doctor_list_str)
-            resp.append(gather)
-            return str(resp)
-
-        # We heard *something* → clear the silence counter for this stage
-        session_data[call_sid].pop("silence_booking", None)
+            _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
 
         # 📻 Clean and normalize speech input
-        spoken_text = speech_result.lower().strip() if speech_result else ""
-        spoken_clean = spoken_text.translate(str.maketrans('', '', string.punctuation)).strip()
-        debug_print(f"📻 booking :speech_result: {spoken_clean}")
+        spoken_text = (speech_result or "").lower().strip()
+        # ⛑️ Use _PUNCT so we never reference `string` locally
+        spoken_clean = spoken_text.translate(str.maketrans('', '', _PUNCT)).strip()
+        print(f"📻 booking :speech_result: {spoken_clean}")
 
         # 🚫 Block common junk phrases often returned by Twilio hallucination
         junk_inputs = {
@@ -3138,7 +3111,7 @@ def voice():
         }
 
         if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
-            debug_print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
+            print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
             gather = make_gather("Please say the name of the doctor you'd like to book with.", hints=doctor_list_str)
             resp.append(gather)
@@ -3153,22 +3126,22 @@ def voice():
         spoken_tokens = set(spoken_clean.split())
 
         for doc_id, friendly in googleid_dr_name_map.items():
-            friendly_clean = friendly.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+            friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
             friendly_tokens = set(friendly_clean.split())
 
             if (
                 spoken_clean in friendly_clean
                 or friendly_clean in spoken_clean
-                or (spoken_tokens & friendly_tokens)  # Token overlap
+                or spoken_tokens & friendly_tokens  # Token overlap
             ):
                 partial_matches.append((doc_id, friendly))
 
         if len(partial_matches) == 1:
             matched_id = partial_matches[0][0]
-            debug_print(f"✅ Partial match with: {partial_matches[0][1]}")
+            print(f"✅ Partial match with: {partial_matches[0][1]}")
         elif len(partial_matches) > 1:
-            debug_print(f"🔍 Multiple potential matches: {[name for _, name in partial_matches]}")
-            matched_id = partial_matches[0][0]  # Keep simple: pick first (or ask to clarify)
+            print(f"🔍 Multiple potential matches found: {[name for _, name in partial_matches]}")
+            matched_id = partial_matches[0][0]  # or ask user to clarify
 
         # ------------------------------------------------------------------
         # 🤖 2. GPT fallback (only if 2+ words)
@@ -3177,9 +3150,9 @@ def voice():
             try:
                 extracted = extract_doctor_name(spoken_text)
                 if extracted:
-                    extracted_clean = extracted.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+                    extracted_clean = extracted.lower().translate(str.maketrans('', '', _PUNCT)).strip()
                     for doc_id, friendly in googleid_dr_name_map.items():
-                        friendly_clean = friendly.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+                        friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
                         if extracted_clean in friendly_clean or friendly_clean in extracted_clean:
                             matched_id = doc_id
                             debug_print(f"✅ Matched via GPT fallback: {friendly}")
@@ -3217,7 +3190,7 @@ def voice():
         # ✅ 4. Success → Go collect phone FIRST
         # ------------------------------------------------------------------
         session_data[call_sid]["doctor_id"] = matched_id
-        session_data[call_sid]["stage"] = "collect_phone"  # next stage
+        session_data[call_sid]["stage"] = "collect_phone"
 
         friendly_name = googleid_dr_name_map[matched_id]
         phone_prompt = (
@@ -5145,9 +5118,8 @@ def voice():
         #   - Uses smart_parse_time + build_timeslot_range to build UTC start/end.
         #   - Requires a chosen doctor (calendar_id) and a 10-digit phone (to prefer
         #     matching the correct patient when multiple overlaps exist).
-        #   - We FIRST call is_time_slot_available (vendor-agnostic check).
-        #     If it returns False (busy), we then list overlapping events to get event ID.
-        #   - No use of next_stage; we set session_data[call_sid]["stage"] explicitly.
+        #   - Silent-mode: re-prompt up to 3x if nothing is heard.
+        #   - No inline imports; relies on top-level build/isoparse/timedelta.
         # ----------------------------------------------------------------------
         debug_print("cancel_appt_by_time_date: 📍 Stage entered")
 
@@ -5164,7 +5136,7 @@ def voice():
             resp.append(make_gather("Which doctor's appointment would you like to cancel?"))
             return str(resp)
 
-        # --- Require phone (10-digit) — helps disambiguate overlapping events -----
+        # --- Require phone (10-digit) ---------------------------------------------
         def _normalize_10(d: str) -> str:
             d = "".join(ch for ch in (d or "") if ch.isdigit())
             return d[1:] if len(d) == 11 and d.startswith("1") else d
@@ -5183,17 +5155,33 @@ def voice():
 
         cancel_ctx["phone"] = phone_norm
 
-        # --- Get utterance and parse date+time ------------------------------------
+        # --- Get utterance (with silent-mode handling) ----------------------------
         utter = (speech_result or "").strip()
         debug_print(f"cancel_appt_by_time_date: 🗣️ Raw speech → '{utter}'")
 
         if not utter:
-            debug_print("cancel_appt_by_time_date: 🚫 No date/time spoken → iterate flow")
-            cancel_ctx["iter_index"] = 0
-            session_data[call_sid]["stage"] = "cancel_appt_iterate"
-            resp.append(make_gather("Okay, I’ll list your upcoming appointments."))
+            # 🔇 Silent-mode: re-prompt up to 3x before falling back to iterator
+            tries = session_data[call_sid].get("silence_cancel_dt", 0) + 1
+            session_data[call_sid]["silence_cancel_dt"] = tries
+            debug_print(f"cancel_appt_by_time_date: 🤐 silence/no input; tries={tries}")
+
+            if tries >= 3:
+                debug_print("cancel_appt_by_time_date: ⬇️ falling back to iterator after repeated silence")
+                cancel_ctx["iter_index"] = 0
+                session_data[call_sid]["stage"] = "cancel_appt_iterate"
+                resp.append(make_gather("Okay, I’ll list your upcoming appointments."))
+                return str(resp)
+
+            # Re-prompt for a date+time
+            session_data[call_sid]["stage"] = "cancel_appt_by_time_date"
+            prompt = "Please say the date and time of the appointment you want to cancel, for example 'August 15th at 5 AM'."
+            resp.append(make_gather(prompt))
             return str(resp)
 
+        # Heard something → clear the silence counter
+        session_data[call_sid].pop("silence_cancel_dt", None)
+
+        # --- Parse date+time ------------------------------------------------------
         time_info = smart_parse_time(utter)
         debug_print(f"cancel_appt_by_time_date: 🧠 smart_parse_time → {time_info}")
 
@@ -5205,9 +5193,11 @@ def voice():
             return str(resp)
 
         spoken_day, spoken_time = time_info
+        cancel_ctx["day"] = spoken_day
+        cancel_ctx["time"] = spoken_time
         debug_print(f"cancel_appt_by_time_date: 📆 Parsed → Day='{spoken_day}', Time='{spoken_time}'")
 
-        # --- Make UTC window from spoken day/time ---------------------------------
+        # --- Build UTC window -----------------------------------------------------
         try:
             appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
             cancel_ctx["utc_start"] = appointment_start
@@ -5220,16 +5210,13 @@ def voice():
             resp.append(make_gather("That didn’t look like a valid date and time. I’ll list your upcoming appointments."))
             return str(resp)
 
-        # --- Use your strict availability checker (vendor-agnostic) ---------------
-        # IMPORTANT: For cancel we invert the meaning:
-        #   • is_time_slot_available == True  → slot is FREE  → nothing to cancel.
-        #   • is_time_slot_available == False → slot is BUSY → there is an event to cancel.
+        # --- Availability (invert logic for cancel) --------------------------------
         try:
             slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
             debug_print(f"cancel_appt_by_time_date: 🔎 is_time_slot_available → {slot_free}")
         except Exception as e:
             debug_print(f"cancel_appt_by_time_date: ⚠️ availability check error → {e}")
-            slot_free = True  # fail-open to avoid accidental delete; treat as "not found"
+            slot_free = True  # fail-open: treat as no event at that time
 
         if slot_free:
             # No event at that time → nothing to cancel; offer iterate path
@@ -5239,15 +5226,11 @@ def voice():
             resp.append(make_gather("I didn’t find an appointment at that time. I’ll list your upcoming appointments."))
             return str(resp)
 
-        # --- Slot is BUSY → fetch overlapping event(s) to get event ID ------------
+        # --- Slot is BUSY → fetch overlapping event(s) to identify event -----------
         try:
-            from googleapiclient.discovery import build
-            from dateutil.parser import isoparse
-            from datetime import timedelta
-
             service = build("calendar", "v3", credentials=creds)
 
-            # Small padding to catch edge-inclusive overlaps (same as availability helper)
+            # Pad the search window to catch edge-inclusive overlaps
             tmin = (isoparse(appointment_start) - timedelta(seconds=60)).isoformat()
             tmax = (isoparse(appointment_end)   + timedelta(seconds=60)).isoformat()
 
@@ -5263,7 +5246,6 @@ def voice():
 
             debug_print(f"cancel_appt_by_time_date: 📄 events().list returned {len(items)} item(s) in padded window")
 
-            # Select the first overlapping, opaque event; prefer one that matches caller phone
             def _overlaps(ev, s, e):
                 try:
                     es = isoparse(ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date"))
@@ -5277,7 +5259,7 @@ def voice():
 
             candidates = []
             for ev in items:
-                if ev.get("status") == "cancelled": 
+                if ev.get("status") == "cancelled":
                     continue
                 if ev.get("transparency") == "transparent":
                     continue
@@ -5287,7 +5269,7 @@ def voice():
 
             debug_print(f"cancel_appt_by_time_date: 🔎 overlapping, opaque events → {len(candidates)}")
 
-            # Prefer the event whose extendedProperties.private.phone10 matches the caller
+            # Prefer the event whose private.phone10 matches the caller
             chosen = None
             for ev in candidates:
                 try:
@@ -5307,7 +5289,7 @@ def voice():
                 resp.append(make_gather("I couldn’t find the event details. I’ll list your upcoming appointments instead."))
                 return str(resp)
 
-            # Persist chosen event for the confirm stage
+            # Persist chosen event for confirm stage
             cancel_ctx["calendar_id"]    = calendar_id
             cancel_ctx["matching_event"] = {
                 "id": chosen.get("id"),
@@ -5320,8 +5302,7 @@ def voice():
 
             # Go to confirmation
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
-            # Friendly echo
-            friendly = cancel_ctx.get("day") and cancel_ctx.get("time")
+            friendly = (cancel_ctx.get("day") and cancel_ctx.get("time"))
             prompt = "I found that appointment. Would you like me to cancel it now?"
             if friendly:
                 prompt = f"I found your appointment on {cancel_ctx['day']} at {cancel_ctx['time']}. Shall I cancel it now?"
