@@ -1,73 +1,43 @@
 # update  07/22/25 2:45 pm
+# =========================
+# Standard library imports
+# =========================
 import os
 import json
-#import openai
-import pickle
+import string          # for string.punctuation
+import calendar
+import re as _re       # use _re everywhere to avoid UnboundLocalError
+from uuid import uuid4
+
+from typing import Any, Optional, List, Dict, Tuple, Iterator, Iterable, Union
+
+from datetime import datetime, date, time, timedelta, timezone
+from datetime import datetime as _dt  # if code references _dt
+
+# =========================
+# Third-party libraries
+# =========================
 import dateparser
-import  calendar
-import  re
-import openai
-import pytz
-import os
-import json
-import re as re_mod
 import pytz as _pytz
-import string  # <-- needed for string.punctuation
-
-
-from dateutil.parser import isoparse  # for parsing RFC3339/ISO datetimes to extract dates
-from datetime import datetime, date
-
-from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from datetime import timedelta
-from datetime import datetime as _dt
 
-from datetime import datetime, timedelta
-from dateutil.tz import gettz
-from datetime import datetime, timedelta, time
-from datetime import datetime, timedelta
-from typing import Tuple
-from datetime import datetime, timedelta, date, time as dtime
-from typing import Tuple, Union
-from typing import Optional
-from typing import Any, Dict
 from dateutil import parser as dtparser
-from datetime import datetime
-from datetime import timedelta
-from datetime import datetime
-from datetime import timedelta, timezone
-from datetime import datetime as _dt
-from uuid import uuid4  # only used if CallSid is missing
-
-
-
-
-
-
-
-# BEFORE:
-# def _render_block_lines(new: bool, rec: dict) -> list[str]:
-# AFTER (3.8-safe):
-from typing import Any, Optional, List, Dict, Tuple, Iterator, Iterable
+from dateutil.parser import isoparse
+from dateutil.tz import gettz
 
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import InstalledAppFlow  # keep only if you actually use OAuth user flow
 from google.auth.transport.requests import Request
 
-from twilio.rest import Client as TwilioClient
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from twilio.twiml.messaging_response import MessagingResponse
-from twilio.rest import Client
+from twilio.rest import Client as TwilioClient
 
+from openai import OpenAI, APIConnectionError, AuthenticationError, RateLimitError, OpenAIError
 
-from openai import OpenAI, APIConnectionError, AuthenticationError, RateLimitError
-from openai import OpenAIError  # Add this import at the top
+from flask import Flask, request, url_for
 
-from flask import request
-from flask import url_for
-from flask import Flask, request
 # ---------------- Project Structure -----------------
 # speech_AI_agent/
 # speech_ai_agent.py
@@ -3075,97 +3045,151 @@ def voice():
 
     # ===== collect_phone (stage) =====
     elif stage == "collect_phone":
-        # Collect a 10-digit US phone via speech or DTMF, stay here until valid.
+        # ----------------------------------------------------------------------
+        # 📞 Stage: collect_phone
+        #
+        # Goal:
+        #   - Capture the caller's phone number via DTMF or speech.
+        #   - Normalize to 10 digits (strip non-digits; if 11 and starts with '1', drop leading 1).
+        #   - Store at session_data[call_sid]["customer"]["phone"].
+        #   - If we were sent here from another stage, return to that stage via
+        #     session_data[call_sid]["return_stage"].
+        #
+        # Notes:
+        #   - We use `_re` instead of `re` to avoid UnboundLocalError caused by
+        #     later `import re` statements in the same function scope.
+        #   - We also support speech like "four six nine four six three..."
+        # ----------------------------------------------------------------------
+        debug_print("collect_phone: 📍 Stage entered")
 
-        session_data.setdefault(call_sid, {}).setdefault("customer", {})
-        session_data[call_sid]["retry_phone"] = session_data[call_sid].get("retry_phone", 0)
-        """
-        re.sub(pattern, repl, string, count=0)
-            pattern → regex pattern to search for.
+        # Use a local alias `_re` to avoid name collisions and UnboundLocalError
+        #import re as _re
 
-            repl → what to replace it with.
+        # Ensure session buckets exist
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid].setdefault("customer", {})
 
-            string → the original text.
-
-            count (optional) → how many occurrences to replace (default = all).
-            d = re.sub(r"\D", "", raw_digits or "")
-                    raw_digits or "" → if raw_digits is None, use "" instead.
-
-                    \D = regex for “any character that is NOT a digit”.
-
-                    re.sub(r"\D", "", ...) → replace all non-digits with "" (delete them).
-                    Example
-                    "(312) 555-0199" → "3125550199"
-                    "+1-800-123-4567" → "18001234567"
-            if len(d) == 11 and d.startswith("1"):
-                    d = d[1:]
-                            If the number is 11 digits long and starts with "1",
-                            → Strip off the leading "1".
-
-                This is because "1" is the US country code.
-                ✅ Example:
-                      "18001234567" → "8001234567"
-                return d if len(d) == 10 else ""
-                    If the result is exactly 10 digits → return it (valid US number).
-                    Otherwise → return empty string "" (invalid phone).
-                    ✅ Example:
-                    "3125550199" → valid, returned as "3125550199".
-                    "5550199" → too short, returns "".
-                    "441234567890" → UK number, not 10 digits, returns "".
-        """
-
-        def _validate_normalize_us_phone(raw_digits: str) -> str:
-            d = re.sub(r"\D", "", raw_digits or "")
-            if len(d) == 11 and d.startswith("1"):
-                d = d[1:]
-            return d if len(d) == 10 else ""
-
-        # Try speech first
+        # Pull inputs
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
         speech_text = (speech_result or "").strip()
-        debug_print(f"collect_phone: speech='{speech_text}'")
-        speech_digits = re.sub(r"\D", "", speech_text)
-        normalized = _validate_normalize_us_phone(speech_digits)
+        debug_print(f"collect_phone: speech='{speech_text}' DTMF='{dtmf_digits}'")
 
-        # Fallback to DTMF if speech invalid
-        if not normalized:
-            try:
-                dtmf_digits = (request.values.get("Digits") or "").strip()
-            except Exception:
-                dtmf_digits = ""
-            debug_print(f"collect_phone: dtmf='{dtmf_digits}'")
-            normalized = _validate_normalize_us_phone(dtmf_digits)
+        # --- helpers --------------------------------------------------------------
+        def _spoken_to_digits(raw: str) -> str:
+            """
+            Convert spoken words to digits.
+            Supports 'double'/'triple' and common homophones (oh/o for 0, to/too for 2, ate for 8).
+            Also extracts any digits already present in the string.
+            """
+            if not raw:
+                return ""
+            words = (
+                raw.lower()
+                .replace("-", " ")
+                .replace(",", " ")
+                .replace(".", " ")
+                .replace("(", " ")
+                .replace(")", " ")
+                .split()
+            )
+            m = {
+                "zero": "0", "oh": "0", "o": "0",
+                "one": "1", "two": "2", "to": "2", "too": "2",
+                "three": "3", "four": "4", "for": "4",
+                "five": "5", "six": "6", "seven": "7",
+                "eight": "8", "ate": "8", "nine": "9",
+            }
+            out = []
+            i = 0
+            while i < len(words):
+                w = words[i].strip()
+                # handle "double X" / "triple X"
+                if w in ("double", "triple") and i + 1 < len(words):
+                    nxt = words[i + 1].strip()
+                    if nxt in m:
+                        out.extend([m[nxt]] * (2 if w == "double" else 3))
+                        i += 2
+                        continue
+                # map word to digit
+                if w in m:
+                    out.append(m[w])
+                else:
+                    # copy any digits present in the token
+                    out.extend([c for c in w if c.isdigit()])
+                i += 1
+            return "".join(out)
 
-        if not normalized:
-            # soft retry (don’t bump counter if caller started input)
-            heard_some = bool(speech_digits or (locals().get("dtmf_digits", "")))
-            if not heard_some:
-                session_data[call_sid]["retry_phone"] += 1
+        def _normalize_10(s: str) -> str:
+            """Keep only digits; if 11 starting with '1', strip to 10."""
+            d = "".join(ch for ch in (s or "") if ch.isdigit())
+            return d[1:] if len(d) == 11 and d.startswith("1") else d
 
-            if session_data[call_sid]["retry_phone"] >= MAX_GET_PHONE_RETRIES:
-                debug_print("collect_phone: max retries reached")
-                resp.say(gpt_speak("Sorry, I couldn’t capture a valid phone number. Please call again later."), VOICE)
+        # Prefer DTMF; if none, use speech→digits
+        if dtmf_digits:
+            raw_digits = _re.sub(r"\D", "", dtmf_digits)
+        else:
+            raw_digits = _re.sub(r"\D", "", _spoken_to_digits(speech_text))
+
+        debug_print(f"collect_phone: raw_digits='{raw_digits}'")
+
+        # Normalize to 10
+        phone10 = _normalize_10(raw_digits)
+        # If still >10 because of accidental repeats, truncate to 10 (conservative)
+        if len(phone10) > 10:
+            phone10 = phone10[:10]
+
+        # Validate
+        if len(phone10) != 10:
+            session_data[call_sid]["retry_phone"] = session_data[call_sid].get("retry_phone", 0) + 1
+            r = session_data[call_sid]["retry_phone"]
+            debug_print(f"collect_phone: ❌ invalid phone '{raw_digits}' (→ '{phone10}') retry={r}")
+
+            if r >= 3:
+                resp.say(gpt_speak("Sorry, I couldn't capture your phone number. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            gather = make_gather(
-                "Please provide your ten digit phone number including area code. "
-                "You can say it clearly with short pauses, or type the digits and press pound.",
-                hints="zero one two three four five six seven eight nine double triple"
+            prompt = (
+                "Please say or type your ten digit phone number including area code. "
+                "For example, four six nine four six three three two seven six. "
+                "You can also type the digits, then press pound."
             )
+            gather = make_gather(prompt, hints="zero one two three four five six seven eight nine double triple")
             resp.append(gather)
-            resp.say(gpt_speak("I didn't get the phone number."), VOICE)
+            return str(resp)
+
+        # Save and reset retry
+        session_data[call_sid]["customer"]["phone"] = phone10
+        session_data[call_sid]["retry_phone"] = 0
+        debug_print(f"collect_phone: ✅ saved phone10={phone10}")
+
+        # If we were sent here by another stage, jump back there now
+        return_stage = session_data[call_sid].pop("return_stage", None)
+        if return_stage:
+            session_data[call_sid]["stage"] = return_stage
+            debug_print(f"collect_phone: ➡️ returning to {return_stage}")
             resp.redirect("/voice")
             return str(resp)
 
-        # valid → store and move on
-        session_data[call_sid]["customer"]["phone"] = normalized
-        debug_print(f"collect_phone: ✅ accepted={normalized}")
-        session_data[call_sid]["stage"] = "collect_dob"
+        # Decide next step by flow context
+        if "cancel" in session_data[call_sid]:
+            # In cancel flow, after phone we usually need DOB or date/time
+            session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
+            gather = make_gather(
+                "Thanks. Now tell me the date and time of the appointment you want to cancel. "
+                "For example, August 15th at 5 AM."
+            )
+            resp.append(gather)
+            return str(resp)
 
+        # Default booking path: ask for DOB next
+        session_data[call_sid]["stage"] = "collect_dob"
         gather = make_gather(
-            "Thank you. Please say your date of birth, for example, January fifteenth nineteen eighty five. "
-            "Or enter two digits for month, two for day, and four for year, then press pound."
+            "Thanks. Please provide your date of birth. You can say it, or enter MMDDYYYY, then press pound."
         )
         resp.append(gather)
         return str(resp)
