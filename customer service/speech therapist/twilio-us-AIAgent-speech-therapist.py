@@ -11,6 +11,10 @@ from uuid import uuid4
 import pickle
 import openai
 
+import dateparser as _dp
+
+
+from datetime import datetime as _dt
 from datetime import time as dtime
 from typing import Any, Optional, List, Dict, Tuple, Iterator, Iterable, Union
 from datetime import datetime, date, time, timedelta, timezone
@@ -35,6 +39,7 @@ from google.auth.transport.requests import Request
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
+from twilio.rest import Client
 
 from openai import OpenAI, APIConnectionError, AuthenticationError, RateLimitError, OpenAIError
 
@@ -1929,89 +1934,107 @@ def _clean_ordinals(text: str) -> str:
 # --- Robust DOB parser (speech + keypad) --------------------------------------
 def parse_dob_input(speech_text: str, dtmf_digits: str):
     """
-    Returns a datetime (naive) if DOB can be parsed with all parts (month/day/year),
-    otherwise returns None. Prefers DTMF when present.
+    Parse DOB from either:
+      - DTMF: MMDDYYYY (strictly 8 digits), OR
+      - Speech: e.g., "February 3rd, 1956", "Feb 3 1956", "2/3/1956".
 
-    DTMF accepted:
-      - 8 digits: MMDDYYYY
-      - 6 digits: MMDDYY  (interprets 00-49 => 2000..2049, 50-99 => 1950..1999)
+    Returns:
+      - datetime(year, month, day) on success
+      - None on failure
 
-    Speech examples supported:
-      - "Feb 3rd 1956", "February 3 1956", "2/3/1956", "02-03-1956"
-      - Tolerates STT glitches like "3D" → "3rd", "febraury" → "february", "augest" → "august"
+    Behavior:
+      - Speech requires explicit 4-digit year (to avoid guessing).
+      - Strips ordinals ("1st","2nd","3rd","4th") and punctuation.
+      - Uses US ordering (MDY) and English language.
+
+    Logging:
+      - Uses debug_print if available, else print.
     """
-   
-    # -------------- 1) DTMF branch (preferred if provided) -------------------
-    if dtmf_digits:
-        digits = _re.sub(r"\D", "", dtmf_digits)
-        if len(digits) == 8:
-            mm, dd, yyyy = digits[:2], digits[2:4], digits[4:]
+    # ---- Local safe logger ---------------------------------------------------
+    def _dbg(msg: str):
+        try:
+            debug_print(msg)  # type: ignore[name-defined]
+        except Exception:
             try:
-                return datetime(int(yyyy), int(mm), int(dd))
+                print(msg)
             except Exception:
                 pass
-        elif len(digits) == 6:
-            mm, dd, yy = digits[:2], digits[2:4], digits[4:]
-            try:
-                yy_i = int(yy)
-                yyyy = 2000 + yy_i if yy_i <= 49 else 1900 + yy_i
-                return datetime(yyyy, int(mm), int(dd))
-            except Exception:
-                pass
-        # If DTMF present but unusable → fall through to speech parse
 
-    # -------------- 2) Speech branch ----------------------------------------
-    s = (speech_text or "").lower().strip()
-    if not s:
+    # Import inside to avoid alias-name issues elsewhere in the file
+    
+
+    # 1) Prefer DTMF if provided: MMDDYYYY
+    digits = "".join(ch for ch in (dtmf_digits or "") if ch.isdigit())
+    if digits:
+        _dbg(f"parse_dob_input: 🔢 DTMF received → '{digits}'")
+        if len(digits) == 8:
+            try:
+                mm = int(digits[0:2])
+                dd = int(digits[2:4])
+                yyyy = int(digits[4:8])
+                # Basic sanity
+                if 1 <= mm <= 12 and 1 <= dd <= 31 and 1900 <= yyyy <= _dt.now().year:
+                    dob = _dt(yyyy, mm, dd)
+                    _dbg(f"parse_dob_input: ✅ DTMF parsed → {dob.strftime('%Y-%m-%d')}")
+                    return dob
+            except Exception as e:
+                _dbg(f"parse_dob_input: ❌ DTMF parse error → {e}")
+        else:
+            _dbg(f"parse_dob_input: ❌ DTMF length != 8 (got {len(digits)})")
+
+    # 2) Speech fallback
+    raw = (speech_text or "").strip()
+    if not raw:
+        _dbg("parse_dob_input: ❌ no speech provided")
         return None
 
-    # Normalize punctuation/spacing artifacts
-    s = (_re.sub(r"[,\.;]+", " ", s))
+    s = raw.lower()
+    _dbg(f"parse_dob_input: 🗣️ speech raw → '{s}'")
+
+    # Normalize common forms:
+    # - Ordinals: "3rd" → "3", "21st" → "21"
+    s = _re.sub(r"\b(\d+)\s*(st|nd|rd|th)\b", r"\1", s, flags=_re.IGNORECASE)
+
+    # Handle mis-hearings like "3d 1956" → "3 1956" (D from "3rd")
+    s = _re.sub(r"\b(\d+)d\b", r"\1", s, flags=_re.IGNORECASE)
+
+    # Remove commas/periods; collapse whitespace
+    s = _re.sub(r"[,\.]+", " ", s)
     s = _re.sub(r"\s+", " ", s).strip()
 
-    # Fix common ordinal STT glitches (e.g., "3D" -> "3rd")
-    s = _re.sub(r"\b(\d+)\s*d\b", r"\1rd", s)   # "3d" -> "3rd"
-    s = _re.sub(r"\b(\d+)\s*st\b", r"\1st", s)  # keep st/nd/rd/th normalized
-    s = _re.sub(r"\b(\d+)\s*nd\b", r"\1nd", s)
-    s = _re.sub(r"\b(\d+)\s*rd\b", r"\1rd", s)
-    s = _re.sub(r"\b(\d+)\s*th\b", r"\1th", s)
-
-    # Tolerate month misspellings
-    MONTH_FIXES = {
-        "febraury": "february", "febuary": "february", "feberuary": "february",
-        "augest": "august", "augt": "august", "sept": "september",
-        "ocotber": "october", "decemeber": "december",
-    }
-    for bad, good in MONTH_FIXES.items():
-        s = s.replace(bad, good)
-
-    # Accept numeric dates hidden by spaces: "2  /  3 / 1956" -> "2/3/1956"
-    s = _re.sub(r"\b(\d{1,2})\s*[/\-]\s*(\d{1,2})\s*[/\-]\s*(\d{2,4})\b",
-                r"\1/\2/\3", s)
-
-    # Require that we truly have month + day + year; reject bare "3rd 1956"
-    # Quick heuristic: look for a month name OR a numeric M/D present, plus a 4-digit year.
-    has_year = bool(_re.search(r"\b(19|20)\d{2}\b", s))
-    has_month_name = bool(_re.search(
-        r"\b(jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|jun(e)?|jul(y)?|aug(ust)?|"
-        r"sep(t(ember)?)?|oct(ober)?|nov(ember)?|dec(ember)?)\b", s))
-    has_numeric_md = bool(_re.search(r"\b\d{1,2}[/\-]\d{1,2}\b", s))
-
-    if not has_year or not (has_month_name or has_numeric_md):
-        # Missing month or year → refuse to guess
+    # Require a 4-digit year in the utterance (avoid guessing current year)
+    has_year4 = bool(_re.search(r"\b(19|20)\d{2}\b", s))
+    if not has_year4:
+        _dbg("parse_dob_input: ❌ no 4-digit year present in speech → cannot parse DOB safely")
         return None
 
-    # Use dateparser but demand day+month+year all present.
-    parsed = _dp.parse(
-        s,
-        settings={
-            "PREFER_DAY_OF_MONTH": "first",
-            "DATE_ORDER": "MDY",
-            "REQUIRE_PARTS": ["day", "month", "year"],
-            "STRICT_PARSING": True
-        }
-    )
+    # Try parsing with explicit US ordering (MDY), English language
+    settings = {
+        "RETURN_AS_TIMEZONE_AWARE": False,
+        "PREFER_DAY_OF_MONTH": "first",
+        "DATE_ORDER": "MDY",
+        "STRICT_PARSING": True,
+    }
+
+    try:
+        parsed = _dp.parse(s, languages=["en"], settings=settings)
+    except Exception as e:
+        _dbg(f"parse_dob_input: ❌ dateparser error → {e}")
+        parsed = None
+
+    if not parsed:
+        _dbg("parse_dob_input: ❌ dateparser failed to parse speech")
+        return None
+
+    # Sanity: ensure parsed date contains a year within sensible DOB range
+    yyyy = parsed.year
+    if not (1900 <= yyyy <= _dt.now().year):
+        _dbg(f"parse_dob_input: ❌ parsed year out of range → {yyyy}")
+        return None
+
+    _dbg(f"parse_dob_input: ✅ speech parsed → {parsed.strftime('%Y-%m-%d')}")
     return parsed
+
 
 
 
