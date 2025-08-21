@@ -1926,63 +1926,93 @@ def _clean_ordinals(text: str) -> str:
         t = t.replace(k, v)
     t = t.replace(",", " ").replace(".", " ").replace("  ", " ").strip()
     return t
-
-
-def parse_dob_input(speech_text: str, dtmf_digits: str) -> Optional[datetime]:
+# --- Robust DOB parser (speech + keypad) --------------------------------------
+def parse_dob_input(speech_text: str, dtmf_digits: str):
     """
-    Date of Birth parser (speech preferred):
-    - First try spoken formats like 'July 3 1990' or '3 July 1990'
-    - If that fails, try keypad DTMF in MMDDYYYY format
-    Returns a datetime.date (as datetime) or None.
+    Returns a datetime (naive) if DOB can be parsed with all parts (month/day/year),
+    otherwise returns None. Prefers DTMF when present.
+
+    DTMF accepted:
+      - 8 digits: MMDDYYYY
+      - 6 digits: MMDDYY  (interprets 00-49 => 2000..2049, 50-99 => 1950..1999)
+
+    Speech examples supported:
+      - "Feb 3rd 1956", "February 3 1956", "2/3/1956", "02-03-1956"
+      - Tolerates STT glitches like "3D" → "3rd", "febraury" → "february", "augest" → "august"
     """
-
-    # 1) Spoken path first
-    if speech_text:
-        cleaned = _clean_ordinals(speech_text)  # Remove 'st', 'nd', 'rd', 'th'
-        parts = cleaned.split()
-
-        try:
-            # Month Day Year
-            for i, p in enumerate(parts):
-                if p in MONTHS and i+2 < len(parts):
-                    month = MONTHS[p]
-                    day = int(parts[i+1])
-                    year = int(parts[i+2])
-                    return datetime(year, month, day)
-
-            # Day Month Year
-            for i, p in enumerate(parts):
-                if p.isdigit() and i+2 < len(parts):
-                    day = int(p)
-                    mword = parts[i+1]
-                    if mword in MONTHS:
-                        month = MONTHS[mword]
-                        year = int(parts[i+2])
-                        return datetime(year, month, day)
-        except Exception:
-            pass
-
-        # Forgiving natural language parse
-        try:
-            
-            dt = dtparser.parse(speech_text, dayfirst=False, fuzzy=True)
-            return datetime(dt.year, dt.month, dt.day)
-        except Exception:
-            pass
-
-    # 2) DTMF fallback
-    if dtmf_digits and dtmf_digits.isdigit():
-        if len(dtmf_digits) == 8:
-            mm = int(dtmf_digits[0:2])
-            dd = int(dtmf_digits[2:4])
-            yyyy = int(dtmf_digits[4:8])
+   
+    # -------------- 1) DTMF branch (preferred if provided) -------------------
+    if dtmf_digits:
+        digits = _re.sub(r"\D", "", dtmf_digits)
+        if len(digits) == 8:
+            mm, dd, yyyy = digits[:2], digits[2:4], digits[4:]
             try:
-                return datetime(yyyy, mm, dd)
-            except ValueError:
-                return None
-        return None  # Invalid length
+                return datetime(int(yyyy), int(mm), int(dd))
+            except Exception:
+                pass
+        elif len(digits) == 6:
+            mm, dd, yy = digits[:2], digits[2:4], digits[4:]
+            try:
+                yy_i = int(yy)
+                yyyy = 2000 + yy_i if yy_i <= 49 else 1900 + yy_i
+                return datetime(yyyy, int(mm), int(dd))
+            except Exception:
+                pass
+        # If DTMF present but unusable → fall through to speech parse
 
-    return None
+    # -------------- 2) Speech branch ----------------------------------------
+    s = (speech_text or "").lower().strip()
+    if not s:
+        return None
+
+    # Normalize punctuation/spacing artifacts
+    s = (_re.sub(r"[,\.;]+", " ", s))
+    s = _re.sub(r"\s+", " ", s).strip()
+
+    # Fix common ordinal STT glitches (e.g., "3D" -> "3rd")
+    s = _re.sub(r"\b(\d+)\s*d\b", r"\1rd", s)   # "3d" -> "3rd"
+    s = _re.sub(r"\b(\d+)\s*st\b", r"\1st", s)  # keep st/nd/rd/th normalized
+    s = _re.sub(r"\b(\d+)\s*nd\b", r"\1nd", s)
+    s = _re.sub(r"\b(\d+)\s*rd\b", r"\1rd", s)
+    s = _re.sub(r"\b(\d+)\s*th\b", r"\1th", s)
+
+    # Tolerate month misspellings
+    MONTH_FIXES = {
+        "febraury": "february", "febuary": "february", "feberuary": "february",
+        "augest": "august", "augt": "august", "sept": "september",
+        "ocotber": "october", "decemeber": "december",
+    }
+    for bad, good in MONTH_FIXES.items():
+        s = s.replace(bad, good)
+
+    # Accept numeric dates hidden by spaces: "2  /  3 / 1956" -> "2/3/1956"
+    s = _re.sub(r"\b(\d{1,2})\s*[/\-]\s*(\d{1,2})\s*[/\-]\s*(\d{2,4})\b",
+                r"\1/\2/\3", s)
+
+    # Require that we truly have month + day + year; reject bare "3rd 1956"
+    # Quick heuristic: look for a month name OR a numeric M/D present, plus a 4-digit year.
+    has_year = bool(_re.search(r"\b(19|20)\d{2}\b", s))
+    has_month_name = bool(_re.search(
+        r"\b(jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|jun(e)?|jul(y)?|aug(ust)?|"
+        r"sep(t(ember)?)?|oct(ober)?|nov(ember)?|dec(ember)?)\b", s))
+    has_numeric_md = bool(_re.search(r"\b\d{1,2}[/\-]\d{1,2}\b", s))
+
+    if not has_year or not (has_month_name or has_numeric_md):
+        # Missing month or year → refuse to guess
+        return None
+
+    # Use dateparser but demand day+month+year all present.
+    parsed = _dp.parse(
+        s,
+        settings={
+            "PREFER_DAY_OF_MONTH": "first",
+            "DATE_ORDER": "MDY",
+            "REQUIRE_PARTS": ["day", "month", "year"],
+            "STRICT_PARSING": True
+        }
+    )
+    return parsed
+
 
 
 def make_gather_dob(prompt_text: str):
@@ -3319,7 +3349,7 @@ def voice():
     #   - Next stage: ask_time_date (always, after successful DOB store)
     # ----------------------------------------------------------------------
     elif stage == "collect_dob":
-            # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
         # 🔊 Short, centralized prompts
         #   Put these near your other constants so every stage uses the same text.
         # ----------------------------------------------------------------------
@@ -3331,6 +3361,9 @@ def voice():
 
         debug_print("collect_dob: 📍 Stage entered")
 
+        # ⚠️ Avoid name shadowing: use `_date` for validation, not `date`
+        from datetime import date as _date
+
         # 1) Pull DTMF if present (Twilio sends digits on the same webhook), otherwise use speech.
         try:
             dtmf_digits = (request.values.get("Digits") or "").strip()
@@ -3340,7 +3373,8 @@ def voice():
         speech_text = (speech_result or "").strip()
         debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
 
-        # 2) Parse DOB input (helper handles speech and/or MMDDYYYY)
+        # 2) Parse DOB input (helper handles speech and/or MMDDYYYY).
+        #    parse_dob_input should return a datetime on success, or None if missing month/day/year.
         dt = parse_dob_input(speech_text, dtmf_digits)
         if not dt:
             # Retry counter (so we don’t loop forever)
@@ -3356,25 +3390,38 @@ def voice():
                 return str(resp)
 
             # Re-prompt using short, consistent copy
-            gather = make_gather_dob(DOB_PROMPT_SHORT)
+            try:
+                gather = make_gather_dob(DOB_PROMPT_SHORT)
+            except Exception:
+                gather = make_gather(DOB_PROMPT_SHORT)
             resp.append(gather)
             return str(resp)
 
         # 3) Validate DOB sanity window (e.g., 1900..today)
         try:
-            today = date.today()
-            min_date = date(1900, 1, 1)
+            today = _date.today()
+            min_date = _date(1900, 1, 1)
             dob_date = dt.date()
             if not (min_date <= dob_date <= today):
                 debug_print(f"collect_dob: ⚠️ DOB out of range → {dob_date.isoformat()}")
 
                 session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-                gather = make_gather_dob(DOB_PROMPT_SHORT)
+                try:
+                    gather = make_gather_dob(DOB_PROMPT_SHORT)
+                except Exception:
+                    gather = make_gather(DOB_PROMPT_SHORT)
                 resp.append(gather)
                 return str(resp)
         except Exception as e:
-            # Do not fail the call; just log and continue to store parsed value
+            # Do not fail the call; just log and re-prompt safely
             debug_print(f"collect_dob: ⚠️ Validation error → {e}")
+            session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
+            try:
+                gather = make_gather_dob(DOB_PROMPT_SHORT)
+            except Exception:
+                gather = make_gather(DOB_PROMPT_SHORT)
+            resp.append(gather)
+            return str(resp)
 
         # 4) Store ISO DOB in session
         iso_dob = dt.strftime("%Y-%m-%d")
@@ -3387,9 +3434,14 @@ def voice():
         debug_print("collect_dob: ➡️ Next stage → ask_time_date")
 
         # 6) Prompt for appointment time/date using the short prompt
-        gather = make_gather("Thanks. " + TIME_PROMPT_SHORT)
+        try:
+            gather = make_gather("Thanks. " + TIME_PROMPT_SHORT)
+        except Exception:
+            # Very defensive fallback (in case make_gather signature differs)
+            gather = make_gather("Thanks. Please say the date and time, for example 'August 12 at 5 PM'.")
         resp.append(gather)
         return str(resp)
+
 
 
 
@@ -3722,63 +3774,62 @@ def voice():
 
 
     elif stage == "collect_address":
-        # ----------------------------------------------------------------------
-        # 🏠 Stage: Collect Customer Address (INFO ONLY)
-        # ----------------------------------------------------------------------
+        # ---------------------------------------------------------------
+        # 🏠 Stage: collect_address
+        # Goal:
+        #   - Capture the caller's address from speech.
+        #   - Normalize whitespace & punctuation (common STT artifacts).
+        #   - Store under session_data[call_sid]["customer"]["address"].
+        #   - Advance to collect_cc.
+        # Notes:
+        #   - Use `_re` (import re as _re) to avoid UnboundLocalError.
+        # ---------------------------------------------------------------
+        try:
+            raw = (speech_result or request.values.get("SpeechResult") or "").strip()
+        except Exception:
+            raw = (speech_result or "").strip()
 
-        address_raw = (speech_result or "").strip()
-        debug_print(f"collect_address: 📬 Collected address (raw): {address_raw}")
+        debug_print(f"collect_address: 📬 Collected address (raw): {raw}")
 
-        address = re.sub(r"\s+", " ", address_raw).strip()
-        address = re.sub(r"[.,;\-–—\s]+$", "", address)
-        debug_print(f"collect_address: 📬 Normalized address: {address}")
+        # If we heard nothing, politely reprompt
+        if not raw:
+            prompt = (
+                "I didn't catch the address. Please say your street address, city, and ZIP. "
+                "For example, '118 Briar Oak, Murphy, Texas 75094'."
+            )
+            gather = make_gather(prompt)
+            resp.append(gather)
+            return str(resp)
 
+        # ---------- Normalize ----------
+        # 1) Collapse multiple spaces
+        address = _re.sub(r"\s+", " ", raw)
+
+        # 2) Normalize spacing around commas, periods, and '#'
+        #    e.g., "Murphy , Texas . 75094" → "Murphy, Texas. 75094"
+        address = _re.sub(r"\s*([,#\.])\s*", r"\1 ", address)
+
+        # 3) Remove repeated periods (STT sometimes outputs "Texas.. 75094")
+        address = _re.sub(r"\.{2,}", ".", address)
+
+        # 4) Strip trailing/leading spaces and stray punctuation
+        address = address.strip(" .,")
+        debug_print(f"collect_address: 🧽 Normalized → '{address}'")
+
+        # ---------- Persist ----------
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
-
-        if not address or len(address) < 5:
-            gather = make_gather("Sorry, I didn't catch your full address. Please say your street, city, state, and zip.")
-            resp.append(gather)
-            resp.say(gpt_speak("I didn't hear the address."), VOICE)
-            resp.redirect("/voice")
-            return str(resp)
-
         session_data[call_sid]["customer"]["address"] = address
+        debug_print("collect_address: ✅ Saved address to session")
 
-        # Require phone + DOB before CC
-        def _normalize_10(d):
-            d = "".join(ch for ch in (d or "") if ch.isdigit())
-            return d[1:] if len(d) == 11 and d.startswith("1") else d
-
-        phone_norm = _normalize_10(session_data[call_sid]["customer"].get("phone", ""))
-        if len(phone_norm) != 10:
-            debug_print("collect_address: ❌ Phone missing/invalid → collect_phone")
-            session_data[call_sid]["stage"] = "collect_phone"
-            gather = make_gather(
-                "Thanks. Before we continue, please provide your ten digit phone number including area code. "
-                "You can say it or type the digits and press pound."
-            )
-            resp.append(gather)
-            resp.say(gpt_speak("I didn't get the phone number."), VOICE)
-            resp.redirect("/voice")
-            return str(resp)
-
-        if not session_data[call_sid]["customer"].get("dob"):
-            debug_print("collect_address: ❌ DOB missing → collect_dob")
-            session_data[call_sid]["stage"] = "collect_dob"
-            gather = make_gather(
-                "Thanks. Before we continue, please provide your date of birth. "
-                "You can say it, or enter two digits for month, two for day, and four for year, then press pound."
-            )
-            resp.append(gather)
-            resp.say(gpt_speak("I didn't get the date of birth."), VOICE)
-            resp.redirect("/voice")
-            return str(resp)
-
+        # ---------- Advance to next stage ----------
         session_data[call_sid]["stage"] = "collect_cc"
-        debug_print("collect_address: 🔁 Redirecting to /voice to run collect_cc")
-        resp.redirect("/voice")
+        gather = make_gather(
+            "Thank you. Now, please enter your card number, then press pound."
+        )
+        resp.append(gather)
         return str(resp)
+
 
 
 
