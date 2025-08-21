@@ -3086,17 +3086,50 @@ def voice():
         # 📍 Booking flow: the caller has just been asked to name a doctor.
         # Our task here is to identify which doctor they said and, if successful,
         # proceed to ask what time they’d like to book.
+        #
+        # 🆕 Silent mode handling:
+        #   - If we hear neither SpeechResult nor Digits, re-prompt up to 3 times.
+        #   - Uses per-stage counter: session_data[call_sid]["silence_booking"].
+        #   - Keeps behavior consistent with other stages.
         # ----------------------------------------------------------------------
 
         if "retry_booking" not in session_data[call_sid]:
             session_data[call_sid]["retry_booking"] = 0
 
-        
+        # Pull Digits too (some carriers send empty speech on silence)
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
+
+        # 🆕 Silent mode: nothing heard (no speech and no digits) → re-prompt with cap 3
+        if not (speech_result or dtmf_digits):
+            tries = session_data[call_sid].get("silence_booking", 0) + 1
+            session_data[call_sid]["silence_booking"] = tries
+            debug_print(f"booking: 🤐 no input heard (tries={tries})")
+
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            doctor_list_str = ", ".join(googleid_dr_name_map.values())
+            prompt = (
+                "I didn't hear you. Please say the name of the doctor you'd like to book with, "
+                "for example 'Alfred Hitchcock'."
+            )
+            gather = make_gather(prompt, hints=doctor_list_str)
+            resp.append(gather)
+            return str(resp)
+
+        # We heard *something* → clear the silence counter for this stage
+        session_data[call_sid].pop("silence_booking", None)
 
         # 📻 Clean and normalize speech input
         spoken_text = speech_result.lower().strip() if speech_result else ""
         spoken_clean = spoken_text.translate(str.maketrans('', '', string.punctuation)).strip()
-        print(f"📻 booking :speech_result: {spoken_clean}")
+        debug_print(f"📻 booking :speech_result: {spoken_clean}")
 
         # 🚫 Block common junk phrases often returned by Twilio hallucination
         junk_inputs = {
@@ -3105,9 +3138,8 @@ def voice():
         }
 
         if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
-            print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
+            debug_print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
-            # ⬇️ CHANGED: use make_gather (keeps same behavior and hints)
             gather = make_gather("Please say the name of the doctor you'd like to book with.", hints=doctor_list_str)
             resp.append(gather)
             return str(resp)
@@ -3127,16 +3159,16 @@ def voice():
             if (
                 spoken_clean in friendly_clean
                 or friendly_clean in spoken_clean
-                or spoken_tokens & friendly_tokens  # Token overlap
+                or (spoken_tokens & friendly_tokens)  # Token overlap
             ):
                 partial_matches.append((doc_id, friendly))
 
         if len(partial_matches) == 1:
             matched_id = partial_matches[0][0]
-            print(f"✅ Partial match with: {partial_matches[0][1]}")
+            debug_print(f"✅ Partial match with: {partial_matches[0][1]}")
         elif len(partial_matches) > 1:
-            print(f"🔍 Multiple potential matches found: {[name for _, name in partial_matches]}")
-            matched_id = partial_matches[0][0]  # Default to first match (or you can ask user to clarify)
+            debug_print(f"🔍 Multiple potential matches: {[name for _, name in partial_matches]}")
+            matched_id = partial_matches[0][0]  # Keep simple: pick first (or ask to clarify)
 
         # ------------------------------------------------------------------
         # 🤖 2. GPT fallback (only if 2+ words)
@@ -3173,7 +3205,6 @@ def voice():
                 return str(resp)
 
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
-            # ⬇️ CHANGED: use make_gather (keeps same behavior and hints)
             retry_prompt = (
                 f"I couldn't match that to a doctor. Available doctors are: {doctor_list_str}. "
                 "Please say the doctor name again."
@@ -3186,24 +3217,23 @@ def voice():
         # ✅ 4. Success → Go collect phone FIRST
         # ------------------------------------------------------------------
         session_data[call_sid]["doctor_id"] = matched_id
-        session_data[call_sid]["stage"] = "collect_phone"  # ⬅️ CHANGED
+        session_data[call_sid]["stage"] = "collect_phone"  # next stage
 
         friendly_name = googleid_dr_name_map[matched_id]
         phone_prompt = (
             f"Great, we'll book with {friendly_name}. "
             "Please say or enter your phone number including area code."
-        )  # ⬅️ CHANGED
+        )
 
-        # ⬇️ Keep using make_gather
-        gather = make_gather(phone_prompt)  # ⬅️ CHANGED (prompt only)
+        gather = make_gather(phone_prompt)
         resp.append(gather)
         return str(resp)
 
 
-    # ===== collect_phone (stage) =====
+
     elif stage == "collect_phone":
         # ----------------------------------------------------------------------
-        # 📞 Stage: collect_phone
+        # 📞 Stage: collect_phone  MOH
         #
         # Goal:
         #   - Capture the caller's phone number via DTMF or speech.
@@ -3212,17 +3242,11 @@ def voice():
         #   - If we were sent here from another stage, return to that stage via
         #     session_data[call_sid]["return_stage"].
         #
-        # Notes:
-        #   - We use `_re` instead of `re` to avoid UnboundLocalError caused by
-        #     later `import re` statements in the same function scope.
-        #   - We also support speech like "four six nine four six three..."
+        # 🆕 Silent mode handling:
+        #   - If no SpeechResult and no Digits → re-prompt up to 3 times.
         # ----------------------------------------------------------------------
         debug_print("collect_phone: 📍 Stage entered")
 
-        # Use a local alias `_re` to avoid name collisions and UnboundLocalError
-        #import re as _re
-
-        # Ensure session buckets exist
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
 
@@ -3233,6 +3257,29 @@ def voice():
             dtmf_digits = ""
         speech_text = (speech_result or "").strip()
         debug_print(f"collect_phone: speech='{speech_text}' DTMF='{dtmf_digits}'")
+
+        # 🆕 Silent mode: nothing heard → re-prompt with cap 3
+        if not (speech_text or dtmf_digits):
+            tries = session_data[call_sid].get("silence_collect_phone", 0) + 1
+            session_data[call_sid]["silence_collect_phone"] = tries
+            debug_print(f"collect_phone: 🤐 no input heard (tries={tries})")
+
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            prompt = (
+                "Please say or type your ten digit phone number including area code. "
+                "You can also type the digits, then press pound."
+            )
+            gather = make_gather(prompt, hints="zero one two three four five six seven eight nine double triple")
+            resp.append(gather)
+            return str(resp)
+
+        # We heard something → clear stage silence counter
+        session_data[call_sid].pop("silence_collect_phone", None)
 
         # --- helpers --------------------------------------------------------------
         def _spoken_to_digits(raw: str) -> str:
@@ -3292,9 +3339,8 @@ def voice():
 
         debug_print(f"collect_phone: raw_digits='{raw_digits}'")
 
-        # Normalize to 10
+        # Normalize to 10 (truncate if user repeated extra digits)
         phone10 = _normalize_10(raw_digits)
-        # If still >10 because of accidental repeats, truncate to 10 (conservative)
         if len(phone10) > 10:
             phone10 = phone10[:10]
 
@@ -3334,7 +3380,6 @@ def voice():
 
         # Decide next step by flow context
         if "cancel" in session_data[call_sid]:
-            # In cancel flow, after phone we usually need DOB or date/time
             session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
             gather = make_gather(
                 "Thanks. Now tell me the date and time of the appointment you want to cancel. "
@@ -3357,9 +3402,6 @@ def voice():
 
 
 
-
-
-
     # ----------------------------------------------------------------------
     # 🎂 Stage: collect_dob
     # Purpose:
@@ -3370,6 +3412,9 @@ def voice():
     # Integration points:
     #   - Uses: parse_dob_input(), make_gather_dob(), debug_print, session_data, call_sid
     #   - Next stage: ask_time_date (always, after successful DOB store)
+    # 🆕 Silent mode:
+    #   - If neither speech nor digits were received, re-prompt up to 3 times using a
+    #     separate counter (silence_dob), then hang up politely.
     # ----------------------------------------------------------------------
     elif stage == "collect_dob":
         # ----------------------------------------------------------------------
@@ -3387,6 +3432,9 @@ def voice():
         # ⚠️ Avoid name shadowing: use `_date` for validation, not `date`
         from datetime import date as _date
 
+        # Ensure session buckets exist
+        session_data.setdefault(call_sid, {})
+
         # 1) Pull DTMF if present (Twilio sends digits on the same webhook), otherwise use speech.
         try:
             dtmf_digits = (request.values.get("Digits") or "").strip()
@@ -3396,14 +3444,13 @@ def voice():
         speech_text = (speech_result or "").strip()
         debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
 
-        # 1a) 🔁 If we didn’t hear anything at all, re-ask the SAME question (no hang up).
+        # 1a) 🔁 SILENT MODE: nothing heard → re-ask up to 3 times (separate counter).
         if not dtmf_digits and not speech_text:
-            session_data.setdefault(call_sid, {})
-            session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-            r = session_data[call_sid]["retry_dob"]
-            debug_print(f"collect_dob: 🛑 silence/no input; retry={r}")
+            tries = session_data[call_sid].get("silence_dob", 0) + 1
+            session_data[call_sid]["silence_dob"] = tries
+            debug_print(f"collect_dob: 🤐 no input heard; silence retries={tries}")
 
-            if r >= 3:
+            if tries >= 3:
                 resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
@@ -3423,14 +3470,17 @@ def voice():
                 resp.redirect("/voice")
             return str(resp)
 
+        # We heard *something* → clear the silence counter for this stage
+        session_data[call_sid].pop("silence_dob", None)
+
         # 2) Parse DOB input (helper handles speech and/or MMDDYYYY).
         #    parse_dob_input should return a datetime on success, or None if missing month/day/year.
         dt = parse_dob_input(speech_text, dtmf_digits)
         if not dt:
-            # Retry counter (so we don’t loop forever)
+            # Retry counter (so we don’t loop forever on parsing errors)
             session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
             r = session_data[call_sid]["retry_dob"]
-            debug_print(f"collect_dob: ❌ Parse failed. Retry={r}")
+            debug_print(f"collect_dob: ❌ Parse failed. retry_dob={r}")
 
             if r >= 3:
                 # Fail out cleanly if user can’t provide a DOB we can parse
@@ -3494,7 +3544,7 @@ def voice():
         session_data[call_sid]["customer"]["dob"] = iso_dob
         debug_print(f"collect_dob: ✅ Stored DOB → {iso_dob}")
 
-        # Reset the retry counter on success so it doesn't affect later stages
+        # Reset the parse retry counter on success so it doesn't affect later stages
         session_data[call_sid].pop("retry_dob", None)
 
         # 5) Always move to ask_time_date next (your booking flow expects this)
@@ -3519,28 +3569,29 @@ def voice():
 
 
 
-# ----------------------------------------------------------------------
-# 📅 Stage: ask_time_date
-# Purpose:
-#   - Parse spoken date/time (e.g., “August 12 at 5 PM”).
-#   - Compute a UTC timeslot window for the appointment.
-#   - Check provider availability; if busy, offer next available options.
-#   - If free:
-#       * If (phone + dob) exists in DB → skip name collection and go to confirm.
-#       * Else → collect first name.
-# Prompts:
-#   - Uses TIME_PROMPT_SHORT when re-prompting.
-# Integration points:
-#   - Uses: smart_parse_time(), build_timeslot_range(), is_time_slot_available(),
-#           get_next_available_slots(), customer_search(), make_gather()
-#   - Globals referenced: APPOINTMENT_DURATION_MINUTES, googleid_dr_name_map, creds
-# ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 📅 Stage: ask_time_date
+    # Purpose:
+    #   - Parse spoken date/time (e.g., “August 12 at 5 PM”).
+    #   - Compute a UTC timeslot window for the appointment.
+    #   - Check provider availability; if busy, offer next available options.
+    #   - If free:
+    #       * If (phone + dob) exists in DB → skip name collection and go to confirm.
+    #       * Else → collect first name.
+    # Prompts:
+    #   - Uses TIME_PROMPT_SHORT when re-prompting.
+    # Integration points:
+    #   - Uses: smart_parse_time(), build_timeslot_range(), is_time_slot_available(),
+    #           get_next_available_slots(), customer_search(), make_gather()
+    #   - Globals referenced: APPOINTMENT_DURATION_MINUTES, googleid_dr_name_map, creds
+    # 🆕 Silent mode:
+    #   - If we hear nothing, re-ask up to 3 times via a separate counter (silence_time).
+    # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
 
         # ----------------------------------------------------------------------
-        # Prompt constants
-        # Keep these short and consistent so callers learn the pattern quickly.
+        # Prompt constants (short = consistent muscle memory for callers)
         # ----------------------------------------------------------------------
         TIME_PROMPT_SHORT = (
             "That doesn't sound like a valid date or time. "
@@ -3560,17 +3611,27 @@ def voice():
             "Please include the time as well, for example, 'August 15th at 5 AM'."
         )
 
+        # Ensure session bucket
+        session_data.setdefault(call_sid, {})
+
         # --- tiny helpers for readability ---
         def _is_blank(x) -> bool:
             return (x is None) or (str(x).strip() == "")
 
         def _has_time_token(raw: str) -> bool:
-            """Heuristic: if parse fully failed, check if caller likely said a time."""
+            """
+            Heuristic: if parse fully failed, check if caller likely said a time.
+            Accepts 'am/pm', '5:30', or compact '0530'/'1730' tokens.
+            """
             s = (raw or "").lower()
-            return ("am" in s) or ("pm" in s) or (":" in s) or ("o'clock" in s) or ("oclock" in s) or re.search(r"\b\d{3,4}\b", s) is not None
+            return (
+                ("am" in s) or ("pm" in s) or (":" in s)
+                or ("o'clock" in s) or ("oclock" in s)
+                or (_re.search(r"\b\d{3,4}\b", s) is not None)
+            )
 
         def _has_date_token(raw: str) -> bool:
-            """Heuristic: if parse fully failed, check for month/weekday/date words."""
+            """Heuristic: check for month/weekday/date words/tokens."""
             s = (raw or "").lower()
             months = ("january","february","march","april","may","june","july",
                     "august","september","october","november","december",
@@ -3584,31 +3645,52 @@ def voice():
             if "/" in s or "-" in s: return True  # dates like 8/15 or 08-15
             return False
 
-        # Ensure we have 're' available even if not globally imported
-        try:
-            import re
-        except Exception:
-            pass
-
-        # --- Minimal pre-clean for AM/PM variants & trailing punctuation ---
-        try:
-            _raw = (speech_result or "").strip()
-            _raw = re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", _raw, flags=re.IGNORECASE)
-            _raw = re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", _raw, flags=re.IGNORECASE)
-            _raw = re.sub(r"[.!?]\s*$", "", _raw)
-        except Exception:
-            _raw = (speech_result or "")
-
         # 0) Guard: doctor must be chosen (per-doctor calendar)
         doctor_id = session_data.get(call_sid, {}).get("doctor_id")
         if not doctor_id:
             debug_print("ask_time_date: ❌ no doctor selected → sending user to pick a doctor")
-            session_data.setdefault(call_sid, {})["stage"] = "choose_doctor"
-            gather = make_gather("Which doctor would you like to see?")
+            session_data[call_sid]["stage"] = "choose_doctor"
+            doctor_list = ", ".join(googleid_dr_name_map.values())
+            gather = make_gather("Which doctor would you like to see?", hints=doctor_list)
             resp.append(gather)
             return str(resp)
 
         calendar_id = doctor_id
+
+        # --- Minimal pre-clean for AM/PM variants & trailing punctuation ---
+        # Use `_re` (imported at top of file) to avoid UnboundLocalError.
+        try:
+            _raw = (speech_result or "").strip()
+            _raw = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", _raw, flags=_re.IGNORECASE)
+            _raw = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", _raw, flags=_re.IGNORECASE)
+            _raw = _re.sub(r"[.!?]\s*$", "", _raw)
+        except Exception:
+            _raw = (speech_result or "")
+
+        # 🔈 Silent-mode handling (nothing heard)
+        if not _raw:
+            tries = session_data[call_sid].get("silence_time", 0) + 1
+            session_data[call_sid]["silence_time"] = tries
+            debug_print(f"ask_time_date: 🤐 no input; silence retries={tries}")
+
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            gather = make_gather("Please say the date and time, for example, 'August 15th at 5 AM'.")
+            resp.append(gather)
+            # Redirect so Twilio re-posts after gather
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
+            return str(resp)
+
+        # We heard something → clear silence counter
+        session_data[call_sid].pop("silence_time", None)
 
         # 1) Parse (day, time) from the caller’s phrase
         #    Expect a tuple like: ("Friday, August 15", "5:00 AM") or similar.
@@ -3616,7 +3698,7 @@ def voice():
 
         # --- Branch A: parser returned nothing useful (None / wrong type / wrong length) ---
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
-            # Before generic retry: try to be *specific* about what’s missing using heuristics.
+            # Heuristics to give a specific prompt about what's missing
             need_date = not _has_date_token(_raw)
             need_time = not _has_time_token(_raw)
 
@@ -3630,7 +3712,6 @@ def voice():
                 prompt = TIME_PROMPT_SHORT
 
             # Retry parsing up to 3 times
-            session_data.setdefault(call_sid, {})
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
             retry_count = session_data[call_sid]["retry_time"]
             debug_print(f"ask_time_date: ⚠️ Time parse failed (no tuple). Retry={retry_count} — prompt='{prompt}'")
@@ -3766,14 +3847,19 @@ def voice():
         customer_dob   = (customer.get("dob") or "").strip()
 
         try:
-            # If we have both phone & DOB and the customer exists → go straight to booking stage
+            # If we have both phone & DOB and the customer exists → go straight to booking confirmation
             if customer_phone and customer_dob and customer_search(customer_phone, customer_dob):
                 debug_print("ask_time_date: 📋 Customer on file — skip name collection")
                 # 🚩 IMPORTANT: actually transition to book_appt_confirm so it can reserve Google Calendar.
                 session_data[call_sid]["stage"] = "book_appt_confirm"
-                session_data[call_sid]["auto_confirm"] = True  # optional: let confirm stage know it can auto-book
+                session_data[call_sid]["auto_confirm"] = True  # optional flag for that stage
                 debug_print("ask_time_date: ➡️ Redirecting to book_appt_confirm (auto_confirm=True)")
-                resp.redirect("/voice")  # immediately re-enter handler; book_appt_confirm will execute now
+                # Immediately re-enter handler; book_appt_confirm will execute now
+                try:
+                    from flask import url_for
+                    resp.redirect(url_for("voice"))
+                except Exception:
+                    resp.redirect("/voice")
                 return str(resp)
             else:
                 # Otherwise collect name (first → last → address → cc → confirm)
@@ -3795,68 +3881,197 @@ def voice():
 
 
 
-# ===== collect_first_name (stage) =====
+    # ===== collect_first_name (stage) =====
     elif stage == "collect_first_name":
-        # Capture first name and merge into existing customer bucket.
-        first_name = (speech_result or "").strip()
-        debug_print(f"collect_first_name: raw='{first_name}'")
+        # ----------------------------------------------------------------------
+        # 🎯 Goal:
+        #   - Capture FIRST name via speech.
+        #   - Handle silence separately (up to 3 silent retries).
+        #   - Clean & lightly validate (letters/'/- only).
+        #   - Store into session_data[call_sid]["customer"]["first_name"].
+        #   - Advance → collect_last_name.
+        # ----------------------------------------------------------------------
+        session_data.setdefault(call_sid, {}).setdefault("customer", {})
+        raw = (speech_result or "").strip()
+        debug_print(f"collect_first_name: raw='{raw}'")
 
-        if not first_name or len(first_name.split()) > 2:
-            gather = make_gather("I didn't catch that clearly. Please say your first name again.")
+        # 🔇 Silent mode: nothing heard → re-ask (no hangup until 3 tries)
+        if not raw:
+            tries = session_data[call_sid].get("silence_first_name", 0) + 1
+            session_data[call_sid]["silence_first_name"] = tries
+            debug_print(f"collect_first_name: 🤐 silence; tries={tries}")
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+            gather = make_gather("I didn’t hear your first name. Please say just your first name.")
             resp.append(gather)
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
             return str(resp)
 
-        session_data.setdefault(call_sid, {}).setdefault("customer", {})
+        # We heard something → clear silence counter
+        session_data[call_sid].pop("silence_first_name", None)
+
+        # 🧽 Clean & normalize (remove punctuation, compress spaces; ignore fillers)
+        import string  # ensure available; you already import at top, but safe to re-import
+        cleaned = raw.translate(str.maketrans('', '', string.punctuation)).strip()
+        cleaned = _re.sub(r"\s+", " ", cleaned)
+
+        # Heuristics: drop leading fillers like "my name is", "this is", "i am", "i'm", "it's"
+        # Keep it simple: if a filler exists, take tokens AFTER it.
+        lower = cleaned.lower()
+        filler_pat = _re.compile(r"\b(?:my name is|this is|i am|i'm|it is|it's)\b\s*", _re.IGNORECASE)
+        cleaned = filler_pat.sub("", cleaned).strip()
+
+        # Take the first token as FIRST name (avoid multiple words here)
+        tokens = cleaned.split()
+        first_name = tokens[0] if tokens else ""
+
+        # ✅ Validate: letters, apostrophes or hyphens, 1–40 chars, no digits
+        if not first_name or not _re.fullmatch(r"[A-Za-z][A-Za-z'\-]{0,39}", first_name):
+            # Soft reprompt (up to 3 attempts)
+            r = session_data[call_sid].get("retry_first_name", 0) + 1
+            session_data[call_sid]["retry_first_name"] = r
+            debug_print(f"collect_first_name: ❌ invalid first name '{first_name}' retry={r}")
+            if r >= 3:
+                resp.say(gpt_speak("Sorry, I couldn’t capture your first name. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+            gather = make_gather("I didn't catch that clearly. Please say just your first name.")
+            resp.append(gather)
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
+            return str(resp)
+
+        # Store & advance
         session_data[call_sid]["customer"]["first_name"] = first_name
         session_data[call_sid]["stage"] = "collect_last_name"
+        # Reset name retry counter on success
+        session_data[call_sid].pop("retry_first_name", None)
+        debug_print(f"collect_first_name: ✅ saved first_name='{first_name}' → next=collect_last_name")
 
         gather = make_gather("Thank you. Now, what is your last name?")
         resp.append(gather)
+        try:
+            from flask import url_for
+            resp.redirect(url_for("voice"))
+        except Exception:
+            resp.redirect("/voice")
         return str(resp)
 
 
-# ===== collect_last_name (stage) =====
+    # ===== collect_last_name (stage) =====
     elif stage == "collect_last_name":
-        try:
-            last = (speech_result or "").strip()
-            debug_print(f"collect_last_name: raw='{last}'")
+        # ----------------------------------------------------------------------
+        # 🎯 Goal:
+        #   - Capture LAST name via speech.
+        #   - Handle silence separately (up to 3 silent retries).
+        #   - Clean & lightly validate (letters/spaces/'/-; allow multi-token like "van dyke").
+        #   - Store into session_data[call_sid]["customer"]["last_name"].
+        #   - Advance → collect_address.
+        # ----------------------------------------------------------------------
+        session_data.setdefault(call_sid, {}).setdefault("customer", {})
+        raw = (speech_result or "").strip()
+        debug_print(f"collect_last_name: raw='{raw}'")
 
-            if not last:
-                gather = make_gather("Sorry, I didn't catch your last name. Please repeat it.")
-                resp.append(gather)
+        # 🔇 Silent mode
+        if not raw:
+            tries = session_data[call_sid].get("silence_last_name", 0) + 1
+            session_data[call_sid]["silence_last_name"] = tries
+            debug_print(f"collect_last_name: 🤐 silence; tries={tries}")
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
                 return str(resp)
-
-            session_data.setdefault(call_sid, {}).setdefault("customer", {})
-            session_data[call_sid]["customer"]["last_name"] = last
-            session_data[call_sid]["stage"] = "collect_address"
-
-            gather = make_gather("Got it. What is your full address, please?")
+            gather = make_gather("I didn’t hear your last name. Please say your last name now.")
             resp.append(gather)
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
             return str(resp)
 
-        except Exception as e:
-            debug_print(f"collect_last_name: exception → {e}")
-            resp.say(gpt_speak("Sorry, there was an error. Let's try again later."), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
+        # We heard something → clear silence counter
+        session_data[call_sid].pop("silence_last_name", None)
+
+        # 🧽 Clean & normalize (keep inner spaces; strip punctuation except apostrophe/hyphen)
+        import string
+        # Remove punctuation except apostrophe and hyphen: build whitelist
+        punct_keep = "'-"
+        trans_table = str.maketrans('', '', "".join(ch for ch in string.punctuation if ch not in punct_keep))
+        cleaned = raw.translate(trans_table).strip()
+        cleaned = _re.sub(r"\s+", " ", cleaned)
+
+        # Minimal validation: at least one letter, only letters/spaces/'/-
+        if (not cleaned) or (not _re.search(r"[A-Za-z]", cleaned)) or (not _re.fullmatch(r"[A-Za-z'\- ]{1,60}", cleaned)):
+            r = session_data[call_sid].get("retry_last_name", 0) + 1
+            session_data[call_sid]["retry_last_name"] = r
+            debug_print(f"collect_last_name: ❌ invalid last name '{cleaned}' retry={r}")
+            if r >= 3:
+                resp.say(gpt_speak("Sorry, I couldn’t capture your last name. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+            gather = make_gather("Sorry, I didn't catch your last name. Please repeat it clearly.")
+            resp.append(gather)
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
             return str(resp)
+
+        # Store & advance
+        session_data[call_sid]["customer"]["last_name"] = cleaned
+        session_data[call_sid]["stage"] = "collect_address"
+        # Reset retry counter on success
+        session_data[call_sid].pop("retry_last_name", None)
+        debug_print(f"collect_last_name: ✅ saved last_name='{cleaned}' → next=collect_address")
+
+        gather = make_gather("Got it. What is your full address, please?")
+        resp.append(gather)
+        try:
+            from flask import url_for
+            resp.redirect(url_for("voice"))
+        except Exception:
+            resp.redirect("/voice")
+        return str(resp)
+
 
 
 
    
 
 
+    # ===== collect_address (stage) =====
     elif stage == "collect_address":
         # ---------------------------------------------------------------
         # 🏠 Stage: collect_address
         # Goal:
         #   - Capture the caller's address from speech.
         #   - Normalize whitespace & punctuation (common STT artifacts).
+        #   - Handle silence with separate retry counter (no premature hangups).
         #   - Store under session_data[call_sid]["customer"]["address"].
-        #   - Advance to collect_cc.
+        #   - Advance to collect_cc with a clear prompt.
         # Notes:
-        #   - Use `_re` (import re as _re) to avoid UnboundLocalError.
+        #   - Uses `_re` (import re as _re) to avoid UnboundLocalError.
+        #   - Keeps flow consistent by redirecting back to /voice after gather.
         # ---------------------------------------------------------------
+
+        session_data.setdefault(call_sid, {}).setdefault("customer", {})
+
+        # Safely pull raw text
         try:
             raw = (speech_result or request.values.get("SpeechResult") or "").strip()
         except Exception:
@@ -3864,43 +4079,97 @@ def voice():
 
         debug_print(f"collect_address: 📬 Collected address (raw): {raw}")
 
-        # If we heard nothing, politely reprompt
+        # 🔇 Silent-mode handling: nothing heard → ask again (up to 3 times)
         if not raw:
+            tries = session_data[call_sid].get("silence_address", 0) + 1
+            session_data[call_sid]["silence_address"] = tries
+            debug_print(f"collect_address: 🤐 silence; tries={tries}")
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
             prompt = (
                 "I didn't catch the address. Please say your street address, city, and ZIP. "
                 "For example, '118 Briar Oak, Murphy, Texas 75094'."
             )
             gather = make_gather(prompt)
             resp.append(gather)
+            # redirect so Twilio posts back after the gather
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
             return str(resp)
 
+        # We heard something → clear silence counter
+        session_data[call_sid].pop("silence_address", None)
+
         # ---------- Normalize ----------
+        addr = raw
+
         # 1) Collapse multiple spaces
-        address = _re.sub(r"\s+", " ", raw)
+        addr = _re.sub(r"\s+", " ", addr)
 
-        # 2) Normalize spacing around commas, periods, and '#'
-        #    e.g., "Murphy , Texas . 75094" → "Murphy, Texas. 75094"
-        address = _re.sub(r"\s*([,#\.])\s*", r"\1 ", address)
+        # 2) Normalize spacing around commas, hashes, and periods
+        #    "Murphy , Texas . 75094" → "Murphy, Texas. 75094"
+        addr = _re.sub(r"\s*([,#\.])\s*", r"\1 ", addr)
 
-        # 3) Remove repeated periods (STT sometimes outputs "Texas.. 75094")
-        address = _re.sub(r"\.{2,}", ".", address)
+        # 3) Remove repeated punctuation like ".." or ",," → single instance
+        addr = _re.sub(r"\.{2,}", ".", addr)
+        addr = _re.sub(r",\s*,+", ", ", addr)
 
-        # 4) Strip trailing/leading spaces and stray punctuation
-        address = address.strip(" .,")
-        debug_print(f"collect_address: 🧽 Normalized → '{address}'")
+        # 4) Trim stray punctuation/spaces at the edges
+        addr = addr.strip(" .,")
+        # 5) Collapse any reintroduced doubles
+        addr = _re.sub(r"\s+", " ", addr).strip()
+
+        debug_print(f"collect_address: 🧽 Normalized → '{addr}'")
+
+        # ---------- Light validation ----------
+        # Must contain at least one letter; and be reasonably long
+        # (We do NOT require digits because some addresses are like "PO Box Two")
+        if (not addr) or (_re.search(r"[A-Za-z]", addr) is None) or (len(addr) < 6):
+            r = session_data[call_sid].get("retry_address", 0) + 1
+            session_data[call_sid]["retry_address"] = r
+            debug_print(f"collect_address: ❌ looks invalid/too short → retry={r}")
+
+            if r >= 3:
+                resp.say(gpt_speak("Sorry, I couldn’t capture your address. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            prompt = (
+                "Please repeat your full mailing address — street, city, state, and ZIP. "
+                "For example, '118 Briar Oak, Murphy, Texas 75094'."
+            )
+            gather = make_gather(prompt)
+            resp.append(gather)
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
+            return str(resp)
 
         # ---------- Persist ----------
-        session_data.setdefault(call_sid, {})
-        session_data[call_sid].setdefault("customer", {})
-        session_data[call_sid]["customer"]["address"] = address
+        session_data[call_sid]["customer"]["address"] = addr
+        # Reset retry counter on success
+        session_data[call_sid].pop("retry_address", None)
         debug_print("collect_address: ✅ Saved address to session")
 
         # ---------- Advance to next stage ----------
         session_data[call_sid]["stage"] = "collect_cc"
-        gather = make_gather(
-            "Thank you. Now, please enter your card number, then press pound."
-        )
+        gather = make_gather("Thank you. Now, please enter your card number, then press pound.")
         resp.append(gather)
+        try:
+            from flask import url_for
+            resp.redirect(url_for("voice"))
+        except Exception:
+            resp.redirect("/voice")
         return str(resp)
 
 
@@ -3922,6 +4191,7 @@ def voice():
         #   - Uses make_gather() (speech + DTMF). DTMF preferred; speech digits supported.
         #   - Requires phone (10-digit) and DOB before collecting CC.
         #   - Logging is UNMASKED here per your request (not recommended for prod).
+        #   - Silent-mode handling with its own counter (silence_cc).
         # ----------------------------------------------------------------------
 
         # --- Luhn mod-10 -------------------------------------------------------
@@ -3988,7 +4258,10 @@ def voice():
             )
             resp.append(gather)
             resp.say(gpt_speak("Let's get that first."), VOICE)
-            resp.redirect("/voice")
+            try:
+                resp.redirect(url_for("voice"))  # relies on global import
+            except Exception:
+                resp.redirect("/voice")
             return str(resp)
 
         # Mini-step tracker: 1=number, 2=exp, 3=cvv
@@ -4008,14 +4281,47 @@ def voice():
 
         debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{dtmf_digits}', speech='{speech_text}'")
 
+        # 🔇 Silent-mode: if both DTMF and speech are empty → reprompt without penalizing Luhn tries
+        if not dtmf_digits and not speech_text:
+            tries = session_data[call_sid].get("silence_cc", 0) + 1
+            session_data[call_sid]["silence_cc"] = tries
+            debug_print(f"collect_cc: 🤐 silence/no input; tries={tries}")
+
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            if cc_step == 1:
+                prompt = "Please enter your card number now, then press pound."
+                hints  = "zero one two three four five six seven eight nine double triple"
+            elif cc_step == 2:
+                prompt = "Please enter the expiration as four digits MMYY, then press pound."
+                hints  = "zero one two three four five six seven eight nine"
+            else:
+                prompt = "Please enter the three or four digit security code, then press pound."
+                hints  = "zero one two three four five six seven eight nine"
+
+            gather = make_gather(prompt, hints=hints)
+            resp.append(gather)
+            resp.say(gpt_speak("I didn’t hear anything."), VOICE)
+            try:
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
+            return str(resp)
+
+        # If we DID hear something, clear the silence counter
+        session_data[call_sid].pop("silence_cc", None)
+
         # Prefer DTMF; otherwise convert spoken words to digits, then strip non-digits.
-        # Use the module-level alias `re_mod` to avoid any closure/scoping issues.
         def get_digits() -> str:
             if dtmf_digits:
-                return re_mod.sub(r"\D", "", dtmf_digits)
-            return re_mod.sub(r"\D", "", normalize_spoken_digits(speech_text))
+                return _re.sub(r"\D", "", dtmf_digits)
+            return _re.sub(r"\D", "", normalize_spoken_digits(speech_text))
 
-        # Re-prompt helper with retry cap
+        # Re-prompt helper with retry cap (separate from silent-mode counter)
         def _reprompt(prompt: str, hints: str):
             session_data[call_sid]["retry_cc"] += 1
             if session_data[call_sid]["retry_cc"] >= 5:
@@ -4027,7 +4333,10 @@ def voice():
             gather = make_gather(prompt, hints=hints)
             resp.append(gather)
             resp.say(gpt_speak("I didn't get that."), VOICE)
-            resp.redirect("/voice")
+            try:
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
             return True
 
         # -------------------------------
@@ -4037,7 +4346,6 @@ def voice():
             new_digits = get_digits()
             digits = (cc_partial + new_digits) if (cc_partial or new_digits) else ""
 
-            # If nothing heard yet, reprompt right away
             if not digits:
                 debug_print("collect_cc: ℹ️ no digits heard → reprompt")
                 if _reprompt(
@@ -4045,11 +4353,9 @@ def voice():
                     hints="zero one two three four five six seven eight nine double triple"
                 ): return str(resp)
 
-            # Keep max length sane
             if len(digits) > 19:
                 digits = digits[:19]
 
-            # If we heard 15 digits via speech, ask for the last single digit
             if len(digits) == 15 and not dtmf_digits:
                 session_data[call_sid]["cc_partial"] = digits
                 debug_print(f"collect_cc: 🧩 Heard 15 digits '{digits}'; asking for the last digit")
@@ -4058,7 +4364,6 @@ def voice():
                     hints="zero one two three four five six seven eight nine"
                 ): return str(resp)
 
-            # Luhn validation
             if not (13 <= len(digits) <= 19) or not luhn_check(digits):
                 session_data[call_sid]["cc_speech_tries"] += (0 if dtmf_digits else 1)
                 escalate = session_data[call_sid]["cc_speech_tries"] >= 2 and not dtmf_digits
@@ -4074,7 +4379,6 @@ def voice():
                         hints="zero one two three four five six seven eight nine double triple"
                     ): return str(resp)
 
-            # Save and advance
             customer["cc_number"] = digits
             session_data[call_sid]["cc_step"] = 2
             session_data[call_sid]["cc_partial"] = ""
@@ -4088,7 +4392,10 @@ def voice():
             )
             resp.append(gather)
             resp.say(gpt_speak("I didn't hear the expiration."), VOICE)
-            resp.redirect("/voice")
+            try:
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
             return str(resp)
 
         # -------------------------------
@@ -4112,11 +4419,9 @@ def voice():
                     hints="zero one two three four five six seven eight nine"
                 ): return str(resp)
 
-            # Normalize year to 2-digit (handle MMYYYY too)
             if len(yy) == 4:
                 yy = yy[-2:]
 
-            # Reject past month
             now = _dt.now()
             exp_year = 2000 + int(yy)
             exp_cmp  = exp_year * 100 + mm
@@ -4138,7 +4443,10 @@ def voice():
             )
             resp.append(gather)
             resp.say(gpt_speak("I didn't hear the security code."), VOICE)
-            resp.redirect("/voice")
+            try:
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
             return str(resp)
 
         # -------------------------------
@@ -4155,7 +4463,6 @@ def voice():
 
             customer["cc_cvv"] = digits
 
-            # Default cardholder name from collected name, if not set
             if not customer.get("cc_name"):
                 name = customer.get("name") or " ".join(
                     p for p in [customer.get("first_name"), customer.get("last_name")] if p
@@ -4164,25 +4471,20 @@ def voice():
 
             debug_print(f"collect_cc: ✅ Saved CVV '{digits}'; cc_name='{customer.get('cc_name')}'")
 
-            # Clear step tracker and jump to confirmation
             session_data[call_sid].pop("cc_step", None)
             session_data[call_sid]["stage"] = "book_appt_confirm"
             debug_print("collect_cc: ➡️ Auto-advancing to book_appt_confirm")
 
-            # Immediately re-enter main handler so book_appt_confirm runs now
             try:
-                from flask import url_for
-                resp.redirect(url_for("voice"))  # adjust endpoint name if different
+                resp.redirect(url_for("voice"))
             except Exception:
-                resp.redirect(request.path)      # fallback to current path
+                resp.redirect("/voice")
             return str(resp)
 
 
 
 
-
     
-
     elif stage == "book_appt_confirm":
         debug_print("book_appt_confirm: 📍 Stage entered")
 
@@ -4190,6 +4492,13 @@ def voice():
         # Doctor info
         # ----------------------------------------------------------------------
         doctor_id = session_data[call_sid].get("doctor_id")
+        if not doctor_id:
+            debug_print("book_appt_confirm: ❌ missing doctor_id; sending back to choose doctor")
+            session_data[call_sid]["stage"] = "choose_doctor"
+            gather = make_gather("Which doctor would you like to see?")
+            resp.append(gather)
+            return str(resp)
+
         doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
         debug_print(f"book_appt_confirm: doctor_id={doctor_id} name={doctor_name}")
 
@@ -4210,13 +4519,13 @@ def voice():
         # Human-friendly local time for voice/SMS (America/Chicago)
         formatted_time = ""
         try:
-            
             dt_utc = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
-            dt_local = dt_utc.astimezone(pytz.timezone("America/Chicago"))
+            dt_local = dt_utc.astimezone(_pytz.timezone("America/Chicago"))
             try:
+                # Linux/Unix: %-d / %-I → no-leading-zero
                 formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
             except Exception:
-                # Windows-compatible fallback (remove leading zero from day/hour)
+                # Windows-compatible fallback: strip leading zeros manually
                 formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
         except Exception as e:
             debug_print(f"book_appt_confirm: time parse/format error → {e}")
@@ -4229,7 +4538,6 @@ def voice():
             try:
                 dur_min = int(APPOINTMENT_DURATION_MINUTES) if 'APPOINTMENT_DURATION_MINUTES' in globals() else 30
                 end_dt  = dt_utc + timedelta(minutes=dur_min)
-                
                 appointment_end = end_dt.replace(tzinfo=_pytz.UTC).isoformat()
                 debug_print(f"book_appt_confirm: computed utc_end={appointment_end} (duration={dur_min}m)")
             except Exception as e:
@@ -4424,53 +4732,112 @@ def voice():
         #  2) If no match, try GPT-based extraction.
         #  3) If still no match, re-prompt (with retry cap).
         #  4) On match, move to phone collection.
+        #
+        # Notes:
+        #  - Includes "silent mode" handling (no speech heard) with its own counter.
+        #  - Uses only built-ins already in scope; no local imports.
+        #  - Uses make_gather(prompt, hints=...) only (no next_stage arg).
         # ----------------------------------------------------------------------
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("cancel", {})
 
-        # Safe punctuation list even if 'string' isn't imported globally
+        # Safe punctuation set even if 'string' isn't globally imported elsewhere
         try:
-            import string as _string
-            _PUNCT = _string.punctuation
+            _PUNCT = string.punctuation  # string should be imported at top of file
         except Exception:
             _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
 
         def _clean(s: str) -> str:
-            """lowercase + strip punctuation + trim spaces"""
-            return (s or "").lower().translate(str.maketrans("", "", _PUNCT)).strip()
+            """lowercase + strip punctuation + squeeze spaces"""
+            s = (s or "").lower().translate(str.maketrans("", "", _PUNCT)).strip()
+            # squeeze internal whitespace (defensive against odd STT spacing)
+            return " ".join(s.split())
 
+        # Pull speech
         selected_text = (speech_result or "").strip()
 
-        # Nothing heard → re-prompt (no next_stage arg)
+        # ------------------------------
+        # 🔇 Silent-mode handling first
+        # ------------------------------
         if not selected_text:
-            debug_print("cancel_appointment: ⚠️ No speech detected — re-prompting for doctor name.")
+            tries = session_data[call_sid].get("silence_cancel_doc", 0) + 1
+            session_data[call_sid]["silence_cancel_doc"] = tries
+            debug_print(f"cancel_appointment: 🤐 No speech detected (silence count={tries})")
+
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
             doctor_list = ", ".join(googleid_dr_name_map.values())
             retry_prompt = (
-                f"I can't hear you. Available doctors are: {doctor_list}. "
+                f"I didn't hear the doctor's name. Available doctors are: {doctor_list}. "
                 "Please say the name of the doctor whose appointment you want to cancel."
             )
+            # keep user in same stage
             session_data[call_sid]["stage"] = "cancel_appointment"
-            resp.append(make_gather(retry_prompt))
+            resp.append(make_gather(retry_prompt, hints=doctor_list))
             return str(resp)
 
+        # If we heard *something*, clear the silence counter
+        session_data[call_sid].pop("silence_cancel_doc", None)
+
+        # Normalize and block common junk inputs that aren’t names
         selected_clean = _clean(selected_text)
         debug_print(f"cancel_appointment: 🗣️ Received doctor name → '{selected_clean}'")
 
+        junk_inputs = {
+            "", "yes", "no", "yeah", "nope", "ok", "okay", "hello", "hi", "hey",
+            "good morning", "good afternoon", "good evening", "test", "i know", "what"
+        }
+        if (not selected_clean) or (selected_clean in junk_inputs) or (len(selected_clean) < 2):
+            doctor_list = ", ".join(googleid_dr_name_map.values())
+            retry_prompt = (
+                f"I didn't recognize that as a doctor's name. Available doctors are: {doctor_list}. "
+                "Please say the name again."
+            )
+            session_data[call_sid]["stage"] = "cancel_appointment"
+            resp.append(make_gather(retry_prompt, hints=doctor_list))
+            return str(resp)
+
+        # ------------------------------
+        # 1) Partial substring / token match
+        # ------------------------------
         matched_id = None
         matched_name = None
-
-        # 1) Partial substring match
         partial_matches = []
+        spoken_tokens = set(selected_clean.split())
+
         for doc_id, friendly_name in googleid_dr_name_map.items():
             friendly_clean = _clean(friendly_name)
-            if selected_clean in friendly_clean or friendly_clean in selected_clean:
+            friendly_tokens = set(friendly_clean.split())
+            if (
+                selected_clean in friendly_clean
+                or friendly_clean in selected_clean
+                or (spoken_tokens & friendly_tokens)  # token overlap
+            ):
                 partial_matches.append((doc_id, friendly_name))
 
         if len(partial_matches) == 1:
             matched_id, matched_name = partial_matches[0]
             debug_print(f"cancel_appointment: ✅ Partial match → {matched_name} ({matched_id})")
+        elif len(partial_matches) > 1:
+            # If multiple candidates, pick the one with max token overlap
+            best = None
+            best_overlap = -1
+            for doc_id, friendly_name in partial_matches:
+                overlap = len(spoken_tokens & set(_clean(friendly_name).split()))
+                if overlap > best_overlap:
+                    best = (doc_id, friendly_name)
+                    best_overlap = overlap
+            if best:
+                matched_id, matched_name = best
+                debug_print(f"cancel_appointment: ✅ Multiple matches; chose best token overlap → {matched_name} ({matched_id})")
 
-        # 2) GPT fallback
+        # ------------------------------
+        # 2) GPT fallback (only if not matched yet)
+        # ------------------------------
         if not matched_id:
             try:
                 extracted_name = extract_doctor_name(selected_text)
@@ -4486,7 +4853,9 @@ def voice():
             except Exception as e:
                 debug_print(f"cancel_appointment: ⚠️ GPT fallback error → {e}")
 
+        # ------------------------------
         # 3) Still no match → retry with cap
+        # ------------------------------
         if not matched_id:
             retries = session_data[call_sid].get("retry_booking", 0)
             session_data[call_sid]["retry_booking"] = retries + 1
@@ -4506,10 +4875,12 @@ def voice():
                 "Please say the name again."
             )
             session_data[call_sid]["stage"] = "cancel_appointment"
-            resp.append(make_gather(retry_prompt))
+            resp.append(make_gather(retry_prompt, hints=doctor_list))
             return str(resp)
 
+        # ------------------------------
         # 4) Proceed with matched doctor → next stage: phone number
+        # ------------------------------
         session_data[call_sid]["doctor_id"] = matched_id
         session_data[call_sid]["cancel"]["doctor"] = matched_name or googleid_dr_name_map.get(matched_id, "the doctor")
         session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"
@@ -4520,16 +4891,52 @@ def voice():
         return str(resp)
 
 
+
+
+
+
+
     elif stage == "cancel_appt_by_phone_number":
         # ----------------------------------------------------------------------
-        # 📌 Collect the phone number used when booking, then move to date+time.
+        # 📞 Collect the phone number used when booking, then move to date+time.
+        #  - Silent-mode aware (re-prompts up to 3x if nothing is heard)
+        #  - Normalizes to 10 digits (strip non-digits; drop leading 1 if 11)
+        #  - Stores under session_data[call_sid]["cancel"]["phone"]
+        #  - Next stage: cancel_appt_get_date_time
         # ----------------------------------------------------------------------
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("cancel", {})
 
         phone_raw = (speech_result or "").strip()
-        phone = extract_phone_number(phone_raw)
-        debug_print(f"cancel_appt_by_phone_number: 📱 Extracted phone → '{phone}' (raw='{phone_raw}')")
+        debug_print(f"cancel_appt_by_phone_number: 🗣️ raw='{phone_raw}'")
+
+        # 🔇 Silent mode: nothing heard at all
+        if not phone_raw:
+            tries = session_data[call_sid].get("silence_cancel_phone", 0) + 1
+            session_data[call_sid]["silence_cancel_phone"] = tries
+            debug_print(f"cancel_appt_by_phone_number: 🤐 silence count={tries}")
+
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            prompt = (
+                "I didn’t hear your phone number. Please say or type your ten digit phone number including area code, "
+                "then press pound."
+            )
+            session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"
+            resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine double triple"))
+            resp.redirect("/voice")
+            return str(resp)
+
+        # If we DID hear something, clear the silence counter
+        session_data[call_sid].pop("silence_cancel_phone", None)
+
+        # Extract + normalize
+        phone = extract_phone_number(phone_raw)  # your helper
+        debug_print(f"cancel_appt_by_phone_number: 📱 extracted='{phone}'")
 
         def _normalize_10(d: str) -> str:
             d = "".join(ch for ch in (d or "") if ch.isdigit())
@@ -4537,78 +4944,67 @@ def voice():
 
         phone10 = _normalize_10(phone)
 
-        if not phone10 or len(phone10) < 7:
-            debug_print("cancel_appt_by_phone_number: ❌ invalid/missing phone → reprompt")
+        # Truncate to 10 if user repeated digits (defensive)
+        if len(phone10) > 10:
+            phone10 = phone10[:10]
+
+        if len(phone10) != 10:
+            debug_print(f"cancel_appt_by_phone_number: ❌ invalid → '{phone10}'")
             session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"
-            resp.append(make_gather("I didn’t catch your phone number. Please say it again clearly, including the area code."))
+            prompt = (
+                "I didn’t catch a valid phone number. Please say or type your ten digit phone number including area code, "
+                "then press pound."
+            )
+            resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine double triple"))
+            resp.redirect("/voice")
             return str(resp)
 
+        # ✅ Store and proceed
         session_data[call_sid]["cancel"]["phone"] = phone10
-        session_data[call_sid]["stage"] = "cancel_appt_by_date_time"
+        session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
 
         resp.append(make_gather(
             "Thanks. Now, please tell me the date and time of the appointment you want to cancel. "
             "For example, say July 3rd at 9 AM."
         ))
+        resp.redirect("/voice")
         return str(resp)
 
 
 
     elif stage == "cancel_appt_get_dob":
         # ----------------------------------------------------------------------
-        # ❌ Stage: cancel_appt_get_dob
-        # Purpose:
-        #   - Collect and validate the caller's Date of Birth for appointment
-        #     cancellation lookup/verification.
-        #   - Accepts speech (e.g., "July third nineteen fifty six") OR DTMF
-        #     as MMDDYYYY (e.g., 07031956#).
-        #   - Stores DOB as ISO (YYYY-MM-DD) under session_data[call_sid]["customer"]["dob"].
-        #   - Requires a 10-digit phone on file before proceeding; if missing,
-        #     redirects to collect_phone and returns here afterward.
-        # Flow after success:
-        #   - Sets stage -> "cancel_appt_get_date_time" (we’ll ask for the appt’s date+time next).
-        # Resilience:
-        #   - 3 retries on parse or validation errors with polite reprompts.
-        #   - Consistent "can't hear you" behavior via make_gather_dob() when available.
+        # 🎂 Collect caller DOB for cancellation lookup/verification.
+        #  - Accepts speech (e.g., “July third nineteen fifty six”) or DTMF MMDDYYYY#
+        #  - Silent-mode aware (re-prompts up to 3x if nothing is heard)
+        #  - Stores ISO under session_data[call_sid]["customer"]["dob"]
+        #  - Requires a 10-digit phone on file first
+        #  - Next stage: cancel_appt_get_date_time
         # ----------------------------------------------------------------------
         debug_print("cancel_appt_get_dob: 📍 Stage entered")
 
-        # Ensure buckets exist
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
 
-        # Local import guard for date
-        try:
-            from datetime import date
-        except Exception:
-            # Fallback: simple shim if import ever fails (highly unlikely)
-            debug_print("cancel_appt_get_dob: ⚠️ could not import 'date' from datetime")
-            class _FakeDate:  # minimal stub to avoid NameError
-                @staticmethod
-                def today(): return None
-            date = _FakeDate  # type: ignore
-
-        # --- Guard: require 10-digit phone first ---------------------------------
+        # Guard: require phone first
         def _normalize_10(d: str) -> str:
             d = "".join(ch for ch in (d or "") if ch.isdigit())
             return d[1:] if len(d) == 11 and d.startswith("1") else d
 
         phone_norm = _normalize_10(session_data[call_sid]["customer"].get("phone"))
         if len(phone_norm) != 10:
-            debug_print("cancel_appt_get_dob: ❌ phone missing/invalid → redirecting to collect_phone")
-            # Set return path so collect_phone bounces back here once done
+            debug_print("cancel_appt_get_dob: ❌ phone missing/invalid → collect_phone")
             session_data[call_sid]["return_stage"] = "cancel_appt_get_dob"
             session_data[call_sid]["stage"] = "collect_phone"
-            gather = make_gather(
+            resp.append(make_gather(
                 "To cancel your appointment, please provide your ten digit phone number including area code. "
                 "You can say it, or type the digits and press pound.",
                 hints="zero one two three four five six seven eight nine"
-            )
-            resp.append(gather)
+            ))
             resp.redirect("/voice")
             return str(resp)
 
-        # --- Pull inputs (DTMF preferred if provided by Twilio) -------------------
+        # Pull inputs
         try:
             dtmf_digits = (request.values.get("Digits") or "").strip()
         except Exception:
@@ -4616,9 +5012,36 @@ def voice():
         speech_text = (speech_result or "").strip()
         debug_print(f"cancel_appt_get_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
 
-        # --- Attempt to parse DOB (speech or keypad) ------------------------------
-        # parse_dob_input should return a datetime (or None on failure)
-        dt = parse_dob_input(speech_text, dtmf_digits)
+        # 🔇 Silent-mode: nothing heard at all
+        if not dtmf_digits and not speech_text:
+            tries = session_data[call_sid].get("silence_cancel_dob", 0) + 1
+            session_data[call_sid]["silence_cancel_dob"] = tries
+            debug_print(f"cancel_appt_get_dob: 🤐 silence count={tries}")
+
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            prompt_text = (
+                "Please say your birth date, for example July third nineteen fifty six, "
+                "or type MMDDYYYY, then press pound."
+            )
+            session_data[call_sid]["stage"] = "cancel_appt_get_dob"
+            try:
+                gather = make_gather_dob(prompt_text)
+            except Exception:
+                gather = make_gather(prompt_text, hints="zero one two three four five six seven eight nine")
+            resp.append(gather)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # If we DID hear something, clear the silence counter
+        session_data[call_sid].pop("silence_cancel_dob", None)
+
+        # Parse DOB
+        dt = parse_dob_input(speech_text, dtmf_digits)  # should return datetime or None
         if not dt:
             session_data[call_sid]["retry_cancel_dob"] = session_data[call_sid].get("retry_cancel_dob", 0) + 1
             r = session_data[call_sid]["retry_cancel_dob"]
@@ -4635,16 +5058,18 @@ def voice():
                 "or type MMDDYYYY, then press pound."
             )
             try:
-                gather = make_gather_dob(prompt_text)  # if you have a specialized DOB gather
+                gather = make_gather_dob(prompt_text)
             except Exception:
                 gather = make_gather(prompt_text, hints="zero one two three four five six seven eight nine")
             resp.append(gather)
+            resp.redirect("/voice")
             return str(resp)
 
-        # --- Validate reasonable DOB range ----------------------------------------
+        # Validate DOB in a sane range (1900..today)
         try:
-            today = date.today()
-            min_date = date(1900, 1, 1)
+            _Date = globals().get("_date", date)  # use top-level alias if present; else built-in 'date'
+            today = _Date.today()
+            min_date = _Date(1900, 1, 1)
             dob_date = dt.date()
             if not (min_date <= dob_date <= today):
                 session_data[call_sid]["retry_cancel_dob"] = session_data[call_sid].get("retry_cancel_dob", 0) + 1
@@ -4667,11 +5092,40 @@ def voice():
                 except Exception:
                     gather = make_gather(prompt_text, hints="zero one two three four five six seven eight nine")
                 resp.append(gather)
+                resp.redirect("/voice")
                 return str(resp)
         except Exception as e:
             debug_print(f"cancel_appt_get_dob: ⚠️ Validation error → {e}")
+            # soft re-prompt (don’t burn a retry here; we already parsed a dt)
+            try:
+                gather = make_gather_dob(
+                    "Please repeat your birth date, for example July third nineteen fifty six, "
+                    "or type MMDDYYYY, then press pound."
+                )
+            except Exception:
+                gather = make_gather(
+                    "Please repeat your birth date, for example July third nineteen fifty six, "
+                    "or type MMDDYYYY, then press pound.",
+                    hints="zero one two three four five six seven eight nine"
+                )
+            resp.append(gather)
+            resp.redirect("/voice")
+            return str(resp)
 
-        # --- Store ISO DOB and advance ----------------------------
+        # ✅ Store and move on
+        iso_dob = dt.strftime("%Y-%m-%d")
+        session_data[call_sid]["customer"]["dob"] = iso_dob
+        session_data[call_sid].pop("retry_cancel_dob", None)
+        debug_print(f"cancel_appt_get_dob: ✅ Stored DOB → {iso_dob}")
+
+        session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
+        resp.append(make_gather(
+            "Thanks. Now, please tell me the date and time of the appointment you want to cancel. "
+            "For example, say July 3rd at 9 AM."
+        ))
+        resp.redirect("/voice")
+        return str(resp)
+
 
 
 
