@@ -682,14 +682,15 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
       - If AM/PM missing, uses `default_meridiem` (configurable; default "AM").
       - Converts 24-hour inputs (e.g., 17:30, 1730) to 12-hour + PM automatically.
     """
-    
 
+    # --- local debug wrapper (safe if debug_print is missing) ------------------
     def _dbg(msg: str):
         try:
             debug_print(msg)
         except Exception:
             pass
 
+    # --- meridiem inference ----------------------------------------------------
     def _infer_meridiem(hh: int, mer: str) -> str:
         """
         If a meridiem (am/pm) was spoken, honor it. Otherwise, infer using `default_meridiem`.
@@ -713,8 +714,8 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
            .replace("a. m", "am").replace("p. m", "pm")
            .replace("a m", "am").replace("p m", "pm"))
     # Replace dots/commas/dashes with a single space; collapse multiple spaces.
-    s = re.sub(r"[,\.\-]+", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
+    s = _re.sub(r"[,\.\-]+", " ", s)
+    s = _re.sub(r"\s+", " ", s).strip()
 
     # -------------------------------------------------------------------------
     # 2) Locate a date (prefer month names, else numeric M/D)
@@ -750,7 +751,7 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
     # 2B) If no named month, try numeric M/D or M-D anywhere in the string.
     #     We keep this *secondary* to avoid false positives on random numbers.
     if month is None:
-        mnum = re.search(r"\b(\d{1,2})[\/\-](\d{1,2})\b", s)
+        mnum = _re.search(r"\b(\d{1,2})[\/\-](\d{1,2})\b", s)
         if mnum:
             mval, dval = int(mnum.group(1)), int(mnum.group(2))
             if 1 <= mval <= 12 and 1 <= dval <= 31:
@@ -768,7 +769,7 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
     # 2C) If named month found but day still unknown, pick the first reasonable integer after it.
     if day is None:
         for j in range(mi + 1, min(mi + 4, len(tokens))):
-            tj = re.sub(r"\D", "", tokens[j])
+            tj = _re.sub(r"\D", "", tokens[j])
             if tj.isdigit():
                 val = int(tj)
                 if 1 <= val <= 31:
@@ -777,8 +778,8 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
                     break
         # If not found, try joining split digits like "1 5" → 15
         if day is None and mi + 2 < len(tokens):
-            a = re.sub(r"\D", "", tokens[mi + 1])
-            b = re.sub(r"\D", "", tokens[mi + 2])
+            a = _re.sub(r"\D", "", tokens[mi + 1])
+            b = _re.sub(r"\D", "", tokens[mi + 2])
             if len(a) == 1 and len(b) == 1 and a.isdigit() and b.isdigit():
                 val = int(a + b)
                 if 1 <= val <= 31:
@@ -804,8 +805,8 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
     # (d) h (optional am/pm)          → "5 am", "5"
     spoken_time = None
 
-    # (a)
-    m = re.search(r"\b(\d{1,2})\s*:\s*(\d{1,2})(?:\s*(am|pm))?\b", rest)
+    # (a) h:mm
+    m = _re.search(r"\b([0-2]?\d)\s*:\s*([0-5]\d)(?:\s*(am|pm))?\b", rest)
     if m:
         hh, mm, mer = int(m.group(1)), int(m.group(2)), (m.group(3) or "").upper()
         if not (0 <= hh <= 23 and 0 <= mm <= 59):
@@ -820,9 +821,9 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
             mer = "PM"; hh -= 12
         spoken_time = f"{hh}:{mm:02d} {mer}"
 
-    # (b)
+    # (b) h mm
     if spoken_time is None:
-        m2 = re.search(r"\b(\d{1,2})\s+(\d{2})(?:\s*(am|pm))?\b", rest)
+        m2 = _re.search(r"\b([0-2]?\d)\s+([0-5]\d)(?:\s*(am|pm))?\b", rest)
         if m2:
             hh, mm, mer = int(m2.group(1)), int(m2.group(2)), (m2.group(3) or "").upper()
             if not (0 <= hh <= 23 and 0 <= mm <= 59):
@@ -836,9 +837,9 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
                 mer = "PM"; hh -= 12
             spoken_time = f"{hh}:{mm:02d} {mer}"
 
-    # (c)
+    # (c) hmm/hhmm
     if spoken_time is None:
-        m3 = re.search(r"\b(\d{3,4})(?:\s*(am|pm))?\b", rest)
+        m3 = _re.search(r"\b(\d{3,4})(?:\s*(am|pm))?\b", rest)
         if m3:
             digits, mer = m3.group(1), (m3.group(2) or "").upper()
             if len(digits) == 3:  # HMM
@@ -856,17 +857,23 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
                 mer = "PM"; hh -= 12
             spoken_time = f"{hh}:{mm:02d} {mer}"
 
-    # (d)
+    # (d) bare hour
     if spoken_time is None:
-        m4 = re.search(r"\b(\d{1,2})(?:\s*(am|pm))?\b", rest)
+        m4 = _re.search(r"\b([0-1]?\d|2[0-3])(?:\s*(am|pm))?\b", rest)
         if m4:
             hh, mer = int(m4.group(1)), (m4.group(2) or "").upper()
             if hh == 0:
                 hh, mer = 12, "AM"
-            if not (1 <= hh <= 12):
-                _dbg("parse_time_fallback_noisy: ❌ bare hour out of 1..12")
+            if not (1 <= hh <= 12 or (mer and 0 <= hh <= 23)):
+                _dbg("parse_time_fallback_noisy: ❌ bare hour out of range")
                 return None
+            # If 13..23 with no mer, force PM and convert
+            if 13 <= hh <= 23 and not mer:
+                hh -= 12
+                mer = "PM"
             mer = _infer_meridiem(hh, mer)
+            if hh > 12:  # safety
+                hh -= 12
             spoken_time = f"{hh}:00 {mer}"
 
     if spoken_time is None:
@@ -887,6 +894,7 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
 
     _dbg(f"parse_time_fallback_noisy: ✅ parsed → day='{spoken_day}' time='{spoken_time}'")
     return (spoken_day, spoken_time)
+
 
 
 # -----------------------------------------------------------------------------
