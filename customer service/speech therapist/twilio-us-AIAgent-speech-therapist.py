@@ -8,6 +8,8 @@ import string          # for string.punctuation
 import calendar
 import re as _re       # use _re everywhere to avoid UnboundLocalError
 from uuid import uuid4
+import pickle
+import openai
 
 from typing import Any, Optional, List, Dict, Tuple, Iterator, Iterable, Union
 
