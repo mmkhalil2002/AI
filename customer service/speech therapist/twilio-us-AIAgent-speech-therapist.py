@@ -591,41 +591,96 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
 
 
 
-
-
-def build_timeslot_range(spoken_day: Union[str, date], spoken_time: Union[str, dtime],
+def build_timeslot_range(spoken_day: Union[str, date],
+                         spoken_time: Union[str, dtime],
                          tolerance_minutes: int = 30) -> Tuple[str, str]:
     """
     Convert a spoken date/time (or date/time objects) to a UTC ISO 8601 window.
     Returns (utc_start_iso, utc_end_iso). Always uses America/Chicago → UTC.
+
+    Behavior / notes:
+      - Accepts either strings ("Saturday, August 16", "5:00 AM") OR date/dtime objects.
+      - Normalizes things like ordinals (“16th”), filler "at", and AM/PM variants (“a.m.”).
+      - Tries a few explicit strptime formats first; if they fail, falls back to dateutil.
+      - If the caller didn’t say a year, we infer the current year; if that local time
+        is already in the past, we roll to next year (common speech UX).
+      - Duration = tolerance_minutes (default 30), used as the end time offset.
     """
     debug_print(f"📥 build_timeslot_range: Input → Day: '{spoken_day}', Time: '{spoken_time}'")
-    local_tz = pytz.timezone("America/Chicago")
 
-    # If already date/time objects
+    # -----------------------------------------
+    # Timezone objects (clinic tz + UTC)
+    # -----------------------------------------
+    local_tz = _pytz.timezone("America/Chicago")
+    utc_tz   = _pytz.UTC
+
+    # -----------------------------------------
+    # Fast path: both are concrete objects
+    # -----------------------------------------
     if isinstance(spoken_day, date) and isinstance(spoken_time, dtime):
         combined = datetime.combine(spoken_day, spoken_time)
-        localized = local_tz.localize(combined)
-        utc_start = localized.astimezone(pytz.utc)
-        utc_end = utc_start + timedelta(minutes=tolerance_minutes)
+        try:
+            localized = local_tz.localize(combined)
+        except Exception:
+            # Fallback if localization complains (rare DST edge)
+            localized = combined.replace(tzinfo=local_tz)
+        utc_start = localized.astimezone(utc_tz)
+        utc_end   = utc_start + timedelta(minutes=tolerance_minutes)
         debug_print(f"📅 Local slot: {localized} → {localized + timedelta(minutes=tolerance_minutes)}")
         debug_print(f"🌍 UTC slot: {utc_start.isoformat()} → {utc_end.isoformat()}")
         return utc_start.isoformat(), utc_end.isoformat()
 
-    # Else strings → clean + parse
-    day_str = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', str(spoken_day)).replace(",", "").replace(" of ", " ").strip()
-    combo = f"{day_str} {spoken_time}".strip()
+    # -----------------------------------------
+    # String path: clean + parse
+    # -----------------------------------------
+    # Day cleanup: remove ordinals, commas, and " of " (e.g., "August 16th" → "August 16")
+    day_str = str(spoken_day or "").strip()
+    day_str = _re.sub(r'(\d+)(st|nd|rd|th)\b', r'\1', day_str, flags=_re.IGNORECASE)
+    day_str = day_str.replace(",", " ").replace(" of ", " ")
+    day_str = _re.sub(r"\s+", " ", day_str).strip()
+
+    # Time cleanup: normalize a.m./p.m., trim trailing punctuation, collapse spaces
+    time_str = str(spoken_time or "").strip()
+    time_str = (time_str.lower()
+                        .replace("a.m.", "am").replace("p.m.", "pm")
+                        .replace("a. m.", "am").replace("p. m.", "pm")
+                        .replace("a. m", "am").replace("p. m", "pm")
+                        .replace("a m", "am").replace("p m", "pm"))
+    time_str = _re.sub(r"[.!?]+$", "", time_str)       # trim sentence-ending punctuation
+    time_str = _re.sub(r"\s+", " ", time_str).strip()
+
+    # Common filler: remove a single " at " so "August 16 at 5:30 AM" → "August 16 5:30 AM"
+    # (We remove only once to avoid nuking "Saturday" → "Saturd".)
+    combo = f"{day_str} {time_str}".replace(" at ", " ", 1).strip()
     debug_print(f"🧽 Cleaned combined input: '{combo}'")
 
-    formats = [
-        "%A %B %d %I:%M %p",  # Wednesday July 8 10:00 AM
-        "%B %d %I:%M %p",     # July 8 10:00 AM
-        "%A %B %d %H:%M",     # Wednesday July 8 14:30
-        "%B %d %H:%M",        # July 8 14:30
+    # -----------------------------------------
+    # Try explicit format templates first
+    # -----------------------------------------
+    fmt_candidates = [
+        # With weekday + 12h
+        "%A %B %d %I:%M %p",
+        "%A %b %d %I:%M %p",
+        "%A %B %d %I %p",
+        "%A %b %d %I %p",
+        # Without weekday + 12h
+        "%B %d %I:%M %p",
+        "%b %d %I:%M %p",
+        "%B %d %I %p",
+        "%b %d %I %p",
+        # Numeric month/day + 12h
+        "%m/%d %I:%M %p",
+        "%m/%d %I %p",
+        # 24h variants
+        "%A %B %d %H:%M",
+        "%A %b %d %H:%M",
+        "%B %d %H:%M",
+        "%b %d %H:%M",
+        "%m/%d %H:%M",
     ]
 
     parsed = None
-    for fmt in formats:
+    for fmt in fmt_candidates:
         try:
             parsed = datetime.strptime(combo, fmt)
             debug_print(f"✅ Parsed datetime: {parsed} using format {fmt}")
@@ -633,17 +688,56 @@ def build_timeslot_range(spoken_day: Union[str, date], spoken_time: Union[str, d
         except ValueError:
             continue
 
+    # -----------------------------------------
+    # Fallback: dateutil (more tolerant)
+    # -----------------------------------------
     if not parsed:
-        raise ValueError(f"🛑 Could not parse datetime from '{combo}'")
+        try:
+            # Use current year as the default base so month/day fill correctly
+            default_dt = datetime(datetime.now().year, 1, 1, 0, 0, 0)
+            parsed = dtparser.parse(combo, default=default_dt)
+            debug_print(f"✅ Parsed via dateutil: {parsed.isoformat()}")
+        except Exception as e:
+            raise ValueError(f"🛑 Could not parse datetime from '{combo}' → {e}")
 
-    parsed = parsed.replace(year=datetime.now().year)  # infer current year
-    debug_print(f"📅 Inferred year → {parsed}")
+    # -----------------------------------------
+    # Year inference + roll forward if past
+    # -----------------------------------------
+    # Did the user explicitly say a year anywhere?
+    explicit_year = bool(_re.search(r"\b(19|20)\d{2}\b", combo))
 
-    localized = local_tz.localize(parsed)
-    utc_start = localized.astimezone(pytz.utc)
-    utc_end = utc_start + timedelta(minutes=tolerance_minutes)
+    # If no explicit year was spoken, force the current year, then roll forward if needed.
+    if not explicit_year:
+        parsed = parsed.replace(year=datetime.now().year)
+
+    # Localize (clinic tz), then if that local time has already passed, roll to next year.
+    try:
+        localized = local_tz.localize(parsed)
+    except Exception:
+        localized = parsed.replace(tzinfo=local_tz)
+
+    now_local = datetime.now(local_tz)
+    if not explicit_year and localized < now_local:
+        try:
+            bumped = parsed.replace(year=parsed.year + 1)
+            try:
+                localized = local_tz.localize(bumped)
+            except Exception:
+                localized = bumped.replace(tzinfo=local_tz)
+            debug_print(f"📅 Inferred year → {localized.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        except Exception as e:
+            debug_print(f"⚠️ Year roll-forward failed → {e}")
+
+    # -----------------------------------------
+    # Convert to UTC + add duration
+    # -----------------------------------------
+    utc_start = localized.astimezone(utc_tz)
+    utc_end   = utc_start + timedelta(minutes=tolerance_minutes)
+
+    # Logs in your existing style
     debug_print(f"📅 Local slot: {localized} → {localized + timedelta(minutes=tolerance_minutes)}")
     debug_print(f"🌍 UTC slot: {utc_start.isoformat()} → {utc_end.isoformat()}")
+
     return utc_start.isoformat(), utc_end.isoformat()
 
 
