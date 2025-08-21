@@ -3396,6 +3396,33 @@ def voice():
         speech_text = (speech_result or "").strip()
         debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
 
+        # 1a) 🔁 If we didn’t hear anything at all, re-ask the SAME question (no hang up).
+        if not dtmf_digits and not speech_text:
+            session_data.setdefault(call_sid, {})
+            session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
+            r = session_data[call_sid]["retry_dob"]
+            debug_print(f"collect_dob: 🛑 silence/no input; retry={r}")
+
+            if r >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            # Re-prompt using short, consistent copy
+            try:
+                gather = make_gather_dob(DOB_PROMPT_SHORT)
+            except Exception:
+                gather = make_gather(DOB_PROMPT_SHORT)
+            resp.append(gather)
+            # Always redirect back so Twilio posts again after gather
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
+            return str(resp)
+
         # 2) Parse DOB input (helper handles speech and/or MMDDYYYY).
         #    parse_dob_input should return a datetime on success, or None if missing month/day/year.
         dt = parse_dob_input(speech_text, dtmf_digits)
@@ -3418,6 +3445,11 @@ def voice():
             except Exception:
                 gather = make_gather(DOB_PROMPT_SHORT)
             resp.append(gather)
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
             return str(resp)
 
         # 3) Validate DOB sanity window (e.g., 1900..today)
@@ -3434,6 +3466,11 @@ def voice():
                 except Exception:
                     gather = make_gather(DOB_PROMPT_SHORT)
                 resp.append(gather)
+                try:
+                    from flask import url_for
+                    resp.redirect(url_for("voice"))
+                except Exception:
+                    resp.redirect("/voice")
                 return str(resp)
         except Exception as e:
             # Do not fail the call; just log and re-prompt safely
@@ -3444,6 +3481,11 @@ def voice():
             except Exception:
                 gather = make_gather(DOB_PROMPT_SHORT)
             resp.append(gather)
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
             return str(resp)
 
         # 4) Store ISO DOB in session
@@ -3451,6 +3493,9 @@ def voice():
         session_data[call_sid].setdefault("customer", {})
         session_data[call_sid]["customer"]["dob"] = iso_dob
         debug_print(f"collect_dob: ✅ Stored DOB → {iso_dob}")
+
+        # Reset the retry counter on success so it doesn't affect later stages
+        session_data[call_sid].pop("retry_dob", None)
 
         # 5) Always move to ask_time_date next (your booking flow expects this)
         session_data[call_sid]["stage"] = "ask_time_date"
@@ -3463,6 +3508,11 @@ def voice():
             # Very defensive fallback (in case make_gather signature differs)
             gather = make_gather("Thanks. Please say the date and time, for example 'August 12 at 5 PM'.")
         resp.append(gather)
+        try:
+            from flask import url_for
+            resp.redirect(url_for("voice"))
+        except Exception:
+            resp.redirect("/voice")
         return str(resp)
 
 
