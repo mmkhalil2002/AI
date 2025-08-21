@@ -4455,9 +4455,6 @@ def voice():
             return str(resp)
 
 
-
-
-    
     elif stage == "book_appt_confirm":
         debug_print("book_appt_confirm: 📍 Stage entered")
 
