@@ -11,8 +11,8 @@ from uuid import uuid4
 import pickle
 import openai
 
+from datetime import time as dtime
 from typing import Any, Optional, List, Dict, Tuple, Iterator, Iterable, Union
-
 from datetime import datetime, date, time, timedelta, timezone
 from datetime import datetime as _dt  # if code references _dt
 
