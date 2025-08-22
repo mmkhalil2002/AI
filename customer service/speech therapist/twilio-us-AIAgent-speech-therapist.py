@@ -4619,6 +4619,7 @@ def voice():
 
 
 
+
     elif stage == "cancel_appointment":
         # ----------------------------------------------------------------------
         # 🔄 Stage: Cancel Appointment — after the caller says the doctor’s name
