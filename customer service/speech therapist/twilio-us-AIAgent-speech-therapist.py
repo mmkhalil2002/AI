@@ -982,6 +982,91 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
     return (spoken_day, spoken_time)
 
 
+# Preserve any existing legacy parser so we can try it first.
+try:
+    _smart_parse_time_prev = smart_parse_time  # type: ignore[name-defined]
+except Exception:
+    _smart_parse_time_prev = None
+
+
+def smart_parse_time(raw: str, *, tz_name: str = "America/Chicago"):
+    """
+    Unified, tolerant date+time parser for noisy ASR text.
+
+    Strategy
+    --------
+    1) Pre-clean the raw text (normalize AM/PM, strip common filler, trim punctuation).
+    2) If a *legacy* smart_parse_time exists, try it FIRST (backward compatibility).
+    3) If legacy is unusable, try parse_time_fallback_noisy(...).
+    4) Return a tuple (spoken_day, spoken_time) like:
+         ("Saturday, August 16", "5:00 AM")
+       or None if we can’t parse confidently.
+
+    Notes
+    -----
+    • Uses `_re` (i.e., `import re as _re`) to avoid UnboundLocalError.
+    • `tz_name` is passed to the fallback in case it needs locale context.
+    • Calls to `debug_print(...)` are wrapped so absence won’t crash.
+    """
+
+    # ---- tiny local logger (safe if debug_print is absent) ----
+    def _dbg(msg: str):
+        try:
+            debug_print(msg)
+        except Exception:
+            pass
+
+    if not raw:
+        return None
+
+    # ---- 1) Pre-clean ASR text --------------------------------
+    s = str(raw).strip()
+
+    # Normalize “a. m.” / “a.m.” / “a m” → “am” (and pm)
+    try:
+        s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s, flags=_re.IGNORECASE)
+        s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s, flags=_re.IGNORECASE)
+    except Exception:
+        pass
+
+    # Strip common filler ASR sometimes prepends:
+    #   “I couldn’t hear August 16th at 5 am” → “August 16th at 5 am”
+    s = _re.sub(
+        r"^\s*(i\s+couldn['’]t\s+hear|you\s+said|caller\s+said|they\s+said|it(?:'s|\s+is))\b[,:;\-\s]*",
+        "",
+        s,
+        flags=_re.IGNORECASE,
+    )
+
+    # Remove trailing terminal punctuation (keeps time colons intact)
+    s = _re.sub(r"[.!?]\s*$", "", s)
+
+    # ---- 2) Try legacy parser first (if present) ---------------
+    if _smart_parse_time_prev:
+        try:
+            v = _smart_parse_time_prev(s)
+            if isinstance(v, tuple) and len(v) == 2 and all(v):
+                _dbg("smart_parse_time: ✅ legacy parser")
+                return v
+            else:
+                _dbg("smart_parse_time: ℹ️ legacy unusable → trying fallback")
+        except Exception as e:
+            _dbg(f"smart_parse_time: ℹ️ legacy error → {e} ; trying fallback")
+
+    # ---- 3) Fallback: tolerant parser for noisy inputs ---------
+    try:
+        v = parse_time_fallback_noisy(s, tz_name=tz_name, default_meridiem="AM")
+        if isinstance(v, tuple) and len(v) == 2 and all(v):
+            _dbg(f"smart_parse_time: ✅ fallback parsed → day='{v[0]}' time='{v[1]}'")
+            return v
+    except Exception as e:
+        _dbg(f"smart_parse_time: ⚠️ fallback error → {e}")
+
+    # ---- 4) Nothing worked ------------------------------------
+    _dbg("smart_parse_time: ❌ both parsers failed")
+    return None
+
+
 
 # ✅ OpenAI client initialization
 #OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
