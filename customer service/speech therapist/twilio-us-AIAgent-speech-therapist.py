@@ -3479,7 +3479,7 @@ def voice():
         # Default booking path: ask for DOB next
         session_data[call_sid]["stage"] = "collect_dob"
         gather = make_gather(
-            "Thanks. Please provide your date of birth. You can say it, or enter MMDDYYYY, then press pound."
+            "Thanks. Please provide your date of birth. You can say it, or enter 2 digits 4 Month and 2 4 day and 4 4 year, then press pound."
         )
         resp.append(gather)
         return str(resp)
