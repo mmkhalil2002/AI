@@ -580,10 +580,10 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
     Normalize input like '29th of July' to 'July 29'
     """
     # Remove ordinal suffixes (e.g., "29th" → "29")
-    day = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day.strip(), flags=re.IGNORECASE)
+    day = _re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day.strip(), flags=_re.IGNORECASE)
 
     # Handle formats like "29 of July"
-    match = re.match(r"(\d+)\s+of\s+([A-Za-z]+)", day, flags=re.IGNORECASE)
+    match = _re.match(r"(\d+)\s+of\s+([A-Za-z]+)", day, flags=_re.IGNORECASE)
     if match:
         day = f"{match.group(2)} {match.group(1)}"
 
@@ -1159,11 +1159,11 @@ def extract_phone_number(speech_text: str) -> str:
     print(f"🗣️ Original speech input: '{speech_text}'")
 
     # 🧼 Step 1: Remove all characters except digits, spaces, and dashes
-    cleaned = re.sub(r"[^\d\s\-]", "", speech_text)
+    cleaned = _re.sub(r"[^\d\s\-]", "", speech_text)
     print(f"🔍 Cleaned speech (kept digits/spaces/dashes): '{cleaned}'")
 
     # 🔢 Step 2: Extract digits only
-    digits = re.sub(r"[^\d]", "", cleaned)
+    digits = _re.sub(r"[^\d]", "", cleaned)
     print(f"📞 Digits only: '{digits}'")
 
     # ✅ Step 3: Check length
@@ -1193,7 +1193,7 @@ def cancel_event_by_phone(
         - False / None if not found
     """
 
-    clean_phone = re.sub(r"[^\d]", "", phone)
+    clean_phone = _re.sub(r"[^\d]", "", phone)
     print(f"🔍 Searching for normalized phone: {clean_phone}")
 
     parsed_datetime = None
@@ -1323,8 +1323,8 @@ def cancel_event_by_phone(
         summary = event.get("summary", "").lower()
         description = event.get("description", "").lower()
 
-        summary_digits = re.sub(r"[^\d]", "", summary)
-        description_digits = re.sub(r"[^\d]", "", description)
+        summary_digits = _re.sub(r"[^\d]", "", summary)
+        description_digits = _re.sub(r"[^\d]", "", description)
 
         print("🔎 Checking event:")
         print(f"     summary: {summary}")
@@ -1487,7 +1487,7 @@ def confirm_appointment_by_name(
     # -----------------------
     # Normalize phone digits
     # -----------------------
-    digits_only_phone = re.sub(r"\D", "", phone or "")
+    digits_only_phone = _re.sub(r"\D", "", phone or "")
     if not digits_only_phone:
         raise ValueError("Phone is required and must contain digits.")
 
@@ -1497,9 +1497,9 @@ def confirm_appointment_by_name(
     dob_iso = (dob or "").strip()
     if dob_iso:
         # Already ISO?
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None:
+        if _re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None:
             # Try MM/DD/YYYY or MM-DD-YYYY
-            m = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
+            m = _re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
             if m:
                 mm, dd, yyyy = m.groups()
                 dob_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
@@ -1529,7 +1529,7 @@ def confirm_appointment_by_name(
                 dt = datetime.fromisoformat(s)
         except Exception:
             # If naive pattern 'YYYY-MM-DDTHH:MM:SS', try that
-            if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", s):
+            if _re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", s):
                 dt = datetime.fromisoformat(s)
             else:
                 raise
@@ -1572,7 +1572,7 @@ def confirm_appointment_by_name(
     # -------------------------------------------------------
     matches = []
     for idx, appt in enumerate(appts):
-        p = re.sub(r"\D", "", appt.get("phone", ""))
+        p = _re.sub(r"\D", "", appt.get("phone", ""))
         d = (appt.get("dob") or "").strip()
         if dob_iso:
             if p == digits_only_phone and d == dob_iso:
@@ -1598,7 +1598,7 @@ def confirm_appointment_by_name(
             debug_print("🔁 Exact duplicate detected — skipping append")
             # Normalize record before returning
             appt_norm = dict(appt)
-            appt_norm["phone"] = re.sub(r"\D", "", appt_norm.get("phone", ""))
+            appt_norm["phone"] = _re.sub(r"\D", "", appt_norm.get("phone", ""))
             appt_norm["time"] = utc_start_iso
             return {"created": False, "record": appt_norm, "reason": "duplicate"}
 
@@ -2040,7 +2040,7 @@ def init_db() -> None:
 # ---------- Sanitizers / formatters ----------
 def _oneline(s: str) -> str:
     """Compact whitespace/newlines to a single line."""
-    return re.sub(r"\s+", " ", (s or "").strip())
+    return _re.sub(r"\s+", " ", (s or "").strip())
 
 
 
@@ -2528,9 +2528,9 @@ def get_doctor_appts_for(doctor_name: str, phone: str, dob: str = None) -> list:
             return ""
         if "T" in s:
             s = s.split("T", 1)[0].strip()
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        if _re.match(r"^\d{4}-\d{2}-\d{2}$", s):
             return s
-        m = re.match(r"^\s*(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})\s*$", s)
+        m = _re.match(r"^\s*(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})\s*$", s)
         if m:
             mm, dd, yyyy = m.groups()
             try:
@@ -2794,7 +2794,7 @@ def normalize(text):
     """
     Lowercase, remove punctuation, and trim extra spaces from text.
     """
-    return re.sub(r"[^a-zA-Z\s]", "", text).lower().strip()
+    return _re.sub(r"[^a-zA-Z\s]", "", text).lower().strip()
 @app.route("/voice", methods=["POST"])
 @app.route("/voice/", methods=["POST"])  # Accepts trailing slash
 def voice():
@@ -4390,8 +4390,7 @@ def voice():
         # Doctor info
         # ----------------------------------------------------------------------
         doctor_id = session_data[call_sid].get("doctor_id")
-        global _re
-        
+
         if not doctor_id:
             debug_print("book_appt_confirm: ❌ missing doctor_id; sending back to choose doctor")
             session_data[call_sid]["stage"] = "choose_doctor"
