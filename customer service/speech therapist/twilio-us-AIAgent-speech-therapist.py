@@ -4200,10 +4200,10 @@ def voice():
         #   - Uses make_gather() (speech + DTMF). DTMF preferred; speech digits supported.
         #   - Requires phone (10-digit) and DOB before collecting CC.
         #   - Logging is UNMASKED here per your request (not recommended for prod).
-        #   - Silent-mode handling with its own counter (silence_cc).
+        #   - Silent-mode handling + DTMF-enforcement after repeated speech failures.
         # ----------------------------------------------------------------------
 
-        # --- Luhn mod-10 -------------------------------------------------------
+        # --- helpers --------------------------------------------------------------
         def luhn_check(number: str) -> bool:
             s, alt = 0, False
             for ch in number[::-1]:
@@ -4218,8 +4218,8 @@ def voice():
                 alt = not alt
             return (s % 10) == 0
 
-        # --- Voice → digits (supports "double"/"triple", homophones) ----------
         def normalize_spoken_digits(raw: str) -> str:
+            """Map spoken words to digits; supports 'double'/'triple' and homophones."""
             if not raw:
                 return ""
             words = raw.lower().strip().split()
@@ -4246,15 +4246,44 @@ def voice():
                 i += 1
             return "".join(out)
 
+        def _normalize_10(d):
+            d = "".join(ch for ch in (d or "") if ch.isdigit())
+            return d[1:] if len(d) == 11 and d.startswith("1") else d
+
+        def _gather_dtmf_only(prompt_text: str, num_digits=None):
+            """Prefer a DTMF-only Gather; fallback to make_gather on error."""
+            try:
+                g = Gather(input="dtmf", finishOnKey="#", numDigits=(num_digits or None))
+                g.say(prompt_text, voice=VOICE)
+                resp.append(g)
+            except Exception:
+                # Fall back to your wrapper if needed
+                resp.append(make_gather(prompt_text))
+
+        def _reprompt(prompt: str, hints: str = ""):
+            """Speech/DTMF reprompt with retry cap (separate from silence)."""
+            session_data[call_sid]["retry_cc"] += 1
+            if session_data[call_sid]["retry_cc"] >= 5:
+                debug_print("collect_cc: ⛔ max CC retries. Ending.")
+                resp.say(gpt_speak("Sorry, we’re having trouble collecting your details. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return True
+            # Respect DTMF-only enforcement
+            if session_data[call_sid].get("enforce_dtmf_cc"):
+                _gather_dtmf_only(prompt)
+            else:
+                resp.append(make_gather(prompt, hints=hints))
+            resp.say(gpt_speak("I didn't get that."), VOICE)
+            resp.redirect("/voice")
+            return True
+
         # Ensure session buckets exist
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
         customer = session_data[call_sid]["customer"]
 
         # 🔒 Require phone + DOB before CC
-        def _normalize_10(d):
-            d = "".join(ch for ch in (d or "") if ch.isdigit())
-            return d[1:] if len(d) == 11 and d.startswith("1") else d
         phone_guard = _normalize_10(customer.get("phone"))
         if len(phone_guard) != 10 or not customer.get("dob"):
             debug_print("collect_cc: ❌ Missing phone/DOB → redirecting")
@@ -4267,19 +4296,18 @@ def voice():
             )
             resp.append(gather)
             resp.say(gpt_speak("Let's get that first."), VOICE)
-            try:
-                resp.redirect(url_for("voice"))  # relies on global import
-            except Exception:
-                resp.redirect("/voice")
+            resp.redirect("/voice")
             return str(resp)
 
         # Mini-step tracker: 1=number, 2=exp, 3=cvv
         cc_step = session_data[call_sid].get("cc_step", 1)
 
-        # Retries + speech assistance + partial buffer for PAN
+        # Retries, speech tries, partial buffer for PAN, last-digit mode, and DTMF enforcement
         session_data[call_sid]["retry_cc"] = session_data[call_sid].get("retry_cc", 0)
         session_data[call_sid]["cc_speech_tries"] = session_data[call_sid].get("cc_speech_tries", 0)
         cc_partial = session_data[call_sid].get("cc_partial", "")
+        cc_expect_last_digit = session_data[call_sid].get("cc_expect_last_digit", False)
+        enforce_dtmf = session_data[call_sid].get("enforce_dtmf_cc", False)
 
         # Pull inputs
         try:
@@ -4287,10 +4315,9 @@ def voice():
         except Exception:
             dtmf_digits = ""
         speech_text = (speech_result or "").strip()
-
         debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{dtmf_digits}', speech='{speech_text}'")
 
-        # 🔇 Silent-mode: if both DTMF and speech are empty → reprompt without penalizing Luhn tries
+        # 🔇 Silent-mode: if both DTMF and speech are empty → reprompt w/out penalizing Luhn tries
         if not dtmf_digits and not speech_text:
             tries = session_data[call_sid].get("silence_cc", 0) + 1
             session_data[call_sid]["silence_cc"] = tries
@@ -4312,49 +4339,50 @@ def voice():
                 prompt = "Please enter the three or four digit security code, then press pound."
                 hints  = "zero one two three four five six seven eight nine"
 
-            gather = make_gather(prompt, hints=hints)
-            resp.append(gather)
-            resp.say(gpt_speak("I didn’t hear anything."), VOICE)
-            try:
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
+            if enforce_dtmf:
+                _gather_dtmf_only(prompt)
+            else:
+                resp.append(make_gather(prompt, hints=hints))
+            resp.redirect("/voice")
             return str(resp)
 
-        # If we DID hear something, clear the silence counter
+        # Clear silence counter once we hear something
         session_data[call_sid].pop("silence_cc", None)
 
-        # Prefer DTMF; otherwise convert spoken words to digits, then strip non-digits.
+        # Prefer DTMF; otherwise convert spoken words to digits
         def get_digits() -> str:
+            if enforce_dtmf:
+                # If we're enforcing DTMF and none provided, pretend we heard nothing
+                if not dtmf_digits:
+                    return ""
+                return re_mod.sub(r"\D", "", dtmf_digits)
+            # Not enforcing: take DTMF if present, else speech→digits
             if dtmf_digits:
-                return _re.sub(r"\D", "", dtmf_digits)
-            return _re.sub(r"\D", "", normalize_spoken_digits(speech_text))
-
-        # Re-prompt helper with retry cap (separate from silent-mode counter)
-        def _reprompt(prompt: str, hints: str):
-            session_data[call_sid]["retry_cc"] += 1
-            if session_data[call_sid]["retry_cc"] >= 5:
-                debug_print("collect_cc: ⛔ max CC retries. Ending.")
-                resp.say(gpt_speak("Sorry, we’re having trouble collecting your details. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return True
-            gather = make_gather(prompt, hints=hints)
-            resp.append(gather)
-            resp.say(gpt_speak("I didn't get that."), VOICE)
-            try:
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
-            return True
+                return re_mod.sub(r"\D", "", dtmf_digits)
+            return re_mod.sub(r"\D", "", normalize_spoken_digits(speech_text))
 
         # -------------------------------
         # Step 1: Card Number (13–19)
         # -------------------------------
         if cc_step == 1:
             new_digits = get_digits()
-            digits = (cc_partial + new_digits) if (cc_partial or new_digits) else ""
 
+            # Handle the special "expect last digit" path cleanly
+            if cc_expect_last_digit:
+                if len(new_digits) == 1:
+                    digits = (cc_partial or "") + new_digits
+                    debug_print(f"collect_cc: 🔚 appended last digit → '{digits}'")
+                else:
+                    # Treat as a fresh entry attempt
+                    debug_print("collect_cc: ℹ️ expected 1 digit, got fresh entry → clearing partial")
+                    session_data[call_sid]["cc_partial"] = ""
+                    session_data[call_sid]["cc_expect_last_digit"] = False
+                    digits = new_digits
+            else:
+                # Normal path
+                digits = new_digits
+
+            # If nothing meaningful yet, reprompt
             if not digits:
                 debug_print("collect_cc: ℹ️ no digits heard → reprompt")
                 if _reprompt(
@@ -4362,49 +4390,64 @@ def voice():
                     hints="zero one two three four five six seven eight nine double triple"
                 ): return str(resp)
 
+            # Keep max sane
             if len(digits) > 19:
                 digits = digits[:19]
 
-            if len(digits) == 15 and not dtmf_digits:
+            # If we heard 15 digits via speech (not DTMF), ask for the last single digit
+            if not enforce_dtmf and not dtmf_digits and len(digits) == 15:
                 session_data[call_sid]["cc_partial"] = digits
-                debug_print(f"collect_cc: 🧩 Heard 15 digits '{digits}'; asking for the last digit")
+                session_data[call_sid]["cc_expect_last_digit"] = True
+                debug_print(f"collect_cc: 🧩 Heard 15 digits '{digits}'; asking for the last single digit")
                 if _reprompt(
                     "I heard fifteen digits. Please say or type the last single digit now, then press pound.",
                     hints="zero one two three four five six seven eight nine"
                 ): return str(resp)
 
+            # Full validation
             if not (13 <= len(digits) <= 19) or not luhn_check(digits):
-                session_data[call_sid]["cc_speech_tries"] += (0 if dtmf_digits else 1)
-                escalate = session_data[call_sid]["cc_speech_tries"] >= 2 and not dtmf_digits
+                # Count speech failures to decide DTMF enforcement
+                if not dtmf_digits:  # speech path
+                    session_data[call_sid]["cc_speech_tries"] += 1
+                escalate = (session_data[call_sid]["cc_speech_tries"] >= 2 and not dtmf_digits)
+
                 debug_print(f"collect_cc: ❌ Invalid card number: '{digits}' (len={len(digits)}), escalate={escalate}")
+
+                # Always clear partial/expect flags on invalid so we don't glue next attempt
+                session_data[call_sid]["cc_partial"] = ""
+                session_data[call_sid]["cc_expect_last_digit"] = False
+
                 if escalate:
-                    if _reprompt(
-                        "That number didn’t sound clear. Please TYPE the full card number now, then press pound.",
-                        hints="zero one two three four five six seven eight nine"
-                    ): return str(resp)
+                    # Force DTMF-only from now on for PAN entry
+                    session_data[call_sid]["enforce_dtmf_cc"] = True
+                    _gather_dtmf_only("That number didn’t sound clear. Please TYPE the full card number now, then press pound.")
+                    resp.say(gpt_speak("Please use your keypad."), VOICE)
+                    resp.redirect("/voice")
+                    return str(resp)
                 else:
                     if _reprompt(
                         "That card number doesn't look right. Please re-enter the full card number, then press pound.",
                         hints="zero one two three four five six seven eight nine double triple"
                     ): return str(resp)
 
+            # Save and advance
             customer["cc_number"] = digits
             session_data[call_sid]["cc_step"] = 2
             session_data[call_sid]["cc_partial"] = ""
+            session_data[call_sid]["cc_expect_last_digit"] = False
             session_data[call_sid]["cc_speech_tries"] = 0
             debug_print(f"collect_cc: ✅ Saved card number '{digits}'")
 
-            gather = make_gather(
+            prompt = (
                 "Thank you. Now enter the expiration as two digits for month and two digits for year. "
-                "For example, 0527. Then press pound.",
-                hints="zero one two three four five six seven eight nine"
+                "For example, 0527. Then press pound."
             )
-            resp.append(gather)
+            if session_data[call_sid].get("enforce_dtmf_cc"):
+                _gather_dtmf_only(prompt)
+            else:
+                resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine"))
             resp.say(gpt_speak("I didn't hear the expiration."), VOICE)
-            try:
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
+            resp.redirect("/voice")
             return str(resp)
 
         # -------------------------------
@@ -4428,9 +4471,11 @@ def voice():
                     hints="zero one two three four five six seven eight nine"
                 ): return str(resp)
 
+            # Normalize year to 2-digit (handle MMYYYY too)
             if len(yy) == 4:
                 yy = yy[-2:]
 
+            # Reject past month
             now = _dt.now()
             exp_year = 2000 + int(yy)
             exp_cmp  = exp_year * 100 + mm
@@ -4446,16 +4491,13 @@ def voice():
             session_data[call_sid]["cc_step"] = 3
             debug_print(f"collect_cc: ✅ Saved expiration {customer['cc_exp']}")
 
-            gather = make_gather(
-                "Great. Finally, enter the three or four digit security code, then press pound.",
-                hints="zero one two three four five six seven eight nine"
-            )
-            resp.append(gather)
+            prompt = "Great. Finally, enter the three or four digit security code, then press pound."
+            if session_data[call_sid].get("enforce_dtmf_cc"):
+                _gather_dtmf_only(prompt)
+            else:
+                resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine"))
             resp.say(gpt_speak("I didn't hear the security code."), VOICE)
-            try:
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
+            resp.redirect("/voice")
             return str(resp)
 
         # -------------------------------
@@ -4472,6 +4514,7 @@ def voice():
 
             customer["cc_cvv"] = digits
 
+            # Default cardholder name from collected name, if not set
             if not customer.get("cc_name"):
                 name = customer.get("name") or " ".join(
                     p for p in [customer.get("first_name"), customer.get("last_name")] if p
@@ -4480,253 +4523,18 @@ def voice():
 
             debug_print(f"collect_cc: ✅ Saved CVV '{digits}'; cc_name='{customer.get('cc_name')}'")
 
+            # Clear step tracker and jump to confirmation
             session_data[call_sid].pop("cc_step", None)
             session_data[call_sid]["stage"] = "book_appt_confirm"
             debug_print("collect_cc: ➡️ Auto-advancing to book_appt_confirm")
 
+            # Immediately re-enter main handler so book_appt_confirm runs now
             try:
                 resp.redirect(url_for("voice"))
             except Exception:
-                resp.redirect("/voice")
+                resp.redirect(request.path)
             return str(resp)
 
-
-    elif stage == "book_appt_confirm":
-        debug_print("book_appt_confirm: 📍 Stage entered")
-
-        # ----------------------------------------------------------------------
-        # Doctor info
-        # ----------------------------------------------------------------------
-        doctor_id = session_data[call_sid].get("doctor_id")
-
-        if not doctor_id:
-            debug_print("book_appt_confirm: ❌ missing doctor_id; sending back to choose doctor")
-            session_data[call_sid]["stage"] = "choose_doctor"
-            gather = make_gather("Which doctor would you like to see?")
-            resp.append(gather)
-            return str(resp)
-
-        doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
-        debug_print(f"book_appt_confirm: doctor_id={doctor_id} name={doctor_name}")
-
-        # ----------------------------------------------------------------------
-        # Appointment time (need start; compute end if missing)
-        # ----------------------------------------------------------------------
-        appt_payload = session_data[call_sid].get("appointment_time", {}) or {}
-        appointment_start = appt_payload.get("start")
-        appointment_end   = appt_payload.get("end")
-        debug_print(f"book_appt_confirm: utc_start={appointment_start} utc_end={appointment_end}")
-
-        if not appointment_start:
-            debug_print("book_appt_confirm: ❌ missing appointment_start")
-            resp.say(gpt_speak("Appointment time missing. Goodbye!"), VOICE)
-            resp.hangup()
-            return str(resp)
-
-        # Human-friendly local time for voice/SMS (America/Chicago)
-        formatted_time = ""
-        try:
-            dt_utc = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
-            dt_local = dt_utc.astimezone(_pytz.timezone("America/Chicago"))
-            try:
-                # Linux/Unix: %-d / %-I → no-leading-zero
-                formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
-            except Exception:
-                # Windows-compatible fallback: strip leading zeros manually
-                formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
-        except Exception as e:
-            debug_print(f"book_appt_confirm: time parse/format error → {e}")
-            resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
-            resp.hangup()
-            return str(resp)
-
-        # Compute end if missing (default duration = 30m)
-        if not appointment_end:
-            try:
-                dur_min = int(APPOINTMENT_DURATION_MINUTES) if 'APPOINTMENT_DURATION_MINUTES' in globals() else 30
-                end_dt  = dt_utc + timedelta(minutes=dur_min)
-                appointment_end = end_dt.replace(tzinfo=_pytz.UTC).isoformat()
-                debug_print(f"book_appt_confirm: computed utc_end={appointment_end} (duration={dur_min}m)")
-            except Exception as e:
-                debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
-                resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
-                resp.hangup()
-                return str(resp)
-
-        # ----------------------------------------------------------------------
-        # Customer info (basic validation)
-        # ----------------------------------------------------------------------
-        customer = session_data[call_sid].get("customer", {}) or {}
-        customer_name    = (customer.get("name") or "").strip()
-        customer_phone   = (customer.get("phone") or "").strip()
-        customer_dob     = (customer.get("dob") or "").strip()
-        customer_address = (customer.get("address") or "").strip()
-
-        # Derive name parts if only full name present
-        first_name = (customer.get("first_name") or "").strip()
-        last_name  = (customer.get("last_name")  or "").strip()
-        if not first_name and customer_name:
-            parts = customer_name.split()
-            first_name = parts[0]
-            last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
-        effective_name = customer_name or " ".join([n for n in [first_name, last_name] if n]).strip()
-
-        # Normalize phone to 10-digit (required)
-        def _normalize_phone10(d):
-            d = "".join(ch for ch in (d or "") if ch.isdigit())
-            return d[1:] if len(d) == 11 and d.startswith("1") else d
-        phone10 = _normalize_phone10(customer_phone)
-        if len(phone10) != 10:
-            debug_print("book_appt_confirm: ❌ invalid/missing phone; redirecting to collect_phone")
-            session_data[call_sid]["stage"] = "collect_phone"
-            gather = make_gather("Before we confirm your appointment, I need your ten digit phone number including area code. You can say it or type the digits and press pound.")
-            resp.append(gather)
-            return str(resp)
-        if not customer_dob:
-            debug_print("book_appt_confirm: ❌ missing DOB; redirecting to collect_dob")
-            session_data[call_sid]["stage"] = "collect_dob"
-            gather = make_gather("Before we confirm, please provide your date of birth. You can say it, or enter two digits for month, two for day, and four for year, then press pound.")
-            resp.append(gather)
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # Upsert customer (FIX: pass cc_* fields to satisfy function signature)
-        # ----------------------------------------------------------------------
-        try:
-            init_db()
-            cc_name   = (customer.get("cc_name") or effective_name or "")
-            cc_number = (customer.get("cc_number") or "")
-            cc_exp    = (customer.get("cc_exp") or "")
-            cc_cvv    = (customer.get("cc_cvv") or "")
-            inserted = insert_customer(
-                phone=phone10,
-                dob=customer_dob,
-                first_name=first_name,
-                last_name=last_name,
-                address=customer_address,
-                cc_name=cc_name,
-                cc_number=cc_number,
-                cc_exp=cc_exp,
-                cc_cvv=cc_cvv
-            )
-            debug_print(f"book_appt_confirm: customers DB → {'inserted' if inserted else 'seen/updated'}")
-        except Exception as e:
-            debug_print(f"book_appt_confirm: insert_customer failed → {e}")
-
-        # ----------------------------------------------------------------------
-        # Single availability check (simple)
-        # ----------------------------------------------------------------------
-        calendar_id = doctor_id
-        debug_print(f"book_appt_confirm: 🔎 availability check → cal={calendar_id} {appointment_start}→{appointment_end}")
-        try:
-            slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ availability check error → {e}")
-            slot_free = False  # be safe
-
-        if not slot_free:
-            debug_print("book_appt_confirm: ❌ Slot not free → offering alternatives or reprompting")
-            try:
-                # Keep it simple: offer up to 3 suggestions if available
-                alts = get_next_available_slots(calendar_id, creds, limit=3) or []
-                if alts:
-                    options = " or ".join([a.get("friendly","") for a in alts if a.get("friendly")])
-                    session_data[call_sid]["stage"] = "ask_time_date"
-                    gather = make_gather(f"That time is not available. Would you like {options}?")
-                    resp.append(gather)
-                    return str(resp)
-            except Exception as e:
-                debug_print(f"book_appt_confirm: ⚠️ get_next_available_slots error → {e}")
-
-            session_data[call_sid]["stage"] = "ask_time_date"
-            gather = make_gather("That time is not available. Please say another date and time, for example, 'tomorrow at 3:30 PM'.")
-            resp.append(gather)
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # Save appointment in your system (simple, no rollback)
-        # ----------------------------------------------------------------------
-        appointment_saved_internal = False
-        try:
-            confirm_appointment_by_name(
-                doctor_name=doctor_name,
-                phone=phone10,
-                dob=customer_dob,
-                name=effective_name,
-                address=customer_address,
-                utc_start=appointment_start,
-                calendar_id=calendar_id
-            )
-            appointment_saved_internal = True
-            debug_print("book_appt_confirm: ✅ internal appointment saved")
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ❌ internal save failed → {e}")
-
-        # ----------------------------------------------------------------------
-        # Create Google Calendar event (simple: let Google assign the event ID)
-        # ----------------------------------------------------------------------
-        try:
-            service = build("calendar", "v3", credentials=creds)
-
-            event_body = {
-                "summary": f"Appointment: {doctor_name}",
-                "description": f"Clinic appointment for {effective_name or 'patient'}.",
-                "start": {"dateTime": appointment_start, "timeZone": "UTC"},
-                "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
-                "transparency": "opaque",  # must block time
-                "extendedProperties": {
-                    "private": {
-                        "patient_name": effective_name,
-                        "phone10": phone10,
-                        "dob": customer_dob,
-                        "call_sid": call_sid,
-                    }
-                },
-            }
-
-            debug_print(f"book_appt_confirm: 📝 creating Google event cal={calendar_id} {appointment_start}→{appointment_end}")
-            ev = service.events().insert(calendarId=calendar_id, body=event_body, sendUpdates="none").execute()
-            google_event_id = ev.get("id")
-            google_event_link = ev.get("htmlLink")
-            debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id} link={google_event_link}")
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ❌ Google Calendar insert failed → {e}")
-            session_data[call_sid]["stage"] = "ask_time_date"
-            gather = make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, August 14th at 10 AM.")
-            resp.append(gather)
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # Voice confirmation (success path)
-        # ----------------------------------------------------------------------
-        msg = f"Your appointment with {doctor_name} has been booked"
-        if formatted_time:
-            msg += f" on {formatted_time}"
-        msg += ". We look forward to seeing you. Goodbye!"
-        debug_print("book_appt_confirm: 🎉 success → speaking confirmation")
-        resp.say(gpt_speak(msg), VOICE)
-
-        # ----------------------------------------------------------------------
-        # SMS confirmation (best-effort)
-        # ----------------------------------------------------------------------
-        try:
-            e164 = f"+1{phone10}"
-            sms_text = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
-            if formatted_time:
-                sms_text += f" on {formatted_time}"
-            sms_text += ". Thank you for choosing Epic Therapist Clinic."
-            message = client.messages.create(body=sms_text, from_=TWILIO_PHONE_NUMBER, to=e164)
-            debug_print(f"book_appt_confirm: 📩 SMS sent to {e164}, SID={message.sid}")
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
-
-        # ----------------------------------------------------------------------
-        # Cleanup
-        # ----------------------------------------------------------------------
-        resp.hangup()
-        session_data.pop(call_sid, None)
-        debug_print("book_appt_confirm: ✅ session cleared and call ended")
-        return str(resp)
 
 
 
