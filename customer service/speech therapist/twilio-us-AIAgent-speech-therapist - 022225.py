@@ -2908,109 +2908,28 @@ def normalize(text):
 def voice():
     # Create a new TwiML VoiceResponse object to build the voice reply to the caller
     resp = VoiceResponse()
+    
 
     # Extract the unique call ID (SID) from the request parameters to track the session
     call_sid = request.values.get("CallSid", "")
 
     # Retrieve the customer's speech input (transcribed by Twilio's Speech-to-Text)
-    speech_result = (request.values.get("SpeechResult") or "").strip()
-    # Also grab any keypad input (DTMF) Twilio might have sent with the same webhook
-    try:
-        dtmf_digits = (request.values.get("Digits") or "").strip()
-    except Exception:
-        dtmf_digits = ""
-
+    speech_result = request.values.get("SpeechResult", "").strip()
     print(f"📢 voice :speech_result: {speech_result}")
-
     # Determine the current interaction stage (default to "intro" if not previously set)
     stage = session_data.get(call_sid, {}).get("stage", "intro")
-
-    # ----------------------------------------------------------------------
-    # 🔇 CENTRAL SILENCE GUARD
-    # If we didn't hear *anything* (no speech, no DTMF), re-prompt with
-    # stage-appropriate text. We skip stages that already have their own
-    # robust silence handling (e.g., collect_cc).
-    # ----------------------------------------------------------------------
-    def _silence_prompt_for_stage(st: str) -> tuple[str, str]:
-        """Return (prompt, hints) best suited for the current stage."""
-        # Default: generic prompt, no hints
-        hints = ""
-        if st in ("intro", "intent"):
-            return (
-                "I didn’t hear anything. Would you like to book an appointment, cancel one, reschedule, or leave a message?",
-                hints
-            )
-        if st == "booking":
-            doctor_list = ", ".join(googleid_dr_name_map.values())
-            hints = doctor_list
-            return ("Please say the name of the doctor you'd like to book with.", hints)
-        if st == "collect_phone":
-            hints = "zero one two three four five six seven eight nine double triple"
-            return ("Please say or enter your ten digit phone number including area code.", hints)
-        if st == "collect_dob":
-            return ("Please say your birth date, for example 'July third 1990'. Or type MMDDYYYY then press pound.", hints)
-        if st == "ask_time_date":
-            return ("Please say the appointment time, for example, 'August 15th at 5 AM'.", hints)
-        if st == "collect_first_name":
-            return ("Please say your first name.", hints)
-        if st == "collect_last_name":
-            return ("Please say your last name.", hints)
-        if st == "collect_address":
-            return ("Please say your street address, city, and ZIP. For example, '118 Briar Oak, Murphy, Texas 75094'.", hints)
-        if st == "cancel_appointment":
-            doctor_list = ", ".join(googleid_dr_name_map.values())
-            hints = doctor_list
-            return ("Please say the name of the doctor whose appointment you want to cancel.", hints)
-        if st in ("cancel_appt_by_phone_number",):
-            hints = "zero one two three four five six seven eight nine double triple"
-            return ("Please say the phone number used when booking, including area code.", hints)
-        if st in ("cancel_appt_by_time_date", "cancel_appt_by_date_time"):
-            return ("Please say the date and time of the appointment you want to cancel, for example, 'July third at nine AM'.", hints)
-        if st == "cancel_appt_get_dob":
-            return ("Please say your birth date, for example 'July third nineteen fifty six'. Or type MMDDYYYY then press pound.", hints)
-        if st == "voicemail":
-            return ("Please leave your name, phone number, and message after the beep.", hints)
-
-        # Fallback generic
-        return ("Sorry, I didn’t hear anything. Please say that again.", hints)
-
-    # Only run the guard outside of the very first greeting (intro),
-    # and skip stages that handle silence internally (collect_cc).
-    if stage not in ("intro", "collect_cc"):
-        if not speech_result and not dtmf_digits:
-            session_data.setdefault(call_sid, {})
-            key = f"silence_{stage}"
-            session_data[call_sid][key] = session_data[call_sid].get(key, 0) + 1
-            tries = session_data[call_sid][key]
-            debug_print(f"voice(): 🔇 silence detected at stage='{stage}' (tries={tries})")
-
-            if tries >= 3:
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            prompt, hints = _silence_prompt_for_stage(stage)
-            try:
-                gather = make_gather(prompt, hints=hints) if hints else make_gather(prompt)
-            except Exception:
-                # Very defensive fallback
-                gather = make_gather("Sorry, I didn’t hear anything. Please try again.")
-            resp.append(gather)
-            # Redirect so Twilio posts again after Gather
-            try:
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
-            return str(resp)
-
     """
     # What happens in this stage:
     # The caller calls the clinic.
+
     # Twilio sends a webhook to your /voice endpoint.
+
     # You respond with a greeting prompt, dynamically generated using ChatGPT.
+
     # You ask: “Would you like to book an appointment or leave a message?”
+
     # The system listens for speech and sends the result back to the same endpoint (/voice) using a POST request.
+
     # The session progresses from "intro" to "intent" for next steps.
     # If this is the start of the call, begin with the "intro" stage
     """
@@ -3051,6 +2970,8 @@ def voice():
         # Return the XML response as a string (TwiML) to Twilio to speak it to the caller
         return str(resp)
 
+
+
     elif stage == "intent":
         # ----------------------------------------------------------------------
         # 🎯 Intent detection stage: figure out if the caller wants to:
@@ -3078,7 +2999,7 @@ def voice():
         # ✅ Rescheduling intent
         elif any(word in lower for word in ["change", "move"]):
             print("🔁 Intent to reschedule detected → will cancel then rebook")
-
+            
             # 🧼 Initialize session
             session_data[call_sid] = {
                 "stage": "cancel_appointment",
