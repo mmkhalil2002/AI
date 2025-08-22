@@ -765,12 +765,22 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
     Robust fallback parser for casual, noisy speech recognition outputs.
     Examples it handles:
       - "August.  15 5:30 a.m."     → ("Friday, August 15", "5:30 AM")
-      - "augest 1 5 at 5 am"        → ("Friday, August 15", "5:00 AM")  # joins 1 + 5 → 15
+      - "August 1 5. at 5:30 a.m."  → ("Friday, August 15", "5:30 AM")  # joins "1 5" → 15
+      - "augest 15 530"             → ("Friday, August 15", "5:30 AM")  # month typo + no AM/PM
       - "8/15 at 17:30"             → ("Friday, August 15", "5:30 PM")  # 24h → 12h PM
       - "August 15 at 5:30"         → ("Friday, August 15", "5:30 AM")  # AM/PM inferred
+      - "August 16th. 3000 a.m."    → ("Saturday, August 16", "3:00 AM") # STT '3000' fix
 
     Returns:
-      (spoken_day, spoken_time) like ("Friday, August 15", "5:00 AM"), or None.
+      (spoken_day, spoken_time) where:
+        - spoken_day  = "Friday, August 15"
+        - spoken_time = "h:mm AM/PM"
+      or None if too ambiguous.
+
+    Notes:
+      - Requires at least a recognizable month and day (named or numeric).
+      - If AM/PM missing, uses `default_meridiem`.
+      - Converts 24-hour inputs (e.g., 17:30, 1730) to 12-hour + PM automatically.
     """
 
     def _dbg(msg: str):
@@ -780,6 +790,7 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
             pass
 
     def _infer_meridiem(hh: int, mer: str) -> str:
+        """Honor spoken meridiem; otherwise use default."""
         if mer:
             return mer.upper()
         _dbg(f"parse_time_fallback_noisy: ℹ️ inferring meridiem='{default_meridiem}' for hour={hh}")
@@ -788,15 +799,17 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
     if not raw:
         return None
 
-    s = (raw or "").lower()
+    s = str(raw).lower()
 
     # -------------------------------------------------------------------------
-    # 1) Normalize punctuation/spacing and AM/PM spellings (keep colons for 5:30)
+    # 1) Normalize punctuation/spacing and AM/PM spellings (keep colons)
     # -------------------------------------------------------------------------
-    s = (s.replace("a.m.", "am").replace("p.m.", "pm")
-           .replace("a. m.", "am").replace("p. m.", "pm")
-           .replace("a. m", "am").replace("p. m", "pm")
-           .replace("a m", "am").replace("p m", "pm"))
+    # "a. m." / "a.m." / "a m" → "am" ; same for pm
+    s = (_re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s, flags=_re.IGNORECASE)
+           .replace("a. m", "am").replace("a m", "am"))
+    s = (_re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s, flags=_re.IGNORECASE)
+           .replace("p. m", "pm").replace("p m", "pm"))
+
     # Replace dots/commas/dashes with a single space; collapse multiple spaces.
     s = _re.sub(r"[,\.\-]+", " ", s)
     s = _re.sub(r"\s+", " ", s).strip()
@@ -822,8 +835,8 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
     month = None
     day = None
     tokens = s.split()
-    mi = -1           # index of named month token
-    day_index = None  # token index used for day
+    mi = -1           # index of month token if matched by name/abbr/typo
+    day_index = None  # index of the day token we end up using
 
     # 2A) Try named month first
     for i, t in enumerate(tokens):
@@ -832,7 +845,7 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
             mi = i
             break
 
-    # 2B) If no named month, try numeric M/D
+    # 2B) If no named month, try numeric M/D or M-D anywhere in the string.
     if month is None:
         mnum = _re.search(r"\b(\d{1,2})[\/\-](\d{1,2})\b", s)
         if mnum:
@@ -847,26 +860,10 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
         _dbg("parse_time_fallback_noisy: ❌ no recognizable month (named or numeric)")
         return None
 
-    # 2C) If named month found but day unknown, prefer joining two single digits (1 + 5 → 15)
+    # 2C) If named month found but day still unknown, pick the first reasonable integer after it.
     if day is None:
         for j in range(mi + 1, min(mi + 4, len(tokens))):
-            tj = _re.sub(r"\D", "", tokens[j])  # keep only digits inside token
-            if not tj:
-                continue
-
-            # 👇 NEW: if single-digit followed by another single-digit, try joining first
-            if len(tj) == 1 and (j + 1) < len(tokens):
-                tk = _re.sub(r"\D", "", tokens[j + 1])
-                if len(tk) == 1:
-                    combined = int(tj + tk)
-                    # Prefer combined two-digit day when plausible (10..31)
-                    if 10 <= combined <= 31:
-                        day = combined
-                        day_index = j + 1  # the second digit index (time window starts after this)
-                        _dbg(f"parse_time_fallback_noisy: 🧩 joined digits → day={day}")
-                        break
-
-            # Fallback: accept the current token as the day if valid
+            tj = _re.sub(r"\D", "", tokens[j])
             if tj.isdigit():
                 val = int(tj)
                 if 1 <= val <= 31:
@@ -874,8 +871,7 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
                     day_index = j
                     _dbg(f"parse_time_fallback_noisy: 📅 day={day} from token '{tokens[j]}'")
                     break
-
-        # Final fallback: try joining exactly two following tokens after month (legacy behavior)
+        # If not found, try joining split digits like "1 5" → 15
         if day is None and mi + 2 < len(tokens):
             a = _re.sub(r"\D", "", tokens[mi + 1])
             b = _re.sub(r"\D", "", tokens[mi + 2])
@@ -884,7 +880,7 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
                 if 1 <= val <= 31:
                     day = val
                     day_index = mi + 2
-                    _dbg(f"parse_time_fallback_noisy: 🧩 legacy join → day={day}")
+                    _dbg(f"parse_time_fallback_noisy: 📅 day={day} by joining '{a}'+'{b}'")
 
     if day is None:
         _dbg("parse_time_fallback_noisy: ❌ could not find day")
@@ -892,6 +888,7 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
 
     # -------------------------------------------------------------------------
     # 3) Extract a time AFTER the day token (or after month if numeric date used)
+    #    Accepts: "h:mm", "h mm", "hmm"/"hhmm", or just "h"; am/pm optional.
     # -------------------------------------------------------------------------
     start_idx = (day_index + 1) if (day_index is not None) else (mi + 1)
     rest = " ".join(tokens[start_idx:]) if start_idx < len(tokens) else ""
@@ -913,7 +910,7 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
             mer = "PM"; hh -= 12
         spoken_time = f"{hh}:{mm:02d} {mer}"
 
-    # (b) h mm (with optional am/pm)
+    # (b) h mm (with optional am/pm) → "5 30 am"
     if spoken_time is None:
         m2 = _re.search(r"\b(\d{1,2})\s+(\d{2})(?:\s*(am|pm))?\b", rest)
         if m2:
@@ -929,15 +926,31 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
                 mer = "PM"; hh -= 12
             spoken_time = f"{hh}:{mm:02d} {mer}"
 
-    # (c) hmm/hhmm (optional am/pm)
+    # (c) hmm/hhmm (optional am/pm) → "530", "1730", **and STT '3000' fix**
     if spoken_time is None:
         m3 = _re.search(r"\b(\d{3,4})(?:\s*(am|pm))?\b", rest)
         if m3:
             digits, mer = m3.group(1), (m3.group(2) or "").upper()
-            if len(digits) == 3:  # HMM
-                hh, mm = int(digits[0]), int(digits[1:])
-            else:                 # HHMM
-                hh, mm = int(digits[:2]), int(digits[2:])
+
+            # --- STT '3000' style normalization (e.g., "3000 am" → "3:00 am") ---
+            # If 4 digits, ends with '00', and the naïve hour (>23) would fail,
+            # treat the *first* digit as the hour and the rest as "00".
+            #   3000 → 3:00 ; 4000 → 4:00 ; etc.
+            coerced = False
+            if len(digits) == 4 and digits.endswith("00"):
+                naive_hh = int(digits[:2])
+                if naive_hh > 23 and digits[1] == "0":
+                    hh = int(digits[0])
+                    mm = 0
+                    coerced = True
+                    _dbg(f"parse_time_fallback_noisy: 🔧 coerced '{digits}' → {hh:01d}:00")
+
+            if not coerced:
+                if len(digits) == 3:  # HMM
+                    hh, mm = int(digits[0]), int(digits[1:])
+                else:                 # HHMM
+                    hh, mm = int(digits[:2]), int(digits[2:])
+
             if not (0 <= hh <= 23 and 0 <= mm <= 59):
                 _dbg("parse_time_fallback_noisy: ❌ invalid 'hmm/hhmm' bounds")
                 return None
@@ -949,7 +962,7 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
                 mer = "PM"; hh -= 12
             spoken_time = f"{hh}:{mm:02d} {mer}"
 
-    # (d) bare hour (optional am/pm)
+    # (d) bare hour (optional am/pm) → "5", "5 am"
     if spoken_time is None:
         m4 = _re.search(r"\b(\d{1,2})(?:\s*(am|pm))?\b", rest)
         if m4:
@@ -967,19 +980,29 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
         return None
 
     # -------------------------------------------------------------------------
-    # 4) Build "Weekday, Month Day" using current year
+    # 4) Build "Weekday, Month Day" using the current year (for friendliness)
     # -------------------------------------------------------------------------
     try:
-        year = datetime.now().year
-        dt = date(year, month, day)
-        weekday = dt.strftime("%A")
+        from datetime import datetime as _dt_local, date as _date_local
+        import calendar as _calendar
+        year = _dt_local.now().year
+        dt = _date_local(year, month, day)
+        weekday = dt.strftime("%A")  # e.g., "Friday"
+        month_name = _calendar.month_name[month]
+        spoken_day = f"{weekday}, {month_name} {day}"
     except Exception:
-        weekday = ""
-    month_name = calendar.month_name[month]
-    spoken_day = f"{weekday + ', ' if weekday else ''}{month_name} {day}"
+        # If anything fails, fall back to "Month Day"
+        import calendar as _calendar
+        month_name = _calendar.month_name[month]
+        spoken_day = f"{month_name} {day}"
 
     _dbg(f"parse_time_fallback_noisy: ✅ parsed → day='{spoken_day}' time='{spoken_time}'")
     return (spoken_day, spoken_time)
+
+
+
+
+
 
 
 # Preserve any existing legacy parser so we can try it first.
