@@ -1,4 +1,4 @@
-# update  07/22/25 2:45 pm
+# update  08/22/25 2:45 pm
 # =========================
 # Standard library imports
 # =========================
@@ -10,7 +10,7 @@ import re as _re       # use _re everywhere to avoid UnboundLocalError
 from uuid import uuid4
 import pickle
 import openai
-
+import calendar as _calendar
 import dateparser as _dp
 
 
@@ -19,6 +19,8 @@ from datetime import time as dtime
 from typing import Any, Optional, List, Dict, Tuple, Iterator, Iterable, Union
 from datetime import datetime, date, time, timedelta, timezone
 from datetime import datetime as _dt  # if code references _dt
+from datetime import datetime as _dt_local, date as _date_local
+
 
 # =========================
 # Third-party libraries
@@ -151,7 +153,7 @@ def make_gather(
     '?next_stage=...' so the /voice handler can switch stages on the next POST.
     """
     try:
-        from flask import request, url_for
+        #from flask import request, url_for
         base_action = action or request.path or "/voice"
         if next_stage:
             sep = "&" if "?" in base_action else "?"
@@ -983,8 +985,8 @@ def parse_time_fallback_noisy(raw: str, *, tz_name: str = "America/Chicago",
     # 4) Build "Weekday, Month Day" using the current year (for friendliness)
     # -------------------------------------------------------------------------
     try:
-        from datetime import datetime as _dt_local, date as _date_local
-        import calendar as _calendar
+        #from datetime import datetime as _dt_local, date as _date_local
+        #import calendar as _calendar
         year = _dt_local.now().year
         dt = _date_local(year, month, day)
         weekday = dt.strftime("%A")  # e.g., "Friday"
