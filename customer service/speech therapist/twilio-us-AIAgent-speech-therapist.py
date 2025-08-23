@@ -2525,83 +2525,6 @@ def insert_customer(
 
 
 
-def _normalize_mmyy(s: str) -> str:
-    """Return 'MM/YY' from inputs like 'MMYY', 'M/YY', 'MM/YY'. Leave empty if unusable."""
-    s = (s or "").strip()
-    if not s:
-        return ""
-    digits = "".join(ch for ch in s if ch.isdigit())
-    if len(digits) == 4:  # e.g., '0229'
-        mm, yy = digits[:2], digits[2:]
-    else:
-        # Try to parse formats with slash; e.g., '2/29', '02/29'
-        parts = s.split("/")
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            mm = parts[0].zfill(2)
-            yy = parts[1][-2:].zfill(2)
-        else:
-            return ""
-    # Basic month guard
-    try:
-        m = int(mm)
-        if not (1 <= m <= 12):
-            return ""
-    except ValueError:
-        return ""
-    return f"{mm}/{yy}"
-
-def update_cc_info(
-    phone: str,
-    dob: str,
-    *,
-    cc_name: Optional[str] = None,
-    cc_number: Optional[str] = None,
-    cc_exp: Optional[str] = None,
-    cc_cvv: Optional[str] = None,
-) -> bool:
-    """
-    Update the customer's CC fields in customers.json (by phone|dob).
-    Returns True if updated, False if no such customer.
-    """
-    init_db()
-    phone10 = _normalize_phone10(phone)
-    dob_iso = (dob or "").strip()
-    if not phone10:
-        return False
-
-    data = _load_customers()
-    key = _key(phone10, dob_iso)
-    if key not in data:
-        return False
-
-    rec = data[key]
-    if cc_name is not None:
-        rec["cc_name"] = _oneline(cc_name)
-    if cc_number is not None:
-        rec["cc_number"] = _oneline(cc_number)
-    if cc_exp is not None:
-        rec["cc_exp"] = _oneline(cc_exp)
-    if cc_cvv is not None:
-        rec["cc_cvv"] = _oneline(cc_cvv)
-
-    rec["last_seen_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    _save_customers(data)
-
-    pan = rec.get("cc_number", "")
-    masked_pan = ("*" * max(0, len(pan) - 4)) + pan[-4:] if pan else ""
-    masked_cvv = "*" * len(rec.get("cc_cvv", ""))
-
-    debug_print(
-        "update_cc_info: ✅ updated\n"
-        f"Phone: {phone10}\n"
-        f"DOB: {dob_iso or '∅'}\n"
-        f"CC Name: {rec.get('cc_name','')}\n"
-        f"CC Number: {masked_pan}\n"
-        f"CC Exp: {rec.get('cc_exp','')}\n"
-        f"CC CVV: {masked_cvv}\n"
-        f"Last Seen At: {rec['last_seen_at']}"
-    )
-    return True
 
 
 
@@ -3115,7 +3038,7 @@ def voice():
 
         # ✅ Cancellation intent
         elif any(word in lower for word in ["cancel", "delete"]):
-            print("❌ Intent to cancel appointment detected → entering cancellation flow")
+            debug_print("❌ Intent to cancel appointment detected → entering cancellation flow")
             session_data[call_sid] = {
                 "stage": "cancel_appointment",
                 "cancel": {},
@@ -3136,7 +3059,7 @@ def voice():
 
         # ✅ Booking intent (placed **after** cancel/reschedule to avoid false positives)
         elif any(word in lower for word in ["book", "booking", "schedule", "make","making", "reserve", "meet","meeting","making"]):
-            print(f"📅 Intent to book recognized → advancing to 'booking' stage")
+            debug_print(f"📅 Intent to book recognized → advancing to 'booking' stage")
 
             # ✅ Fix: Use update instead of overwrite to preserve previous session info
             session_data.setdefault(call_sid, {})
@@ -3157,10 +3080,30 @@ def voice():
             gather = make_gather(prompt, hints=", ".join(googleid_dr_name_map.values()))
             resp.append(gather)
             return str(resp)
+        
+        # ✅ Update Credit Card intent  ⬅️ NEW
+        elif any(kw in lower for kw in [
+            "update card", "update my card", "update credit card", "update cc",
+            "change card", "change my card", "new card", "update payment", "update billing",
+            "update the card", "update the cc", "update card info", "update the cc info"
+        ]):
+            debug_print("💳 Intent to update credit card detected → entering 'update_cc' stage")
+
+            session_data.setdefault(call_sid, {})
+            session_data[call_sid].update({
+                "stage": "update_cc",
+                "cc_update": {"active": True},   # flag the CC-update path
+                "retry_booking": 0
+            })
+
+            # Let the /voice router hit the new stage so it can hand off to collect_phone
+            resp.redirect("/voice")
+            return str(resp)
+
 
         # ✅ Voicemail intent
         elif "message" in lower or "voicemail" in lower:
-            print("📩 Intent to leave a message detected → recording voicemail")
+            debug_print("📩 Intent to leave a message detected → recording voicemail")
             session_data[call_sid]["stage"] = "voicemail"
             resp.say(gpt_speak("Please leave your name, phone number, and message after the beep."), VOICE)
             resp.record(
@@ -3173,7 +3116,7 @@ def voice():
 
         # ❓ Fallback
         else:
-            print(f"❓ Unclear intent: '{lower}' → re-prompting for intent choice")
+            debug_print(f"❓ Unclear intent: '{lower}' → re-prompting for intent choice")
 
             # Initialize or increment retry counter
             if "retry_intent" not in session_data[call_sid]:
@@ -3201,6 +3144,20 @@ def voice():
             resp.append(gather)
             return str(resp)
 
+    elif stage == "update_cc":
+        """
+        Short routing stage for CC update flow.
+        Immediately move to collect_phone with the right prompt/hints.
+        """
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid]["stage"] = "collect_phone"
+
+        gather = make_gather(
+            "To update your card, please say or enter your ten digit phone number including area code.",
+            hints="zero one two three four five six seven eight nine double triple"
+        )
+        resp.append(gather)
+        return str(resp)
 
     elif stage == "booking":
         # ----------------------------------------------------------------------
@@ -3494,25 +3451,22 @@ def voice():
 
 
 
-
-    # ----------------------------------------------------------------------
-    # 🎂 Stage: collect_dob
-    # Purpose:
-    #   - Accept DOB via speech (e.g., “July third 1990”) or keypad (MMDDYYYY#).
-    #   - Parse and validate reasonable date range.
-    #   - Store DOB as ISO (YYYY-MM-DD) in session.
-    #   - On failure, re-prompt with the SHORT prompt (DOB_PROMPT_SHORT).
-    # Integration points:
-    #   - Uses: parse_dob_input(), make_gather_dob(), debug_print, session_data, call_sid
-    #   - Next stage: ask_time_date (always, after successful DOB store)
-    # 🆕 Silent mode:
-    #   - If neither speech nor digits were received, re-prompt up to 3 times using a
-    #     separate counter (silence_dob), then hang up politely.
-    # ----------------------------------------------------------------------
     elif stage == "collect_dob":
         # ----------------------------------------------------------------------
-        # 🔊 Short, centralized prompts
-        #   Put these near your other constants so every stage uses the same text.
+        # 🎂 Stage: collect_dob
+        # Purpose:
+        #   - Accept DOB via speech (e.g., “July third 1990”) or keypad (MMDDYYYY#).
+        #   - Parse and validate reasonable date range.
+        #   - Store DOB as ISO (YYYY-MM-DD) in session.
+        #   - On failure, re-prompt with the SHORT prompt (DOB_PROMPT_SHORT).
+        # Integration points:
+        #   - Uses: parse_dob_input(), make_gather_dob(), debug_print, session_data, call_sid
+        #   - Next stage:
+        #       • If cc_update.active → update_customer_cc  ⬅️ NEW
+        #       • Else → ask_time_date (booking flow)
+        # 🆕 Silent mode:
+        #   - If neither speech nor digits were received, re-prompt up to 3 times using a
+        #     separate counter (silence_dob), then hang up politely.
         # ----------------------------------------------------------------------
         DOB_PROMPT_SHORT = (
             "Please say your birth date, for example 'July third 1990'. "
@@ -3637,14 +3591,27 @@ def voice():
         session_data[call_sid]["customer"]["dob"] = iso_dob
         debug_print(f"collect_dob: ✅ Stored DOB → {iso_dob}")
 
+        # Optional compact DOB for systems that prefer yyyymmdd
+        session_data[call_sid]["dob_yyyymmdd"] = dt.strftime("%Y%m%d")
+
         # Reset the parse retry counter on success so it doesn't affect later stages
         session_data[call_sid].pop("retry_dob", None)
 
-        # 5) Always move to ask_time_date next (your booking flow expects this)
+        # 5) 🔀 NEW BRANCH: If we came from Update-CC path, go to update_customer_cc
+        if session_data.get(call_sid, {}).get("cc_update", {}).get("active"):
+            session_data[call_sid]["stage"] = "update_customer_cc"
+            debug_print("collect_dob: 💳 cc_update active → next stage → update_customer_cc")
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
+            return str(resp)
+
+        # 6) Otherwise (normal booking flow) → ask_time_date
         session_data[call_sid]["stage"] = "ask_time_date"
         debug_print("collect_dob: ➡️ Next stage → ask_time_date")
 
-        # 6) Prompt for appointment time/date using the short prompt
         try:
             gather = make_gather("Thanks. " + TIME_PROMPT_SHORT)
         except Exception:
