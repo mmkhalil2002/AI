@@ -3112,7 +3112,7 @@ def voice():
 
         # ✅ Cancellation intent
         elif any(word in lower for word in ["cancel", "delete"]):
-            print("❌ Intent to cancel appointment detected → entering cancellation flow")
+            debug_print("❌ Intent to cancel appointment detected → entering cancellation flow")
             session_data[call_sid] = {
                 "stage": "cancel_appointment",
                 "cancel": {},
@@ -3133,7 +3133,7 @@ def voice():
 
         # ✅ Booking intent (placed **after** cancel/reschedule to avoid false positives)
         elif any(word in lower for word in ["book", "booking", "schedule", "make","making", "reserve", "meet","meeting","making"]):
-            print(f"📅 Intent to book recognized → advancing to 'booking' stage")
+            debug_print(f"📅 Intent to book recognized → advancing to 'booking' stage")
 
             # ✅ Fix: Use update instead of overwrite to preserve previous session info
             session_data.setdefault(call_sid, {})
@@ -3157,7 +3157,7 @@ def voice():
 
         # ✅ Voicemail intent
         elif "message" in lower or "voicemail" in lower:
-            print("📩 Intent to leave a message detected → recording voicemail")
+            debug_print("📩 Intent to leave a message detected → recording voicemail")
             session_data[call_sid]["stage"] = "voicemail"
             resp.say(gpt_speak("Please leave your name, phone number, and message after the beep."), VOICE)
             resp.record(
@@ -3170,7 +3170,7 @@ def voice():
 
         # ❓ Fallback
         else:
-            print(f"❓ Unclear intent: '{lower}' → re-prompting for intent choice")
+            debug_print(f"❓ Unclear intent: '{lower}' → re-prompting for intent choice")
 
             # Initialize or increment retry counter
             if "retry_intent" not in session_data[call_sid]:
