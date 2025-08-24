@@ -2911,8 +2911,14 @@ def voice():
         # Default: generic prompt, no hints
         hints = ""
         if st in ("intro", "intent"):
+            # ✨ Updated to advertise both voice and keypad (DTMF 1..5)
+            hints = "book,cancel,change,reschedule,update,update card,voicemail,leave message"
             return (
-                "I didn’t hear anything. Would you like to book an appointment, cancel one, reschedule, or leave a message?",
+                "I didn’t hear anything. Say 'book appointment' or press 1. "
+                "Say 'cancel appointment' or press 2. "
+                "Say 'change appointment' or press 3. "
+                "Say 'update credit card' or press 4. "
+                "Say 'leave voicemail' or press 5.",
                 hints
             )
         if st == "booking":
@@ -2967,10 +2973,11 @@ def voice():
 
             prompt, hints = _silence_prompt_for_stage(stage)
             try:
-                gather = make_gather(prompt, hints=hints) if hints else make_gather(prompt)
+                # ✨ num_digits=1 so the menu can accept a single DTMF digit as well
+                gather = make_gather(prompt, hints=hints, num_digits=1) if hints else make_gather(prompt, num_digits=1)
             except Exception:
                 # Very defensive fallback
-                gather = make_gather("Sorry, I didn’t hear anything. Please try again.")
+                gather = make_gather("Sorry, I didn’t hear anything. Please try again.", num_digits=1)
             resp.append(gather)
             # Redirect so Twilio posts again after Gather
             try:
@@ -2995,18 +3002,22 @@ def voice():
         session_data[call_sid] = {"stage": "intent"}
 
         # Define a friendly prompt to ask the customer what they want to do
+        # ✨ Updated prompt to support both voice and keypad selection (DTMF 1..5)
         prompt = (
             "Thank you for calling EPIC therapist. "
-            "Would you like to book an appointment, cancel an appointment, "
-            "change an appointment, or leave a message?"
+            "Say 'book appointment' or press 1. "
+            "Say 'cancel appointment' or press 2. "
+            "Say 'change appointment' or press 3. "
+            "Say 'update credit card' or press 4. "
+            "Say 'leave voicemail' or press 5."
         )
 
         # Create a <Gather> TwiML block using our helper that:
         # - Speaks the prompt with GPT voice
-        # - Listens for the caller’s voice input
+        # - Listens for the caller’s voice input *and* allows one DTMF digit
         # - If silence / no input, re-prompts with 'I can't hear you...'
-        # - Sends the speech result to /voice for further processing
-        gather = make_gather(prompt)
+        # - Sends the speech/DTMF result to /voice for further processing
+        gather = make_gather(prompt, hints="book,cancel,change,reschedule,update,voicemail", num_digits=1)
 
         """
         Speaks the message inside <Say>
@@ -3033,10 +3044,107 @@ def voice():
         #  2. Cancel an appointment
         #  3. Reschedule an appointment
         #  4. Leave a voicemail
+        #  5. (NEW) Update credit card on file
         # ----------------------------------------------------------------------
 
         lower = speech_result.lower()
         print(f"📢 intent :speech_result: {lower.strip()}")
+
+        # --- New: handle keypad selection 1..5 (or literal spoken "1".."5") first ---
+        choice = None
+        if dtmf_digits and len(dtmf_digits) == 1 and dtmf_digits in "12345":
+            choice = dtmf_digits
+        elif lower.strip() in {"1", "2", "3", "4", "5"}:
+            choice = lower.strip()
+
+        if choice:
+            # Map choices to flows
+            if choice == "1":
+                # ✅ Booking
+                print("📅 DTMF=1 → booking")
+                session_data.setdefault(call_sid, {})
+                session_data[call_sid].update({
+                    "stage": "booking",
+                    "booking": {},
+                    "retry_booking": 0,
+                    "retry_time": 0
+                })
+                doctor_list = ", ".join(googleid_dr_name_map.values())
+                prompt = (
+                    f"Great! Let's schedule your appointment. Here is the list of doctors: {doctor_list}. "
+                    "Please say the name of the doctor you want to book with."
+                )
+                gather = make_gather(prompt, hints=", ".join(googleid_dr_name_map.values()))
+                resp.append(gather)
+                return str(resp)
+
+            if choice == "2":
+                # ✅ Cancellation
+                print("❌ DTMF=2 → cancel flow")
+                session_data[call_sid] = {
+                    "stage": "cancel_appointment",
+                    "cancel": {},
+                    "retry_booking": 0
+                }
+                doctor_names = list(googleid_dr_name_map.values())
+                doctor_list = ", ".join(doctor_names[:-1]) + ", or " + doctor_names[-1] if len(doctor_names) > 1 else doctor_names[0]
+                prompt = (
+                    f"Sure, I can help you cancel your appointment. "
+                    f"We currently have the following doctors: {doctor_list}. "
+                    f"Please say the name of the doctor you had booked with."
+                )
+                gather = make_gather(prompt, hints=", ".join(doctor_names))
+                resp.append(gather)
+                return str(resp)
+
+            if choice == "3":
+                # ✅ Reschedule (change → cancel then rebook)
+                print("🔁 DTMF=3 → reschedule (cancel then rebook)")
+                session_data[call_sid] = {
+                    "stage": "cancel_appointment",
+                    "cancel": {},
+                    "retry_booking": 0,
+                    "reschedule_after_cancel": True
+                }
+                doctor_names = list(googleid_dr_name_map.values())
+                doctor_list = ", ".join(doctor_names[:-1]) + ", or " + doctor_names[-1] if len(doctor_names) > 1 else doctor_names[0]
+                prompt = (
+                    f"Sure, let's reschedule your appointment. First, we'll cancel your current appointment. "
+                    f"Available doctors include: {doctor_list}. Please say the name of the doctor you had booked with."
+                )
+                gather = make_gather(prompt, hints=", ".join(doctor_names))
+                resp.append(gather)
+                return str(resp)
+
+            if choice == "4":
+                # ✅ Update CC
+                print("💳 DTMF=4 → update CC flow")
+                session_data.setdefault(call_sid, {})
+                session_data[call_sid].update({
+                    "stage": "update_cc",
+                    "cc_update": {"active": True},
+                    "retry_booking": 0
+                })
+                # Let the update_cc stage/procedure run
+                try:
+                    resp.redirect(url_for("voice"))
+                except Exception:
+                    resp.redirect("/voice")
+                return str(resp)
+
+            if choice == "5":
+                # ✅ Voicemail
+                print("📩 DTMF=5 → voicemail")
+                session_data.setdefault(call_sid, {})
+                session_data[call_sid]["stage"] = "voicemail"
+                resp.say(gpt_speak("Please leave your name, phone number, and message after the beep."), VOICE)
+                resp.record(
+                    max_length=MAX_RECORD_TIME,
+                    action="/voice",
+                    transcribe=True,
+                    transcribe_callback="/transcription"
+                )
+                return str(resp)
 
         # 🚫 Ignore junk or greeting phrases commonly returned by Twilio
         junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
@@ -3044,14 +3152,22 @@ def voice():
             print(f"⛔ Ignored junk input: '{lower}' — re-prompting without response")
 
             # ⬇️ CHANGED: use make_gather (same behavior, cleaner + consistent)
+            # ✨ Updated to show both voice and keypad options, allow 1 digit
             gather = make_gather(
-                "Thank you for Calling EPIC thearapist : Please tell me if you'd like to book an appointment, cancel one, reschedule, or leave a message."
+                "Thank you for calling EPIC therapist. "
+                "Say 'book appointment' or press 1. "
+                "Say 'cancel appointment' or press 2. "
+                "Say 'change appointment' or press 3. "
+                "Say 'update credit card' or press 4. "
+                "Say 'leave voicemail' or press 5.",
+                hints="book,cancel,change,reschedule,update,voicemail",
+                num_digits=1
             )
             resp.append(gather)
             return str(resp)
 
         # ✅ Rescheduling intent
-        elif any(word in lower for word in ["change", "move"]):
+        elif any(word in lower for word in ["change", "move", "reschedule"]):
             print("🔁 Intent to reschedule detected → will cancel then rebook")
 
             # 🧼 Initialize session
@@ -3082,12 +3198,14 @@ def voice():
 
             print("🎙️ Prompted user to specify doctor for cancellation as part of reschedule.")
             return str(resp)
+
+        # ✅ Update credit card (voice intent)
         elif any(kw in lower for kw in [
             "update card", "update credit card", "update my card", "update cc",
             "change card", "new card", "update payment", "update payment method",
             "update billing", "change billing", "update card number",
             "update visa", "update mastercard", "update american express", "update amex"
-            ]):
+        ]):
             print("💳 Intent to update credit card detected → starting CC update flow")
 
             # Flag the CC update path and start identity verification at collect_phone
@@ -3098,13 +3216,12 @@ def voice():
                 "retry_booking": 0
             })
 
-            gather = make_gather(
-                "Sure. To verify your identity for updating your card, please say or enter your ten digit phone number including area code.",
-                hints="zero one two three four five six seven eight nine double triple"
-            )
-            resp.append(gather)
+            # For the update_cc stage, we redirect so its handler can do the phone gather
+            try:
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
             return str(resp)
-        
 
         # ✅ Cancellation intent
         elif any(word in lower for word in ["cancel", "delete"]):
@@ -3126,8 +3243,6 @@ def voice():
             gather = make_gather(prompt, hints=", ".join(doctor_names))
             resp.append(gather)
             return str(resp)
-
-
 
         # ✅ Booking intent (placed **after** cancel/reschedule to avoid false positives)
         elif any(word in lower for word in ["book", "booking", "schedule", "make","making", "reserve", "meet","meeting","making"]):
@@ -3190,8 +3305,16 @@ def voice():
             session_data[call_sid]["stage"] = "intent"
 
             # ⬇️ CHANGED: use make_gather
+            # ✨ Re-prompt includes both voice choices and digits, allows single DTMF
             gather = make_gather(
-                "Sorry, I didn’t catch that. Would you like to book an appointment, cancel one, reschedule, or leave a message?"
+                "Sorry, I didn’t catch that. "
+                "Say 'book appointment' or press 1, "
+                "'cancel appointment' or press 2, "
+                "'change appointment' or press 3, "
+                "'update credit card' or press 4, "
+                "or 'leave voicemail' or press 5.",
+                hints="book,cancel,change,reschedule,update,voicemail",
+                num_digits=1
             )
             resp.append(gather)
             return str(resp)
@@ -3199,14 +3322,22 @@ def voice():
 
     elif stage == "update_cc":
         # Delegate to collect_phone by switching stage, then re-entering /voice
+        # Redundant explicit set for clarity (this stage routes to collect_phone).
         session_data.setdefault(call_sid, {})
         session_data[call_sid]["stage"] = "collect_phone"
+        session_data[call_sid].setdefault("cc_update", {"active": True})
+        session_data[call_sid]["cc_update"]["active"] = True
 
-        try:
-            resp.redirect(url_for("voice"))
-        except Exception:
-            resp.redirect("/voice")
+        # Inline body from the old update_cc() procedure — prompt for a 10-digit phone
+        gather = make_gather(
+            "Sure. To verify your identity for updating your card, please say or enter your ten digit phone number including area code.",
+            hints="zero one two three four five six seven eight nine double triple"
+        )
+        resp.append(gather)
+
+        # No redirect necessary — the <Gather> action will POST back to /voice.
         return str(resp)
+
 
 
     elif stage == "update_customer_cc":
