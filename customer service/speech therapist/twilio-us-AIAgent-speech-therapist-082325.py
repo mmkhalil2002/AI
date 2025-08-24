@@ -3034,6 +3034,29 @@ def voice():
 
             print("🎙️ Prompted user to specify doctor for cancellation as part of reschedule.")
             return str(resp)
+        elif any(kw in lower for kw in [
+            "update card", "update credit card", "update my card", "update cc",
+            "change card", "new card", "update payment", "update payment method",
+            "update billing", "change billing", "update card number",
+            "update visa", "update mastercard", "update american express", "update amex"
+            ]):
+            print("💳 Intent to update credit card detected → starting CC update flow")
+
+            # Flag the CC update path and start identity verification at collect_phone
+            session_data.setdefault(call_sid, {})
+            session_data[call_sid].update({
+                "stage": "update_cc",
+                "cc_update": {"active": True},   # used later to route to collect_cc after DOB
+                "retry_booking": 0
+            })
+
+            gather = make_gather(
+                "Sure. To verify your identity for updating your card, please say or enter your ten digit phone number including area code.",
+                hints="zero one two three four five six seven eight nine double triple"
+            )
+            resp.append(gather)
+            return str(resp)
+        
 
         # ✅ Cancellation intent
         elif any(word in lower for word in ["cancel", "delete"]):
@@ -3055,6 +3078,8 @@ def voice():
             gather = make_gather(prompt, hints=", ".join(doctor_names))
             resp.append(gather)
             return str(resp)
+
+
 
         # ✅ Booking intent (placed **after** cancel/reschedule to avoid false positives)
         elif any(word in lower for word in ["book", "booking", "schedule", "make","making", "reserve", "meet","meeting","making"]):
@@ -3123,6 +3148,17 @@ def voice():
             resp.append(gather)
             return str(resp)
 
+
+    elif stage == "update_cc":
+        # Delegate to collect_phone by switching stage, then re-entering /voice
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid]["stage"] = "collect_phone"
+
+        try:
+            resp.redirect(url_for("voice"))
+        except Exception:
+            resp.redirect("/voice")
+        return str(resp)
 
     elif stage == "booking":
         # ----------------------------------------------------------------------
