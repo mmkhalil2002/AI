@@ -3276,7 +3276,7 @@ def voice():
     # stage-appropriate text. We skip stages that already have their own
     # robust silence handling (e.g., collect_cc).
     # ----------------------------------------------------------------------
-    def _silence_prompt_for_stage(st: str) -> tuple[str, str]:
+    def _silence_prompt_for_stage(st: str) -> Tuple[str, str]:
         """Return (prompt, hints) best suited for the current stage."""
         # Default: generic prompt, no hints
         hints = ""
