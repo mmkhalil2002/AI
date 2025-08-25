@@ -1,7 +1,9 @@
-# update  08/24/25 6:41 pm
+# update  08/24/25 10:27 pm
 # =========================
 # Standard library imports
 # =========================
+
+
 import os
 import json
 import string          # for string.punctuation
@@ -1566,197 +1568,7 @@ def load_doctor_appointments():
 # ------------------------
 
 
-def confirm_appointment_by_name(
-    doctor_name: str,
-    phone: str,
-    utc_start: str,
-    calendar_id: str,
-    name: str = None,
-    dob: str = None,
-    address: str = None,
-    event_id: str = None,
-    debug: bool = False,
-):
-    """
-    Add a new appointment to the doctor's table and save to JSON file.
 
-    Compatibility:
-      - Required params remain: doctor_name, phone, utc_start, calendar_id.
-      - Optional params (name, dob, address, event_id, debug) have defaults, so existing
-        call sites won't break if they don't pass them.
-
-    Behavior:
-      - Normalizes phone to digits-only.
-      - Ensures utc_start is UTC ISO8601 (e.g., '2025-08-07T10:00:00Z').
-      - Searches existing file by (phone + dob) if dob provided; otherwise by phone only.
-      - Skips exact duplicates (same phone + dob + time + calendar_id).
-      - Appends record with optional name/dob/address/event_id.
-      - Saves back to disk and refreshes in-memory cache doctor_appointments[filename], if defined.
-
-    Returns:
-      dict with:
-        created: bool           # True if appended, False if duplicate
-        record: dict            # The record (new or existing)
-        reason: str | None      # 'duplicate' if not created, else None
-    """
-    
-    
-    # -----------------------
-    # Normalize phone digits
-    # -----------------------
-    digits_only_phone = _re.sub(r"\D", "", phone or "")
-    if not digits_only_phone:
-        raise ValueError("Phone is required and must contain digits.")
-
-    # -----------------------------------------
-    # Normalize DOB into ISO YYYY-MM-DD (if any)
-    # -----------------------------------------
-    dob_iso = (dob or "").strip()
-    if dob_iso:
-        # Already ISO?
-        if _re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None:
-            # Try MM/DD/YYYY or MM-DD-YYYY
-            m = _re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
-            if m:
-                mm, dd, yyyy = m.groups()
-                dob_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
-            else:
-                # Light normalization: 2025/08/07 → 2025-08-07
-                dob_iso = dob_iso.replace("/", "-")
-
-    # --------------------------------------
-    # Ensure utc_start is UTC ISO8601 string
-    # --------------------------------------
-    def ensure_utc_iso(ts: str) -> str:
-        """
-        Accepts:
-          - '2025-08-07T10:00:00Z'
-          - '2025-08-07T10:00:00+00:00'
-          - '2025-08-07 10:00:00' (assumed UTC if naive)
-        Returns: 'YYYY-MM-DDTHH:MM:SSZ'
-        """
-        if not ts:
-            raise ValueError("utc_start is required")
-        s = ts.strip().replace(" ", "T")
-        try:
-            # Handle trailing Z by converting to +00:00 for fromisoformat
-            if s.endswith("Z"):
-                dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-            else:
-                dt = datetime.fromisoformat(s)
-        except Exception:
-            # If naive pattern 'YYYY-MM-DDTHH:MM:SS', try that
-            if _re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", s):
-                dt = datetime.fromisoformat(s)
-            else:
-                raise
-        # Force UTC tz-aware
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        else:
-            dt = dt.astimezone(timezone.utc)
-        return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-    utc_start_iso = ensure_utc_iso(utc_start)
-
-    # --------------------------
-    # Resolve file paths/keys
-    # --------------------------
-    filename = sanitize_filename(doctor_name).replace(".json", "")
-    full_path = get_doctor_filename(doctor_name)
-    debug_print(f"🔍 File → {full_path}")
-
-    # --------------------------
-    # Load existing appointments
-    # --------------------------
-    appts = []
-    if os.path.exists(full_path):
-        try:
-            with open(full_path, "r") as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                appts = data
-                debug_print(f"✅ Loaded list with {len(appts)} appointment(s)")
-            else:
-                debug_print("⚠️ Root JSON was not a list; reinitializing")
-        except Exception as e:
-            debug_print(f"⚠️ Failed to parse JSON → {e}")
-    else:
-        debug_print("📂 No file found — starting new list")
-
-    # -------------------------------------------------------
-    # Search by phone (+ dob if provided) for duplicates/info
-    # -------------------------------------------------------
-    matches = []
-    for idx, appt in enumerate(appts):
-        p = _re.sub(r"\D", "", appt.get("phone", ""))
-        d = (appt.get("dob") or "").strip()
-        if dob_iso:
-            if p == digits_only_phone and d == dob_iso:
-                matches.append((idx, appt))
-        else:
-            if p == digits_only_phone:
-                matches.append((idx, appt))
-
-    debug_print(f"🔎 Search by phone+dob → {len(matches)} match(es) "
-         f"(phone={digits_only_phone}, dob={dob_iso or 'N/A'})")
-
-    # -----------------------------------------------------------
-    # Skip exact duplicate (same phone + dob + time + calendar)
-    # -----------------------------------------------------------
-    for _, appt in matches:
-        try:
-            appt_time_iso = ensure_utc_iso(appt.get("time", ""))
-        except Exception:
-            # If bad time in file, don't treat as duplicate
-            appt_time_iso = None
-
-        if appt_time_iso == utc_start_iso and appt.get("calendar_id") == calendar_id:
-            debug_print("🔁 Exact duplicate detected — skipping append")
-            # Normalize record before returning
-            appt_norm = dict(appt)
-            appt_norm["phone"] = _re.sub(r"\D", "", appt_norm.get("phone", ""))
-            appt_norm["time"] = utc_start_iso
-            return {"created": False, "record": appt_norm, "reason": "duplicate"}
-
-    # ---------------------------------
-    # Append new appointment record
-    # ---------------------------------
-    new_record = {
-        "phone": digits_only_phone,
-        "time": utc_start_iso,
-        "calendar_id": calendar_id,
-    }
-    if name:
-        new_record["name"] = name
-    if dob_iso:
-        new_record["dob"] = dob_iso
-    if address:
-        new_record["address"] = address
-    if event_id:
-        new_record["event_id"] = event_id
-
-    appts.append(new_record)
-    debug_print(f"➕ Appended: {new_record}")
-
-    # -----------------------------
-    # Save back to disk (+ cache)
-    # -----------------------------
-    try:
-        with open(full_path, "w") as f:
-            json.dump(appts, f, indent=2)
-        debug_print(f"💾 Saved to {full_path}")
-
-        # Update in-memory cache if present
-        try:
-            doctor_appointments[filename] = appts
-        except Exception:
-            pass
-
-        return {"created": True, "record": new_record, "reason": None}
-    except Exception as e:
-        debug_print(f"❌ Failed to write JSON → {e}")
-        raise
 
 
 
@@ -1771,33 +1583,74 @@ def normalize_phone_digits(phone: str) -> str:
 
 # ===== local doctor JSON cancellation (by doctor+phone+dob+utc_start) =====
 
+#  remove phone10 
 
-
-def cancel_appointment_by_name(doctor_name: str, phone: str, dob: str, utc_start: str) -> bool:
+def cancel_appointment_by_name(
+    doctor_name: str,
+    phone: str,
+    dob: str,
+    utc_start: str,
+    *,
+    default_country: str = COUNTRY  # e.g., "US" or "EG"
+) -> bool:
     """
     Remove a single appointment from appointment_data/doctors/<doctor>.json
     matching ALL of:
-      • phone (10-digit normalized)
-      • dob (exact string match; expected ISO YYYY-MM-DD)
-      • time (exact UTC ISO match)
+      • phone_e164 (strict E.164, e.g., '+12025550123' or '+201234567890')
+      • dob (exact string match; expected ISO 'YYYY-MM-DD')
+      • time/start (exact UTC ISO match)
+
+    E.164-ONLY:
+      - Input `phone` is normalized to E.164 using `normalize_phone_e164`.
+      - Appointment records are expected to carry 'phone_e164'.
+      - No 10-digit or digit-only legacy comparison is performed.
+
     Returns True if a record was removed, else False.
     """
-    def normalize_phone_digits(s: str) -> str:
-        d = "".join(ch for ch in (s or "") if ch.isdigit())
-        return d[1:] if len(d) == 11 and d.startswith("1") else d
 
-   
-    
-    full_path = get_doctor_filename(doctor_name)
-    phone10 = normalize_phone_digits(phone)
+    # --- helpers --------------------------------------------------------------
+    def _is_e164(s: str) -> bool:
+        return bool(_re.fullmatch(r"\+\d{6,15}", (s or "").strip()))
+
+    def _to_utc_iso(s: str) -> str:
+        """Parse any ISO-ish string and return canonical UTC ISO string."""
+        dt = dtparser.isoparse((s or "").strip())
+        if dt.tzinfo is None:
+            # assume input is UTC if naive (safer for stored UTC values)
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+
+    # --- normalize inputs -----------------------------------------------------
+    raw = (phone or "").strip()
+    if _is_e164(raw):
+        phone_e164 = raw
+    else:
+        try:
+            phone_e164 = normalize_phone_e164(raw, default_country) or ""
+        except Exception:
+            phone_e164 = ""
     dob_str = (dob or "").strip()
 
-    debug_print(f"cancel_appointment_by_name: doctor='{doctor_name}' phone='{phone10}' dob='{dob_str}' utc='{utc_start}'")
-
-    if not (os.path.exists(full_path) and phone10 and dob_str and utc_start):
+    try:
+        target_utc_iso = _to_utc_iso(utc_start)
+    except Exception as e:
+        debug_print(f"cancel_appointment_by_name: ❌ invalid utc_start → {e}")
         return False
 
-    # load list
+    if not (doctor_name and phone_e164 and dob_str and target_utc_iso):
+        debug_print("cancel_appointment_by_name: ❌ missing required normalized inputs")
+        return False
+
+    full_path = get_doctor_filename(doctor_name)
+    debug_print(
+        f"cancel_appointment_by_name: doctor='{doctor_name}' phone_e164='{phone_e164}' "
+        f"dob='{dob_str}' utc='{target_utc_iso}'"
+    )
+
+    if not os.path.exists(full_path):
+        return False
+
+    # --- load file ------------------------------------------------------------
     try:
         with open(full_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -1807,29 +1660,36 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, dob: str, utc_start
         debug_print(f"cancel_appointment_by_name: read error → {e}")
         return False
 
-    # normalize target UTC
-    try:
-        target_norm = dtparser.isoparse(utc_start).astimezone().astimezone(tz=None).isoformat()
-    except Exception as e:
-        debug_print(f"cancel_appointment_by_name: utc parse error → {e}")
-        return False
-
+    # --- filter out the matching record --------------------------------------
     kept = []
     removed = 0
+
     for appt in data:
         if not isinstance(appt, dict):
             kept.append(appt)
             continue
-        ap_phone = normalize_phone_digits(appt.get("phone", ""))
-        ap_dob   = (appt.get("dob", "") or "").strip()
-        ap_time_raw = (appt.get("time") or appt.get("start") or "").strip()
+
+        # Phone: strict E.164 only (record should already have this)
+        ap_e164 = (appt.get("phone_e164") or "").strip()
+        if not _is_e164(ap_e164):
+            # If your DB migration guarantees phone_e164 exists, we just skip non-e164 rows.
+            # (Optional: derive with normalize_phone_e164(appt.get("phone", ""), default_country))
+            kept.append(appt)
+            continue
+
+        # DOB: exact string match (you store ISO 'YYYY-MM-DD')
+        ap_dob = (appt.get("dob", "") or "").strip()
+
+        # Time: use 'start' or 'time' then canonicalize UTC
+        ap_time_raw = (appt.get("start") or appt.get("time") or "").strip()
         try:
-            ap_time_norm = dtparser.isoparse(ap_time_raw).astimezone().astimezone(tz=None).isoformat()
+            ap_time_utc = _to_utc_iso(ap_time_raw)
         except Exception:
             kept.append(appt)
             continue
 
-        if ap_phone == phone10 and ap_dob == dob_str and ap_time_norm == target_norm:
+        # Match all three
+        if ap_e164 == phone_e164 and ap_dob == dob_str and ap_time_utc == target_utc_iso:
             removed += 1
         else:
             kept.append(appt)
@@ -1838,6 +1698,7 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, dob: str, utc_start
         debug_print("cancel_appointment_by_name: no matching record found")
         return False
 
+    # --- write back -----------------------------------------------------------
     try:
         with open(full_path, "w", encoding="utf-8") as f:
             json.dump(kept, f, indent=2, ensure_ascii=False)
@@ -1846,6 +1707,7 @@ def cancel_appointment_by_name(doctor_name: str, phone: str, dob: str, utc_start
     except Exception as e:
         debug_print(f"cancel_appointment_by_name: write error → {e}")
         return False
+
 
 
 
@@ -1879,77 +1741,113 @@ def list_events_in_window_utc(calendar_id: str, creds, utc_start: str, utc_end: 
         debug_print(f"❌ list_events_in_window_utc error → {e}")
         return []
 
+#  independent of phone10  and dpende only on e164
 
-def get_upcoming_events(calendar_id: str, phone: str, utc_start: str, utc_end: str, creds, debug: bool=False):
+def get_upcoming_events(
+    calendar_id: str,
+    phone: str,
+    utc_start: str,
+    utc_end: str,
+    creds,
+    debug: bool = False,
+    *,
+    default_country: str = COUNTRY  # Use your global COUNTRY ('US' or 'EG', etc.)
+):
     """
     Search a specific Google Calendar for events within a given UTC time window
-    and return the first event whose description contains the caller's phone number.
+    and return the first event that matches the caller's **E.164** phone number.
+
+    E.164-ONLY BEHAVIOR:
+      - We accept only a valid E.164 phone (e.g., '+12025550123', '+201234567890').
+      - Matching is done against:
+          (a) event.extendedProperties.private.phone_e164  (exact string), or
+          (b) event.description containing the exact E.164 string.
+      - No legacy 10-digit or digit-only normalization is performed.
 
     Arguments:
     ----------
     calendar_id : str
-        The Google Calendar ID where the search should be performed (e.g., "doctor@example.com").
+        The Google Calendar ID (e.g., "doctor@example.com").
     phone : str
-        The caller's phone number in any format (will be normalized to digits only).
+        The caller's phone number; will be normalized to E.164 using normalize_phone_e164.
     utc_start : str
-        The ISO 8601 formatted UTC start time of the search window (e.g., "2025-08-07T14:00:00Z").
+        ISO 8601 UTC start time of the search window (e.g., "2025-08-07T14:00:00Z").
     utc_end : str
-        The ISO 8601 formatted UTC end time of the search window.
+        ISO 8601 UTC end time of the search window.
     creds :
-        An authenticated Google API credentials object to authorize the Calendar API requests.
+        Authenticated Google API credentials.
     debug : bool, optional
         If True, prints detailed debug logs for troubleshooting.
+    default_country : str, keyword-only
+        Country hint for normalization (e.g., 'US' or 'EG').
 
     Returns:
     --------
     dict or None
-        The first matching Google Calendar event (full event dictionary) if found,
+        The first matching Google Calendar event (full event dict) if found,
         otherwise None.
     """
 
-    # 1️⃣ Normalize the phone number so we can reliably match it against event descriptions.
-    #    This strips all non-digit characters (e.g., spaces, dashes, parentheses, etc.)
-    phone_digits = normalize_phone_digits(phone)
+    # --- 1) Normalize input to strict E.164 -----------------------------------
+    def _is_e164(s: str) -> bool:
+        return bool(_re.fullmatch(r"\+\d{6,15}", (s or "").strip()))
 
-    # 2️⃣ If debugging is enabled, print the search parameters.
+    raw = (phone or "").strip()
+    phone_e164 = raw if _is_e164(raw) else ""
+
+    if not phone_e164:
+        try:
+            # Your helper should convert national formats -> E.164 or return ''.
+            phone_e164 = normalize_phone_e164(raw, default_country) or ""
+        except Exception:
+            phone_e164 = ""
+
+    if not phone_e164 or not _is_e164(phone_e164):
+        if debug:
+            debug_print(f"get_upcoming_events: ❌ invalid/non-E.164 phone '{phone}'")
+        return None
+
+    # --- 2) Debug parameters ---------------------------------------------------
     if debug:
-        debug_print(f"📅 get_upcoming_events: Searching in calendar → {calendar_id}")
-        debug_print(f"⏱️ Time window → {utc_start} to {utc_end}")
-        debug_print(f"📞 Looking for phone digits → {phone_digits}")
+        debug_print(f"📅 get_upcoming_events: calendar={calendar_id}")
+        debug_print(f"⏱️ window: {utc_start} → {utc_end}")
+        debug_print(f"📞 match E.164: {phone_e164}")
 
-    # 3️⃣ Retrieve all events from the given calendar in the specified UTC time window.
-    #    This is done via a helper function that wraps the Google Calendar API request.
+    # --- 3) Fetch events in the window ----------------------------------------
     events = list_events_in_window_utc(calendar_id, creds, utc_start, utc_end, debug=debug)
 
-    # 4️⃣ Log how many events were retrieved in the time range (useful for diagnostics).
     if debug:
-        debug_print(f"🔍 get_upcoming_events: Found {len(events)} event(s) in the time window")
+        debug_print(f"🔍 get_upcoming_events: {len(events)} event(s) fetched in window")
 
-    # 5️⃣ Loop through all events to look for one that matches our phone number.
+    # --- 4) Find first event that matches E.164 --------------------------------
     for ev in events:
-        # Extract the event description (can contain customer details such as phone, name, address).
-        # Ensure it's a string, default to empty if missing.
-        desc = ev.get("description", "") or ""
+        # Prefer an explicit structured field in extendedProperties.private
+        priv = ((ev.get("extendedProperties") or {}).get("private") or {})
+        ev_phone_e164 = (priv.get("phone_e164") or "").strip()
 
-        # Normalize the digits from the event description so we can compare to the caller's digits.
-        desc_digits = normalize_phone_digits(desc)
-
-        # 6️⃣ For debugging: print the event summary, start time, and extracted phone digits from the description.
-        if debug:
-            # Try to get the start datetime in a consistent format.
-            start_dbg = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
-            debug_print(f"📝 Event → summary={ev.get('summary')} start={start_dbg} desc_digits={desc_digits}")
-
-        # 7️⃣ If the caller's phone digits are non-empty AND found within the event description's digits → MATCH.
-        if phone_digits and phone_digits in desc_digits:
+        if ev_phone_e164 == phone_e164:
             if debug:
-                debug_print("✅ Match found by phone number in event description")
-            return ev  # Return the entire event dictionary.
+                s = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
+                debug_print(f"✅ match via extendedProperties.private.phone_e164 → {ev_phone_e164}; start={s}")
+            return ev
 
-    # 8️⃣ If no event matched the phone number, log this (if debugging) and return None.
+        # Fallback: exact E.164 string embedded in description (no digit-only matching)
+        desc = (ev.get("description") or "").strip()
+        if phone_e164 and phone_e164 in desc:
+            if debug:
+                s = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
+                debug_print(f"✅ match via description contains E.164 → {phone_e164}; start={s}")
+            return ev
+
+        if debug:
+            s = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
+            debug_print(f"… no match: summary={ev.get('summary')} start={s}")
+
+    # --- 5) Nothing matched ----------------------------------------------------
     if debug:
-        debug_print("❌ No matching event found with the provided phone number.")
+        debug_print("❌ No matching event found for E.164 phone.")
     return None
+
 ##
 ###    DOB  parsing and processing
 ##
@@ -2136,15 +2034,19 @@ def init_db() -> None:
     Ensure appointment_data folder exists and customers.json is a dict file.
     Creates an empty {} if missing or invalid.
 
-    🆕 Also performs a light migration:
-      - Add 'phone_e164' to records if missing (derived from 'phone' or key).
-      - Re-key legacy (10-digit) entries to (phone_e164|dob) when possible.
+    🆕 E.164-only migration (no legacy formatting):
+      - If a record already has a valid E.164 'phone_e164', re-key to (phone_e164|dob).
+      - If the existing key's left side is valid E.164, adopt it into 'phone_e164'.
       - Ensure 'created_at' and 'last_seen_at' exist.
+      - Never derive from legacy 10-digit or trunked numbers; no digit munging.
+
+    This function deliberately avoids any non-E.164 normalization. Records without
+    a valid E.164 will be left as-is (preserved under their original keys).
     """
     os.makedirs(DB_FOLDER, exist_ok=True)
     if not os.path.exists(DB_FILE):
         with open(DB_FILE, "w", encoding="utf-8") as f:
-            json.dump({}, f, indent=2)
+            json.dump({}, f, indent=2, ensure_ascii=False)
         return
 
     # Validate existing file is a JSON object; if not, reset to {}
@@ -2155,108 +2057,98 @@ def init_db() -> None:
             raise ValueError("customers.json must be a JSON object")
     except Exception:
         with open(DB_FILE, "w", encoding="utf-8") as f:
-            json.dump({}, f, indent=2)
+            json.dump({}, f, indent=2, ensure_ascii=False)
         return
 
-    # ---------- 🧰 migration (safe / idempotent) ----------
+    # ---------- 🧰 migration (safe / idempotent; E.164-only) ----------
     changed = False
     migrated = 0
-    enriched = 0
     ensured_ts = 0
+    adopted_from_key = 0
+    skipped_non_e164 = 0
 
-    def _derive_e164(rec: dict, key_str: str) -> str:
-        """Best-effort E.164 from record fields or legacy key text."""
-        # Prefer explicit phone_e164 on record
-        pe = (rec.get("phone_e164") or "").strip()
-        if pe.startswith("+") and pe[1:].replace(" ", "").isdigit():
-            return "+" + pe[1:].replace(" ", "")
+    def _is_e164(s: str) -> bool:
+        """Strict E.164 check: '+' followed by 6..15 digits (no spaces)."""
+        s = (s or "").strip()
+        return bool(_re.fullmatch(r"\+\d{6,15}", s))
 
-        # Try record's 'phone' (often 10-digit US)
-        cand = rec.get("phone", "")
-        e164 = normalize_phone_e164(cand, "US") or normalize_phone_e164(cand, "EG")
-        if e164:
-            return e164
+    def _e164_or_empty(s: str) -> str:
+        s = (s or "").strip().replace(" ", "")
+        return s if _is_e164(s) else ""
 
-        # Try key prefix before '|' if present
-        if "|" in key_str:
-            k_phone = key_str.split("|", 1)[0]
-            e164 = normalize_phone_e164(k_phone, "US") or normalize_phone_e164(k_phone, "EG")
-            if e164:
-                return e164
-
-        # Last resort: digits inside the key itself
-        d = "".join(ch for ch in key_str if ch.isdigit())
-        if d:
-            e164 = normalize_phone_e164(d, "US") or normalize_phone_e164(d, "EG")
-            if e164:
-                return e164
-        return ""
-
-    # Build a new map to allow re-keying while iterating
     try:
         new_data: dict = {}
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         for old_key, rec in data.items():
             if not isinstance(rec, dict):
-                # skip non-dict entries
+                # Skip non-dict entries (preserve as-is)
+                new_data[old_key] = rec
                 continue
 
             # Ensure timestamps
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             if not rec.get("created_at") or not rec.get("last_seen_at"):
                 rec.setdefault("created_at", now)
                 rec.setdefault("last_seen_at", now)
                 ensured_ts += 1
                 changed = True
 
-            # Normalize DOB field to a simple oneline string (don't parse here)
+            # Normalize DOB field to a single line (do NOT parse)
             rec["dob"] = _oneline(rec.get("dob", ""))
 
-            # Ensure phone_e164
-            phone_e164 = _derive_e164(rec, old_key)
-            if phone_e164 and rec.get("phone_e164") != phone_e164:
-                rec["phone_e164"] = phone_e164
-                # Keep US 10-digit legacy copy if applicable
-                if phone_e164.startswith("+1") and len(phone_e164) == 12:
-                    rec["phone"] = phone_e164[2:]
-                enriched += 1
-                changed = True
+            # Ensure phone_e164 ONLY if it is already E.164 or can be read as E.164 from the key
+            phone_e164 = _e164_or_empty(rec.get("phone_e164", ""))
+            if not phone_e164 and "|" in old_key:
+                # If the legacy key *already* uses E.164 on the left, adopt it
+                left = old_key.split("|", 1)[0].strip()
+                left_e164 = _e164_or_empty(left)
+                if left_e164:
+                    rec["phone_e164"] = left_e164
+                    phone_e164 = left_e164
+                    adopted_from_key += 1
+                    changed = True
 
-            # Decide final key
+            # Decide final key:
+            #   - If we have valid E.164, re-key to (phone_e164|dob)
+            #   - Otherwise, keep the old key (no legacy conversion attempted)
             final_key = old_key
             if phone_e164:
                 try:
                     final_key = _key(phone_e164, rec.get("dob", ""))
                 except Exception:
-                    # If _key is unavailable/misconfigured, fall back to old key
-                    final_key = old_key
+                    final_key = old_key  # defensive
 
-            # If the key changed, migrate
             if final_key != old_key:
+                # Migrate if target key not occupied
                 if final_key not in new_data:
                     new_data[final_key] = rec
                     migrated += 1
                     changed = True
                 else:
-                    # Collision: prefer existing, but refresh last_seen_at
+                    # Collision: prefer existing; update its last_seen_at
                     try:
                         new_data[final_key]["last_seen_at"] = now
                     except Exception:
                         pass
             else:
-                # keep as-is
-                if final_key not in new_data:
-                    new_data[final_key] = rec
-                else:
-                    # avoid overwrite; prefer the one that already exists
-                    pass
+                # Keep record under its original key
+                new_data[old_key] = rec
+                if not phone_e164:
+                    skipped_non_e164 += 1
 
         if changed:
-            with open(DB_FILE, "w", encoding="utf-8") as f:
-                json.dump(new_data, f, indent=2)
-            debug_print(
-                f"init_db: 🔧 migration complete "
-                f"(migrated={migrated}, enriched={enriched}, ensured_ts={ensured_ts})"
-            )
+            # Atomic write to avoid corruption
+            tmp = DB_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(new_data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, DB_FILE)
+
+        debug_print(
+            "init_db (E.164-only): "
+            f"migrated={migrated}, adopted_from_key={adopted_from_key}, "
+            f"ensured_ts={ensured_ts}, skipped_non_e164={skipped_non_e164}, changed={changed}"
+        )
+
     except Exception as e:
         # Migration errors should never take down the app; keep existing data
         debug_print(f"init_db: ⚠️ migration skipped due to error: {e}")
@@ -2264,6 +2156,7 @@ def init_db() -> None:
         return
 
 
+#   remove phone10 and make dependent on e146
 
 # ---------- Sanitizers / formatters ----------
 def _oneline(s: str) -> str:
@@ -2271,28 +2164,37 @@ def _oneline(s: str) -> str:
     return _re.sub(r"\s+", " ", (s or "").strip())
 
 
-
 def _normalize_phone(s: str) -> str:
     """
-    Keep digits only; if NANP 11-digit starting with '1', strip leading '1'.
-    Returns 10-digit for US numbers where applicable; no validation beyond that.
+    E.164-only sanitizer.
+
+    Returns the input as E.164 (e.g., '+12025550123', '+201234567890') **only** if it
+    already matches strict E.164 ('+' followed by 6–15 digits). Otherwise returns ''.
+
+    NOTE:
+      - No legacy normalization (no 10-digit US, no trunked EG, no digit stripping).
+      - If you need to transform national numbers into E.164, call your dedicated
+        normalize_phone_e164(raw, country) helper elsewhere; this function intentionally
+        does not attempt any conversion.
     """
-    d = "".join(ch for ch in (s or "") if ch.isdigit())
-    return d[1:] if len(d) == 11 and d.startswith("1") else d
+    s = (s or "").strip().replace(" ", "")
+    return s if _re.fullmatch(r"\+\d{6,15}", s) else ""
+
 
 def _mask_pan(n: str) -> str:
     """Mask a PAN for storage/logs (keep last 4)."""
     n = (n or "").strip()
     return ("*" * max(0, len(n) - 4)) + n[-4:] if n else ""
 
+
 def _mask_all(n: str) -> str:
     """Mask entire sensitive string (e.g., CVV)."""
     return "*" * len((n or "").strip())
 
+
 def _block_title(new: bool) -> str:
     return "insert_customer: ✅ Added new customer" if new \
            else "insert_customer: ℹ️ Existing customer — updated last_seen_at"
-
 
 
 def _render_block_lines(new: bool, rec: Dict[str, Any]) -> List[str]:
@@ -2311,7 +2213,7 @@ def _render_block_lines(new: bool, rec: Dict[str, Any]) -> List[str]:
     OUTPUT CONTRACT:
       - Returns a list of **exactly 12 strings**, in a strict, known order:
           0: Title line (varies with `new`)
-          1: Phone
+          1: Phone (E.164)
           2: DOB
           3: First Name
           4: Last Name
@@ -2332,8 +2234,8 @@ def _render_block_lines(new: bool, rec: Dict[str, Any]) -> List[str]:
           on-file title. The exact wording comes from `_block_title(new)`.
       rec : Dict[str, Any]
           The customer record dictionary (already normalized); expected keys:
-            'phone_e164' (preferred), 'phone' (legacy 10-digit), 'dob',
-            'first_name', 'last_name', 'address',
+            'phone_e164' (required for E.164-only display),
+            'dob', 'first_name', 'last_name', 'address',
             'cc_name', 'cc_number', 'cc_exp', 'cc_cvv',
             'created_at', 'last_seen_at'
           Any key may be missing/empty; we display '—' in that case.
@@ -2351,9 +2253,7 @@ def _render_block_lines(new: bool, rec: Dict[str, Any]) -> List[str]:
 
     # Pull values from the record. We deliberately don’t mutate or normalize here;
     # we only render whatever the caller provided, swapping empty/None for '—'.
-
-    # Prefer E.164; fall back to legacy 10-digit if that's all we have.
-    phone        = (rec.get("phone_e164") or rec.get("phone") or "—")
+    phone        = rec.get("phone_e164") or "—"     # E.164 ONLY
     dob          = rec.get("dob") or "—"
     first_name   = rec.get("first_name") or "—"
     last_name    = rec.get("last_name") or "—"
@@ -2366,10 +2266,9 @@ def _render_block_lines(new: bool, rec: Dict[str, Any]) -> List[str]:
     last_seen_at = rec.get("last_seen_at") or "—"
 
     # Assemble the 12-line block in a consistent order.
-    # Line 0 is a dynamic title provided by `_block_title(new)`.
     lines: List[str] = [
-        _block_title(new),             # 0  → e.g., "insert_customer: ✅ Added new customer" or "Customer on file"
-        f"Phone: {phone}",             # 1  (E.164 preferred)
+        _block_title(new),             # 0
+        f"Phone: {phone}",             # 1  (E.164 only)
         f"DOB: {dob}",                 # 2
         f"First Name: {first_name}",   # 3
         f"Last Name: {last_name}",     # 4
@@ -2382,20 +2281,24 @@ def _render_block_lines(new: bool, rec: Dict[str, Any]) -> List[str]:
         f"Last Seen At: {last_seen_at}"# 11
     ]
 
-    # Optional defensive check (keep as comment to avoid runtime overhead):
     # assert len(lines) == 12, "Rendered block must contain exactly 12 lines"
-
     return lines
 
+# end finishing remove phone10 and make it strict on e164
 
 
 # ---------- File parsing helpers ----------
 
-
+# =============================================================================
+# Block parsers / accessors (3.8-safe typing)
+# =============================================================================
+####   rewmove dependency on phone10
 # BEFORE:
 # def _iter_blocks(lines: list[str]):
 # AFTER (3.8-safe):
-def _iter_blocks(lines: List[str]) -> Iterator[List[str]]:
+##  reove dependency on phone 10 until save_customer
+
+def _iter_blocks(lines: List[str]) -> Iterator[Tuple[int, int, List[str]]]:
     # ... keep your existing body ...
     """
     Yield (start_idx, end_idx_exclusive, block_lines).
@@ -2411,11 +2314,8 @@ def _iter_blocks(lines: List[str]) -> Iterator[List[str]]:
     if start is not None:
         yield (start, len(lines), lines[start:])
 
-
-
 # change this:
 # def _get_value(block_lines: list[str], label: str) -> str | None:
-
 # to this:
 # BEFORE:
 # def _get_value(block_lines: list[str], label: str) -> str | None:
@@ -2439,14 +2339,7 @@ def _extract_phone_dob(block_lines: List[str]) -> Tuple[Optional[str], Optional[
 
 # ---------- Public API ----------
 
-def _normalize_phone10(phone: str) -> str:
-    """
-    Keep digits only, drop leading US '1' if present, and return 10-digit phone or ''.
-    """
-    d = "".join(ch for ch in (phone or "") if ch.isdigit())
-    if len(d) == 11 and d.startswith("1"):
-        d = d[1:]
-    return d if len(d) == 10 else ""
+# (Legacy helper removed)  _normalize_phone10 → ❌ gone (E.164 only now)
 
 def _load_customers() -> Dict[str, Dict[str, Any]]:
     """Read the customers map from disk (already ensured by init_db)."""
@@ -2459,18 +2352,17 @@ def _load_customers() -> Dict[str, Dict[str, Any]]:
         debug_print(f"customers.json read error → {e}")
     return {}
 
-
-def _key(phone_key: str, dob_iso: str) -> str:
-    """Stable map key: use E.164 (preferred) or legacy 10-digit, plus DOB ISO."""
-    return f"{(phone_key or '').strip()}|{(dob_iso or '').strip()}"
+def _key(phone_e164: str, dob_iso: str) -> str:
+    """Stable map key: E.164 + DOB ISO."""
+    return f"{(phone_e164 or '').strip()}|{(dob_iso or '').strip()}"
 
 def customer_search(phone: str, dob: str, *, default_country: str = COUNTRY) -> bool:
     """
     Return True if a customer (phone|dob) exists in customers.json, else False.
 
-    Lookup order:
-      1) (phone_e164, dob)  — preferred
-      2) (US 10-digit, dob) — legacy fallback
+    Lookup (E.164 only):
+      1) Normalize input as E.164 using default_country (falls back US↔EG).
+      2) Check key = _key(phone_e164, dob_iso).
     """
     init_db()
     dob_iso = (dob or "").strip()
@@ -2482,48 +2374,41 @@ def customer_search(phone: str, dob: str, *, default_country: str = COUNTRY) -> 
         phone_e164 = "+" + raw[1:].replace(" ", "")
     else:
         try:
-            phone_e164 = normalize_phone_e164(raw, default_country)
+            phone_e164 = normalize_phone_e164(raw, default_country) or ""
         except Exception:
             phone_e164 = ""
-        # Secondary guess (useful when caller is EG and default is US)
+        # Secondary guess (useful when caller is EG and default is US, or vice versa)
         if not phone_e164:
             try:
                 alt_country = "EG" if default_country.upper() != "EG" else "US"
-                phone_e164 = normalize_phone_e164(raw, alt_country)
+                phone_e164 = normalize_phone_e164(raw, alt_country) or ""
             except Exception:
                 phone_e164 = ""
 
+    if not phone_e164:
+        debug_print(f"customer_search: ❌ invalid phone '{raw}' (no E.164)")
+        return False
+
     data = _load_customers()
-
-    # Primary: E.164 key
-    if phone_e164:
-        key_e164 = _key(phone_e164, dob_iso)
-        exists = key_e164 in data
-        debug_print(f"customer_search: phone_e164={phone_e164} dob={dob_iso or '∅'} → {exists}")
-        if exists:
-            return True
-
-    # Legacy fallback: US 10-digit key
-    phone10 = _normalize_phone10(raw)
-    if phone10:
-        key_10 = _key(phone10, dob_iso)
-        exists_legacy = key_10 in data
-        debug_print(f"customer_search: legacy phone10={phone10} dob={dob_iso or '∅'} → {exists_legacy}")
-        return exists_legacy
-
-    # Nothing usable
-    debug_print(f"customer_search: ❌ invalid phone '{raw}' (no E.164/10-digit)")
-    return False
-
+    key_e164 = _key(phone_e164, dob_iso)
+    exists = key_e164 in data
+    debug_print(f"customer_search: phone_e164={phone_e164} dob={dob_iso or '∅'} → {exists}")
+    return exists
 
 def _save_customers(data: Dict[str, Dict[str, Any]]) -> None:
     """Write the customers map to disk in readable (pretty) form."""
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
+#  update to remove legact phone 10
 
-
-def _update_existing_block_in_place(phone_norm: str, dob_clean: str, updates: dict, *, default_country: str = "US") -> bool:
+def _update_existing_block_in_place(
+    phone_norm: str,
+    dob_clean: str,
+    updates: dict,
+    *,
+    default_country: str = COUNTRY  # uses global COUNTRY by default
+) -> bool:
     """
     Edit the matching block in place:
       - Always bump 'Last Seen At' to now
@@ -2532,10 +2417,10 @@ def _update_existing_block_in_place(phone_norm: str, dob_clean: str, updates: di
       - Preserve original 'Created At' and title line
     Returns True if a block was updated.
 
-    E.164 NOTE:
-      - phone_norm may be E.164 (e.g., +12025550123 / +2011...) or legacy US 10 digits.
-      - We match blocks whose "Phone:" line is either E.164 or US 10 digits, with cross-compat:
-          +1XXXXXXXXXX  ⇔  XXXXXXXXXX
+    E.164 ONLY:
+      - phone_norm is normalized to E.164.
+      - We normalize the block's "Phone:" line to E.164 and match by strict equality.
+      - No 10-digit (phone10) paths remain. Legacy blocks should still normalize.
     """
     if not os.path.exists(DB_FILE):
         return False
@@ -2548,60 +2433,50 @@ def _update_existing_block_in_place(phone_norm: str, dob_clean: str, updates: di
     out: list[str] = []
     i = 0
 
-    # ---- build target forms (E.164 + legacy 10-digit) ------------------------
+    # ---- build target E.164 --------------------------------------------------
     raw_in = (phone_norm or "").strip()
-    # target E.164
-    target_e164 = ""
-    if raw_in.startswith("+") and raw_in[1:].replace(" ", "").isdigit():
-        target_e164 = "+" + raw_in[1:].replace(" ", "")
-    else:
+
+    def _to_e164(raw: str, pref_country: str) -> str:
+        raw = (raw or "").strip()
+        if raw.startswith("+") and raw[1:].replace(" ", "").isdigit():
+            return "+" + raw[1:].replace(" ", "")
         try:
-            target_e164 = normalize_phone_e164(raw_in, default_country) or ""
-            if not target_e164:
-                alt = "EG" if default_country.upper() != "EG" else "US"
-                target_e164 = normalize_phone_e164(raw_in, alt) or ""
+            e = normalize_phone_e164(raw, pref_country) or ""
+            if not e:
+                alt = "EG" if pref_country.upper() != "EG" else "US"
+                e = normalize_phone_e164(raw, alt) or ""
+            return e
         except Exception:
-            target_e164 = ""
-    # target US 10-digit fallback
-    try:
-        target_10 = _normalize_phone10(raw_in)
-    except Exception:
-        target_10 = ""
+            return ""
 
-    def _phones_match(block_phone: str) -> bool:
-        """E.164-aware, legacy-compatible phone equality against the block 'Phone:' line."""
-        bp = (block_phone or "").strip()
-
-        # derive block forms
-        b_e164 = ""
-        if bp.startswith("+") and bp[1:].replace(" ", "").isdigit():
-            b_e164 = "+" + bp[1:].replace(" ", "")
-        else:
-            try:
-                b_e164 = normalize_phone_e164(bp, default_country) or ""
-                if not b_e164:
-                    alt = "EG" if default_country.upper() != "EG" else "US"
-                    b_e164 = normalize_phone_e164(bp, alt) or ""
-            except Exception:
-                b_e164 = ""
-        try:
-            b_10 = _normalize_phone10(bp)
-        except Exception:
-            b_10 = ""
-
-        # direct E.164 equality
-        if target_e164 and b_e164 and (target_e164 == b_e164):
-            return True
-        # legacy both sides 10-digit
-        if target_10 and b_10 and (target_10 == b_10):
-            return True
-        # cross: input +1E.164 vs block 10-digit
-        if target_e164 and target_e164.startswith("+1") and b_10 and (target_e164[2:] == b_10):
-            return True
-        # cross: input 10-digit vs block +1E.164
-        if target_10 and b_e164 and b_e164.startswith("+1") and (b_e164[2:] == target_10):
-            return True
+    target_e164 = _to_e164(raw_in, default_country)
+    if not target_e164:
+        # If we cannot normalize the input, we cannot match anything safely.
         return False
+
+    # ---- DOB → ISO -----------------------------------------------------------
+    def _dob_iso(s: str) -> str:
+        s = (s or "").strip()
+        if not s:
+            return ""
+        if "T" in s:
+            s = s.split("T", 1)[0].strip()
+        if _re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+            return s
+        m = _re.match(r"^\s*(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})\s*$", s)
+        if m:
+            mm, dd, yyyy = m.groups()
+            try:
+                return f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
+            except Exception:
+                return ""
+        return ""
+    dob_target_iso = _dob_iso(dob_clean)
+
+    # ---- phone matcher (E.164 only) -----------------------------------------
+    def _phones_match(block_phone: str) -> bool:
+        b_e164 = _to_e164(block_phone, default_country)
+        return bool(b_e164) and (b_e164 == target_e164)
 
     while i < len(lines):
         ln = lines[i]
@@ -2613,8 +2488,10 @@ def _update_existing_block_in_place(phone_norm: str, dob_clean: str, updates: di
             block = lines[start:i]
 
             b_phone, b_dob = _extract_phone_dob(block)
-            # DOB comparison stays literal; if you want, normalize both to ISO first.
-            if _phones_match(b_phone) and ((b_dob or "") == dob_clean):
+            b_dob_iso = _dob_iso(b_dob)
+
+            # Strict: E.164 phone equality AND ISO DOB equality
+            if _phones_match(b_phone) and (b_dob_iso == dob_target_iso):
                 # Pull existing values
                 cur = {
                     "title":        block[0],
@@ -2624,14 +2501,14 @@ def _update_existing_block_in_place(phone_norm: str, dob_clean: str, updates: di
                     "last_name":    _get_value(block, "Last Name") or "",
                     "address":      _get_value(block, "Address") or "",
                     "cc_name":      _get_value(block, "CC Name") or "",
-                    "cc_number":    _get_value(block, "CC Number") or "",  # masked in file
+                    "cc_number":    _get_value(block, "CC Number") or "",  # renderer may mask
                     "cc_exp":       _get_value(block, "CC Exp") or "",
-                    "cc_cvv":       _get_value(block, "CC CVV") or "",     # masked in file
+                    "cc_cvv":       _get_value(block, "CC CVV") or "",     # renderer may mask
                     "created_at":   _get_value(block, "Created At") or "—",
                     "last_seen_at": now,
                 }
 
-                # Apply non-empty updates (sanitize to one line)
+                # Apply non-empty updates (one-line sanitize)
                 def pick(new_val, old_val):
                     new_val = _oneline(new_val)
                     return new_val if new_val else old_val
@@ -2641,16 +2518,15 @@ def _update_existing_block_in_place(phone_norm: str, dob_clean: str, updates: di
                 cur["address"]    = pick(updates.get("address"),    cur["address"])
                 cur["cc_name"]    = pick(updates.get("cc_name"),    cur["cc_name"])
 
-                # For CC fields we overwrite only if a non-empty value is provided.
                 nv = _oneline(updates.get("cc_number"))
                 if nv:
-                    cur["cc_number"] = nv  # renderer will mask
+                    cur["cc_number"] = nv
                 nv = _oneline(updates.get("cc_exp"))
                 if nv:
                     cur["cc_exp"] = nv
                 nv = _oneline(updates.get("cc_cvv"))
                 if nv:
-                    cur["cc_cvv"] = nv  # renderer will mask
+                    cur["cc_cvv"] = nv
 
                 # Re-render; keep original title text
                 new_block = _render_block_lines(new=True, rec=cur)
@@ -2671,6 +2547,7 @@ def _update_existing_block_in_place(phone_norm: str, dob_clean: str, updates: di
 
 
 
+#   update to remove legacy phone10
 
 def insert_customer(
     phone: str,
@@ -2678,103 +2555,105 @@ def insert_customer(
     first_name: str,
     last_name: str,
     address: str,
+    cc_name: str,
     cc_number: str,
     cc_exp: str,
     cc_cvv: str,
-    *,
-    country: str = "US",
 ) -> bool:
     """
     Insert or update a customer in customers.json (single pretty JSON dict):
-      • If (phone_e164|dob) exists: update 'last_seen_at' only; return False.
+      • If (phone|dob) exists: update 'last_seen_at' only; return False.
       • If new: create record with 'created_at' and 'last_seen_at'; return True.
     Never duplicates because the map key is unique.
-    All values are stored on one logical line each (pretty JSON with indent=2).
 
-    Notes:
-    - Primary phone key is E.164 (e.g., +12025550123, +2011...).
-    - Keeps a US 10-digit copy when applicable for legacy compatibility.
-    - Logs are UNMASKED per your request.
+    PHONE FORMAT:
+      • Stores and keys by E.164 (e.g., +12025550123, +2011xxxxxxxx)
+      • Also writes 'phone' (display) = E.164 for compatibility with renderers
+
+    SECURITY (logging only):
+      • Per your request, this version logs FULL values (no masking) for cc_number and cc_cvv.
+        This is NOT recommended for production systems subject to PCI-DSS.
+
+    DEPENDENCIES:
+      • Requires: init_db(), _load_customers(), _save_customers(), _key(),
+                  _oneline(), normalize_phone_e164(), debug_print,
+                  and global COUNTRY
     """
+    # Ensure DB exists and is a JSON object
     init_db()
 
-    # ---- normalize inputs ----
-    phone_e164 = normalize_phone_e164(phone or "", country)
-    dob_iso = (dob or "").strip()
+    # --- normalize inputs ----------------------------------------------------
+    # E.164 canonical phone (strict: must normalize)
+    phone_e164 = normalize_phone_e164(phone, COUNTRY)
     if not phone_e164:
         raise ValueError("insert_customer: invalid phone (must normalize to E.164)")
 
-    # Optional US 10-digit copy for legacy consumers
-    phone10 = ""
-    if phone_e164.startswith("+1") and len(phone_e164) == 12:
-        phone10 = phone_e164[2:]
+    dob_iso = (dob or "").strip()  # upstream stages should already normalize to YYYY-MM-DD
 
+    # Compact one-line fields (no newlines/tabs)
+    first_name  = _oneline(first_name)
+    last_name   = _oneline(last_name)
+    address     = _oneline(address)
+    cc_name     = _oneline(cc_name)
+    cc_number   = _oneline(cc_number)
+    cc_exp      = _oneline(cc_exp)   # MM/YY expected by your collector
+    cc_cvv      = _oneline(cc_cvv)
+
+    # --- load current map ----------------------------------------------------
     data = _load_customers()
-
-    # New primary key: (phone_e164, dob)
     key = _key(phone_e164, dob_iso)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # ---- legacy migration (optional but helpful) ----
-    # If an old US-only key exists (10-digit), migrate it to the new E.164 key.
-    migrated = False
-    if not (key in data):
-        legacy10 = _normalize_phone10(phone or "")
-        if legacy10:
-            old_key = _key(legacy10, dob_iso)
-            if old_key in data:
-                rec_old = data.pop(old_key)
-                # enrich and move under new key
-                rec_old["phone_e164"] = phone_e164
-                if phone10:
-                    rec_old["phone"] = phone10   # keep 10-digit copy as before
-                rec_old["last_seen_at"] = now
-                data[key] = rec_old
-                _save_customers(data)
-                debug_print(f"insert_customer: 🔁 migrated legacy key {old_key} → {key}")
-                return False  # treated as existing (just migrated)
-
-    # ---- existing? Only refresh last_seen_at ----
+    # --- existing customer: bump last_seen_at --------------------------------
     if key in data:
         data[key]["last_seen_at"] = now
         _save_customers(data)
         debug_print(f"insert_customer: ℹ️ exists; updated last_seen_at for {key}")
         return False
 
-    # ---- new record ----
+    # --- new record ----------------------------------------------------------
     rec: Dict[str, Any] = {
-        "phone_e164": phone_e164,            # primary
-        "phone": phone10,                    # optional US 10-digit legacy copy
+        # Canonical phone for storage + compatibility display field
+        "phone_e164": phone_e164,   # canonical
+        "phone":      phone_e164,   # for renderers that print "Phone: ..."
+
         "dob": dob_iso,
-        "first_name": _oneline(first_name),
-        "last_name": _oneline(last_name),
-        "address": _oneline(address),
-        # store CC fields (unmasked per your request)
-        "cc_number": _oneline(cc_number),
-        "cc_exp": _oneline(cc_exp),          # MM/YY
-        "cc_cvv": _oneline(cc_cvv),
-        "created_at": now,
+
+        "first_name": first_name,
+        "last_name":  last_name,
+        "address":    address,
+
+        # Store CC fields (unmasked)
+        "cc_name":   cc_name,
+        "cc_number": cc_number,   # WARNING: stored unmasked per your request
+        "cc_exp":    cc_exp,      # MM/YY
+        "cc_cvv":    cc_cvv,      # WARNING: stored unmasked per your request
+
+        "created_at":  now,
         "last_seen_at": now,
     }
+
     data[key] = rec
     _save_customers(data)
 
-    # UNMASKED logging as requested
+    # --- logging (UNMASKED per request) --------------------------------------
     debug_print(
         "insert_customer: ✅ Added new customer\n"
-        f"Phone E164: {rec['phone_e164']}\n"
-        f"Phone10: {rec.get('phone','') or '∅'}\n"
+        f"Phone: {rec['phone_e164']}\n"
         f"DOB: {rec['dob'] or '∅'}\n"
         f"First Name: {rec['first_name']}\n"
         f"Last Name: {rec['last_name']}\n"
         f"Address: {rec['address']}\n"
+        f"CC Name: {rec.get('cc_name','')}\n"
         f"CC Number: {rec.get('cc_number','')}\n"
         f"CC Exp: {rec.get('cc_exp','')}\n"
         f"CC CVV: {rec.get('cc_cvv','')}\n"
         f"Created At: {rec['created_at']}\n"
         f"Last Seen At: {rec['last_seen_at']}"
     )
+
     return True
+
 
 
 
@@ -2914,16 +2793,24 @@ def normalize_phone_e164(raw: str, country: str = "US") -> str:
         # Unknown country → fail closed
         return ""
 
-
+# update remove phone 10
 def get_doctor_appts_for(doctor_name: str, phone: str, dob: str = None) -> list:
     """
     Read appointment_data/doctors/<doctor_name>.json and return all
     appointment dicts that match the given caller:
-      - phone is REQUIRED (E.164 preferred; US 10-digit legacy supported)
+      - phone is REQUIRED (E.164 string, e.g., +12025550123 or +2011xxxxxxx)
       - dob is OPTIONAL (normalized to YYYY-MM-DD if possible)
 
     Returned list is sorted chronologically by start time if present.
     Uses debug_print for logging (falls back to print if unavailable).
+
+    E.164 behavior:
+      - We normalize the input with normalize_phone_e164 using a default country
+        (GLOBAL COUNTRY if defined, else 'US'), and falling back to the other
+        supported country (US/EG) if needed.
+      - Records are matched by 'phone_e164'. If a record lacks that field but
+        has legacy 'phone' digits, we try to derive an E.164 using the input
+        phone’s country as a hint (US: +1, EG: +20).
     """
     # ---------- local helpers (self-contained) ----------
 
@@ -2956,30 +2843,35 @@ def get_doctor_appts_for(doctor_name: str, phone: str, dob: str = None) -> list:
         return (appt.get("start") or appt.get("time") or "").strip()
 
     # ---------- normalize inputs ----------
-    # Primary: E.164 using your helper (US default; accepts '+E.164' as-is)
-    phone_e164 = normalize_phone_e164(phone or "", "US")
+    # Choose a default country from global COUNTRY if present; else US
+    try:
+        _default_country = COUNTRY
+    except NameError:
+        _default_country = "US"
 
-    # Infer country from E.164 prefix (for legacy conversions below)
-    inferred_country = None
+    # Primary: E.164 using your helper (accepts '+E.164' as-is when valid)
+    phone_e164 = ""
+    try:
+        phone_e164 = normalize_phone_e164(phone or "", _default_country) or ""
+        if not phone_e164:
+            alt = "EG" if _default_country.upper() != "EG" else "US"
+            phone_e164 = normalize_phone_e164(phone or "", alt) or ""
+    except Exception:
+        phone_e164 = ""
+
+    if not phone_e164:
+        debug_print(f"get_doctor_appts_for: ❌ invalid phone '{phone}' (no E.164)")
+        return []
+
+    # Infer country hint from input E.164 (used only to up-convert legacy record phones)
     if phone_e164.startswith("+1"):
         inferred_country = "US"
     elif phone_e164.startswith("+20"):
         inferred_country = "EG"
-
-    # Legacy US fallback: if E.164 failed but the input is US-like, keep 10 digits
-    phone10 = ""
-    if not phone_e164:
-        phone10 = _normalize_phone_digits(phone or "")
-        if len(phone10) == 11 and phone10.startswith("1"):
-            phone10 = phone10[1:]
-        if len(phone10) == 10:
-            inferred_country = "US"  # most likely US legacy
+    else:
+        inferred_country = _default_country
 
     dob_iso = _normalize_dob_iso(dob) if dob else ""
-
-    if not phone_e164 and not phone10:
-        debug_print(f"get_doctor_appts_for: ❌ invalid phone '{phone}' (no E.164 / 10-digit fallback)")
-        return []
 
     path = get_doctor_filename(doctor_name)
     if not os.path.exists(path):
@@ -3006,46 +2898,20 @@ def get_doctor_appts_for(doctor_name: str, phone: str, dob: str = None) -> list:
         # Prefer E.164 stored on the record
         ap_e164 = (appt.get("phone_e164") or "").strip()
 
-        # If record lacks E.164, derive it from the legacy 'phone' field using the inferred country
+        # If record lacks E.164, derive it from the legacy 'phone' field using the hint country
         if not ap_e164:
-            ap_digits = _normalize_phone_digits(appt.get("phone", "") or "")
-            if inferred_country == "US":
-                # 10-digit legacy US → +1
-                if len(ap_digits) == 11 and ap_digits.startswith("1"):
-                    ap_digits = ap_digits[1:]
-                if len(ap_digits) == 10:
-                    ap_e164 = f"+1{ap_digits}"
-            elif inferred_country == "EG":
-                # Egypt legacy variants
-                if ap_digits.startswith("20") and 11 <= len(ap_digits) <= 12:  # 20 + (9..10)
-                    ap_e164 = f"+{ap_digits}"
-                elif len(ap_digits) == 11 and ap_digits.startswith("0"):
-                    ap_e164 = f"+20{ap_digits[1:]}"
-                elif 9 <= len(ap_digits) <= 10:
-                    ap_e164 = f"+20{ap_digits}"
-            # If country unknown, leave ap_e164 empty (we'll try legacy compare below)
+            raw_legacy = (appt.get("phone") or "").strip()
+            try:
+                ap_e164 = normalize_phone_e164(raw_legacy, inferred_country) or ""
+                if not ap_e164:
+                    # one last pass with the opposite of the hint if we only support US/EG
+                    alt = "EG" if inferred_country.upper() != "EG" else "US"
+                    ap_e164 = normalize_phone_e164(raw_legacy, alt) or ""
+            except Exception:
+                ap_e164 = ""
 
-        # Phone match logic
-        phone_ok = False
-        if phone_e164 and ap_e164:
-            phone_ok = (ap_e164 == phone_e164)
-        elif phone10 and not ap_e164:
-            # Both sides legacy US 10-digit
-            ap10 = _normalize_phone_digits(appt.get("phone", "") or "")
-            if len(ap10) == 11 and ap10.startswith("1"):
-                ap10 = ap10[1:]
-            phone_ok = (ap10 == phone10)
-        elif phone10 and ap_e164 and ap_e164.startswith("+1"):
-            # Input legacy US 10-digit; record E.164 +1
-            phone_ok = (ap_e164[2:] == phone10)
-        elif phone_e164 and not ap_e164 and phone_e164.startswith("+1"):
-            # Input +1E164; record legacy US 10-digit
-            ap10 = _normalize_phone_digits(appt.get("phone", "") or "")
-            if len(ap10) == 11 and ap10.startswith("1"):
-                ap10 = ap10[1:]
-            phone_ok = (len(ap10) == 10 and phone_e164[2:] == ap10)
-
-        if not phone_ok:
+        # Phone match (E.164 only)
+        if not ap_e164 or ap_e164 != phone_e164:
             continue
 
         # Optional DOB exact match (normalized)
@@ -3069,13 +2935,14 @@ def get_doctor_appts_for(doctor_name: str, phone: str, dob: str = None) -> list:
     except Exception:
         pass
 
-    dbg_phone = phone_e164 or (f"+1{phone10}" if phone10 else "∅")
     debug_print(
-        f"get_doctor_appts_for: ✅ doctor='{doctor_name}' phone='{dbg_phone}' "
+        f"get_doctor_appts_for: ✅ doctor='{doctor_name}' phone='{phone_e164}' "
         f"dob='{dob_iso or '∅'}' → {len(matches)} appt(s)"
     )
     return matches
----------------------------------------------------------------------
+
+#   update remove phone 10
+# ----------------------------------------------------------------------
 # backward-compat alias (typo): some code may call get_docotor_appt_for
 # ----------------------------------------------------------------------
 def get_docotor_appt_for(doctor_name: str, phone: str, dob: str = None) -> list:
@@ -3086,11 +2953,13 @@ def get_docotor_appt_for(doctor_name: str, phone: str, dob: str = None) -> list:
 
 
 
+
 # =============================================================================
 # Helper: Per-doctor availability using Google Calendar FreeBusy
 # - Purpose-built for availability. More reliable than events().list overlap.
 # - Adds ±1s boundary "fuzz" to avoid edge inclusivity issues.
 # - Logs any blocking busy windows for debugging.
+# - UPDATED: robust tz handling + all-day events in fallback overlap test.
 # =============================================================================
 def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds) -> bool:
     """
@@ -3099,24 +2968,83 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
     - Fallback: events().list with explicit overlap test.
     - Adds ±60s guard to catch edge-inclusive events.
     - Emits debug lines showing what blocked the slot when busy.
+    - UPDATED: Converts all comparisons to tz-aware UTC; handles all-day events.
     """
-    
+    from googleapiclient.discovery import build
+    from dateutil.parser import isoparse
+    from datetime import datetime, date as _date, timedelta
 
     service = build("calendar", "v3", credentials=creds)
 
-    start_dt = isoparse(start_iso)
-    end_dt   = isoparse(end_iso)
+    # ---- helpers -------------------------------------------------------------
+    def _aware_utc(dt):
+        """Ensure dt is tz-aware UTC."""
+        if dt.tzinfo is None:
+            return _pytz.UTC.localize(dt)
+        return dt.astimezone(_pytz.UTC)
+
+    def _event_bounds_utc(ev) -> tuple:
+        """
+        Return (start_utc, end_utc) for an event.
+        Handles:
+          - dateTime with/without tz
+          - all-day date (end.date is exclusive per Google API)
+          - per-field and per-event timeZone hints
+        """
+        s = ev.get("start", {}) or {}
+        e = ev.get("end",   {}) or {}
+        ev_tz = (ev.get("timeZone") or "").strip() or None
+        stz = (s.get("timeZone") or ev_tz)
+        etz = (e.get("timeZone") or ev_tz)
+
+        tz_hint = _pytz.timezone(CLINIC_TZ)
+
+        # Start
+        if "dateTime" in s and s["dateTime"]:
+            ds = isoparse(s["dateTime"])
+            if ds.tzinfo is None:
+                ds = ( _pytz.timezone(stz).localize(ds) if stz else tz_hint.localize(ds) )
+        elif "date" in s and s["date"]:
+            # All-day start at 00:00 local
+            d = _date.fromisoformat(s["date"])
+            ds = ( _pytz.timezone(stz).localize(datetime(d.year, d.month, d.day))
+                   if stz else tz_hint.localize(datetime(d.year, d.month, d.day)) )
+        else:
+            return (None, None)
+
+        # End (Google all-day end.date is exclusive)
+        if "dateTime" in e and e["dateTime"]:
+            de = isoparse(e["dateTime"])
+            if de.tzinfo is None:
+                de = ( _pytz.timezone(etz).localize(de) if etz else tz_hint.localize(de) )
+        elif "date" in e and e["date"]:
+            d = _date.fromisoformat(e["date"])
+            de = ( _pytz.timezone(etz).localize(datetime(d.year, d.month, d.day))
+                   if etz else tz_hint.localize(datetime(d.year, d.month, d.day)) )
+        else:
+            return (None, None)
+
+        return (ds.astimezone(_pytz.UTC), de.astimezone(_pytz.UTC))
+
+    # ---- normalize requested window (UTC, aware) -----------------------------
+    try:
+        start_dt = _aware_utc(isoparse(start_iso))
+        end_dt   = _aware_utc(isoparse(end_iso))
+    except Exception as e:
+        debug_print(f"is_time_slot_available: ❌ invalid start/end iso → {e}")
+        return False
+
     # ±60s guard for edge cases where an event starts/ends exactly at boundaries
     tmin = (start_dt - timedelta(seconds=60)).isoformat()
     tmax = (end_dt   + timedelta(seconds=60)).isoformat()
 
     debug_print(
         "is_time_slot_available: 🔎 Checking "
-        f"calendar='{calendar_id}' window={start_iso}→{end_iso} "
+        f"calendar='{calendar_id}' window={start_dt.isoformat()}→{end_dt.isoformat()} "
         f"(padded {tmin}→{tmax})"
     )
 
-    # ---- 1) FreeBusy (preferred) ----
+    # ---- 1) FreeBusy (preferred) --------------------------------------------
     try:
         fb = service.freebusy().query(body={
             "timeMin": tmin,
@@ -3137,13 +3065,13 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
     except Exception as e:
         debug_print(f"is_time_slot_available: ⚠️ FreeBusy error → {e} (will check events().list)")
 
-    # ---- 2) Fallback/double-check: events().list with explicit overlap test ----
+    # ---- 2) Fallback/double-check: events().list with explicit overlap -------
     try:
         items = service.events().list(
             calendarId=calendar_id,
             timeMin=tmin,
             timeMax=tmax,
-            singleEvents=True,
+            singleEvents=True,   # expand recurrences
             showDeleted=False,
             orderBy="startTime",
             maxResults=250,
@@ -3154,24 +3082,20 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
         for ev in items:
             if ev.get("status") == "cancelled":
                 continue
-            # 'transparent' events shouldn't block availability; 'opaque' (default) does.
+            # 'transparent' shouldn't block; 'opaque' (default) does
             if ev.get("transparency") == "transparent":
                 continue
 
-            ev_start_raw = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
-            ev_end_raw   = ev.get("end",   {}).get("dateTime") or ev.get("end",   {}).get("date")
-            if not ev_start_raw or not ev_end_raw:
+            es_utc, ee_utc = _event_bounds_utc(ev)
+            if not es_utc or not ee_utc:
                 continue
 
-            es = isoparse(ev_start_raw)
-            ee = isoparse(ev_end_raw)
-
             # Overlap rule: (start < ev_end) AND (end > ev_start)
-            if start_dt < ee and end_dt > es:
+            if start_dt < ee_utc and end_dt > es_utc:
                 title = ev.get("summary", "")
                 debug_print(
                     "is_time_slot_available: 🚫 BUSY (events overlap) "
-                    f"{es.isoformat()} → {ee.isoformat()} title='{title}'"
+                    f"{es_utc.isoformat()} → {ee_utc.isoformat()} title='{title}'"
                 )
                 debug_print("is_time_slot_available: ❌ Slot NOT available (events overlap)")
                 return False
@@ -3184,7 +3108,6 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
 
     debug_print("is_time_slot_available: ✅ Slot FREE (final)")
     return True
-
 
 
 
