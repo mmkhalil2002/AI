@@ -92,9 +92,13 @@ WORKING_HOURS_START = 8  # 8:00 AM
 WORKING_HOURS_END = 17   # 5:00 PM
 LUNCH_BREAK_START = time(13, 0)  # 1:00 PM
 LUNCH_BREAK_END = time(14, 0)    # 2:00 PM
+# ---- Country switch (US by default; set to "EG" to favor Egypt) ----
+COUNTRY = os.getenv("COUNTRY", "US").upper()   # e.g., export COUNTRY=EG
 
 USE_GPT = False
 DEBUG  = True
+
+
 
 if USE_GPT:
     
@@ -151,7 +155,7 @@ def make_gather(
     '?next_stage=...' so the /voice handler can switch stages on the next POST.
     """
     try:
-        from flask import request, url_for
+        #from flask import request, url_for
         base_action = action or request.path or "/voice"
         if next_stage:
             sep = "&" if "?" in base_action else "?"
@@ -355,6 +359,75 @@ def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, cre
 
 
 
+# --- phone normalization (US + Egypt) ---------------------------------------
+def normalize_phone_e164(raw: str, country: str = "US") -> str:
+    """
+    Return an E.164 number ('+<cc><nsn>') for the given country ('US' or 'EG'),
+    or '' if invalid.
+
+    Notes
+    -----
+    - If input already looks like +E.164, we lightly validate and normalize
+      (remove spaces/hyphens) and return it.
+    - Otherwise we strip all non-digits and apply country rules.
+    - No dependency on normalize_phone_digits.
+    """
+    s = (str(raw) if raw is not None else "").strip()
+    if not s:
+        return ""
+
+    # Pass-through for +E.164-ish input: keep only digits after '+'
+    if s.startswith("+"):
+        """
+            Breakdown:
+            s[1:] → slice off the first character (we expect it to be +).
+            for ch in s[1:] if ch.isdigit() → iterate each character after + and keep it only if it’s a digit (0–9).
+            "".join(...) → join the kept digits into one continuous string.
+            Example:
+            s = "+1 (469) 463-3276" → body_digits becomes "14694633276".
+            s = "+20 11-234-56789" → body_digits becomes "201123456789".
+            Why do this? It normalizes already-+-prefixed inputs by stripping spaces, dashes,
+            and parentheses so you can quickly validate the core E.164 digits.
+
+        """
+        body_digits = "".join(ch for ch in s[1:] if ch.isdigit())
+        # Basic E.164 length sanity: total digits 8..15 is typical
+        if 8 <= len(body_digits) <= 15:
+            return f"+{body_digits}"
+        # fall through to country handling if it didn't pass
+
+    # Strip to just digits for country handling
+    d = "".join(ch for ch in s if ch.isdigit())
+    c = (country or "US").upper()
+
+    # Optional: handle international prefix like 00 / 011 (minimal support)
+    if d.startswith("00"):
+        d = d[2:]
+    elif d.startswith("011"):
+        d = d[3:]
+
+    if c == "US":
+        # Accept 11 digits starting with '1' and drop trunk '1'
+        if len(d) == 11 and d.startswith("1"):
+            d = d[1:]
+        return f"+1{d}" if len(d) == 10 else ""
+
+    if c == "EG":
+        # Egypt (+20). NSN length typically 9–10 after country code.
+        if d.startswith("20") and 11 <= len(d) <= 12:        # already has '20' prefix
+            return f"+{d}"
+        if len(d) == 11 and d.startswith("0"):               # domestic trunk '0'
+            return f"+20{d[1:]}"
+        if 9 <= len(d) <= 10:                                 # domestic without trunk
+            return f"+20{d}"
+        return ""
+
+    # Unknown country → fail closed
+    return ""
+
+
+
+
 def get_next_available_slots(
     calendar_id: str,
     creds,
@@ -508,7 +581,7 @@ def suggest_alternative_times(
     
     service = build("calendar", "v3", credentials=creds)
 
-    now = datetime.utcnow().replace(tzinfo=pytz.UTC)
+    now = datetime.utcnow().replace(tzinfo=_pytz.UTC)
     search_end = now + timedelta(days=7)
 
     suggested = []
@@ -516,7 +589,7 @@ def suggest_alternative_times(
 
     while current_time < search_end and len(suggested) < num_options:
         weekday = current_time.weekday()
-        current_local = current_time.astimezone(pytz.timezone("UTC"))  # adjust as needed
+        current_local = current_time.astimezone(_pytz.timezone("UTC"))  # adjust as needed
 
         # Skip non-working days
         if weekday not in WORKING_DAYS:
@@ -1755,87 +1828,179 @@ def confirm_appointment_by_name(
 
 
 
-def normalize_phone_digits(phone: str) -> str:
-    """Digits-only normalization for matching (calendar description & JSON)."""
-    return ''.join(ch for ch in (phone or "") if ch.isdigit())
 
 
 # ===== local doctor JSON cancellation (by doctor+phone+dob+utc_start) =====
 
 
 
-def cancel_appointment_by_name(doctor_name: str, phone: str, dob: str, utc_start: str) -> bool:
+def cancel_appointment_by_name(
+    doctor_name: str,
+    phone: str,
+    dob: str,
+    utc_start: str,
+    *,
+    default_country: str = COUNTRY  # e.g., "US" or "EG"
+) -> bool:
     """
     Remove a single appointment from appointment_data/doctors/<doctor>.json
     matching ALL of:
-      • phone (10-digit normalized)
-      • dob (exact string match; expected ISO YYYY-MM-DD)
-      • time (exact UTC ISO match)
+      • phone  → E.164 ('+<cc><nsn>') **only**
+      • dob    → exact string match; expected ISO 'YYYY-MM-DD'
+      • time   → exact UTC ISO match (after normalization)
+
     Returns True if a record was removed, else False.
+
+    Notes:
+      - Input `phone` can be already E.164; otherwise we normalize with `normalize_phone_e164`.
+      - Records may be mixed (older ones may only have 'phone' digits). We *derive* an E.164
+        per record (US/EG supported) and compare E.164 ↔ E.164 only.
     """
-    def normalize_phone_digits(s: str) -> str:
-        d = "".join(ch for ch in (s or "") if ch.isdigit())
-        return d[1:] if len(d) == 11 and d.startswith("1") else d
 
-   
-    
-    full_path = get_doctor_filename(doctor_name)
-    phone10 = normalize_phone_digits(phone)
+    # ---------- inputs (raw) ----------
+    debug_print(
+        "cancel_appointment_by_name: 🟡 inputs"
+        f"\n  doctor_name = '{doctor_name}'"
+        f"\n  phone(raw)  = '{(phone or '').strip()}'"
+        f"\n  dob         = '{(dob or '').strip()}'"
+        f"\n  utc_start   = '{(utc_start or '').strip()}'"
+        f"\n  country     = '{(default_country or 'US')}'"
+    )
+
+    # ---------- normalize input phone to E.164 ----------
+    raw = (phone or "").strip()
+    phone_e164 = ""
+    if raw.startswith("+") and raw[1:].replace(" ", "").isdigit():
+        phone_e164 = "+" + raw[1:].replace(" ", "")
+        debug_print(f"cancel_appointment_by_name: 📞 pass-through E.164 = '{phone_e164}'")
+    else:
+        try:
+            debug_print(f"cancel_appointment_by_name: 📞 trying normalize_phone_e164(raw, {default_country})")
+            phone_e164 = normalize_phone_e164(raw, (default_country or "US").upper()) or ""
+            debug_print(f"cancel_appointment_by_name: 📞 result (default) = '{phone_e164 or '∅'}'")
+            if not phone_e164:
+                alt = "EG" if (default_country or "US").upper() != "EG" else "US"
+                debug_print(f"cancel_appointment_by_name: 📞 trying normalize_phone_e164(raw, {alt})")
+                phone_e164 = normalize_phone_e164(raw, alt) or ""
+                debug_print(f"cancel_appointment_by_name: 📞 result (alt) = '{phone_e164 or '∅'}'")
+        except Exception as e:
+            debug_print(f"cancel_appointment_by_name: ⚠️ normalize_phone_e164 error → {e}")
+            phone_e164 = ""
+
     dob_str = (dob or "").strip()
+    full_path = get_doctor_filename(doctor_name)
+    debug_print(
+        "cancel_appointment_by_name: 🟡 normalized inputs"
+        f"\n  phone_e164  = '{phone_e164 or '∅'}'"
+        f"\n  dob_iso     = '{dob_str or '∅'}'"
+        f"\n  file_path   = '{full_path}'"
+    )
 
-    debug_print(f"cancel_appointment_by_name: doctor='{doctor_name}' phone='{phone10}' dob='{dob_str}' utc='{utc_start}'")
-
-    if not (os.path.exists(full_path) and phone10 and dob_str and utc_start):
+    if not os.path.exists(full_path):
+        debug_print("cancel_appointment_by_name: ❌ file not found")
+        return False
+    if not phone_e164 or not dob_str or not utc_start:
+        debug_print("cancel_appointment_by_name: ❌ missing one of (phone_e164, dob, utc_start)")
         return False
 
-    # load list
+    # ---------- load list ----------
     try:
         with open(full_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, list):
+            debug_print("cancel_appointment_by_name: ❌ JSON root is not a list")
             return False
+        debug_print(f"cancel_appointment_by_name: 📄 loaded {len(data)} record(s)")
     except Exception as e:
-        debug_print(f"cancel_appointment_by_name: read error → {e}")
+        debug_print(f"cancel_appointment_by_name: ❌ read/parse error → {e}")
         return False
 
-    # normalize target UTC
+    # ---------- normalize times to comparable UTC ISO (no micros) ----------
+    def _to_utc_iso(s: str) -> str:
+        dt = dtparser.isoparse(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        out = dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        debug_print(f"_to_utc_iso: '{s}' → '{out}'")
+        return out
+
     try:
-        target_norm = dtparser.isoparse(utc_start).astimezone().astimezone(tz=None).isoformat()
+        target_norm = _to_utc_iso(utc_start)
+        debug_print(f"cancel_appointment_by_name: 🎯 target UTC   = '{target_norm}'")
     except Exception as e:
-        debug_print(f"cancel_appointment_by_name: utc parse error → {e}")
+        debug_print(f"cancel_appointment_by_name: ❌ utc parse error → {e}")
         return False
+
+    # ---------- helper: derive E.164 for a stored appt record ----------
+    def _appt_e164(appt: dict) -> str:
+        pe = (appt.get("phone_e164") or "").strip()
+        if pe.startswith("+") and pe[1:].replace(" ", "").isdigit():
+            debug_print(f"_appt_e164: using record phone_e164 = '{pe}'")
+            return "+" + pe[1:].replace(" ", "")
+        cand = (appt.get("phone") or "").strip()
+        if cand:
+            try:
+                e164 = normalize_phone_e164(cand, (default_country or "US").upper()) or ""
+                if not e164:
+                    alt = "EG" if (default_country or "US").upper() != "EG" else "US"
+                    e164 = normalize_phone_e164(cand, alt) or ""
+                debug_print(f"_appt_e164: derived from 'phone'='{cand}' → '{e164 or '∅'}'")
+                if e164:
+                    return e164
+            except Exception as e:
+                debug_print(f"_appt_e164: ⚠️ normalize error for '{cand}' → {e}")
+        debug_print("_appt_e164: no usable phone on record")
+        return ""
 
     kept = []
     removed = 0
-    for appt in data:
+
+    for idx, appt in enumerate(data):
         if not isinstance(appt, dict):
-            kept.append(appt)
-            continue
-        ap_phone = normalize_phone_digits(appt.get("phone", ""))
-        ap_dob   = (appt.get("dob", "") or "").strip()
-        ap_time_raw = (appt.get("time") or appt.get("start") or "").strip()
-        try:
-            ap_time_norm = dtparser.isoparse(ap_time_raw).astimezone().astimezone(tz=None).isoformat()
-        except Exception:
+            debug_print(f"[{idx}] skip non-dict record")
             kept.append(appt)
             continue
 
-        if ap_phone == phone10 and ap_dob == dob_str and ap_time_norm == target_norm:
+        ap_e164 = _appt_e164(appt)
+        ap_dob  = (appt.get("dob", "") or "").strip()
+        ap_time_raw = (appt.get("time") or appt.get("start") or "").strip()
+
+        try:
+            ap_time_norm = _to_utc_iso(ap_time_raw) if ap_time_raw else ""
+        except Exception as e:
+            debug_print(f"[{idx}] time parse error for '{ap_time_raw}' → {e} (keeping record)")
+            kept.append(appt)
+            continue
+
+        debug_print(
+            f"[{idx}] record"
+            f"\n     phone_e164(rec) = '{ap_e164 or '∅'}'"
+            f"\n     dob(rec)        = '{ap_dob or '∅'}'"
+            f"\n     time(raw)       = '{ap_time_raw or '∅'}'"
+            f"\n     time(norm)      = '{ap_time_norm or '∅'}'"
+        )
+
+        matched = (ap_e164 == phone_e164) and (ap_dob == dob_str) and (ap_time_norm == target_norm)
+        debug_print(f"[{idx}] match? {matched}")
+        if matched:
             removed += 1
         else:
             kept.append(appt)
 
     if removed == 0:
-        debug_print("cancel_appointment_by_name: no matching record found")
+        debug_print("cancel_appointment_by_name: ❌ no matching record found")
         return False
 
+    # ---------- write back ----------
     try:
         with open(full_path, "w", encoding="utf-8") as f:
             json.dump(kept, f, indent=2, ensure_ascii=False)
-        debug_print(f"cancel_appointment_by_name: ✅ deleted {removed} appt(s)")
+        debug_print(f"cancel_appointment_by_name: ✅ deleted {removed} appt(s); kept {len(kept)}")
         return True
     except Exception as e:
-        debug_print(f"cancel_appointment_by_name: write error → {e}")
+        debug_print(f"cancel_appointment_by_name: ❌ write error → {e}")
         return False
 
 
@@ -3927,7 +4092,7 @@ def voice():
         session_data[call_sid].pop("silence_first_name", None)
 
         # 🧽 Clean & normalize (remove punctuation, compress spaces; ignore fillers)
-        import string  # ensure available; you already import at top, but safe to re-import
+        #import string  # ensure available; you already import at top, but safe to re-import
         cleaned = raw.translate(str.maketrans('', '', string.punctuation)).strip()
         cleaned = _re.sub(r"\s+", " ", cleaned)
 
@@ -4184,7 +4349,6 @@ def voice():
 
 
 
-    
     elif stage == "collect_cc":
         # ----------------------------------------------------------------------
         # 💳 Stage: collect_cc
@@ -4198,7 +4362,7 @@ def voice():
         #   - Auto-advances to book_appt_confirm upon success.
         # Notes:
         #   - Uses make_gather() (speech + DTMF). DTMF preferred; speech digits supported.
-        #   - Requires phone (10-digit) and DOB before collecting CC.
+        #   - Requires phone (E.164) and DOB before collecting CC.   ← updated
         #   - Logging is UNMASKED here per your request (not recommended for prod).
         #   - Silent-mode handling + DTMF-enforcement after repeated speech failures.
         # ----------------------------------------------------------------------
@@ -4246,10 +4410,6 @@ def voice():
                 i += 1
             return "".join(out)
 
-        def _normalize_10(d):
-            d = "".join(ch for ch in (d or "") if ch.isdigit())
-            return d[1:] if len(d) == 11 and d.startswith("1") else d
-
         def _gather_dtmf_only(prompt_text: str, num_digits=None):
             """Prefer a DTMF-only Gather; fallback to make_gather on error."""
             try:
@@ -4283,14 +4443,15 @@ def voice():
         session_data[call_sid].setdefault("customer", {})
         customer = session_data[call_sid]["customer"]
 
-        # 🔒 Require phone + DOB before CC
-        phone_guard = _normalize_10(customer.get("phone"))
-        if len(phone_guard) != 10 or not customer.get("dob"):
-            debug_print("collect_cc: ❌ Missing phone/DOB → redirecting")
-            session_data[call_sid]["stage"] = "collect_phone" if len(phone_guard) != 10 else "collect_dob"
+        # 🔒 Require phone + DOB before CC  (E.164 only)
+        phone_e164 = (customer.get("phone_e164") or "").strip()
+        has_phone = bool(phone_e164 and phone_e164.startswith("+") and phone_e164[1:].replace(" ", "").isdigit())
+        if not has_phone or not customer.get("dob"):
+            debug_print("collect_cc: ❌ Missing phone_e164/DOB → redirecting")
+            session_data[call_sid]["stage"] = "collect_phone" if not has_phone else "collect_dob"
             gather = make_gather(
-                "Before payment details, please provide your ten digit phone number including area code."
-                if len(phone_guard) != 10 else
+                "Before payment details, please provide your phone number including area code."
+                if not has_phone else
                 "Before payment details, please provide your date of birth. You can say it, or enter MMDDYYYY then press pound.",
                 hints="zero one two three four five six seven eight nine"
             )
@@ -4355,11 +4516,11 @@ def voice():
                 # If we're enforcing DTMF and none provided, pretend we heard nothing
                 if not dtmf_digits:
                     return ""
-                return re_mod.sub(r"\D", "", dtmf_digits)
+                return _re.sub(r"\D", "", dtmf_digits)
             # Not enforcing: take DTMF if present, else speech→digits
             if dtmf_digits:
-                return re_mod.sub(r"\D", "", dtmf_digits)
-            return re_mod.sub(r"\D", "", normalize_spoken_digits(speech_text))
+                return _re.sub(r"\D", "", dtmf_digits)
+            return _re.sub(r"\D", "", normalize_spoken_digits(speech_text))
 
         # -------------------------------
         # Step 1: Card Number (13–19)
@@ -4540,6 +4701,268 @@ def voice():
 
 
 
+
+
+
+        elif stage == "book_appt_confirm":
+            debug_print("book_appt_confirm: 📍 Stage entered")
+
+            # ----------------------------------------------------------------------
+            # Doctor info
+            # ----------------------------------------------------------------------
+            doctor_id = session_data[call_sid].get("doctor_id")
+            if not doctor_id:
+                debug_print("book_appt_confirm: ❌ missing doctor_id; sending back to choose doctor")
+                session_data[call_sid]["stage"] = "choose_doctor"
+                gather = make_gather("Which doctor would you like to see?")
+                resp.append(gather)
+                return str(resp)
+
+            doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
+            debug_print(f"book_appt_confirm: doctor_id={doctor_id} name={doctor_name}")
+
+            # ----------------------------------------------------------------------
+            # Appointment time (need start; compute end if missing)
+            # ----------------------------------------------------------------------
+            appt_payload = session_data[call_sid].get("appointment_time", {}) or {}
+            appointment_start = appt_payload.get("start")
+            appointment_end   = appt_payload.get("end")
+            debug_print(f"book_appt_confirm: utc_start={appointment_start} utc_end={appointment_end}")
+
+            if not appointment_start:
+                debug_print("book_appt_confirm: ❌ missing appointment_start")
+                resp.say(gpt_speak("Appointment time missing. Goodbye!"), VOICE)
+                resp.hangup()
+                return str(resp)
+
+            # Human-friendly local time for voice/SMS (America/Chicago)
+            formatted_time = ""
+            try:
+                dt_utc = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
+                dt_local = dt_utc.astimezone(_pytz.timezone("America/Chicago"))
+                try:
+                    # Linux/Unix: %-d / %-I → no-leading-zero
+                    formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
+                except Exception:
+                    # Windows-compatible fallback: strip leading zeros manually
+                    formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: time parse/format error → {e}")
+                resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+                resp.hangup()
+                return str(resp)
+
+            # Compute end if missing (default duration = 30m)
+            if not appointment_end:
+                try:
+                    dur_min = int(APPOINTMENT_DURATION_MINUTES) if 'APPOINTMENT_DURATION_MINUTES' in globals() else 30
+                    end_dt  = dt_utc + timedelta(minutes=dur_min)
+                    appointment_end = end_dt.replace(tzinfo=_pytz.UTC).isoformat()
+                    debug_print(f"book_appt_confirm: computed utc_end={appointment_end} (duration={dur_min}m)")
+                except Exception as e:
+                    debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
+                    resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+                    resp.hangup()
+                    return str(resp)
+
+            # ----------------------------------------------------------------------
+            # Customer info (basic validation)
+            # ----------------------------------------------------------------------
+            customer = session_data[call_sid].get("customer", {}) or {}
+            customer_name    = (customer.get("name") or "").strip()
+            # E.164-only handling: prefer explicit phone_e164; otherwise try to normalize what's stored
+            customer_phone_e164 = (customer.get("phone_e164") or "").strip()
+            if not customer_phone_e164:
+                maybe_phone = (customer.get("phone") or "").strip()
+                # Accept already-formed +E.164, else try to normalize with server-known country
+                if maybe_phone.startswith("+") and maybe_phone[1:].replace(" ", "").isdigit():
+                    customer_phone_e164 = "+" + maybe_phone[1:].replace(" ", "")
+                else:
+                    try:
+                        default_country = (session_data[call_sid].get("phone_country") or COUNTRY or "US").upper()
+                        customer_phone_e164 = normalize_phone_e164(maybe_phone, default_country) or ""
+                        if not customer_phone_e164:
+                            # one alternate attempt with the other supported country if applicable
+                            alt = "EG" if default_country != "EG" else "US"
+                            customer_phone_e164 = normalize_phone_e164(maybe_phone, alt) or ""
+                    except Exception:
+                        customer_phone_e164 = ""
+
+            customer_dob     = (customer.get("dob") or "").strip()
+            customer_address = (customer.get("address") or "").strip()
+
+            # Derive name parts if only full name present
+            first_name = (customer.get("first_name") or "").strip()
+            last_name  = (customer.get("last_name")  or "").strip()
+            if not first_name and customer_name:
+                parts = customer_name.split()
+                first_name = parts[0]
+                last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
+            effective_name = customer_name or " ".join([n for n in [first_name, last_name] if n]).strip()
+
+            # Require E.164 phone and DOB
+            if not customer_phone_e164:
+                debug_print("book_appt_confirm: ❌ missing/invalid E.164 phone; redirecting to collect_phone")
+                session_data[call_sid]["stage"] = "collect_phone"
+                gather = make_gather(
+                    "Before we confirm your appointment, please provide your phone number. "
+                    "You can say it or type the digits and press pound."
+                )
+                resp.append(gather)
+                return str(resp)
+
+            if not customer_dob:
+                debug_print("book_appt_confirm: ❌ missing DOB; redirecting to collect_dob")
+                session_data[call_sid]["stage"] = "collect_dob"
+                gather = make_gather(
+                    "Before we confirm, please provide your date of birth. "
+                    "You can say it, or enter two digits for month, two for day, and four for year, then press pound."
+                )
+                resp.append(gather)
+                return str(resp)
+
+            # ----------------------------------------------------------------------
+            # Upsert customer (FIX: pass cc_* fields to satisfy function signature)
+            # ----------------------------------------------------------------------
+            try:
+                init_db()
+                cc_name   = (customer.get("cc_name") or effective_name or "")
+                cc_number = (customer.get("cc_number") or "")
+                cc_exp    = (customer.get("cc_exp") or "")
+                cc_cvv    = (customer.get("cc_cvv") or "")
+                inserted = insert_customer(
+                    phone=customer_phone_e164,   # ← E.164 only
+                    dob=customer_dob,
+                    first_name=first_name,
+                    last_name=last_name,
+                    address=customer_address,
+                    cc_name=cc_name,
+                    cc_number=cc_number,
+                    cc_exp=cc_exp,
+                    cc_cvv=cc_cvv
+                )
+                debug_print(f"book_appt_confirm: customers DB → {'inserted' if inserted else 'seen/updated'}")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: insert_customer failed → {e}")
+
+            # ----------------------------------------------------------------------
+            # Single availability check (simple)
+            # ----------------------------------------------------------------------
+            calendar_id = doctor_id
+            debug_print(f"book_appt_confirm: 🔎 availability check → cal={calendar_id} {appointment_start}→{appointment_end}")
+            try:
+                slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ⚠️ availability check error → {e}")
+                slot_free = False  # be safe
+
+            if not slot_free:
+                debug_print("book_appt_confirm: ❌ Slot not free → offering alternatives or reprompting")
+                try:
+                    # Keep it simple: offer up to 3 suggestions if available
+                    alts = get_next_available_slots(calendar_id, creds, limit=3) or []
+                    if alts:
+                        options = " or ".join([a.get("friendly","") for a in alts if a.get("friendly")])
+                        session_data[call_sid]["stage"] = "ask_time_date"
+                        gather = make_gather(f"That time is not available. Would you like {options}?")
+                        resp.append(gather)
+                        return str(resp)
+                except Exception as e:
+                    debug_print(f"book_appt_confirm: ⚠️ get_next_available_slots error → {e}")
+
+                session_data[call_sid]["stage"] = "ask_time_date"
+                gather = make_gather("That time is not available. Please say another date and time, for example, 'tomorrow at 3:30 PM'.")
+                resp.append(gather)
+                return str(resp)
+
+            # ----------------------------------------------------------------------
+            # Save appointment in your system (simple, no rollback)
+            # ----------------------------------------------------------------------
+            appointment_saved_internal = False
+            try:
+                confirm_appointment_by_name(
+                    doctor_name=doctor_name,
+                    phone=customer_phone_e164,   # ← E.164 only
+                    dob=customer_dob,
+                    name=effective_name,
+                    address=customer_address,
+                    utc_start=appointment_start,
+                    calendar_id=calendar_id
+                )
+                appointment_saved_internal = True
+                debug_print("book_appt_confirm: ✅ internal appointment saved")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ❌ internal save failed → {e}")
+
+            # ----------------------------------------------------------------------
+            # Create Google Calendar event (simple: let Google assign the event ID)
+            # ----------------------------------------------------------------------
+            try:
+                service = build("calendar", "v3", credentials=creds)
+
+                event_body = {
+                    "summary": f"Appointment: {doctor_name}",
+                    "description": f"Clinic appointment for {effective_name or 'patient'}.",
+                    "start": {"dateTime": appointment_start, "timeZone": "UTC"},
+                    "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
+                    "transparency": "opaque",  # must block time
+                    "extendedProperties": {
+                        "private": {
+                            "patient_name": effective_name,
+                            "phone_e164": customer_phone_e164,  # ← store E.164 for downstream tooling
+                            "dob": customer_dob,
+                            "call_sid": call_sid,
+                        }
+                    },
+                }
+
+                debug_print(f"book_appt_confirm: 📝 creating Google event cal={calendar_id} {appointment_start}→{appointment_end}")
+                ev = service.events().insert(calendarId=calendar_id, body=event_body, sendUpdates="none").execute()
+                google_event_id = ev.get("id")
+                google_event_link = ev.get("htmlLink")
+                debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id} link={google_event_link}")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ❌ Google Calendar insert failed → {e}")
+                session_data[call_sid]["stage"] = "ask_time_date"
+                gather = make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, August 14th at 10 AM.")
+                resp.append(gather)
+                return str(resp)
+
+            # ----------------------------------------------------------------------
+            # Voice confirmation (success path)
+            # ----------------------------------------------------------------------
+            msg = f"Your appointment with {doctor_name} has been booked"
+            if formatted_time:
+                msg += f" on {formatted_time}"
+            msg += ". We look forward to seeing you. Goodbye!"
+            debug_print("book_appt_confirm: 🎉 success → speaking confirmation")
+            resp.say(gpt_speak(msg), VOICE)
+
+            # ----------------------------------------------------------------------
+            # SMS confirmation (best-effort) — Twilio expects E.164
+            # ----------------------------------------------------------------------
+            try:
+                sms_text = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
+                if formatted_time:
+                    sms_text += f" on {formatted_time}"
+                sms_text += ". Thank you for choosing Epic Therapist Clinic."
+                message = client.messages.create(body=sms_text, from_=TWILIO_PHONE_NUMBER, to=customer_phone_e164)
+                debug_print(f"book_appt_confirm: 📩 SMS sent to {customer_phone_e164}, SID={message.sid}")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
+
+            # ----------------------------------------------------------------------
+            # Cleanup
+            # ----------------------------------------------------------------------
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            debug_print("book_appt_confirm: ✅ session cleared and call ended")
+            return str(resp)
+
+
+
+
+
     elif stage == "cancel_appointment":
         # ----------------------------------------------------------------------
         # 🔄 Stage: Cancel Appointment — after the caller says the doctor’s name
@@ -4715,18 +5138,27 @@ def voice():
         # ----------------------------------------------------------------------
         # 📞 Collect the phone number used when booking, then move to date+time.
         #  - Silent-mode aware (re-prompts up to 3x if nothing is heard)
-        #  - Normalizes to 10 digits (strip non-digits; drop leading 1 if 11)
-        #  - Stores under session_data[call_sid]["cancel"]["phone"]
+        #  - E.164-only: normalize with normalize_phone_e164(raw, country)
+        #  - Stores under session_data[call_sid]["cancel"]["phone_e164"] (and "phone")
         #  - Next stage: cancel_appt_get_date_time
         # ----------------------------------------------------------------------
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("cancel", {})
 
-        phone_raw = (speech_result or "").strip()
-        debug_print(f"cancel_appt_by_phone_number: 🗣️ raw='{phone_raw}'")
+        # Default country for normalization (prefer Twilio signal if you capture it earlier)
+        default_country = (session_data[call_sid].get("phone_country") or COUNTRY or "US").upper()
+
+        # Pull inputs
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
+        speech_text = (speech_result or "").strip()
+
+        debug_print(f"cancel_appt_by_phone_number: 🗣️ speech='{speech_text}' 🔢 dtmf='{dtmf_digits}'")
 
         # 🔇 Silent mode: nothing heard at all
-        if not phone_raw:
+        if not dtmf_digits and not speech_text:
             tries = session_data[call_sid].get("silence_cancel_phone", 0) + 1
             session_data[call_sid]["silence_cancel_phone"] = tries
             debug_print(f"cancel_appt_by_phone_number: 🤐 silence count={tries}")
@@ -4737,8 +5169,9 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
+            # Prompt wording can be US/EG aware if you like; keeping it simple here
             prompt = (
-                "I didn’t hear your phone number. Please say or type your ten digit phone number including area code, "
+                "I didn’t hear your phone number. Please say or type your phone number including area code, "
                 "then press pound."
             )
             session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"
@@ -4749,41 +5182,76 @@ def voice():
         # If we DID hear something, clear the silence counter
         session_data[call_sid].pop("silence_cancel_phone", None)
 
-        # Extract + normalize
-        phone = extract_phone_number(phone_raw)  # your helper
-        debug_print(f"cancel_appt_by_phone_number: 📱 extracted='{phone}'")
+        # --- helper: speech words → digits (supports 'double'/'triple') ----------
+        def _spoken_to_digits(raw: str) -> str:
+            if not raw:
+                return ""
+            words = (
+                raw.lower()
+                .replace("-", " ").replace(",", " ").replace(".", " ")
+                .replace("(", " ").replace(")", " ")
+                .split()
+            )
+            m = {
+                "zero":"0","oh":"0","o":"0",
+                "one":"1","two":"2","to":"2","too":"2",
+                "three":"3","four":"4","for":"4",
+                "five":"5","six":"6","seven":"7",
+                "eight":"8","ate":"8","nine":"9",
+            }
+            out, i = [], 0
+            while i < len(words):
+                w = words[i].strip()
+                if w in ("double","triple") and i+1 < len(words):
+                    nxt = words[i+1].strip()
+                    if nxt in m:
+                        out.extend([m[nxt]] * (2 if w == "double" else 3))
+                        i += 2
+                        continue
+                if w in m:
+                    out.append(m[w])
+                else:
+                    out.extend([c for c in w if c.isdigit()])
+                i += 1
+            return "".join(out)
 
-        def _normalize_10(d: str) -> str:
-            d = "".join(ch for ch in (d or "") if ch.isdigit())
-            return d[1:] if len(d) == 11 and d.startswith("1") else d
+        # Build the raw string to feed into normalize_phone_e164
+        raw_for_e164 = dtmf_digits if dtmf_digits else speech_text
 
-        phone10 = _normalize_10(phone)
+        # Primary normalization: E.164
+        try:
+            phone_e164 = normalize_phone_e164(raw_for_e164, default_country)  # '+<cc><nsn>' or ''
+        except NameError:
+            # If helper isn't available, fall back to digits-only and hope COUNTRY is US
+            debug_print("cancel_appt_by_phone_number: ⚠️ normalize_phone_e164 missing; using digits-only fallback")
+            digits = dtmf_digits if dtmf_digits else _spoken_to_digits(speech_text)
+            # Very light fallback: assume US if COUNTRY says so
+            phone_e164 = f"+1{digits}" if (default_country == "US" and len(digits) == 10) else ""
 
-        # Truncate to 10 if user repeated digits (defensive)
-        if len(phone10) > 10:
-            phone10 = phone10[:10]
-
-        if len(phone10) != 10:
-            debug_print(f"cancel_appt_by_phone_number: ❌ invalid → '{phone10}'")
+        if not phone_e164:
+            debug_print("cancel_appt_by_phone_number: ❌ invalid phone (E.164 normalization failed)")
             session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"
             prompt = (
-                "I didn’t catch a valid phone number. Please say or type your ten digit phone number including area code, "
+                "I didn’t catch a valid phone number. Please say or type your phone number including area code, "
                 "then press pound."
             )
             resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine double triple"))
             resp.redirect("/voice")
             return str(resp)
 
-        # ✅ Store and proceed
-        session_data[call_sid]["cancel"]["phone"] = phone10
-        session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
+        # ✅ Store E.164 only (also mirror to 'phone' for any legacy readers)
+        session_data[call_sid]["cancel"]["phone_e164"] = phone_e164
+        session_data[call_sid]["cancel"]["phone"] = phone_e164
 
+        # Advance
+        session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
         resp.append(make_gather(
             "Thanks. Now, please tell me the date and time of the appointment you want to cancel. "
             "For example, say July 3rd at 9 AM."
         ))
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
@@ -5204,7 +5672,7 @@ def voice():
             """Render a UTC ISO string into a caller-friendly local phrase."""
             try:
                 dt_utc = dtparser.isoparse(utc_iso)
-                local = dt_utc.astimezone(pytz.timezone(tz_name))
+                local = dt_utc.astimezone(_pytz.timezone(tz_name))
                 try:
                     return local.strftime("%A, %B %-d at %-I:%M %p")
                 except Exception:
@@ -5400,50 +5868,49 @@ def voice():
 
 
 # ----------------------------------------------------------------------
-        # 📌 Stage: cancel_appt_confirm
-        #
-        # What this does now (updated):
-        #   • Always attempts LOCAL cancellation first via:
-        #       cancel_appointment_by_name(doctor_name, phone, dob, utc_start)
-        #     using doctor name + phone + DOB + exact UTC start time.
-        #   • If a Google Calendar ID is available, it ALSO tries to delete the
-        #     corresponding GCal event (best-effort; not required).
-        #   • Speaks a friendly, local-time confirmation when successfully cancelled.
-        #
-        # Inputs expected in session_data[call_sid]["cancel"]:
-        #   {
-        #     "phone":        str,   # REQUIRED earlier in the flow
-        #     "doctor":       str,   # friendly doctor name (used to locate local file)
-        #     "dob":          str,   # ISO 'YYYY-MM-DD' (already verified upstream)
-        #     "utc_start":    str,   # ISO UTC start of the appt (preferred)
-        #     "utc_end":      str,   # optional
-        #     "calendar_id":  str,   # optional; if given we attempt GCal delete too
-        #     "matching_event": {    # optional; set by cancel_appt_iterate
-        #         "doctor_name": str,
-        #         "start_utc":   str,
-        #         "end_utc":     str,
-        #         "friendly":    str,
-        #         "phone":       str,
-        #         "dob":         str
-        #     }
-        #   }
-        #
-        # Output:
-        #   • Speaks success or failure; optionally transitions to booking if
-        #     reschedule_after_cancel is set.
-        #
-        # Notes:
-        #   • This stage does NOT validate DOB/phone; that is done earlier.
-        #   • Calendar deletion is best-effort; local JSON removal is primary.
-        # ----------------------------------------------------------------------
+# 📌 Stage: cancel_appt_confirm
+#
+# What this does now (updated):
+#   • Always attempts LOCAL cancellation first via:
+#       cancel_appointment_by_name(doctor_name, phone, dob, utc_start)
+#     using doctor name + phone (E.164) + DOB + exact UTC start time.
+#   • If a Google Calendar ID is available, it ALSO tries to delete the
+#     corresponding GCal event (best-effort; not required).
+#   • Speaks a friendly, local-time confirmation when successfully cancelled.
+#
+# Inputs expected in session_data[call_sid]["cancel"]:
+#   {
+#     "phone_e164":   str,   # REQUIRED earlier in the flow (E.164)
+#     "doctor":       str,   # friendly doctor name (used to locate local file)
+#     "dob":          str,   # ISO 'YYYY-MM-DD' (already verified upstream)
+#     "utc_start":    str,   # ISO UTC start of the appt (preferred)
+#     "utc_end":      str,   # optional
+#     "calendar_id":  str,   # optional; if given we attempt GCal delete too
+#     "matching_event": {    # optional; set by cancel_appt_iterate
+#         "doctor_name": str,
+#         "start_utc":   str,
+#         "end_utc":     str,
+#         "friendly":    str,
+#         "phone_e164":  str,
+#         "dob":         str
+#     }
+#   }
+#
+# Output:
+#   • Speaks success or failure; optionally transitions to booking if
+#     reschedule_after_cancel is set.
+#
+# Notes:
+#   • This stage does NOT validate DOB/phone; that is done earlier.
+#   • Calendar deletion is best-effort; local JSON removal is primary.
+# ----------------------------------------------------------------------
 
-   
-    # ===== cancel_appt_confirm (stage) =====
     elif stage == "cancel_appt_confirm":
         debug_print("📍 Stage: cancel_appt_confirm")
 
         cancel_ctx  = session_data[call_sid].setdefault("cancel", {})
-        phone       = (cancel_ctx.get("phone") or "").strip()
+        # Prefer already-stored E.164; fall back to normalizing any raw 'phone'
+        phone_raw   = (cancel_ctx.get("phone_e164") or cancel_ctx.get("phone") or "").strip()
         doctor      = (cancel_ctx.get("doctor") or "").strip()
         spoken_day  = (cancel_ctx.get("day") or "").strip()
         spoken_time = (cancel_ctx.get("time") or "").strip()
@@ -5452,18 +5919,37 @@ def voice():
         calendar_id = (cancel_ctx.get("calendar_id") or "").strip()
         dob         = (cancel_ctx.get("dob") or session_data[call_sid].get("customer", {}).get("dob") or "").strip()
 
+        # Use call-detected country if available, else your global COUNTRY
+        default_country = (session_data[call_sid].get("phone_country") or COUNTRY or "US").upper()
+
+        # If a matching candidate was found earlier, prefer its values
         cand = cancel_ctx.get("matching_event") or {}
         if cand:
             doctor    = cand.get("doctor_name", doctor) or doctor
             utc_start = cand.get("start_utc",   utc_start) or utc_start
             utc_end   = cand.get("end_utc",     utc_end) or utc_end
-            phone     = cand.get("phone") or phone
-            dob       = cand.get("dob")   or dob
+            phone_raw = (cand.get("phone_e164") or cand.get("phone") or phone_raw).strip()
+            dob       = cand.get("dob") or dob
+
+        # -------- Phone: E.164 only (no phone10 fallback) --------
+        phone_e164 = ""
+        raw = (phone_raw or "").strip()
+        if raw.startswith("+") and raw[1:].replace(" ", "").isdigit():
+            phone_e164 = "+" + raw[1:].replace(" ", "")
+        else:
+            try:
+                phone_e164 = normalize_phone_e164(raw, default_country) or ""
+                if not phone_e164:
+                    # try the other supported country as a last resort
+                    alt = "EG" if default_country != "EG" else "US"
+                    phone_e164 = normalize_phone_e164(raw, alt) or ""
+            except Exception:
+                phone_e164 = ""
 
         def _friendly_from_iso(utc_iso: str, tz_name: str = "America/Chicago") -> str:
             try:
                 dt_utc = dtparser.isoparse(utc_iso)
-                local = dt_utc.astimezone(pytz.timezone(tz_name))
+                local = dt_utc.astimezone(_pytz.timezone(tz_name))
                 try:
                     return local.strftime("%A, %B %-d at %-I:%M %p")
                 except Exception:
@@ -5471,29 +5957,31 @@ def voice():
             except Exception:
                 return utc_iso or (spoken_day and f"{spoken_day} at {spoken_time}") or "the scheduled time"
 
-        phone10 = _normalize_phone10(phone)
-
-        # Primary: local JSON cancel (doctor + phone10 + dob + utc_start)
+        # Primary: local JSON cancel (doctor + phone_e164 + dob + utc_start)
         local_ok = False
-        if doctor and phone10 and dob and utc_start:
+        if doctor and phone_e164 and dob and utc_start:
             try:
-                local_ok = cancel_appointment_by_name(doctor_name=doctor, phone=phone10, dob=dob, utc_start=utc_start)
+                local_ok = cancel_appointment_by_name(
+                    doctor_name=doctor,
+                    phone=phone_e164,   # ← E.164 ONLY
+                    dob=dob,
+                    utc_start=utc_start
+                )
             except Exception as e:
                 debug_print(f"cancel_appt_confirm: local cancel failed → {e}")
         else:
-            debug_print("cancel_appt_confirm: insufficient info for local cancel (need doctor, phone, dob, utc_start)")
+            debug_print("cancel_appt_confirm: insufficient info for local cancel (need doctor, phone_e164, dob, utc_start)")
 
-        # Secondary: best-effort Google Calendar delete
+        # Secondary: best-effort Google Calendar delete (search by E.164)
         gcal_ok = False
-        if calendar_id and utc_start:
+        if calendar_id and utc_start and phone_e164:
             try:
-                
-
-                start_dt = dtparser.isoparse(utc_start)
+                start_dt  = dtparser.isoparse(utc_start)
                 win_start = (start_dt - timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
                 win_end   = (start_dt + timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
 
-                matched = get_upcoming_events(calendar_id, phone10, win_start, win_end, creds, debug=True)
+                # get_upcoming_events is assumed to use E.164-only matching now
+                matched = get_upcoming_events(calendar_id, phone_e164, win_start, win_end, creds, debug=True)
                 if isinstance(matched, list) and matched:
                     ev = matched[0]
                 elif isinstance(matched, dict):
@@ -5511,7 +5999,7 @@ def voice():
             except Exception as e:
                 debug_print(f"cancel_appt_confirm: GCal delete failed → {e}")
         else:
-            debug_print("cancel_appt_confirm: skipping GCal delete (no calendar_id or utc_start)")
+            debug_print("cancel_appt_confirm: skipping GCal delete (missing calendar_id, utc_start, or phone_e164)")
 
         # Speak outcome
         if local_ok or gcal_ok:
