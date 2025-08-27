@@ -76,7 +76,7 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_NUMBER")
 GOOGLE_CREDENTIALS = "credentials.json"
 
 # How long of silence ends a speech phrase (seconds). Use "auto" if you prefer VAD.
-SPEECH_INPUT_DURATION = os.getenv("SPEECH_INPUT_DURATION", "12")  # keep as string for Twilio
+SPEECH_INPUT_DURATION = os.getenv("SPEECH_INPUT_DURATION", "6")  # keep as string for Twilio
 # How long Twilio waits for the first input AND between DTMF digits (seconds)
 PAUSE_BETWEEN_DIGITS = int(os.getenv("PAUSE_BETWEEN_DIGITS", "7"))
 # Max seconds for <Record> (voicemail, freeform notes)
