@@ -74,9 +74,14 @@ TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_NUMBER")
 GOOGLE_CREDENTIALS = "credentials.json"
-SPEECH_INPUT_DURATION = int(os.getenv("SPEECH_INPUT_DURATION", 12))  # how long to wait for input
-PAUSE_BETWEEN_DIGITS = int(os.getenv("PAUSE_BETWEEN_DIGITS", 7))  # pause between digits
-MAX_RECORD_TIME = int(os.getenv("MAX_RECORD_TIME", 60))
+
+# How long of silence ends a speech phrase (seconds). Use "auto" if you prefer VAD.
+SPEECH_INPUT_DURATION = os.getenv("SPEECH_INPUT_DURATION", "12")  # keep as string for Twilio
+# How long Twilio waits for the first input AND between DTMF digits (seconds)
+PAUSE_BETWEEN_DIGITS = int(os.getenv("PAUSE_BETWEEN_DIGITS", "7"))
+# Max seconds for <Record> (voicemail, freeform notes)
+MAX_RECORD_TIME = int(os.getenv("MAX_RECORD_TIME", "60"))
+
 MAX_NUMBER_DR_RETRY = int(os.getenv("MAX_NUMBER_DR_RETRY", 3))
 MAX_APPT_RETRIEVED_FROM_CALNDER = int(os.getenv("MAX_APPT_RETRIEVED_FROM_CALENDER", 50))
 # 🔧 Appointment duration in minutes (can be 15, 30, 60)
@@ -141,85 +146,103 @@ def debug_print(msg: str) -> None:
 
 # --- retry counter utils ---
 
+# ===== Env-driven defaults (module-level) =====
+
+
+
+def _append_stage_to_action(action: Optional[str], next_stage: Optional[str]) -> str:
+    """Back-compat: if next_stage is provided, append ?stage=... to action."""
+    base = action or "/voice"
+    if next_stage:
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}stage={next_stage}"
+    return base
+
+
 def make_gather(
     prompt: str,
     *,
-    next_stage: str = None,        # optional convenience; ignored if not used
-    hints: str = None,
+    next_stage: Optional[str] = None,               # ← back-compat
+    hints: Optional[str] = None,
     input: str = "speech dtmf",
-    num_digits: int = None,        # None → user must press '#'
-    timeout: int = 25,             # wait longer so speech doesn't get cut off
-    speech_timeout: str = "10",    # seconds as string; 'auto' also allowed
+    num_digits: Optional[int] = None,
+    timeout: int = PAUSE_BETWEEN_DIGITS,            # ← default from ENV
+    speech_timeout: str = SPEECH_INPUT_DURATION,    # ← default from ENV ("auto" or seconds string)
     finish_on_key: str = "#",
     barge_in: bool = True,
     language: str = "en-US",
-    action: str = None,            # defaults to /voice
+    action: Optional[str] = "/voice",
+    method: str = "POST",
 ):
     """
-    Returns a <Gather> verb (do NOT append to resp here).
-    Existing calls like `resp.append(make_gather(...))` keep working.
+    Build and RETURN a Twilio <Gather> with ENV-driven defaults.
+
+    Backward compatible:
+      - Accepts next_stage and appends it as '?stage=...' to action.
+      - Returns the <Gather> so callers can `resp.append(make_gather(...))`.
+
+    Notes on timing:
+      - timeout controls DTMF first-digit and between-digit wait.
+      - speech_timeout controls how long STT waits for silence; can be "auto" or seconds.
     """
+    # Normalize speechTimeout for Twilio (int or "auto")
+    _speech_timeout = speech_timeout
+    if isinstance(_speech_timeout, str) and _speech_timeout.isdigit():
+        _speech_timeout = int(_speech_timeout)
 
-    # Optionally pre-set stage (no-op if you don't use it)
-    if next_stage:
-        try:
-            call_sid = (request.values.get("CallSid") or "").strip()
-            if call_sid:
-                session_data.setdefault(call_sid, {})
-                session_data[call_sid]["stage"] = next_stage
-        except Exception:
-            pass
+    _num_digits = num_digits if (isinstance(num_digits, int) and num_digits > 0) else None
+    _action = _append_stage_to_action(action, next_stage)
 
-    from twilio.twiml.voice_response import Gather
-
-    in_modes = " ".join((input or "speech dtmf").split())
-    nd = num_digits if (isinstance(num_digits, int) and num_digits > 0) else None
-    act = action or "/voice"
-
-    # Build kwargs and include only supported fields
-    kwargs = dict(
-        input=in_modes,
-        action=act,
-        method="POST",
-        timeout=timeout,
-        speechTimeout=str(speech_timeout),
-        hints=(hints or None),
-        language=language,
-        finishOnKey=finish_on_key,
-    )
-    if nd is not None:
-        kwargs["numDigits"] = nd
-    if "speech" in in_modes:
-        kwargs["bargeIn"] = bool(barge_in)
-
-    # Some older twilio SDKs may not support bargeIn; fall back gracefully
     try:
-        g = Gather(**kwargs)
-    except TypeError:
-        kwargs.pop("bargeIn", None)
-        g = Gather(**kwargs)
-
-    # IMPORTANT: speak on the Gather itself, not on resp
-    g.say(gpt_speak(prompt), voice=VOICE)
-    return g
+        from twilio.twiml.voice_response import Gather
+        g = Gather(
+            input=input,
+            action=_action,
+            method=method,
+            timeout=int(timeout),
+            speechTimeout=_speech_timeout,
+            finishOnKey=finish_on_key,
+            numDigits=_num_digits,
+            hints=hints,
+            language=language,
+            bargeIn=barge_in,
+        )
+        g.say(gpt_speak(prompt), voice=VOICE)
+        return g
+    except Exception as e:
+        # Soft fallback: at least speak the prompt so the flow doesn't crash
+        try:
+            from twilio.twiml.voice_response import Gather
+            g = Gather(input=input, action=_action, method=method)
+            g.say(gpt_speak(prompt), voice=VOICE)
+            return g
+        except Exception:
+            debug_print(f"make_gather: failed to build Gather → {e}")
+            return None
 
 
 def make_gather_dtmf(
     prompt: str,
     *,
-    num_digits: int = None,
-    timeout: int = 25,
+    num_digits: Optional[int] = None,
+    next_stage: Optional[str] = None,               # keep symmetry with make_gather
     finish_on_key: str = "#",
-    action: str = None,
+    action: Optional[str] = "/voice",
+    method: str = "POST",
 ):
+    """
+    DTMF-only helper using the same ENV-driven defaults.
+    """
     return make_gather(
         prompt,
+        next_stage=next_stage,
         input="dtmf",
         num_digits=num_digits,
-        timeout=timeout,
-        speech_timeout="auto",  # ignored for dtmf
+        timeout=PAUSE_BETWEEN_DIGITS,
+        speech_timeout="auto",  # irrelevant for pure DTMF
         finish_on_key=finish_on_key,
         action=action,
+        method=method,
     )
 
 
