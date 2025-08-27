@@ -1,4 +1,4 @@
-# update  08/27/25 07:27 am
+# update  08/27/25 07:54 am
 # =========================
 # Standard library imports
 # =========================
@@ -4912,7 +4912,7 @@ def voice():
         # ----------------------------------------------------------------------
 
         # --- helpers ----------------------------------------------------------
-        def luhn_check(number: str) -> bool:
+        def luhn_check(number):
             s, alt = 0, False
             for ch in number[::-1]:
                 if not ch.isdigit():
@@ -4926,7 +4926,7 @@ def voice():
                 alt = not alt
             return (s % 10) == 0
 
-        def normalize_spoken_digits(raw: str) -> str:
+        def normalize_spoken_digits(raw):
             """Map spoken words to digits; supports 'double'/'triple' and common homophones."""
             if not raw:
                 return ""
@@ -4954,83 +4954,46 @@ def voice():
                 i += 1
             return "".join(out)
 
-        def _normalize_10(d: str) -> str:
+        def _normalize_10(d):
             d = "".join(ch for ch in (d or "") if ch.isdigit())
             return d[1:] if len(d) == 11 and d.startswith("1") else d
-        
 
-
-        
-
-        # Make sure this import exists near the top of your file for 3.8-safe typing
-
-        def _gather_dtmf_only(prompt_text: str, num_digits: Optional[int] = None) -> None:
+        # ---- Back-compat gather wrapper (uses your make_gather functions) ----
+        def _append_gather(prompt_text, *, dtmf_only=False, hints=""):
             """
-            DTMF-only Gather helper (Python 3.8-safe).
-
-            Why:
-            - Forces keypad input to reduce speech-recognition errors (e.g., for PAN/CVV).
-            - Uses Optional[int] instead of 'int | None' so it runs on Python 3.8.
-
-            Params:
-            prompt_text : str
-                The prompt to speak to the caller.
-            num_digits : Optional[int]
-                If provided and > 0, Twilio will auto-complete after this many digits.
-                If None/invalid, the caller must press '#' to finish.
-
-            Behavior:
-            - Tries to build a Twilio <Gather> with DTMF-only input.
-            - Uses '#' as the finish key so callers can end input early.
-            - Posts back to /voice (same handler) when digits are collected.
-            - Falls back to your generic make_gather(...) if anything goes wrong.
+            Appends a Gather using app-provided helpers only.
+            - If make_gather_dtmf(...) exists and dtmf_only=True, prefer it.
+            - Otherwise fall back to make_gather(prompt, hints=...).
+            IMPORTANT: Do NOT redirect immediately after appending; let Twilio post back.
             """
-            # Sanitize/normalize num_digits for Twilio: must be a positive int or None
             try:
-                nd = int(num_digits) if (isinstance(num_digits, int) and num_digits > 0) else None
-            except Exception:
-                nd = None
-
-            try:
-                # Import here so the module remains importable even if Twilio isn't installed at startup
-                from twilio.twiml.voice_response import Gather
-
-                g = Gather(
-                    input="dtmf",            # DTMF only (no speech)
-                    finishOnKey="#",         # Caller can end with '#'
-                    numDigits=nd,            # Optional fixed length
-                    action="/voice",         # Post back to the same endpoint
-                    method="POST",
-                )
-
-                # Use your existing TTS helper/voice selection
-                g.say(gpt_speak(prompt_text), voice=VOICE)
-
-                # Append into the current TwiML response
+                if dtmf_only and "make_gather_dtmf" in globals():
+                    g = make_gather_dtmf(prompt_text)
+                else:
+                    # Back-compat: older make_gather may not accept hints ⇒ try, then fall back
+                    try:
+                        g = make_gather(prompt_text, hints=hints)
+                    except TypeError:
+                        g = make_gather(prompt_text)
                 resp.append(g)
-
-                # Helpful debug line for logs
                 try:
-                    debug_print(f"_gather_dtmf_only: appended Gather (numDigits={nd if nd is not None else 'None'}, finishOnKey='#')")
+                    debug_print(f"_append_gather: dtmf_only={dtmf_only} hints={(hints or '∅')}")
                 except Exception:
                     pass
-
             except Exception as e:
-                # If Twilio Gather construction fails for any reason, degrade gracefully
+                # Absolute fallback to avoid breaking flow
                 try:
-                    debug_print(f"_gather_dtmf_only: ⚠️ fallback to make_gather due to error → {e}")
+                    debug_print(f"_append_gather: ⚠️ error appending gather → {e}; falling back to basic prompt")
                 except Exception:
                     pass
                 resp.append(make_gather(prompt_text))
 
-
-
-
-
-
-
-        def _reprompt(prompt: str, hints: str = "") -> bool:
-            """Speech/DTMF reprompt with retry cap (separate from silence). Returns True if response returned."""
+        def _reprompt(prompt, *, dtmf_only=False, hints=""):
+            """
+            Speech/DTMF reprompt with retry cap (separate from silence).
+            Returns True if we appended a Gather and are returning TwiML now.
+            NOTE: Do NOT redirect after appending a Gather; let Twilio call back.
+            """
             session_data[call_sid]["retry_cc"] += 1
             if session_data[call_sid]["retry_cc"] >= 5:
                 debug_print("collect_cc: ⛔ max CC retries. Ending.")
@@ -5038,13 +5001,7 @@ def voice():
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return True
-            # Respect DTMF-only enforcement
-            if session_data[call_sid].get("enforce_dtmf_cc"):
-                _gather_dtmf_only(prompt)
-            else:
-                resp.append(make_gather(prompt, hints=hints))
-            # After Gather, Twilio posts back to /voice
-            resp.redirect("/voice")
+            _append_gather(prompt, dtmf_only=dtmf_only, hints=hints)
             return True
 
         # --- session buckets --------------------------------------------------
@@ -5058,16 +5015,14 @@ def voice():
         # 🔒 Require phone + DOB before CC
         phone_guard = _normalize_10(customer.get("phone"))
         if len(phone_guard) != 10 or not customer.get("dob"):
-            debug_print("collect_cc: ❌ Missing phone/DOB → redirecting")
+            debug_print("collect_cc: ❌ Missing phone/DOB → redirecting to prerequisite")
             session_data[call_sid]["stage"] = "collect_phone" if len(phone_guard) != 10 else "collect_dob"
-            gather = make_gather(
+            prompt = (
                 "Before payment details, please provide your ten digit phone number including area code."
                 if len(phone_guard) != 10 else
-                "Before payment details, please provide your date of birth. You can say it, or enter MMDDYYYY then press pound.",
-                hints="zero one two three four five six seven eight nine"
+                "Before payment details, please provide your date of birth. You can say it, or enter MMDDYYYY then press pound."
             )
-            resp.append(gather)
-            resp.redirect("/voice")
+            _append_gather(prompt, hints="zero one two three four five six seven eight nine")
             return str(resp)
 
         # Mini-step tracker: 1=number, 2=exp, 3=cvv
@@ -5110,18 +5065,14 @@ def voice():
                 prompt = "Please enter the three or four digit security code, then press pound."
                 hints  = "zero one two three four five six seven eight nine"
 
-            if enforce_dtmf:
-                _gather_dtmf_only(prompt)
-            else:
-                resp.append(make_gather(prompt, hints=hints))
-            resp.redirect("/voice")
+            _append_gather(prompt, dtmf_only=enforce_dtmf, hints=hints)
             return str(resp)
 
         # Clear silence counter once we hear something
         session_data[call_sid].pop("silence_cc", None)
 
         # Prefer DTMF; otherwise convert spoken words to digits
-        def get_digits() -> str:
+        def get_digits():
             if enforce_dtmf:
                 if not dtmf_digits:
                     return ""
@@ -5154,8 +5105,10 @@ def voice():
                 debug_print("collect_cc: ℹ️ no digits heard → reprompt")
                 if _reprompt(
                     "Please enter your card number now, then press pound.",
+                    dtmf_only=enforce_dtmf,
                     hints="zero one two three four five six seven eight nine double triple"
-                ): return str(resp)
+                ):
+                    return str(resp)
 
             # Keep max sane
             if len(digits) > 19:
@@ -5169,7 +5122,8 @@ def voice():
                 if _reprompt(
                     "I heard fifteen digits. Please say or type the last single digit now, then press pound.",
                     hints="zero one two three four five six seven eight nine"
-                ): return str(resp)
+                ):
+                    return str(resp)
 
             # Full validation
             if not (13 <= len(digits) <= 19) or not luhn_check(digits):
@@ -5187,14 +5141,17 @@ def voice():
                 if escalate:
                     # Force DTMF-only from now on for PAN entry
                     session_data[call_sid]["enforce_dtmf_cc"] = True
-                    _gather_dtmf_only("That number didn’t sound clear. Please TYPE the full card number now, then press pound.")
-                    resp.redirect("/voice")
+                    _append_gather(
+                        "That number didn’t sound clear. Please TYPE the full card number now, then press pound.",
+                        dtmf_only=True
+                    )
                     return str(resp)
                 else:
                     if _reprompt(
                         "That card number doesn't look right. Please re-enter the full card number, then press pound.",
                         hints="zero one two three four five six seven eight nine double triple"
-                    ): return str(resp)
+                    ):
+                        return str(resp)
 
             # Save and advance
             customer["cc_number"] = digits
@@ -5208,11 +5165,7 @@ def voice():
                 "Thank you. Now enter the expiration as two digits for month and two digits for year. "
                 "For example, 0527. Then press pound."
             )
-            if session_data[call_sid].get("enforce_dtmf_cc"):
-                _gather_dtmf_only(prompt)
-            else:
-                resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine"))
-            resp.redirect("/voice")
+            _append_gather(prompt, dtmf_only=enforce_dtmf, hints="zero one two three four five six seven eight nine")
             return str(resp)
 
         # -------------------------------
@@ -5224,8 +5177,10 @@ def voice():
                 debug_print(f"collect_cc: ❌ Exp bad length: '{digits}'")
                 if _reprompt(
                     "Please enter the expiration as four digits MMYY, then press pound.",
+                    dtmf_only=enforce_dtmf,
                     hints="zero one two three four five six seven eight nine"
-                ): return str(resp)
+                ):
+                    return str(resp)
 
             mm = int(digits[:2]) if digits[:2].isdigit() else 0
             yy = digits[2:]
@@ -5233,8 +5188,10 @@ def voice():
                 debug_print(f"collect_cc: ❌ Invalid month: '{digits}'")
                 if _reprompt(
                     "The month must be 01 through 12. Please re-enter expiration MMYY, then press pound.",
+                    dtmf_only=enforce_dtmf,
                     hints="zero one two three four five six seven eight nine"
-                ): return str(resp)
+                ):
+                    return str(resp)
 
             # Normalize year to 2-digit (handle MMYYYY too)
             if len(yy) == 4:
@@ -5250,19 +5207,17 @@ def voice():
                 debug_print(f"collect_cc: ❌ Expired card: {mm:02d}/{yy}")
                 if _reprompt(
                     "That card appears expired. Please enter a valid expiration date as MMYY, then press pound.",
+                    dtmf_only=enforce_dtmf,
                     hints="zero one two three four five six seven eight nine"
-                ): return str(resp)
+                ):
+                    return str(resp)
 
             customer["cc_exp"] = f"{mm:02d}/{yy}"
             session_data[call_sid]["cc_step"] = 3
             debug_print(f"collect_cc: ✅ Saved expiration {customer['cc_exp']}")
 
             prompt = "Great. Finally, enter the three or four digit security code, then press pound."
-            if session_data[call_sid].get("enforce_dtmf_cc"):
-                _gather_dtmf_only(prompt)
-            else:
-                resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine"))
-            resp.redirect("/voice")
+            _append_gather(prompt, dtmf_only=enforce_dtmf, hints="zero one two three four five six seven eight nine")
             return str(resp)
 
         # -------------------------------
@@ -5274,8 +5229,10 @@ def voice():
                 debug_print(f"collect_cc: ❌ Invalid CVV '{digits}' length={len(digits)}")
                 if _reprompt(
                     "That security code doesn't look right. Please re-enter the three or four digit code, then press pound.",
+                    dtmf_only=enforce_dtmf,
                     hints="zero one two three four five six seven eight nine"
-                ): return str(resp)
+                ):
+                    return str(resp)
 
             customer["cc_cvv"] = digits
 
@@ -5294,12 +5251,13 @@ def voice():
             session_data[call_sid]["stage"] = next_stage
             debug_print(f"collect_cc: ➡️ Auto-advancing to {next_stage}")
 
-            # Re-enter main handler so the next stage runs now
+            # Now that we're DONE gathering, it's safe to redirect to run the next stage
             try:
                 resp.redirect(url_for("voice"))
             except Exception:
                 resp.redirect("/voice")
             return str(resp)
+
 
 
 
