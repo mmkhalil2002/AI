@@ -5263,21 +5263,44 @@ def voice():
         # -------------------------------
         if cc_step == 3:
             digits = get_digits()
-            if not (3 <= len(digits) <= 4) or not digits.isdigit():
-                debug_print(f"collect_cc: ❌ Invalid CVV '{digits}' length={len(digits)}")
-                return _reprompt(
-                    "That security code doesn't look right. Please re-enter the three or four digit code, then press pound.",
-                    hints="zero one two three four five six seven eight nine"
-                )
 
+            # If speech path produced nothing meaningful, try parsing the raw speech again (more tolerant)
+            if (not digits) and (not dtmf_digits) and speech_text:
+                digits = _re.sub(r"\D", "", normalize_spoken_digits(speech_text))
+
+            # Validate
+            if not (3 <= len(digits) <= 4 and digits.isdigit()):
+                # Count speech failures and escalate to DTMF-only after first miss
+                if not dtmf_digits:
+                    session_data[call_sid]["cc_speech_tries"] += 1
+                enforce_now = session_data[call_sid]["cc_speech_tries"] >= 1 and not dtmf_digits
+
+                debug_print(f"collect_cc: ❌ Invalid CVV '{digits or speech_text}' "
+                            f"len={len(digits)} enforce_dtmf={enforce_now}")
+
+                # Pin the flag so next prompt uses keypad-only
+                if enforce_now:
+                    session_data[call_sid]["enforce_dtmf_cc"] = True
+
+                # Reprompt (DTMF if escalated)
+                session_data[call_sid]["retry_cc"] += 1
+                if session_data[call_sid]["retry_cc"] >= 5:
+                    resp.say(gpt_speak("Sorry, we’re having trouble collecting your card details. Please call again later."), VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    return str(resp)
+
+                prompt = "That security code doesn't sound right. Please enter the three or four digit code, then press pound."
+                g = prompt_for_value(prompt_text=prompt, dtmf_only=session_data[call_sid].get("enforce_dtmf_cc", False))
+                if g: resp.append(g)
+                resp.redirect("/voice")
+                return str(resp)
+
+            # ✅ Good CVV
             customer["cc_cvv"] = digits
-
-            # Default cardholder name from collected name, if not set
             if not customer.get("cc_name"):
-                name = customer.get("name") or " ".join(
-                    p for p in [customer.get("first_name"), customer.get("last_name")] if p
-                )
-                customer["cc_name"] = name.strip() if name else None
+                name = customer.get("name") or " ".join(p for p in [customer.get("first_name"), customer.get("last_name")] if p)
+                customer["cc_name"] = (name or "").strip() or None
 
             debug_print(f"collect_cc: ✅ Saved CVV '{digits}'; cc_name='{customer.get('cc_name')}'")
 
@@ -5287,12 +5310,10 @@ def voice():
             session_data[call_sid]["stage"] = next_stage
             debug_print(f"collect_cc: ➡️ Auto-advancing to {next_stage}")
 
-            # Re-enter main handler so the next stage runs now
-            try:
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
+            # Move to next stage now
+            resp.redirect("/voice")
             return str(resp)
+
 
 
 
