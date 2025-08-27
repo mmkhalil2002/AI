@@ -141,89 +141,86 @@ def debug_print(msg: str) -> None:
 
 # --- retry counter utils ---
 
-# --- Twilio <Gather> helpers (wait-friendly) ---------------------------------
 def make_gather(
     prompt: str,
     *,
-    next_stage: str = None,        # optional: set stage before returning
+    next_stage: str = None,        # optional convenience; ignored if not used
     hints: str = None,
-    input: str = "speech dtmf",    # both by default
-    num_digits: int = None,        # None → caller presses '#' to finish
-    timeout: int = 25,             # wait up to 25s for input/start (and between DTMF digits)
-    speech_timeout: str = "10",    # tolerate up to 10s of silence while speaking
+    input: str = "speech dtmf",
+    num_digits: int = None,        # None → user must press '#'
+    timeout: int = 25,             # wait longer so speech doesn't get cut off
+    speech_timeout: str = "10",    # seconds as string; 'auto' also allowed
     finish_on_key: str = "#",
     barge_in: bool = True,
     language: str = "en-US",
     action: str = None,            # defaults to /voice
-) -> None:
+):
     """
-    Builds a Twilio <Gather> that **waits** for spoken or typed input.
-
-    - `timeout`        = how long to wait for input to start / between DTMF digits.
-    - `speech_timeout` = how long of silence Twilio tolerates before it stops listening.
-                         Use e.g. "10" (seconds). "auto" is shorter and may cut callers off.
-    - For DTMF, user can press `finish_on_key` (default '#') to submit early. If
-      you want auto-submit after N digits, set `num_digits=N`.
-
-    Backward compatible: defaults still accept speech + dtmf and post back to /voice.
+    Returns a <Gather> verb (do NOT append to resp here).
+    Existing calls like `resp.append(make_gather(...))` keep working.
     """
-    # Normalize args
-    in_modes = " ".join(t for t in (input or "speech dtmf").split())
-    nd = int(num_digits) if isinstance(num_digits, int) and num_digits > 0 else None
-    act = action or "/voice"
 
-    # Optionally set the next stage now (so the next POST lands in the right handler)
-    try:
-        if next_stage:
+    # Optionally pre-set stage (no-op if you don't use it)
+    if next_stage:
+        try:
             call_sid = (request.values.get("CallSid") or "").strip()
             if call_sid:
                 session_data.setdefault(call_sid, {})
                 session_data[call_sid]["stage"] = next_stage
-    except Exception:
-        pass
+        except Exception:
+            pass
 
+    from twilio.twiml.voice_response import Gather
+
+    in_modes = " ".join((input or "speech dtmf").split())
+    nd = num_digits if (isinstance(num_digits, int) and num_digits > 0) else None
+    act = action or "/voice"
+
+    # Build kwargs and include only supported fields
+    kwargs = dict(
+        input=in_modes,
+        action=act,
+        method="POST",
+        timeout=timeout,
+        speechTimeout=str(speech_timeout),
+        hints=(hints or None),
+        language=language,
+        finishOnKey=finish_on_key,
+    )
+    if nd is not None:
+        kwargs["numDigits"] = nd
+    if "speech" in in_modes:
+        kwargs["bargeIn"] = bool(barge_in)
+
+    # Some older twilio SDKs may not support bargeIn; fall back gracefully
     try:
-        from twilio.twiml.voice_response import Gather
+        g = Gather(**kwargs)
+    except TypeError:
+        kwargs.pop("bargeIn", None)
+        g = Gather(**kwargs)
 
-        g = Gather(
-            input=in_modes,
-            action=act,
-            method="POST",
-            timeout=timeout,
-            speechTimeout=str(speech_timeout),
-            numDigits=nd,
-            finishOnKey=finish_on_key,
-            hints=(hints or None),
-            language=language,
-            bargeIn=barge_in if "speech" in in_modes else None,
-        )
-        g.say(gpt_speak(prompt), voice=VOICE)
-        resp.append(g)
-        debug_print(f"make_gather: <Gather input='{in_modes}' timeout={timeout} speechTimeout='{speech_timeout}' numDigits={nd} finishOnKey='{finish_on_key}'>")
-    except Exception as e:
-        debug_print(f"make_gather: fallback (error={e}) → using basic prompt")
-        resp.say(gpt_speak(prompt), voice=VOICE)
+    # IMPORTANT: speak on the Gather itself, not on resp
+    g.say(gpt_speak(prompt), voice=VOICE)
+    return g
 
 
 def make_gather_dtmf(
     prompt: str,
     *,
-    num_digits: int = None,        # e.g., 16 for PAN, 4 for MMYY; None → press '#'
+    num_digits: int = None,
     timeout: int = 25,
     finish_on_key: str = "#",
     action: str = None,
-) -> None:
-    """DTMF-only gather. Good for PAN/EXP/CVV when you want keypad only."""
+):
     return make_gather(
         prompt,
         input="dtmf",
         num_digits=num_digits,
         timeout=timeout,
-        speech_timeout="auto",      # ignored when input='dtmf'
+        speech_timeout="auto",  # ignored for dtmf
         finish_on_key=finish_on_key,
         action=action,
     )
-
 
 
 
