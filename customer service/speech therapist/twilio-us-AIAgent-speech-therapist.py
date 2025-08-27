@@ -1,4 +1,4 @@
-# update  08/25/25 09:24 am
+# update  08/27/25 07:27 am
 # =========================
 # Standard library imports
 # =========================
@@ -4957,17 +4957,77 @@ def voice():
         def _normalize_10(d: str) -> str:
             d = "".join(ch for ch in (d or "") if ch.isdigit())
             return d[1:] if len(d) == 11 and d.startswith("1") else d
+        
 
-        def _gather_dtmf_only(prompt_text: str, num_digits: int | None = None):
-            """Prefer DTMF-only Gather; fallback to make_gather on error."""
+
+        
+
+        # Make sure this import exists near the top of your file for 3.8-safe typing
+
+        def _gather_dtmf_only(prompt_text: str, num_digits: Optional[int] = None) -> None:
+            """
+            DTMF-only Gather helper (Python 3.8-safe).
+
+            Why:
+            - Forces keypad input to reduce speech-recognition errors (e.g., for PAN/CVV).
+            - Uses Optional[int] instead of 'int | None' so it runs on Python 3.8.
+
+            Params:
+            prompt_text : str
+                The prompt to speak to the caller.
+            num_digits : Optional[int]
+                If provided and > 0, Twilio will auto-complete after this many digits.
+                If None/invalid, the caller must press '#' to finish.
+
+            Behavior:
+            - Tries to build a Twilio <Gather> with DTMF-only input.
+            - Uses '#' as the finish key so callers can end input early.
+            - Posts back to /voice (same handler) when digits are collected.
+            - Falls back to your generic make_gather(...) if anything goes wrong.
+            """
+            # Sanitize/normalize num_digits for Twilio: must be a positive int or None
             try:
-                from twilio.twiml.voice_response import Gather
-                g = Gather(input="dtmf", finishOnKey="#", numDigits=(num_digits or None), action="/voice", method="POST")
-                g.say(gpt_speak(prompt_text), voice=VOICE)
-                resp.append(g)
+                nd = int(num_digits) if (isinstance(num_digits, int) and num_digits > 0) else None
             except Exception:
-                # Fallback to generic gather
+                nd = None
+
+            try:
+                # Import here so the module remains importable even if Twilio isn't installed at startup
+                from twilio.twiml.voice_response import Gather
+
+                g = Gather(
+                    input="dtmf",            # DTMF only (no speech)
+                    finishOnKey="#",         # Caller can end with '#'
+                    numDigits=nd,            # Optional fixed length
+                    action="/voice",         # Post back to the same endpoint
+                    method="POST",
+                )
+
+                # Use your existing TTS helper/voice selection
+                g.say(gpt_speak(prompt_text), voice=VOICE)
+
+                # Append into the current TwiML response
+                resp.append(g)
+
+                # Helpful debug line for logs
+                try:
+                    debug_print(f"_gather_dtmf_only: appended Gather (numDigits={nd if nd is not None else 'None'}, finishOnKey='#')")
+                except Exception:
+                    pass
+
+            except Exception as e:
+                # If Twilio Gather construction fails for any reason, degrade gracefully
+                try:
+                    debug_print(f"_gather_dtmf_only: ⚠️ fallback to make_gather due to error → {e}")
+                except Exception:
+                    pass
                 resp.append(make_gather(prompt_text))
+
+
+
+
+
+
 
         def _reprompt(prompt: str, hints: str = "") -> bool:
             """Speech/DTMF reprompt with retry cap (separate from silence). Returns True if response returned."""
