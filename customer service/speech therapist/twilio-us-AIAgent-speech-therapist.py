@@ -1,4 +1,4 @@
-# update  08/25/25 09:24 am
+# update  08/27/25 03:12 pm
 # =========================
 # Standard library imports
 # =========================
@@ -9,34 +9,40 @@ import json
 import string          # for string.punctuation
 import calendar
 import re as _re       # use _re everywhere to avoid UnboundLocalError
-from uuid import uuid4
 import pickle
 import openai
 import calendar as _calendar
 import dateparser as _dp
+import dateparser
+import pytz as _pytz
 
 
 
 
-
+from uuid import uuid4
 from datetime import datetime as _dt
 from datetime import time as dtime
 from typing import Any, Optional, List, Dict, Tuple, Iterator, Iterable, Union
-from datetime import datetime, date, time, timedelta, timezone
+from datetime import datetime, date, time, timedelta, timezone, time as _time
 from datetime import datetime as _dt  # if code references _dt
 from datetime import datetime as _dt_local, date as _date_local
+from dateutil import parser as dtparser
+from dateutil.parser import isoparse
+from dateutil.tz import gettz
+from dotenv import load_dotenv, find_dotenv
+
+# Load .env from the current directory (or nearest parent)
+load_dotenv(find_dotenv())   # returns True/False if a file was loaded
+
+# Now read values
+CLINIC_TZ = os.getenv("CLINIC_TZ", "America/Chicago")
+SPEECH_INPUT_DURATION = int(os.getenv("SPEECH_INPUT_DURATION", 12))
+
 
 
 # =========================
 # Third-party libraries
 # =========================
-import dateparser
-import pytz as _pytz
-from dotenv import load_dotenv
-
-from dateutil import parser as dtparser
-from dateutil.parser import isoparse
-from dateutil.tz import gettz
 
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
@@ -74,9 +80,14 @@ TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_NUMBER")
 GOOGLE_CREDENTIALS = "credentials.json"
-SPEECH_INPUT_DURATION = int(os.getenv("SPEECH_INPUT_DURATION", 12))  # how long to wait for input
-PAUSE_BETWEEN_DIGITS = int(os.getenv("PAUSE_BETWEEN_DIGITS", 7))  # pause between digits
-MAX_RECORD_TIME = int(os.getenv("MAX_RECORD_TIME", 60))
+
+# How long of silence ends a speech phrase (seconds). Use "auto" if you prefer VAD.
+SPEECH_INPUT_DURATION = os.getenv("SPEECH_INPUT_DURATION", "6")  # keep as string for Twilio
+# How long Twilio waits for the first input AND between DTMF digits (seconds)
+PAUSE_BETWEEN_DIGITS = int(os.getenv("PAUSE_BETWEEN_DIGITS", "7"))
+# Max seconds for <Record> (voicemail, freeform notes)
+MAX_RECORD_TIME = int(os.getenv("MAX_RECORD_TIME", "60"))
+
 MAX_NUMBER_DR_RETRY = int(os.getenv("MAX_NUMBER_DR_RETRY", 3))
 MAX_APPT_RETRIEVED_FROM_CALNDER = int(os.getenv("MAX_APPT_RETRIEVED_FROM_CALENDER", 50))
 # 🔧 Appointment duration in minutes (can be 15, 30, 60)
@@ -89,16 +100,51 @@ MAX_TIME_SELECTION_ATTEMPTS = int(os.getenv("MAX_TIME_SELECTION_ATTEMPTS", 3))
 MAX_SILENCE_RETRIES = int(os.getenv("MAX_SILENCE_RETRIES", 3))
 
 MAX_GET_PHONE_RETRIES = int(os.getenv("MAX_GET_PHONE_RETRIES", 3))
-WORKING_DAYS = [0, 1, 2, 3, 4]  # Adjust based on your local week
 
 DB_FOLDER = "appointment_data"
 DB_FILE   = os.path.join(DB_FOLDER, "customers.json")  # human-readable, not JSON
 # Global working config
-WORKING_DAYS = [0, 2, 3, 4]  # Mon=0, Tue=1,... Friday=4
-WORKING_HOURS_START = 8  # 8:00 AM
-WORKING_HOURS_END = 17   # 5:00 PM
-LUNCH_BREAK_START = time(13, 0)  # 1:00 PM
-LUNCH_BREAK_END = time(14, 0)    # 2:00 PM
+# 2) Read from env, with a safe default
+CLINIC_TZ = os.getenv("CLINIC_TZ", "America/Chicago")
+from datetime import time
+WORKING_DAYS = [int(x) for x in os.getenv("WORKING_DAYS", "0,1,2,3,4").split(",") if x.strip().isdigit()]
+
+WORKING_HOURS_START = int(os.getenv("WORKING_HOURS_START", 8))
+WORKING_HOURS_END   = int(os.getenv("WORKING_HOURS_END", 17))
+
+LUNCH_BREAK_START = time(
+    int(os.getenv("LUNCH_BREAK_START_H", 13)),
+    int(os.getenv("LUNCH_BREAK_START_M", 0))
+)
+LUNCH_BREAK_END = time(
+    int(os.getenv("LUNCH_BREAK_END_H", 14)),
+    int(os.getenv("LUNCH_BREAK_END_M", 0))
+)
+
+"""
+WORKING_DAYS=0,1,2,3,4
+WORKING_HOURS_START=8
+WORKING_HOURS_END=17
+LUNCH_BREAK_START_H=13
+LUNCH_BREAK_START_M=0
+LUNCH_BREAK_END_H=14
+LUNCH_BREAK_END_M=0
+
+"""
+WORKING_DAYS = [int(x) for x in os.getenv("WORKING_DAYS", "0,1,2,3,4").split(",") if x.strip().isdigit()]
+
+WORKING_HOURS_START = int(os.getenv("WORKING_HOURS_START", 8))
+WORKING_HOURS_END   = int(os.getenv("WORKING_HOURS_END", 17))
+
+LUNCH_BREAK_START = time(
+    int(os.getenv("LUNCH_BREAK_START_H", 13)),
+    int(os.getenv("LUNCH_BREAK_START_M", 0))
+)
+LUNCH_BREAK_END = time(
+    int(os.getenv("LUNCH_BREAK_END_H", 14)),
+    int(os.getenv("LUNCH_BREAK_END_M", 0))
+)
+SESSION_TIME = int(os.getenv("SESSION_TIME", 30))
 
 USE_GPT = False
 DEBUG  = True
@@ -141,58 +187,102 @@ def debug_print(msg: str) -> None:
 
 # --- retry counter utils ---
 
+# ===== Env-driven defaults (module-level) =====
+
+
+
+def _append_stage_to_action(action: Optional[str], next_stage: Optional[str]) -> str:
+    """Back-compat: if next_stage is provided, append ?stage=... to action."""
+    base = action or "/voice"
+    if next_stage:
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}stage={next_stage}"
+    return base
+
 
 def make_gather(
     prompt: str,
     *,
-    next_stage: str = None,        # ← NEW (optional)
-    hints: str = None,
+    next_stage: Optional[str] = None,               # ← back-compat
+    hints: Optional[str] = None,
     input: str = "speech dtmf",
-    num_digits: int = None,
-    timeout: int = 6,
-    speech_timeout: str = "auto",
+    num_digits: Optional[int] = None,
+    timeout: int = PAUSE_BETWEEN_DIGITS,            # ← default from ENV
+    speech_timeout: str = SPEECH_INPUT_DURATION,    # ← default from ENV ("auto" or seconds string)
     finish_on_key: str = "#",
     barge_in: bool = True,
     language: str = "en-US",
-    action: str = None
+    action: Optional[str] = "/voice",
+    method: str = "POST",
 ):
     """
-    Build a Twilio <Gather> with sane defaults.
-    If next_stage is provided, it will be appended to the action URL as
-    '?next_stage=...' so the /voice handler can switch stages on the next POST.
+    Build and RETURN a Twilio <Gather> with ENV-driven defaults.
+
+    Backward compatible:
+      - Accepts next_stage and appends it as '?stage=...' to action.
+      - Returns the <Gather> so callers can `resp.append(make_gather(...))`.
+
+    Notes on timing:
+      - timeout controls DTMF first-digit and between-digit wait.
+      - speech_timeout controls how long STT waits for silence; can be "auto" or seconds.
     """
-    try:
-        #from flask import request, url_for
-        base_action = action or request.path or "/voice"
-        if next_stage:
-            sep = "&" if "?" in base_action else "?"
-            base_action = f"{base_action}{sep}next_stage={next_stage}"
-            try:
-                debug_print(f"make_gather: ↪️ action with next_stage → {base_action}")
-            except Exception:
-                pass
-    except Exception:
-        base_action = action or "/voice"
+    # Normalize speechTimeout for Twilio (int or "auto")
+    _speech_timeout = speech_timeout
+    if isinstance(_speech_timeout, str) and _speech_timeout.isdigit():
+        _speech_timeout = int(_speech_timeout)
 
-    g = Gather(
-        input=input,
-        action=base_action,
-        method="POST",
-        timeout=timeout,
-        speech_timeout=speech_timeout,
-        hints=hints,
-        language=language,
-        finish_on_key=finish_on_key,
-        barge_in=barge_in,
+    _num_digits = num_digits if (isinstance(num_digits, int) and num_digits > 0) else None
+    _action = _append_stage_to_action(action, next_stage)
+
+    try:
+        g = Gather(
+            input=input,
+            action=_action,
+            method=method,
+            timeout=int(timeout),
+            speechTimeout=_speech_timeout,
+            finishOnKey=finish_on_key,
+            numDigits=_num_digits,
+            hints=hints,
+            language=language,
+            bargeIn=barge_in,
+        )
+        g.say(gpt_speak(prompt), voice=VOICE)
+        return g
+    except Exception as e:
+        # Soft fallback: at least speak the prompt so the flow doesn't crash
+        try:
+            g = Gather(input=input, action=_action, method=method)
+            g.say(gpt_speak(prompt), voice=VOICE)
+            return g
+        except Exception:
+            debug_print(f"make_gather: failed to build Gather → {e}")
+            return None
+
+
+def make_gather_dtmf(
+    prompt: str,
+    *,
+    num_digits: Optional[int] = None,
+    next_stage: Optional[str] = None,               # keep symmetry with make_gather
+    finish_on_key: str = "#",
+    action: Optional[str] = "/voice",
+    method: str = "POST",
+):
+    """
+    DTMF-only helper using the same ENV-driven defaults.
+    """
+    return make_gather(
+        prompt,
+        next_stage=next_stage,
+        input="dtmf",
         num_digits=num_digits,
+        timeout=PAUSE_BETWEEN_DIGITS,
+        speech_timeout="auto",  # irrelevant for pure DTMF
+        finish_on_key=finish_on_key,
+        action=action,
+        method=method,
     )
-    # Keep your TTS wrapper and voice selection
-    try:
-        g.say(gpt_speak(prompt), VOICE)
-    except Exception:
-        g.say(prompt)
-    return g
-
 
 
 
@@ -370,140 +460,18 @@ def get_next_available_slots(
     calendar_id: str,
     creds,
     *,
-    from_start_iso: str,
-    duration_minutes: int = 30,
-    limit: int = 3,
-    tz_name: str = "America/Chicago",
-    # Working hours per day (local time) — tuples of (start_hour, end_hour) in 24h.
-    # You can make this a dict keyed by weekday if you need different hours per day.
-    work_hours=( (8, 17), ),  # 8:00–17:00 local; multiple windows supported, e.g., ((8,12),(13,17))
-    slot_step_minutes: int = 30,   # align suggestions to a 30-minute grid
-    search_days: int = 14          # scan forward up to 14 days
-) -> list:
+    from_start_iso: Optional[str] = None,
+    limit: int = 3
+) -> List[Dict[str, str]]:
     """
-    Return a list of up to `limit` free slots after `from_start_iso` *for this doctor*.
-    Each element: {"start": "<UTC-iso>", "end": "<UTC-iso>", "friendly": "Friday, August 15 at 8:30 AM"}
-
-    Strategy:
-      - Work in the doctor's LOCAL TZ for grid/working-hours alignment; convert to UTC for FreeBusy.
-      - For each day in the search window:
-          - Query FreeBusy once for the full working window(s).
-          - Subtract busy intervals and scan the free timeline on a fixed grid (slot_step_minutes).
-          - Return the first `limit` non-overlapping slots of `duration_minutes`.
+    Thin wrapper that delegates to suggest_alternative_times so both share the same shape.
     """
-    service = build("calendar", "v3", credentials=creds)
-    tz_local = gettz(tz_name)
-
-    # ---------- helpers ----------
-    def _round_up(dt: datetime, minutes: int) -> datetime:
-        """Round dt up to the next multiple of `minutes`."""
-        q = (dt.minute // minutes) * minutes
-        base = dt.replace(minute=q, second=0, microsecond=0)
-        if base < dt:
-            base += timedelta(minutes=minutes)
-        return base
-
-    def _merge_intervals(intervals):
-        """Merge overlapping (start_dt, end_dt) intervals (both timezone-aware)."""
-        if not intervals:
-            return []
-        intervals = sorted(intervals, key=lambda x: x[0])
-        merged = [intervals[0]]
-        for s, e in intervals[1:]:
-            ms, me = merged[-1]
-            if s <= me:
-                merged[-1] = (ms, max(me, e))
-            else:
-                merged.append((s, e))
-        return merged
-
-    def _friendly(local_start: datetime) -> str:
-        """Readable label like 'Friday, August 15 at 8:30 AM' (use local tz)."""
-        return local_start.strftime("%A, %B %#d at %-I:%M %p") if hasattr(local_start, "strftime") else \
-               local_start.strftime("%A, %B %d at %I:%M %p")
-        # Note: %#d / %-I flags vary by OS; the fallback still works cross-platform.
-
-    # ---------- seed / context ----------
-    start_utc = isoparse(from_start_iso)                # timezone-aware UTC
-    start_local = start_utc.astimezone(tz_local)        # align to local grid/hours
-    results = []
-
-    # Scan forward day by day until we find `limit` slots or exhaust `search_days`
-    for day_offset in range(search_days):
-        day_local = (start_local if day_offset == 0 else
-                     (start_local + timedelta(days=day_offset)).replace(hour=0, minute=0, second=0, microsecond=0))
-
-        # Handle each working window (you can pass multiple windows, e.g., morning & afternoon)
-        for wh_start_hour, wh_end_hour in work_hours:
-            # Local working-window bounds for that day
-            window_start_local = day_local.replace(hour=wh_start_hour, minute=0, second=0, microsecond=0)
-            window_end_local   = day_local.replace(hour=wh_end_hour,   minute=0, second=0, microsecond=0)
-
-            # If it's the first day and we're already past start of window, start from NOW (rounded)
-            if day_offset == 0 and start_local > window_start_local:
-                window_start_local = _round_up(start_local, slot_step_minutes)
-
-            # Convert to UTC for FreeBusy query
-            window_start_utc = window_start_local.astimezone(gettz("UTC"))
-            window_end_utc   = window_end_local.astimezone(gettz("UTC"))
-            if window_start_utc >= window_end_utc:
-                continue  # skip invalid windows
-
-            # ---- Query FreeBusy once for the whole window ----
-            fb = service.freebusy().query(body={
-                "timeMin": window_start_utc.isoformat(),
-                "timeMax": window_end_utc.isoformat(),
-                "items": [{"id": calendar_id}],
-                "timeZone": "UTC",
-            }).execute()
-
-            busy_list = (fb.get("calendars", {}).get(calendar_id, {}) or {}).get("busy", []) or []
-
-            # Convert busy intervals to LOCAL TZ for easier local grid checks
-            busy_intervals_local = []
-            for b in busy_list:
-                try:
-                    bs = isoparse(b["start"]).astimezone(tz_local)
-                    be = isoparse(b["end"]).astimezone(tz_local)
-                    # Keep only overlaps with the working window
-                    if be > window_start_local and bs < window_end_local:
-                        busy_intervals_local.append( (max(bs, window_start_local), min(be, window_end_local)) )
-                except Exception:
-                    continue
-            busy_intervals_local = _merge_intervals(busy_intervals_local)
-
-            # ---- Scan the local working window on a fixed grid ----
-            cur = _round_up(window_start_local, slot_step_minutes)
-            slot_delta = timedelta(minutes=duration_minutes)
-            while cur + slot_delta <= window_end_local:
-                # Check overlap against merged busy intervals (in LOCAL tz)
-                overlap = False
-                for bs, be in busy_intervals_local:
-                    if cur < be and (cur + slot_delta) > bs:
-                        overlap = True
-                        # Jump ahead to the end of this busy block aligned to grid to speed scanning
-                        cur = _round_up(be, slot_step_minutes)
-                        break
-                if overlap:
-                    continue
-
-                # Candidate is free → record it (convert start/end to UTC ISO; keep friendly local label)
-                start_local_slot = cur
-                end_local_slot   = cur + slot_delta
-                start_utc_slot   = start_local_slot.astimezone(gettz("UTC"))
-                end_utc_slot     = end_local_slot.astimezone(gettz("UTC"))
-                results.append({
-                    "start": start_utc_slot.isoformat(),
-                    "end":   end_utc_slot.isoformat(),
-                    "friendly": _friendly(start_local_slot),
-                })
-                if len(results) >= limit:
-                    return results
-
-                # Move to next grid tick
-                cur += timedelta(minutes=slot_step_minutes)
-
-    return results  # may be empty if no free time found in the window
+    return suggest_alternative_times(
+        doctor_id=calendar_id,
+        creds=creds,
+        num_options=limit,
+        from_start_iso=from_start_iso
+    )
 
 
 
@@ -514,58 +482,161 @@ def get_next_available_slots(
 def suggest_alternative_times(
     doctor_id: str,
     creds,
-    num_options: int = 3
-    ) -> List[Tuple[str, str]]:
-    
-    service = build("calendar", "v3", credentials=creds)
+    num_options: int = 3,
+    *,
+    from_start_iso: Optional[str] = None
+) -> List[Dict[str, str]]:
+    """
+    Return the next `num_options` *available* slots for this doctor.
+    Shape: [{"start": "<UTC-iso>", "end": "<UTC-iso>", "friendly": "<local phrase>"}]
 
-    now = datetime.utcnow().replace(tzinfo=pytz.UTC)
-    search_end = now + timedelta(days=7)
+    This version **uses your slot-check function**:
+      - Prefer: is_time_slot_avaiable(calendar_id, start_iso, end_iso, creds)  # (typo per your code)
+      - Fallback: is_time_slot_available(calendar_id, start_iso, end_iso, creds)
+    If neither is present, nothing is suggested (safe default).
 
-    suggested = []
-    current_time = now.replace(hour=WORKING_HOURS_START, minute=0, second=0, microsecond=0)
+    Respects globals:
+      SESSION_TIME / SESSIUON_TIME, WORKING_DAYS, WORKING_HOURS_START/END,
+      LUNCH_BREAK_START/END, CLINIC_TZ/LOCAL_TZ, SEARCH_DAYS
+    """
 
-    while current_time < search_end and len(suggested) < num_options:
-        weekday = current_time.weekday()
-        current_local = current_time.astimezone(pytz.timezone("UTC"))  # adjust as needed
+    # ---------- resolve slot check function (typo-friendly) ----------
+    slot_check =  globals().get("is_time_slot_available")
+    if not callable(slot_check):
+        try:
+            debug_print("suggest_alternative_times: ⚠️ no slot-check function found; returning no suggestions")
+        except Exception:
+            pass
+        return []
 
-        # Skip non-working days
-        if weekday not in WORKING_DAYS:
-            current_time += timedelta(days=1)
-            current_time = current_time.replace(hour=WORKING_HOURS_START, minute=0)
+    # ---------- globals with fallbacks ----------
+    try:
+        session_minutes = int(globals().get("SESSION_TIME", globals().get("SESSIUON_TIME", 30)) or 30)
+    except Exception:
+        session_minutes = 30
+    if session_minutes not in (15, 30, 45, 60):
+        session_minutes = 30
+    step_minutes = session_minutes  # align grid to session length
+
+    WSTART = int(globals().get("WORKING_HOURS_START", globals().get("WORKIN_HOURS_START", 8)))
+    WEND   = int(globals().get("WORKING_HOURS_END", 17))
+
+    WORKING_DAYS = set(globals().get("WORKING_DAYS", {0,1,2,3,4}))  # Mon–Fri
+
+    LUNCH_BREAK_START = globals().get("LUNCH_BREAK_START", _time(12, 0))
+    LUNCH_BREAK_END   = globals().get("LUNCH_BREAK_END",   _time(13, 0))
+    if not isinstance(LUNCH_BREAK_START, _time): LUNCH_BREAK_START = _time(12, 0)
+    if not isinstance(LUNCH_BREAK_END, _time):   LUNCH_BREAK_END   = _time(13, 0)
+
+    tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
+    try:
+        tz_local = _pytz.timezone(tz_name)
+    except Exception:
+        tz_local = _pytz.timezone("America/Chicago")
+
+    SEARCH_DAYS = int(globals().get("SEARCH_DAYS", 7))
+
+    # ---------- helpers ----------
+    def _round_up(dt, minutes: int):
+        q = (dt.minute // minutes) * minutes
+        base = dt.replace(minute=q, second=0, microsecond=0)
+        if base < dt:
+            base += timedelta(minutes=minutes)
+        return base
+
+    def _inside_hours(dt_local):
+        t = dt_local.time()
+        return _time(WSTART) <= t < _time(WEND)
+
+    def _in_lunch(dt_local):
+        t = dt_local.time()
+        return LUNCH_BREAK_START <= t < LUNCH_BREAK_END
+
+    def _to_utc_iso(dt_local):
+        return dt_local.astimezone(_pytz.UTC).isoformat()
+
+    def _friendly_local(dt_local):
+        try:
+            return dt_local.strftime("%A, %B %-d at %-I:%M %p")   # Unix-like
+        except Exception:
+            return dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")  # Windows fallback
+
+    # ---------- seed start ----------
+    if from_start_iso:
+        s = from_start_iso.strip().replace(" ", "T")
+        try:
+            if s.endswith("Z"):
+                start_utc = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            else:
+                start_utc = datetime.fromisoformat(s)
+            if start_utc.tzinfo is None:
+                start_utc = start_utc.replace(tzinfo=_pytz.UTC)
+            else:
+                start_utc = start_utc.astimezone(_pytz.UTC)
+        except Exception:
+            start_utc = datetime.utcnow().replace(tzinfo=_pytz.UTC)
+    else:
+        start_utc = datetime.utcnow().replace(tzinfo=_pytz.UTC)
+
+    cur_local = _round_up(start_utc.astimezone(tz_local), step_minutes)
+
+    # bring inside today's working window
+    if cur_local.time() < _time(WSTART):
+        cur_local = cur_local.replace(hour=WSTART, minute=0, second=0, microsecond=0)
+    elif cur_local.time() >= _time(WEND):
+        cur_local = (cur_local + timedelta(days=1)).replace(hour=WSTART, minute=0, second=0, microsecond=0)
+
+    end_of_search = cur_local + timedelta(days=SEARCH_DAYS)
+    results: List[Dict[str, str]] = []
+
+    # ---------- scan grid ----------
+    while cur_local < end_of_search and len(results) < num_options:
+        # skip non-working days
+        if cur_local.weekday() not in WORKING_DAYS:
+            cur_local = (cur_local + timedelta(days=1)).replace(hour=WSTART, minute=0, second=0, microsecond=0)
             continue
 
-        # Skip outside working hours
-        if current_time.time() < time(WORKING_HOURS_START) or current_time.time() >= time(WORKING_HOURS_END):
-            current_time += timedelta(days=1)
-            current_time = current_time.replace(hour=WORKING_HOURS_START, minute=0)
+        # skip lunch
+        if _in_lunch(cur_local):
+            cur_local = cur_local.replace(hour=LUNCH_BREAK_END.hour, minute=LUNCH_BREAK_END.minute, second=0, microsecond=0)
             continue
 
-        # Skip lunch break
-        if LUNCH_BREAK_START <= current_time.time() < LUNCH_BREAK_END:
-            current_time = current_time.replace(hour=LUNCH_BREAK_END.hour, minute=0)
+        # outside hours? jump to next day start
+        if not _inside_hours(cur_local):
+            cur_local = (cur_local + timedelta(days=1)).replace(hour=WSTART, minute=0, second=0, microsecond=0)
             continue
 
-        start_str = current_time.isoformat()
-        end_time = current_time + timedelta(minutes=30)
-        end_str = end_time.isoformat()
+        # candidate window (local) → to UTC
+        end_local = cur_local + timedelta(minutes=session_minutes)
+        if end_local.date() != cur_local.date() or end_local.time() > _time(WEND):
+            cur_local = (cur_local + timedelta(days=1)).replace(hour=WSTART, minute=0, second=0, microsecond=0)
+            continue
 
-        # Check if time slot is free
-        events_result = service.events().list(
-            calendarId=doctor_id,
-            timeMin=start_str,
-            timeMax=end_str,
-            singleEvents=True,
-            orderBy="startTime"
-        ).execute()
-        events = events_result.get("items", [])
+        start_iso = _to_utc_iso(cur_local)
+        end_iso   = _to_utc_iso(end_local)
 
-        if not events:
-            suggested.append((start_str, end_str))
+        # **Call the slot checker** before suggesting
+        try:
+            ok = bool(slot_check(doctor_id, start_iso, end_iso, creds))
+        except Exception:
+            ok = False
 
-        current_time += timedelta(minutes=30)
+        if ok:
+            results.append({
+                "start": start_iso,
+                "end": end_iso,
+                "friendly": _friendly_local(cur_local),
+            })
 
-    return suggested
+        # advance grid
+        cur_local = cur_local + timedelta(minutes=step_minutes)
+        if cur_local.time() >= _time(WEND):
+            cur_local = (cur_local + timedelta(days=1)).replace(hour=WSTART, minute=0, second=0, microsecond=0)
+
+    return results
+
+
+
 
 
 
@@ -4892,6 +4963,8 @@ def voice():
 
 
 
+
+
     elif stage == "collect_cc":
         # ----------------------------------------------------------------------
         # 💳 Stage: collect_cc
@@ -4907,7 +4980,7 @@ def voice():
         #       - else → stage=book_appt_confirm
         # Notes:
         #   - Uses make_gather() (speech + DTMF). DTMF preferred; speech digits supported.
-        #   - Requires phone (10-digit) and DOB before collecting CC.
+        #   - Requires phone **E.164** and DOB before collecting CC.
         #   - Never store full PAN/CVV in production (tokenize with Twilio <Pay> instead).
         # ----------------------------------------------------------------------
 
@@ -4930,7 +5003,7 @@ def voice():
             """Map spoken words to digits; supports 'double'/'triple' and common homophones."""
             if not raw:
                 return ""
-            words = raw.lower().strip().split()
+            words = raw.lower().strip().replace("-", " ").replace(",", " ").replace(".", " ").split()
             m = {
                 "zero":"0","oh":"0","o":"0",
                 "one":"1","two":"2","to":"2","too":"2",
@@ -4938,7 +5011,7 @@ def voice():
                 "five":"5","six":"6","seven":"7",
                 "eight":"8","ate":"8","nine":"9"
             }
-            out, i = [], 0
+            out = []; i = 0
             while i < len(words):
                 w = words[i].strip(".,;:-")
                 if w in ("double","triple") and i+1 < len(words):
@@ -4954,38 +5027,36 @@ def voice():
                 i += 1
             return "".join(out)
 
-        def _normalize_10(d: str) -> str:
-            d = "".join(ch for ch in (d or "") if ch.isdigit())
-            return d[1:] if len(d) == 11 and d.startswith("1") else d
-
-        def _gather_dtmf_only(prompt_text: str, num_digits: int | None = None):
-            """Prefer DTMF-only Gather; fallback to make_gather on error."""
-            try:
-                from twilio.twiml.voice_response import Gather
-                g = Gather(input="dtmf", finishOnKey="#", numDigits=(num_digits or None), action="/voice", method="POST")
-                g.say(gpt_speak(prompt_text), voice=VOICE)
-                resp.append(g)
-            except Exception:
-                # Fallback to generic gather
-                resp.append(make_gather(prompt_text))
-
-        def _reprompt(prompt: str, hints: str = "") -> bool:
-            """Speech/DTMF reprompt with retry cap (separate from silence). Returns True if response returned."""
-            session_data[call_sid]["retry_cc"] += 1
+        def _reprompt(prompt: str, hints: str = "") -> str:
+            """
+            Speech/DTMF reprompt with retry cap (separate from silence). Returns TwiML string.
+            Always append a <Gather> and redirect, then return str(resp).
+            """
+            session_data[call_sid]["retry_cc"] = session_data[call_sid].get("retry_cc", 0) + 1
             if session_data[call_sid]["retry_cc"] >= 5:
                 debug_print("collect_cc: ⛔ max CC retries. Ending.")
                 resp.say(gpt_speak("Sorry, we’re having trouble collecting your card details. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
-                return True
-            # Respect DTMF-only enforcement
+                return str(resp)
+
+            # If we've escalated to DTMF-only, force keypad
             if session_data[call_sid].get("enforce_dtmf_cc"):
-                _gather_dtmf_only(prompt)
+                resp.append(make_gather_dtmf(prompt_text=prompt, num_digits=None))
             else:
-                resp.append(make_gather(prompt, hints=hints))
-            # After Gather, Twilio posts back to /voice
+                # Longer timeouts so speech has time to finish the digits
+                resp.append(make_gather(
+                    prompt,
+                    hints=hints,
+                    input="speech dtmf",
+                    timeout=25,          # overall wait before user starts
+                    speech_timeout="10", # wait for up to 10s of speech chunk
+                    finish_on_key="#",
+                    barge_in=True,
+                    action="/voice",
+                ))
             resp.redirect("/voice")
-            return True
+            return str(resp)
 
         # --- session buckets --------------------------------------------------
         session_data.setdefault(call_sid, {})
@@ -4995,18 +5066,17 @@ def voice():
         # Are we here via the update_cc path?
         is_cc_update = bool(session_data.get(call_sid, {}).get("cc_update", {}).get("active"))
 
-        # 🔒 Require phone + DOB before CC
-        phone_guard = _normalize_10(customer.get("phone"))
-        if len(phone_guard) != 10 or not customer.get("dob"):
-            debug_print("collect_cc: ❌ Missing phone/DOB → redirecting")
-            session_data[call_sid]["stage"] = "collect_phone" if len(phone_guard) != 10 else "collect_dob"
-            gather = make_gather(
-                "Before payment details, please provide your ten digit phone number including area code."
-                if len(phone_guard) != 10 else
-                "Before payment details, please provide your date of birth. You can say it, or enter MMDDYYYY then press pound.",
-                hints="zero one two three four five six seven eight nine"
+        # 🔒 Require phone **E.164** + DOB before CC (no phone10 fallback)
+        phone_e164 = (customer.get("phone_e164") or session_data[call_sid].get("phone_e164") or "").strip()
+        if not phone_e164 or not customer.get("dob"):
+            debug_print(f"collect_cc: ❌ Missing E.164 phone or DOB → redirecting (phone_e164='{phone_e164}', dob_present={bool(customer.get('dob'))})")
+            session_data[call_sid]["stage"] = "collect_phone" if not phone_e164 else "collect_dob"
+            prompt_txt = (
+                "Before payment details, please provide your phone number including area code."
+                if not phone_e164 else
+                "Before payment details, please provide your date of birth. You can say it, or enter MMDDYYYY then press pound."
             )
-            resp.append(gather)
+            resp.append(make_gather(prompt_txt, hints="zero one two three four five six seven eight nine", action="/voice"))
             resp.redirect("/voice")
             return str(resp)
 
@@ -5051,9 +5121,10 @@ def voice():
                 hints  = "zero one two three four five six seven eight nine"
 
             if enforce_dtmf:
-                _gather_dtmf_only(prompt)
+                resp.append(make_gather_dtmf(prompt_text=prompt, num_digits=None))
             else:
-                resp.append(make_gather(prompt, hints=hints))
+                resp.append(make_gather(prompt, hints=hints, input="speech dtmf",
+                                        timeout=25, speech_timeout="10", finish_on_key="#", action="/voice"))
             resp.redirect("/voice")
             return str(resp)
 
@@ -5082,7 +5153,6 @@ def voice():
                     digits = (cc_partial or "") + new_digits
                     debug_print(f"collect_cc: 🔚 appended last digit → '{digits}'")
                 else:
-                    # Treat as fresh entry attempt
                     debug_print("collect_cc: ℹ️ expected 1 digit, got fresh entry → clearing partial")
                     session_data[call_sid]["cc_partial"] = ""
                     session_data[call_sid]["cc_expect_last_digit"] = False
@@ -5092,12 +5162,11 @@ def voice():
 
             if not digits:
                 debug_print("collect_cc: ℹ️ no digits heard → reprompt")
-                if _reprompt(
+                return _reprompt(
                     "Please enter your card number now, then press pound.",
                     hints="zero one two three four five six seven eight nine double triple"
-                ): return str(resp)
+                )
 
-            # Keep max sane
             if len(digits) > 19:
                 digits = digits[:19]
 
@@ -5106,10 +5175,10 @@ def voice():
                 session_data[call_sid]["cc_partial"] = digits
                 session_data[call_sid]["cc_expect_last_digit"] = True
                 debug_print(f"collect_cc: 🧩 Heard 15 digits '{digits}'; asking for the last single digit")
-                if _reprompt(
+                return _reprompt(
                     "I heard fifteen digits. Please say or type the last single digit now, then press pound.",
                     hints="zero one two three four five six seven eight nine"
-                ): return str(resp)
+                )
 
             # Full validation
             if not (13 <= len(digits) <= 19) or not luhn_check(digits):
@@ -5120,21 +5189,21 @@ def voice():
 
                 debug_print(f"collect_cc: ❌ Invalid card number: '{digits}' (len={len(digits)}), escalate={escalate}")
 
-                # Always clear partial/expect flags on invalid so we don't glue next attempt
+                # Always clear partial/expect flags on invalid
                 session_data[call_sid]["cc_partial"] = ""
                 session_data[call_sid]["cc_expect_last_digit"] = False
 
                 if escalate:
                     # Force DTMF-only from now on for PAN entry
                     session_data[call_sid]["enforce_dtmf_cc"] = True
-                    _gather_dtmf_only("That number didn’t sound clear. Please TYPE the full card number now, then press pound.")
+                    resp.append(make_gather_dtmf("That number didn’t sound clear. Please TYPE the full card number now, then press pound.", num_digits=None))
                     resp.redirect("/voice")
                     return str(resp)
                 else:
-                    if _reprompt(
+                    return _reprompt(
                         "That card number doesn't look right. Please re-enter the full card number, then press pound.",
                         hints="zero one two three four five six seven eight nine double triple"
-                    ): return str(resp)
+                    )
 
             # Save and advance
             customer["cc_number"] = digits
@@ -5149,9 +5218,11 @@ def voice():
                 "For example, 0527. Then press pound."
             )
             if session_data[call_sid].get("enforce_dtmf_cc"):
-                _gather_dtmf_only(prompt)
+                resp.append(make_gather_dtmf(prompt_text=prompt, num_digits=None))
             else:
-                resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine"))
+                resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine",
+                                        input="speech dtmf", timeout=25, speech_timeout="10",
+                                        finish_on_key="#", action="/voice"))
             resp.redirect("/voice")
             return str(resp)
 
@@ -5162,19 +5233,19 @@ def voice():
             digits = get_digits()
             if len(digits) not in (4, 6):
                 debug_print(f"collect_cc: ❌ Exp bad length: '{digits}'")
-                if _reprompt(
+                return _reprompt(
                     "Please enter the expiration as four digits MMYY, then press pound.",
                     hints="zero one two three four five six seven eight nine"
-                ): return str(resp)
+                )
 
             mm = int(digits[:2]) if digits[:2].isdigit() else 0
             yy = digits[2:]
             if not (1 <= mm <= 12):
                 debug_print(f"collect_cc: ❌ Invalid month: '{digits}'")
-                if _reprompt(
+                return _reprompt(
                     "The month must be 01 through 12. Please re-enter expiration MMYY, then press pound.",
                     hints="zero one two three four five six seven eight nine"
-                ): return str(resp)
+                )
 
             # Normalize year to 2-digit (handle MMYYYY too)
             if len(yy) == 4:
@@ -5188,10 +5259,10 @@ def voice():
             now_cmp  = now.year * 100 + now.month
             if exp_cmp < now_cmp:
                 debug_print(f"collect_cc: ❌ Expired card: {mm:02d}/{yy}")
-                if _reprompt(
+                return _reprompt(
                     "That card appears expired. Please enter a valid expiration date as MMYY, then press pound.",
                     hints="zero one two three four five six seven eight nine"
-                ): return str(resp)
+                )
 
             customer["cc_exp"] = f"{mm:02d}/{yy}"
             session_data[call_sid]["cc_step"] = 3
@@ -5199,9 +5270,11 @@ def voice():
 
             prompt = "Great. Finally, enter the three or four digit security code, then press pound."
             if session_data[call_sid].get("enforce_dtmf_cc"):
-                _gather_dtmf_only(prompt)
+                resp.append(make_gather_dtmf(prompt_text=prompt, num_digits=None))
             else:
-                resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine"))
+                resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine",
+                                        input="speech dtmf", timeout=25, speech_timeout="10",
+                                        finish_on_key="#", action="/voice"))
             resp.redirect("/voice")
             return str(resp)
 
@@ -5210,21 +5283,44 @@ def voice():
         # -------------------------------
         if cc_step == 3:
             digits = get_digits()
-            if not (3 <= len(digits) <= 4) or not digits.isdigit():
-                debug_print(f"collect_cc: ❌ Invalid CVV '{digits}' length={len(digits)}")
-                if _reprompt(
-                    "That security code doesn't look right. Please re-enter the three or four digit code, then press pound.",
-                    hints="zero one two three four five six seven eight nine"
-                ): return str(resp)
 
+            # If speech path produced nothing meaningful, try parsing the raw speech again (more tolerant)
+            if (not digits) and (not dtmf_digits) and speech_text:
+                digits = _re.sub(r"\D", "", normalize_spoken_digits(speech_text))
+
+            # Validate
+            if not (3 <= len(digits) <= 4 and digits.isdigit()):
+                # Count speech failures and escalate to DTMF-only after first miss
+                if not dtmf_digits:
+                    session_data[call_sid]["cc_speech_tries"] += 1
+                enforce_now = session_data[call_sid]["cc_speech_tries"] >= 1 and not dtmf_digits
+
+                debug_print(f"collect_cc: ❌ Invalid CVV '{digits or speech_text}' "
+                            f"len={len(digits)} enforce_dtmf={enforce_now}")
+
+                # Pin the flag so next prompt uses keypad-only
+                if enforce_now:
+                    session_data[call_sid]["enforce_dtmf_cc"] = True
+
+                # Reprompt (DTMF if escalated)
+                session_data[call_sid]["retry_cc"] += 1
+                if session_data[call_sid]["retry_cc"] >= 5:
+                    resp.say(gpt_speak("Sorry, we’re having trouble collecting your card details. Please call again later."), VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    return str(resp)
+
+                prompt = "That security code doesn't sound right. Please enter the three or four digit code, then press pound."
+                g = prompt_for_value(prompt_text=prompt, dtmf_only=session_data[call_sid].get("enforce_dtmf_cc", False))
+                if g: resp.append(g)
+                resp.redirect("/voice")
+                return str(resp)
+
+            # ✅ Good CVV
             customer["cc_cvv"] = digits
-
-            # Default cardholder name from collected name, if not set
             if not customer.get("cc_name"):
-                name = customer.get("name") or " ".join(
-                    p for p in [customer.get("first_name"), customer.get("last_name")] if p
-                )
-                customer["cc_name"] = name.strip() if name else None
+                name = customer.get("name") or " ".join(p for p in [customer.get("first_name"), customer.get("last_name")] if p)
+                customer["cc_name"] = (name or "").strip() or None
 
             debug_print(f"collect_cc: ✅ Saved CVV '{digits}'; cc_name='{customer.get('cc_name')}'")
 
@@ -5234,12 +5330,271 @@ def voice():
             session_data[call_sid]["stage"] = next_stage
             debug_print(f"collect_cc: ➡️ Auto-advancing to {next_stage}")
 
-            # Re-enter main handler so the next stage runs now
-            try:
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
+            # Move to next stage now
+            resp.redirect("/voice")
             return str(resp)
+
+
+
+
+
+
+    elif stage == "book_appt_confirm":
+            debug_print("book_appt_confirm: 📍 Stage entered")
+
+            # ----------------------------------------------------------------------
+            # Doctor info
+            # ----------------------------------------------------------------------
+            doctor_id = session_data[call_sid].get("doctor_id")
+            if not doctor_id:
+                debug_print("book_appt_confirm: ❌ missing doctor_id; sending back to choose doctor")
+                session_data[call_sid]["stage"] = "choose_doctor"
+                gather = make_gather("Which doctor would you like to see?")
+                resp.append(gather)
+                return str(resp)
+
+            doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
+            debug_print(f"book_appt_confirm: doctor_id={doctor_id} name={doctor_name}")
+
+            # ----------------------------------------------------------------------
+            # Appointment time (need start; compute end if missing)
+            # ----------------------------------------------------------------------
+            appt_payload = session_data[call_sid].get("appointment_time", {}) or {}
+            appointment_start = appt_payload.get("start")
+            appointment_end   = appt_payload.get("end")
+            debug_print(f"book_appt_confirm: utc_start={appointment_start} utc_end={appointment_end}")
+
+            if not appointment_start:
+                debug_print("book_appt_confirm: ❌ missing appointment_start")
+                resp.say(gpt_speak("Appointment time missing. Goodbye!"), VOICE)
+                resp.hangup()
+                return str(resp)
+
+            # Human-friendly local time for voice/SMS (America/Chicago)
+            formatted_time = ""
+            try:
+                dt_utc = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
+                dt_local = dt_utc.astimezone(_pytz.timezone("America/Chicago"))
+                try:
+                    # Linux/Unix: %-d / %-I → no-leading-zero
+                    formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
+                except Exception:
+                    # Windows-compatible fallback: strip leading zeros manually
+                    formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: time parse/format error → {e}")
+                resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+                resp.hangup()
+                return str(resp)
+
+            # Compute end if missing (default duration = 30m)
+            if not appointment_end:
+                try:
+                    dur_min = int(APPOINTMENT_DURATION_MINUTES) if 'APPOINTMENT_DURATION_MINUTES' in globals() else 30
+                    end_dt  = dt_utc + timedelta(minutes=dur_min)
+                    appointment_end = end_dt.replace(tzinfo=_pytz.UTC).isoformat()
+                    debug_print(f"book_appt_confirm: computed utc_end={appointment_end} (duration={dur_min}m)")
+                except Exception as e:
+                    debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
+                    resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+                    resp.hangup()
+                    return str(resp)
+
+            # ----------------------------------------------------------------------
+            # Customer info (basic validation)
+            # ----------------------------------------------------------------------
+            customer = session_data[call_sid].get("customer", {}) or {}
+            customer_name    = (customer.get("name") or "").strip()
+            # E.164-only handling: prefer explicit phone_e164; otherwise try to normalize what's stored
+            customer_phone_e164 = (customer.get("phone_e164") or "").strip()
+            if not customer_phone_e164:
+                maybe_phone = (customer.get("phone") or "").strip()
+                # Accept already-formed +E.164, else try to normalize with server-known country
+                if maybe_phone.startswith("+") and maybe_phone[1:].replace(" ", "").isdigit():
+                    customer_phone_e164 = "+" + maybe_phone[1:].replace(" ", "")
+                else:
+                    try:
+                        default_country = (session_data[call_sid].get("phone_country") or COUNTRY or "US").upper()
+                        customer_phone_e164 = normalize_phone_e164(maybe_phone, default_country) or ""
+                        if not customer_phone_e164:
+                            # one alternate attempt with the other supported country if applicable
+                            alt = "EG" if default_country != "EG" else "US"
+                            customer_phone_e164 = normalize_phone_e164(maybe_phone, alt) or ""
+                    except Exception:
+                        customer_phone_e164 = ""
+
+            customer_dob     = (customer.get("dob") or "").strip()
+            customer_address = (customer.get("address") or "").strip()
+
+            # Derive name parts if only full name present
+            first_name = (customer.get("first_name") or "").strip()
+            last_name  = (customer.get("last_name")  or "").strip()
+            if not first_name and customer_name:
+                parts = customer_name.split()
+                first_name = parts[0]
+                last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
+            effective_name = customer_name or " ".join([n for n in [first_name, last_name] if n]).strip()
+
+            # Require E.164 phone and DOB
+            if not customer_phone_e164:
+                debug_print("book_appt_confirm: ❌ missing/invalid E.164 phone; redirecting to collect_phone")
+                session_data[call_sid]["stage"] = "collect_phone"
+                gather = make_gather(
+                    "Before we confirm your appointment, please provide your phone number. "
+                    "You can say it or type the digits and press pound."
+                )
+                resp.append(gather)
+                return str(resp)
+
+            if not customer_dob:
+                debug_print("book_appt_confirm: ❌ missing DOB; redirecting to collect_dob")
+                session_data[call_sid]["stage"] = "collect_dob"
+                gather = make_gather(
+                    "Before we confirm, please provide your date of birth. "
+                    "You can say it, or enter two digits for month, two for day, and four for year, then press pound."
+                )
+                resp.append(gather)
+                return str(resp)
+
+            # ----------------------------------------------------------------------
+            # Upsert customer (FIX: pass cc_* fields to satisfy function signature)
+            # ----------------------------------------------------------------------
+            try:
+                init_db()
+                cc_name   = (customer.get("cc_name") or effective_name or "")
+                cc_number = (customer.get("cc_number") or "")
+                cc_exp    = (customer.get("cc_exp") or "")
+                cc_cvv    = (customer.get("cc_cvv") or "")
+                inserted = insert_customer(
+                    phone=customer_phone_e164,   # ← E.164 only
+                    dob=customer_dob,
+                    first_name=first_name,
+                    last_name=last_name,
+                    address=customer_address,
+                    cc_name=cc_name,
+                    cc_number=cc_number,
+                    cc_exp=cc_exp,
+                    cc_cvv=cc_cvv
+                )
+                debug_print(f"book_appt_confirm: customers DB → {'inserted' if inserted else 'seen/updated'}")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: insert_customer failed → {e}")
+
+            # ----------------------------------------------------------------------
+            # Single availability check (simple)
+            # ----------------------------------------------------------------------
+            calendar_id = doctor_id
+            debug_print(f"book_appt_confirm: 🔎 availability check → cal={calendar_id} {appointment_start}→{appointment_end}")
+            try:
+                slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ⚠️ availability check error → {e}")
+                slot_free = False  # be safe
+
+            if not slot_free:
+                debug_print("book_appt_confirm: ❌ Slot not free → offering alternatives or reprompting")
+                try:
+                    # Keep it simple: offer up to 3 suggestions if available
+                    alts = get_next_available_slots(calendar_id, creds, limit=3) or []
+                    if alts:
+                        options = " or ".join([a.get("friendly","") for a in alts if a.get("friendly")])
+                        session_data[call_sid]["stage"] = "ask_time_date"
+                        gather = make_gather(f"That time is not available. Would you like {options}?")
+                        resp.append(gather)
+                        return str(resp)
+                except Exception as e:
+                    debug_print(f"book_appt_confirm: ⚠️ get_next_available_slots error → {e}")
+
+                session_data[call_sid]["stage"] = "ask_time_date"
+                gather = make_gather("That time is not available. Please say another date and time, for example, 'tomorrow at 3:30 PM'.")
+                resp.append(gather)
+                return str(resp)
+
+            # ----------------------------------------------------------------------
+            # Save appointment in your system (simple, no rollback)
+            # ----------------------------------------------------------------------
+            appointment_saved_internal = False
+            try:
+                confirm_appointment_by_name(
+                    doctor_name=doctor_name,
+                    phone=customer_phone_e164,   # ← E.164 only
+                    dob=customer_dob,
+                    name=effective_name,
+                    address=customer_address,
+                    utc_start=appointment_start,
+                    calendar_id=calendar_id
+                )
+                appointment_saved_internal = True
+                debug_print("book_appt_confirm: ✅ internal appointment saved")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ❌ internal save failed → {e}")
+
+            # ----------------------------------------------------------------------
+            # Create Google Calendar event (simple: let Google assign the event ID)
+            # ----------------------------------------------------------------------
+            try:
+                service = build("calendar", "v3", credentials=creds)
+
+                event_body = {
+                    "summary": f"Appointment: {doctor_name}",
+                    "description": f"Clinic appointment for {effective_name or 'patient'}.",
+                    "start": {"dateTime": appointment_start, "timeZone": "UTC"},
+                    "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
+                    "transparency": "opaque",  # must block time
+                    "extendedProperties": {
+                        "private": {
+                            "patient_name": effective_name,
+                            "phone_e164": customer_phone_e164,  # ← store E.164 for downstream tooling
+                            "dob": customer_dob,
+                            "call_sid": call_sid,
+                        }
+                    },
+                }
+
+                debug_print(f"book_appt_confirm: 📝 creating Google event cal={calendar_id} {appointment_start}→{appointment_end}")
+                ev = service.events().insert(calendarId=calendar_id, body=event_body, sendUpdates="none").execute()
+                google_event_id = ev.get("id")
+                google_event_link = ev.get("htmlLink")
+                debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id} link={google_event_link}")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ❌ Google Calendar insert failed → {e}")
+                session_data[call_sid]["stage"] = "ask_time_date"
+                gather = make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, August 14th at 10 AM.")
+                resp.append(gather)
+                return str(resp)
+
+            # ----------------------------------------------------------------------
+            # Voice confirmation (success path)
+            # ----------------------------------------------------------------------
+            msg = f"Your appointment with {doctor_name} has been booked"
+            if formatted_time:
+                msg += f" on {formatted_time}"
+            msg += ". We look forward to seeing you. Goodbye!"
+            debug_print("book_appt_confirm: 🎉 success → speaking confirmation")
+            resp.say(gpt_speak(msg), VOICE)
+
+            # ----------------------------------------------------------------------
+            # SMS confirmation (best-effort) — Twilio expects E.164
+            # ----------------------------------------------------------------------
+            try:
+                sms_text = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
+                if formatted_time:
+                    sms_text += f" on {formatted_time}"
+                sms_text += ". Thank you for choosing Epic Therapist Clinic."
+                message = client.messages.create(body=sms_text, from_=TWILIO_PHONE_NUMBER, to=customer_phone_e164)
+                debug_print(f"book_appt_confirm: 📩 SMS sent to {customer_phone_e164}, SID={message.sid}")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
+
+            # ----------------------------------------------------------------------
+            # Cleanup
+            # ----------------------------------------------------------------------
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            debug_print("book_appt_confirm: ✅ session cleared and call ended")
+            return str(resp)
+
+
 
 
 
