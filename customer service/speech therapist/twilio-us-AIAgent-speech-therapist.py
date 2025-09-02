@@ -483,8 +483,12 @@ def get_next_available_slots(
     # slot checker (support both spellings)
     slot_check = globals().get("is_time_slot_available") or globals().get("is_time_slot_avaiable")
     if not callable(slot_check):
-        try: debug_print("get_next_available_slots: ❌ no slot checker callable found"); except: pass
+        try:
+            debug_print("get_next_available_slots: ❌ no slot checker callable found")
+        except Exception:
+            pass
         return []
+
 
     # defaults from globals
     if duration_minutes is None:
