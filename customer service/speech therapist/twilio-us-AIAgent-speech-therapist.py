@@ -1,4 +1,4 @@
-# update  09/02/25 time_saved 10:27 am
+# update  09/02/25 time_saved 10:33 am
 # =========================
 # Standard library imports
 # =========================
@@ -662,8 +662,14 @@ def get_next_available_slots(
                 try:
                     ok = bool(slot_check(calendar_id, start_iso, end_iso, creds))
                 except Exception as e:
-                    try: debug_print(f"get_next_available_slots: slot_check error → {e}"); except: pass
+                    try:
+                        debug_print(f"get_next_available_slots: slot_check error → {e}");
+                    except:
+                        pass
                     ok = False
+
+
+
 
                 if ok:
                     results.append({
