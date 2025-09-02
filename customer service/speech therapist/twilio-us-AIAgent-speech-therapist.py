@@ -1,4 +1,4 @@
-# update  09/02/25 07:44 am
+# update  09/02/25 08:12 am
 # =========================
 # Standard library imports
 # =========================
@@ -4388,7 +4388,7 @@ def voice():
     #   - Globals referenced: APPOINTMENT_DURATION_MINUTES, googleid_dr_name_map, creds
     # 🆕 Silent mode:
     #   - If we hear nothing, re-ask up to 3 times via a separate counter (silence_time).
-    # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
     elif stage == "ask_time_date":
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
 
@@ -4460,7 +4460,6 @@ def voice():
         calendar_id = doctor_id
 
         # --- Minimal pre-clean for AM/PM variants & trailing punctuation ---
-        # Use `_re` (imported at top of file) to avoid UnboundLocalError.
         try:
             _raw = (speech_result or "").strip()
             _raw = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", _raw, flags=_re.IGNORECASE)
@@ -4483,9 +4482,7 @@ def voice():
 
             gather = make_gather("Please say the date and time, for example, 'August 15th at 5 AM'.")
             resp.append(gather)
-            # Redirect so Twilio re-posts after gather
             try:
-                #from flask import url_for
                 resp.redirect(url_for("voice"))
             except Exception:
                 resp.redirect("/voice")
@@ -4495,12 +4492,10 @@ def voice():
         session_data[call_sid].pop("silence_time", None)
 
         # 1) Parse (day, time) from the caller’s phrase
-        #    Expect a tuple like: ("Friday, August 15", "5:00 AM") or similar.
         time_info = smart_parse_time(_raw)
 
-        # --- Branch A: parser returned nothing useful (None / wrong type / wrong length) ---
+        # --- Branch A: parser returned nothing useful ---
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
-            # Heuristics to give a specific prompt about what's missing
             need_date = not _has_date_token(_raw)
             need_time = not _has_time_token(_raw)
 
@@ -4513,7 +4508,6 @@ def voice():
             else:
                 prompt = TIME_PROMPT_SHORT
 
-            # Retry parsing up to 3 times
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
             retry_count = session_data[call_sid]["retry_time"]
             debug_print(f"ask_time_date: ⚠️ Time parse failed (no tuple). Retry={retry_count} — prompt='{prompt}'")
@@ -4529,7 +4523,7 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # --- Branch B: parser returned (day, time) — validate each part explicitly ---
+        # --- Branch B: parser returned (day, time) — validate parts ---
         spoken_day, spoken_time = time_info
         debug_print(f"ask_time_date: 📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
 
@@ -4567,7 +4561,6 @@ def voice():
         try:
             appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
             session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
-            # Reset retry counter after a successful parse/build
             session_data[call_sid]["retry_time"] = 0
             debug_print(f"ask_time_date: ⏰ Built slot → Start: {appointment_start}, End: {appointment_end}")
         except Exception as e:
@@ -4590,7 +4583,7 @@ def voice():
 
         slot_available = False
         try:
-            # ✅ Use the stricter helper (FreeBusy + events fallback + padding + debug)
+            # ✅ Strict helper (FreeBusy + padding)
             slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
             if slot_available:
                 debug_print("ask_time_date: ✅ Slot free (first check) → proceed to customer lookup/confirmation")
@@ -4598,35 +4591,55 @@ def voice():
             debug_print(f"ask_time_date: ⚠️ Availability check error → {e}")
             slot_available = False
 
+        # ---------- If NOT available → offer up to 3 alternatives (single source) ----------
         if not slot_available:
             debug_print("ask_time_date: ❌ Slot not available")
 
-            # Find nearby alternatives (friendly strings already included by helper).
-            alts = []
+            # Session length (fallbacks)
             try:
-                dur_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
+                dur_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES",
+                                globals().get("SESSION_TIME", 30)) or 30)
+            except Exception:
+                dur_minutes = 30
+            if dur_minutes not in (15, 30, 45, 60):
+                dur_minutes = 30
+
+            alts = []
+            # Prefer new signature (duration_minutes + limit). If the deployed helper is older,
+            # retry without 'duration_minutes'.
+            try:
                 alts = get_next_available_slots(
                     calendar_id,
                     creds,
-                    from_start_iso=appointment_start,              # start searching from requested time
+                    from_start_iso=appointment_start,
                     duration_minutes=dur_minutes,
-                    limit=3,
-                    tz_name="America/Chicago",                     # clinic tz
-                    work_hours=((8,12),(13,17)),                   # adjust to your schedule
-                    slot_step_minutes=30,
-                    search_days=14
+                    limit=3
                 ) or []
+            except TypeError as e:
+                if "duration_minutes" in str(e):
+                    try:
+                        alts = get_next_available_slots(
+                            calendar_id,
+                            creds,
+                            from_start_iso=appointment_start,
+                            limit=3
+                        ) or []
+                    except Exception as e2:
+                        debug_print(f"ask_time_date: ⚠️ get_next_available_slots (no duration) failed → {e2}")
+                        alts = []
+                else:
+                    debug_print(f"ask_time_date: ⚠️ get_next_available_slots TypeError → {e}")
+                    alts = []
             except Exception as e:
                 debug_print(f"ask_time_date: ⚠️ get_next_available_slots error → {e}")
                 alts = []
 
+            # Build the friendly prompt
             if alts:
                 try:
-                    options = " or ".join([slot.get("friendly") for slot in alts if slot.get("friendly")])
-                except Exception as e:
-                    debug_print(f"ask_time_date: ⚠️ options build error → {e}")
+                    options = " or ".join([a.get("friendly") for a in alts if a.get("friendly")])
+                except Exception:
                     options = ""
-
                 if options:
                     prompt = f"That time is not available. Would you like {options}?"
                     debug_print(f"ask_time_date: 💡 Offering alternatives → {options}")
@@ -4652,13 +4665,10 @@ def voice():
             # If we have both phone & DOB and the customer exists → go straight to booking confirmation
             if customer_phone and customer_dob and customer_search(customer_phone, customer_dob):
                 debug_print("ask_time_date: 📋 Customer on file — skip name collection")
-                # 🚩 IMPORTANT: actually transition to book_appt_confirm so it can reserve Google Calendar.
                 session_data[call_sid]["stage"] = "book_appt_confirm"
-                session_data[call_sid]["auto_confirm"] = True  # optional flag for that stage
+                session_data[call_sid]["auto_confirm"] = True  # optional hint for next stage
                 debug_print("ask_time_date: ➡️ Redirecting to book_appt_confirm (auto_confirm=True)")
-                # Immediately re-enter handler; book_appt_confirm will execute now
                 try:
-                    from flask import url_for
                     resp.redirect(url_for("voice"))
                 except Exception:
                     resp.redirect("/voice")
@@ -4677,6 +4687,7 @@ def voice():
             gather = make_gather("Thanks. What is your first name?")
             resp.append(gather)
             return str(resp)
+
 
 
 
