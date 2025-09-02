@@ -1,4 +1,4 @@
-# update  09/02/25 time_saved 10:33 am
+# update  09/02/25 time_saved 11:22 am
 # =========================
 # Standard library imports
 # =========================
@@ -462,36 +462,58 @@ def get_next_available_slots(
     creds,
     *,
     from_start_iso: str,
-    duration_minutes: int = None,   # if None → derive from APPOINTMENT_DURATION_MINUTES / SESSION_TIME
+    duration_minutes: int = None,   # falls back to APPOINTMENT_DURATION_MINUTES/SESSION_TIME
     limit: int = 3,
-    tz_name: str = None,            # if None → CLINIC_TZ or America/Chicago
-    work_hours=None,                # e.g. ((8,12),(13,17)); if None → WORKING_HOURS_START/END
-    slot_step_minutes: int = None,  # if None → duration
-    search_days: int = None         # if None → SEARCH_DAYS or 14
+    tz_name: str = None,            # falls back to CLINIC_TZ or America/Chicago
+    work_hours=None,                # e.g., ((8,12),(13,17)); falls back to WORKING_HOURS_START/END
+    slot_step_minutes: int = None,  # default = duration
+    search_days: int = None         # default = SEARCH_DAYS or 14
 ) -> list:
     """
-    Return up to `limit` free slots after `from_start_iso` for this calendar.
-    Each element: {"start": "<UTC-iso>", "end": "<UTC-iso>", "friendly": "Friday, August 15 at 8:30 AM"}
-    """
+    Return up to `limit` free slots after `from_start_iso`.
 
-    # -------- slot checker (support both spellings) ----------
-    slot_check = globals().get("is_time_slot_available")
+    STRONG RULES (clinic schedule wins):
+      - Only suggest slots on WORKING_DAYS.
+      - Slot must fit FULLY inside provided work_hours windows (and W_START/END).
+      - Exclude LUNCH window entirely (no overlap).
+      - Google availability is necessary but NOT sufficient.
+
+    Also:
+      - If from_start_iso is past, start from NOW (rounded to grid).
+    """
+    # ---- local imports (3.8-safe) ----
+    from datetime import datetime, timedelta, time as dtime
+    try:
+        import pytz as _pytz
+    except Exception:
+        raise RuntimeError("pytz is required")
+    try:
+        from dateutil.parser import isoparse
+    except Exception:
+        raise RuntimeError("python-dateutil is required")
+
+    def _dbg(msg: str) -> None:
+        try: debug_print(msg)
+        except Exception: pass
+
+    _dbg(f"get_next_available_slots: ▶️ cal={calendar_id} from={from_start_iso} limit={limit}")
+
+    # ---- slot checker (support both spellings) ----
+    slot_check = (globals().get("is_time_slot_available")
+                  or globals().get("is_time_slot_avaiable"))
     if not callable(slot_check):
-        try:
-            debug_print("suggest_alternative_times: ❌ 'is_time_slot_available' not found or not callable")
-        except Exception:
-            pass
+        _dbg("get_next_available_slots: ❌ no slot checker callable found")
         return []
 
-    # -------- resolve globals / defaults ----------
-    try:
-        if duration_minutes is None:
+    # ---- defaults from globals ----
+    if duration_minutes is None:
+        try:
             duration_minutes = int(
                 globals().get("APPOINTMENT_DURATION_MINUTES",
                 globals().get("SESSION_TIME", globals().get("SESSIUON_TIME", 30)))
             )
-    except Exception:
-        duration_minutes = 30
+        except Exception:
+            duration_minutes = 30
     if duration_minutes not in (15, 30, 45, 60):
         duration_minutes = 30
 
@@ -500,59 +522,48 @@ def get_next_available_slots(
 
     if tz_name is None:
         tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
-
     try:
         tz_local = _pytz.timezone(tz_name)
     except Exception:
         tz_local = _pytz.timezone("America/Chicago")
 
-    # Working hours windows
     WSTART = int(globals().get("WORKING_HOURS_START", globals().get("WORKIN_HOURS_START", 8)))
     WEND   = int(globals().get("WORKING_HOURS_END", 17))
     if not work_hours:
-        work_hours = ((WSTART, WEND),)  # single window by default
+        work_hours = ((WSTART, WEND),)
 
-    # Working days
     try:
-        working_days = globals().get("WORKING_DAYS", {0,1,2,3,4})
-        # ensure set of ints
-        WORKING_DAYS = set(int(x) for x in (working_days if isinstance(working_days, (list,set,tuple)) else [0,1,2,3,4]))
+        wd_src = globals().get("WORKING_DAYS", {0,1,2,3,4})
+        WORKING_DAYS = set(int(x) for x in (wd_src if isinstance(wd_src, (list,set,tuple)) else [0,1,2,3,4]))
     except Exception:
         WORKING_DAYS = {0,1,2,3,4}
 
-    # Lunch times → ensure datetime.time
+    # ---- lunch helpers ----
     def _as_time(val, default_h=12, default_m=0):
-        from datetime import time as _time
-        if isinstance(val, _time):
+        if isinstance(val, dtime):
             return val
         if isinstance(val, str):
             s = val.strip()
-            if ":" in s:
-                hh, mm = s.split(":", 1)
-            else:
-                hh, mm = s, "0"
+            hh, mm = (s.split(":", 1) + ["0"])[:2] if ":" in s else (s, "0")
             try:
-                return _time(max(0,min(23,int(hh))), max(0,min(59,int(mm))))
+                return dtime(max(0,min(23,int(hh))), max(0,min(59,int(mm))))
             except Exception:
-                return _time(default_h, default_m)
+                return dtime(default_h, default_m)
         if isinstance(val, int):
-            from datetime import time as _time
-            return _time(max(0,min(23,val)), 0)
-        from datetime import time as _time
-        return _time(default_h, default_m)
+            return dtime(max(0,min(23,val)), 0)
+        return dtime(default_h, default_m)
 
-    LUNCH_START = _as_time(globals().get("LUNCH_BREAK_START", None), 12, 0) if globals().get("LUNCH_BREAK_START", None) is not None else None
-    LUNCH_END   = _as_time(globals().get("LUNCH_BREAK_END",   None), 13, 0) if globals().get("LUNCH_BREAK_END",   None) is not None else None
+    LUNCH_START = globals().get("LUNCH_BREAK_START", None)
+    LUNCH_END   = globals().get("LUNCH_BREAK_END",   None)
+    LUNCH_START = _as_time(LUNCH_START, 12, 0) if LUNCH_START is not None else None
+    LUNCH_END   = _as_time(LUNCH_END,   13, 0) if LUNCH_END   is not None else None
 
-    # search horizon
-    try:
-        if search_days is None:
-            search_days = int(globals().get("SEARCH_DAYS", 14))
-    except Exception:
-        search_days = 14
+    if search_days is None:
+        try: search_days = int(globals().get("SEARCH_DAYS", 14))
+        except Exception: search_days = 14
 
-    # -------- helpers ----------
-    def _round_up(dt, minutes: int):
+    # ---- utilities ----
+    def _round_up(dt, minutes):
         q = (dt.minute // minutes) * minutes
         base = dt.replace(minute=q, second=0, microsecond=0)
         if base < dt:
@@ -561,115 +572,124 @@ def get_next_available_slots(
 
     def _inside_hours(dt_local):
         t = dt_local.time()
-        return (t >= time(WSTART, 0)) and (t < time(WEND, 0))
+        ok = (dtime(WSTART, 0) <= t) and ((dt_local + timedelta(minutes=duration_minutes)).time() <= dtime(WEND, 0))
+        if not ok:
+            _dbg(f"get_next_available_slots: ⛔ outside working hours → {dt_local.strftime('%Y-%m-%d %H:%M')}")
+        return ok
 
     def _in_lunch(dt_local):
         if LUNCH_START is None or LUNCH_END is None:
             return False
-        t = dt_local.time()
-        return (t >= LUNCH_START) and (t < LUNCH_END)
+        st = dt_local.time()
+        et = (dt_local + timedelta(minutes=duration_minutes)).time()
+        hit = (st < LUNCH_END and et > LUNCH_START)
+        if hit:
+            _dbg(f"get_next_available_slots: 🍽️ overlaps lunch → {dt_local.strftime('%Y-%m-%d %H:%M')}")
+        return hit
 
     def _friendly(dt_local):
         try:
-            # Unix: %-d / %-I (no leading zeros)
             return dt_local.strftime("%A, %B %-d at %-I:%M %p")
         except Exception:
-            # Windows fallback
             return dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
 
-    # -------- seed / parse from_start_iso ----------
+    # ---- seed start (NOW-aware) ----
     try:
         s = (from_start_iso or "").strip()
-        if s.endswith("Z"):
-            start_utc = isoparse(s)
-            if start_utc.tzinfo is None:
-                start_utc = start_utc.replace(tzinfo=_pytz.UTC)
+        req_utc = isoparse(s)
+        if req_utc.tzinfo is None:
+            req_utc = req_utc.replace(tzinfo=_pytz.UTC)
         else:
-            start_utc = isoparse(s)
-            if start_utc.tzinfo is None:
-                start_utc = start_utc.replace(tzinfo=_pytz.UTC)
-            else:
-                start_utc = start_utc.astimezone(_pytz.UTC)
+            req_utc = req_utc.astimezone(_pytz.UTC)
     except Exception:
-        start_utc = datetime.utcnow().replace(tzinfo=_pytz.UTC)
+        req_utc = None
 
-    start_local = start_utc.astimezone(tz_local)
-    cur_local = _round_up(start_local, slot_step_minutes)
+    now_utc = datetime.utcnow().replace(tzinfo=_pytz.UTC)
+    base_utc = req_utc if (req_utc and req_utc > now_utc) else now_utc
 
-    # If outside hours, snap to next window start
-    if not _inside_hours(cur_local):
-        # Move to today’s first window or next day’s first window
-        today = cur_local
-        jumped = False
-        for ws, we in work_hours:
-            wstart = today.replace(hour=int(ws), minute=0, second=0, microsecond=0)
-            wend   = today.replace(hour=int(we), minute=0, second=0, microsecond=0)
-            if cur_local < wstart:
-                cur_local = wstart
-                jumped = True
+    cur_local = _round_up(base_utc.astimezone(tz_local), slot_step_minutes)
+
+    # Snap into today’s first acceptable window
+    if cur_local.weekday() not in WORKING_DAYS:
+        _dbg(f"get_next_available_slots: 📅 non-working day {cur_local.weekday()} → jump to next working day")
+        # jump to tomorrow 00:00 then set to first window hour
+        d = cur_local
+        while True:
+            d = (d + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            if d.weekday() in WORKING_DAYS:
+                cur_local = d.replace(hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0)
                 break
-        if not jumped:
-            # go to next day first window
-            cur_local = (today + timedelta(days=1)).replace(hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0)
+    else:
+        # move to the first window start if we’re before it; or next day if we’re past it
+        windows_today = [(int(ws), int(we)) for (ws, we) in work_hours if int(ws) < int(we)]
+        if windows_today:
+            first_ws = windows_today[0][0]
+            last_we  = windows_today[-1][1]
+            if cur_local.time() < dtime(first_ws, 0):
+                cur_local = cur_local.replace(hour=first_ws, minute=0, second=0, microsecond=0)
+            elif cur_local.time() >= dtime(last_we, 0):
+                # jump to next working day’s first window
+                d = cur_local
+                while True:
+                    d = (d + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                    if d.weekday() in WORKING_DAYS:
+                        cur_local = d.replace(hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0)
+                        break
 
     end_of_search = cur_local + timedelta(days=search_days)
     results = []
 
-    # -------- main scan loop ----------
+    # ---- main scan (clinic schedule before Google) ----
     while cur_local < end_of_search and len(results) < limit:
-        # non-working day → jump to next day at first window
+        # enforce WORKING_DAYS
         if cur_local.weekday() not in WORKING_DAYS:
-            cur_local = (cur_local + timedelta(days=1)).replace(hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0)
+            _dbg(f"get_next_available_slots: ⤴️ skip non-working day {cur_local.weekday()}")
+            # advance to next working day’s first window
+            d = cur_local
+            while True:
+                d = (d + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                if d.weekday() in WORKING_DAYS:
+                    cur_local = d.replace(hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0)
+                    break
             continue
 
-        # iterate over the day's working windows
         day = cur_local.date()
+        # build localized windows for the day
         windows = []
         for ws, we in work_hours:
-            wstart = datetime(day.year, day.month, day.day, int(ws), 0, tzinfo=tz_local)
-            wend   = datetime(day.year, day.month, day.day, int(we), 0, tzinfo=tz_local)
-            if wstart < wend:
-                windows.append((wstart, wend))
+            ws = int(ws); we = int(we)
+            if ws >= we:
+                continue
+            wstart = tz_local.localize(datetime(day.year, day.month, day.day, ws, 0, 0))
+            wend   = tz_local.localize(datetime(day.year, day.month, day.day, we, 0, 0))
+            windows.append((wstart, wend))
 
-        progressed_day = False
-        placed_in_window = False
-
+        progressed = False
         for wstart, wend in windows:
             if cur_local >= wend:
                 continue
             if cur_local < wstart:
-                cur_local = wstart  # snap up to window start
-
-            # Handle lunch: if we *start* inside lunch, jump to lunch end
-            if _in_lunch(cur_local):
-                cur_local = datetime.combine(cur_local.date(), LUNCH_END, tzinfo=tz_local)
+                cur_local = wstart
 
             while cur_local + timedelta(minutes=duration_minutes) <= wend and len(results) < limit:
-                # skip if entering lunch within this slot
-                if LUNCH_START and LUNCH_END:
-                    start_t = cur_local.time()
-                    end_t = (cur_local + timedelta(minutes=duration_minutes)).time()
-                    # overlap lunch?
-                    if (start_t < LUNCH_END and end_t > LUNCH_START):
-                        # jump to lunch end
-                        cur_local = datetime.combine(cur_local.date(), LUNCH_END, tzinfo=tz_local)
+                # strictly inside working hours
+                if not _inside_hours(cur_local):
+                    break
+                # exclude lunch overlap
+                if _in_lunch(cur_local):
+                    if LUNCH_END:
+                        cur_local = tz_local.localize(datetime.combine(cur_local.date(), LUNCH_END))
                         continue
 
-                # candidate window (UTC ISO)
                 start_iso = cur_local.astimezone(_pytz.UTC).isoformat()
                 end_iso   = (cur_local + timedelta(minutes=duration_minutes)).astimezone(_pytz.UTC).isoformat()
 
+                # Only now ask Google — clinic schedule already satisfied
                 try:
                     ok = bool(slot_check(calendar_id, start_iso, end_iso, creds))
                 except Exception as e:
-                    try:
-                        debug_print(f"get_next_available_slots: slot_check error → {e}");
-                    except:
-                        pass
+                    _dbg(f"get_next_available_slots: slot_check error → {e}")
                     ok = False
-
-
-
 
                 if ok:
                     results.append({
@@ -677,35 +697,35 @@ def get_next_available_slots(
                         "end": end_iso,
                         "friendly": _friendly(cur_local),
                     })
+                    _dbg(f"get_next_available_slots: ✅ add {results[-1]['friendly']}")
                     if len(results) >= limit:
                         break
 
-                # advance by grid
+                # move on grid
                 cur_local = cur_local + timedelta(minutes=slot_step_minutes)
 
-            placed_in_window = True
+            progressed = True
             if len(results) >= limit:
                 break
 
         if len(results) >= limit:
             break
 
-        # advance to next day’s first window if we exhausted windows
-        if placed_in_window:
-            cur_local = (datetime(cur_local.year, cur_local.month, cur_local.day, 0, 0, tzinfo=tz_local) + timedelta(days=1)).replace(
-                hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0
-            )
+        # advance to next working day’s first window
+        if progressed:
+            d = tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day)) + timedelta(days=1)
         else:
-            # if we never placed in a window (e.g., after-hours), jump to next day first window
-            cur_local = (cur_local + timedelta(days=1)).replace(
-                hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0
-            )
+            d = (cur_local + timedelta(days=1))
+        while True:
+            d = d.replace(hour=0, minute=0, second=0, microsecond=0)
+            if d.weekday() in WORKING_DAYS:
+                cur_local = d.replace(hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0)
+                break
+            d = d + timedelta(days=1)
 
-    try:
-        debug_print(f"get_next_available_slots: ✅ returning {len(results)} suggestion(s)")
-    except Exception:
-        pass
+    _dbg(f"get_next_available_slots: ✅ suggestions={len(results)}")
     return results
+
 
 
 
