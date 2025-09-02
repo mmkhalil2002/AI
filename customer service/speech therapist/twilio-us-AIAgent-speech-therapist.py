@@ -1,4 +1,4 @@
-# update  09/02/25 time_saved 11:22 am
+# update  09/02/25 time_saved 11:48 am
 # =========================
 # Standard library imports
 # =========================
@@ -380,78 +380,180 @@ session_data = {}
 
 def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, creds) -> bool:
     """
-    Check if the given time range is free on the doctor's calendar.
-    Returns True if available, False if already booked.
+    Check if the given time range is valid per clinic rules AND free on the doctor's calendar.
+    Returns True if available, False otherwise.
+
+    Validations (done BEFORE Google):
+      - Start/end parseable and on the same local date.
+      - Local weekday is in WORKING_DAYS.
+      - Entire slot is inside WORKING_HOURS_START..WORKING_HOURS_END.
+      - Slot does NOT overlap LUNCH_BREAK_START..LUNCH_BREAK_END (if defined).
 
     Logs (via debug_print):
       - the calendar and window being checked
-      - how many events were returned
+      - schedule validation verdict (and reason if invalid)
+      - how many events were returned (if Google is queried)
       - for each event: (one line) input_start, event_start, input_date, event_date
       - final verdict (FREE/BUSY)
     """
     
 
-    debug_print(
+    # ---- logging helper ----
+    def _dbg(msg: str) -> None:
+        try: debug_print(msg)
+        except Exception: pass
+
+    _dbg(
         f"is_time_slot_available: 🔎 cal='{calendar_id}' "
         f"window={start_time}→{end_time}"
     )
 
-    # Pre-parse input window once so we can also log the date-only view
+    # ---- parse inputs (UTC expected; tolerate naive by assuming UTC) ----
     try:
-        _in_start_dt = isoparse(start_time)
-        _in_start_date = _in_start_dt.date().isoformat()
+        in_start_dt = isoparse(start_time)
+        if in_start_dt.tzinfo is None:
+            in_start_dt = in_start_dt.replace(tzinfo=_pytz.UTC)
+        else:
+            in_start_dt = in_start_dt.astimezone(_pytz.UTC)
+        in_start_date = in_start_dt.date().isoformat()
     except Exception:
-        _in_start_dt = None
-        _in_start_date = "?"
+        _dbg("is_time_slot_available: ❌ invalid start_time")
+        return False
 
     try:
-        _in_end_dt = isoparse(end_time)
-        _in_end_date = _in_end_dt.date().isoformat()
+        in_end_dt = isoparse(end_time)
+        if in_end_dt.tzinfo is None:
+            in_end_dt = in_end_dt.replace(tzinfo=_pytz.UTC)
+        else:
+            in_end_dt = in_end_dt.astimezone(_pytz.UTC)
+        in_end_date = in_end_dt.date().isoformat()
     except Exception:
-        _in_end_dt = None
-        _in_end_date = "?"
+        _dbg("is_time_slot_available: ❌ invalid end_time")
+        return False
 
+    if in_end_dt <= in_start_dt:
+        _dbg("is_time_slot_available: ❌ end <= start")
+        return False
+
+    # ---- clinic timezone & globals ----
+    tz_name = (globals().get("CLINIC_TZ")
+               or globals().get("LOCAL_TZ")
+               or "America/Chicago")
+    try:
+        tz_local = _pytz.timezone(tz_name)
+    except Exception:
+        tz_local = _pytz.timezone("America/Chicago")
+
+    WSTART = int(globals().get("WORKING_HOURS_START", globals().get("WORKIN_HOURS_START", 8)))
+    WEND   = int(globals().get("WORKING_HOURS_END", 17))
+    try:
+        wd_src = globals().get("WORKING_DAYS", {0,1,2,3,4})
+        WORKING_DAYS = set(int(x) for x in (wd_src if isinstance(wd_src, (list,set,tuple,set)) else [0,1,2,3,4]))
+    except Exception:
+        WORKING_DAYS = {0,1,2,3,4}
+
+    # Parse lunch as time objects (accept time/int/"HH" or "HH:MM")
+    def _as_time(val, default_h=12, default_m=0) -> dtime:
+        if isinstance(val, dtime):
+            return val
+        if isinstance(val, int):
+            return dtime(max(0, min(23, val)), 0)
+        if isinstance(val, str):
+            s = val.strip()
+            if ":" in s:
+                hh, mm = s.split(":", 1)
+            else:
+                hh, mm = s, "0"
+            try:
+                return dtime(max(0,min(23,int(hh))), max(0,min(59,int(mm))))
+            except Exception:
+                return dtime(default_h, default_m)
+        return dtime(default_h, default_m)
+
+    LUNCH_START = globals().get("LUNCH_BREAK_START", None)
+    LUNCH_END   = globals().get("LUNCH_BREAK_END",   None)
+    LUNCH_START = _as_time(LUNCH_START, 12, 0) if LUNCH_START is not None else None
+    LUNCH_END   = _as_time(LUNCH_END,   13, 0) if LUNCH_END   is not None else None
+
+    # ---- convert to local for schedule validation ----
+    start_local = in_start_dt.astimezone(tz_local)
+    end_local   = in_end_dt.astimezone(tz_local)
+
+    # Must be same local day (we don’t support cross-midnight sessions)
+    if start_local.date() != end_local.date():
+        _dbg("is_time_slot_available: ❌ crosses local midnight (single-day sessions only)")
+        return False
+
+    # Working day check
+    if start_local.weekday() not in WORKING_DAYS:
+        _dbg(f"is_time_slot_available: ❌ {start_local.strftime('%Y-%m-%d')} is not in WORKING_DAYS {sorted(WORKING_DAYS)}")
+        return False
+
+    # Inside hours check (entire slot must fit)
+    ws = dtime(WSTART, 0)
+    we = dtime(WEND,   0)
+    st = start_local.time()
+    et = end_local.time()
+    if not (ws <= st and et <= we and st < et):
+        _dbg(
+            "is_time_slot_available: ❌ outside working hours "
+            f"({ws.strftime('%H:%M')}–{we.strftime('%H:%M')} local)"
+        )
+        return False
+
+    # Lunch overlap check (if defined)
+    if LUNCH_START and LUNCH_END:
+        # overlap if start < lunch_end and end > lunch_start
+        if (st < LUNCH_END) and (et > LUNCH_START):
+            _dbg(
+                "is_time_slot_available: ❌ overlaps lunch "
+                f"({LUNCH_START.strftime('%H:%M')}–{LUNCH_END.strftime('%H:%M')} local)"
+            )
+            return False
+
+    # ---- Schedule is valid → now check Google for BUSY/FREE ----
     try:
         service = build("calendar", "v3", credentials=creds)
         events_result = service.events().list(
             calendarId=calendar_id,
-            timeMin=start_time,          # RFC3339 / ISO 8601
-            timeMax=end_time,            # RFC3339 / ISO 8601
+            timeMin=in_start_dt.isoformat(),   # RFC3339 / ISO 8601
+            timeMax=in_end_dt.isoformat(),
             singleEvents=True,
             showDeleted=False,
             orderBy="startTime",
             maxResults=250,
         ).execute()
 
-        events = events_result.get("items", [])
-        debug_print(f"is_time_slot_available: ℹ️ events count={len(events)}")
+        events = events_result.get("items", []) or []
+        _dbg(f"is_time_slot_available: ℹ️ events count={len(events)}")
 
         # Print (one line) input_start, event_start, input_date, event_date for each event
         for ev in events:
             event_start_raw = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
             try:
-                _ev_start_dt = isoparse(event_start_raw) if event_start_raw else None
-                _ev_start_date = _ev_start_dt.date().isoformat() if _ev_start_dt else "?"
+                ev_start_dt = isoparse(event_start_raw) if event_start_raw else None
+                if ev_start_dt and ev_start_dt.tzinfo is None:
+                    ev_start_dt = ev_start_dt.replace(tzinfo=_pytz.UTC)
+                ev_start_date = ev_start_dt.date().isoformat() if ev_start_dt else "?"
             except Exception:
-                _ev_start_dt = None
-                _ev_start_date = "?"
-
-            debug_print(
+                ev_start_date = "?"
+            _dbg(
                 "is_time_slot_available: • "
-                f"input_start={start_time} | "
+                f"input_start={in_start_dt.isoformat()} | "
                 f"event_start={event_start_raw} | "
-                f"input_date={_in_start_date} | "
-                f"event_date={_ev_start_date}"
+                f"input_date={in_start_date} | "
+                f"event_date={ev_start_date}"
             )
 
         available = (len(events) == 0)
-        debug_print(f"is_time_slot_available: {'✅ FREE' if available else '❌ BUSY'}")
+        _dbg(f"is_time_slot_available: {'✅ FREE' if available else '❌ BUSY'}")
         return available
 
     except Exception as e:
-        debug_print(f"is_time_slot_available: ❗ error during events.list → {e}")
-        # Safer to fail closed to avoid double-booking
+        _dbg(f"is_time_slot_available: ❗ error during events.list → {e}")
+        # Fail closed to avoid double-booking
         return False
+
 
 
 
