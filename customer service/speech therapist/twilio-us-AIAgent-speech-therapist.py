@@ -1,4 +1,4 @@
-# update  08/27/25 03:12 pm
+# update  09/02/25 07:30 pm
 # =========================
 # Standard library imports
 # =========================
@@ -29,6 +29,7 @@ from datetime import datetime as _dt_local, date as _date_local
 from dateutil import parser as dtparser
 from dateutil.parser import isoparse
 from dateutil.tz import gettz
+from dateutil.tz import gettz as _gettz
 from dotenv import load_dotenv, find_dotenv
 
 # Load .env from the current directory (or nearest parent)
@@ -477,8 +478,18 @@ def get_next_available_slots(
 
 
 
+"""
 
+from typing import List, Dict, Optional
+from datetime import datetime, timedelta, time as _time, timezone
 
+try:
+    # Prefer dateutil for named timezones
+    from dateutil.tz import gettz as _gettz
+except Exception:
+    _gettz = None
+
+"""
 def suggest_alternative_times(
     doctor_id: str,
     creds,
@@ -491,17 +502,16 @@ def suggest_alternative_times(
     Shape: [{"start": "<UTC-iso>", "end": "<UTC-iso>", "friendly": "<local phrase>"}]
 
     This version **uses your slot-check function**:
-      - Prefer: is_time_slot_avaiable(calendar_id, start_iso, end_iso, creds)  # (typo per your code)
-      - Fallback: is_time_slot_available(calendar_id, start_iso, end_iso, creds)
-    If neither is present, nothing is suggested (safe default).
+      - Prefer: is_time_slot_available(calendar_id, start_iso, end_iso, creds)
+      - (Legacy typo support: if you had is_time_slot_avaiable, it will be used too)
 
     Respects globals:
       SESSION_TIME / SESSIUON_TIME, WORKING_DAYS, WORKING_HOURS_START/END,
-      LUNCH_BREAK_START/END, CLINIC_TZ/LOCAL_TZ, SEARCH_DAYS
+      LUNCH_BREAK_START/END, CLINIC_TZ (or LOCAL_TZ), SEARCH_DAYS
     """
 
     # ---------- resolve slot check function (typo-friendly) ----------
-    slot_check =  globals().get("is_time_slot_available")
+    slot_check = globals().get("is_time_slot_available") or globals().get("is_time_slot_avaiable")
     if not callable(slot_check):
         try:
             debug_print("suggest_alternative_times: ⚠️ no slot-check function found; returning no suggestions")
@@ -509,59 +519,88 @@ def suggest_alternative_times(
             pass
         return []
 
-    # ---------- globals with fallbacks ----------
+    # ---------- load globals with safe fallbacks ----------
+    g = globals()
+
+    # Session length (minutes) – accept common values; default 30
     try:
-        session_minutes = int(globals().get("SESSION_TIME", globals().get("SESSIUON_TIME", 30)) or 30)
+        session_minutes = int(g.get("SESSION_TIME", g.get("SESSIUON_TIME", 30)) or 30)
     except Exception:
         session_minutes = 30
     if session_minutes not in (15, 30, 45, 60):
         session_minutes = 30
-    step_minutes = session_minutes  # align grid to session length
 
-    WSTART = int(globals().get("WORKING_HOURS_START", globals().get("WORKIN_HOURS_START", 8)))
-    WEND   = int(globals().get("WORKING_HOURS_END", 17))
+    # Grid step aligned to session length
+    step_minutes = session_minutes
 
-    WORKING_DAYS = set(globals().get("WORKING_DAYS", {0,1,2,3,4}))  # Mon–Fri
+    # Working days/hours
+    WORKING_DAYS = set(g.get("WORKING_DAYS", {0, 1, 2, 3, 4}))  # Mon–Fri by default
+    WSTART = int(g.get("WORKING_HOURS_START", g.get("WORKIN_HOURS_START", 8)))  # 08:00
+    WEND   = int(g.get("WORKING_HOURS_END", 17))                                 # 17:00
 
-    LUNCH_BREAK_START = globals().get("LUNCH_BREAK_START", _time(12, 0))
-    LUNCH_BREAK_END   = globals().get("LUNCH_BREAK_END",   _time(13, 0))
-    if not isinstance(LUNCH_BREAK_START, _time): LUNCH_BREAK_START = _time(12, 0)
-    if not isinstance(LUNCH_BREAK_END, _time):   LUNCH_BREAK_END   = _time(13, 0)
+    # Lunch window (can be datetime.time or "HH:MM" string)
+    def _as_time(val, default: _time) -> _time:
+        if isinstance(val, _time):
+            return val
+        if isinstance(val, str):
+            parts = val.split(":")
+            try:
+                h = int(parts[0]); m = int(parts[1]) if len(parts) > 1 else 0
+                return _time(h, m)
+            except Exception:
+                return default
+        return default
 
-    tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
+    LUNCH_BREAK_START = _as_time(g.get("LUNCH_BREAK_START", "12:00"), _time(12, 0))
+    LUNCH_BREAK_END   = _as_time(g.get("LUNCH_BREAK_END",   "13:00"), _time(13, 0))
+
+    # Clinic timezone
+    tz_name = (g.get("CLINIC_TZ") or g.get("LOCAL_TZ") or "America/Chicago")
+
+    # Resolve tzinfo (dateutil preferred; fall back to UTC)
+    def _tz(name: str):
+        if _gettz:
+            tz = _gettz(name)
+            if tz is not None:
+                return tz
+        return timezone.utc
+
+    tz_local = _tz(tz_name)
+
+    # Search horizon (days)
     try:
-        tz_local = _pytz.timezone(tz_name)
+        SEARCH_DAYS = int(g.get("SEARCH_DAYS", 7))
     except Exception:
-        tz_local = _pytz.timezone("America/Chicago")
-
-    SEARCH_DAYS = int(globals().get("SEARCH_DAYS", 7))
+        SEARCH_DAYS = 7
 
     # ---------- helpers ----------
-    def _round_up(dt, minutes: int):
+    def _round_up(dt: datetime, minutes: int) -> datetime:
         q = (dt.minute // minutes) * minutes
         base = dt.replace(minute=q, second=0, microsecond=0)
         if base < dt:
             base += timedelta(minutes=minutes)
         return base
 
-    def _inside_hours(dt_local):
+    def _inside_hours(dt_local: datetime) -> bool:
         t = dt_local.time()
         return _time(WSTART) <= t < _time(WEND)
 
-    def _in_lunch(dt_local):
+    def _in_lunch(dt_local: datetime) -> bool:
         t = dt_local.time()
         return LUNCH_BREAK_START <= t < LUNCH_BREAK_END
 
-    def _to_utc_iso(dt_local):
-        return dt_local.astimezone(_pytz.UTC).isoformat()
+    def _to_utc_iso(dt_local: datetime) -> str:
+        return dt_local.astimezone(timezone.utc).isoformat()
 
-    def _friendly_local(dt_local):
+    def _friendly_local(dt_local: datetime) -> str:
         try:
-            return dt_local.strftime("%A, %B %-d at %-I:%M %p")   # Unix-like
+            # Unix-style (no leading zeros)
+            return dt_local.strftime("%A, %B %-d at %-I:%M %p")
         except Exception:
-            return dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")  # Windows fallback
+            # Windows fallback
+            return dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
 
-    # ---------- seed start ----------
+    # ---------- seed start (UTC aware) ----------
     if from_start_iso:
         s = from_start_iso.strip().replace(" ", "T")
         try:
@@ -570,17 +609,16 @@ def suggest_alternative_times(
             else:
                 start_utc = datetime.fromisoformat(s)
             if start_utc.tzinfo is None:
-                start_utc = start_utc.replace(tzinfo=_pytz.UTC)
+                start_utc = start_utc.replace(tzinfo=timezone.utc)
             else:
-                start_utc = start_utc.astimezone(_pytz.UTC)
+                start_utc = start_utc.astimezone(timezone.utc)
         except Exception:
-            start_utc = datetime.utcnow().replace(tzinfo=_pytz.UTC)
+            start_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
     else:
-        start_utc = datetime.utcnow().replace(tzinfo=_pytz.UTC)
+        start_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
 
+    # Start on local grid inside working hours
     cur_local = _round_up(start_utc.astimezone(tz_local), step_minutes)
-
-    # bring inside today's working window
     if cur_local.time() < _time(WSTART):
         cur_local = cur_local.replace(hour=WSTART, minute=0, second=0, microsecond=0)
     elif cur_local.time() >= _time(WEND):
@@ -608,6 +646,7 @@ def suggest_alternative_times(
 
         # candidate window (local) → to UTC
         end_local = cur_local + timedelta(minutes=session_minutes)
+        # keep inside the same working day/hours
         if end_local.date() != cur_local.date() or end_local.time() > _time(WEND):
             cur_local = (cur_local + timedelta(days=1)).replace(hour=WSTART, minute=0, second=0, microsecond=0)
             continue
@@ -615,10 +654,14 @@ def suggest_alternative_times(
         start_iso = _to_utc_iso(cur_local)
         end_iso   = _to_utc_iso(end_local)
 
-        # **Call the slot checker** before suggesting
+        # **Single source of truth**: check availability
         try:
             ok = bool(slot_check(doctor_id, start_iso, end_iso, creds))
-        except Exception:
+        except Exception as e:
+            try:
+                debug_print(f"suggest_alternative_times: ⚠️ availability check error → {e}")
+            except Exception:
+                pass
             ok = False
 
         if ok:
@@ -632,6 +675,12 @@ def suggest_alternative_times(
         cur_local = cur_local + timedelta(minutes=step_minutes)
         if cur_local.time() >= _time(WEND):
             cur_local = (cur_local + timedelta(days=1)).replace(hour=WSTART, minute=0, second=0, microsecond=0)
+
+    try:
+        debug_print(f"suggest_alternative_times: ✅ {len(results)} suggestion(s) "
+                    f"(dur={session_minutes}m, limit={num_options}, tz='{tz_name}')")
+    except Exception:
+        pass
 
     return results
 
