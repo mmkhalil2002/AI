@@ -851,19 +851,9 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
 
 
 
-# --- imports near top of file (once) ---
-import re as _re
-from datetime import datetime, timedelta
-try:
-    import pytz as _pytz
-except Exception:
-    _pytz = None
-try:
-    from dateutil.parser import parse as _dtparse
-except Exception:
-    _dtparse = None
 
-def build_timeslot_range(spoken_day: str, spoken_time: str) -> tuple[str, str]:
+
+def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     """
     Parse ("Friday, August 17", "5:00 AM") into a future UTC start/end ISO pair.
     Rules:
