@@ -3180,81 +3180,146 @@ def get_docotor_appt_for(doctor_name: str, phone: str, dob: str = None) -> list:
 # - Adds ±1s boundary "fuzz" to avoid edge inclusivity issues.
 # - Logs any blocking busy windows for debugging.
 # - UPDATED: robust tz handling + all-day events in fallback overlap test.
+# - NEW: Enforces clinic policy (working days/hours/lunch/past) before Google.
 # =============================================================================
 def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds) -> bool:
     """
-    Return True if NO overlapping event exists on this doctor's calendar.
-    - Primary check: Google Calendar FreeBusy (robust for availability).
-    - Fallback: events().list with explicit overlap test.
-    - Adds ±60s guard to catch edge-inclusive events.
-    - Emits debug lines showing what blocked the slot when busy.
-    - UPDATED: Converts all comparisons to tz-aware UTC; handles all-day events.
+    Return True if the slot is valid per clinic policy AND no overlapping event exists.
+    Policy enforced here (no extra helpers):
+      - not in the past (local clinic TZ)
+      - on an allowed working day (WORKING_DAYS)
+      - inside working hours (WORKING_HOURS_START/END)
+      - does not overlap lunch (LUNCH_BREAK_START/END)
+    Then:
+      - Primary check: Google FreeBusy
+      - Fallback: events().list explicit overlap
     """
-    #from googleapiclient.discovery import build
-    #from dateutil.parser import isoparse
-    from datetime import datetime, date as _date, timedelta
+    # Lazy imports / aliases that won't pollute globals
+    try:
+        _TZMOD = _pytz
+    except NameError:
+        import pytz as _TZMOD
+    try:
+        _isoparse = isoparse
+    except NameError:
+        from dateutil.parser import isoparse as _isoparse
+    from datetime import datetime, date as _date, time as _time, timedelta
+    # (build is expected to be imported elsewhere in your file)
 
-    service = build("calendar", "v3", credentials=creds)
-
-    # ---- helpers -------------------------------------------------------------
+    # ---- helpers (local to this function, not global) ------------------------
     def _aware_utc(dt):
-        """Ensure dt is tz-aware UTC."""
         if dt.tzinfo is None:
-            return _pytz.UTC.localize(dt)
-        return dt.astimezone(_pytz.UTC)
+            return _TZMOD.UTC.localize(dt)
+        return dt.astimezone(_TZMOD.UTC)
 
-    def _event_bounds_utc(ev) -> tuple:
-        """
-        Return (start_utc, end_utc) for an event.
-        Handles:
-          - dateTime with/without tz
-          - all-day date (end.date is exclusive per Google API)
-          - per-field and per-event timeZone hints
-        """
+    def _to_time(val, default_h=None, default_m=0):
+        """Coerce env/global value to datetime.time or None."""
+        if val is None:
+            return None if default_h is None else _time(default_h, default_m)
+        if isinstance(val, _time):
+            return val
+        if isinstance(val, int):
+            return _time(max(0, min(23, val)), 0)
+        s = str(val).strip()
+        if not s:
+            return None if default_h is None else _time(default_h, default_m)
+        if ":" in s:
+            hh, mm = (s.split(":", 1) + ["0"])[:2]
+        else:
+            hh, mm = s, "0"
+        try:
+            return _time(max(0, min(23, int(hh))), max(0, min(59, int(mm))))
+        except Exception:
+            return None if default_h is None else _time(default_h, default_m)
+
+    def _event_bounds_utc(ev):
+        """Return (start_utc, end_utc) handling dateTime/date and tz hints."""
         s = ev.get("start", {}) or {}
         e = ev.get("end",   {}) or {}
         ev_tz = (ev.get("timeZone") or "").strip() or None
         stz = (s.get("timeZone") or ev_tz)
         etz = (e.get("timeZone") or ev_tz)
 
-        tz_hint = _pytz.timezone(CLINIC_TZ)
+        tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
+        try:
+            tz_hint = _TZMOD.timezone(tz_name)
+        except Exception:
+            tz_hint = _TZMOD.timezone("America/Chicago")
 
         # Start
-        if "dateTime" in s and s["dateTime"]:
-            ds = isoparse(s["dateTime"])
+        if s.get("dateTime"):
+            ds = _isoparse(s["dateTime"])
             if ds.tzinfo is None:
-                ds = ( _pytz.timezone(stz).localize(ds) if stz else tz_hint.localize(ds) )
-        elif "date" in s and s["date"]:
-            # All-day start at 00:00 local
+                ds = (_TZMOD.timezone(stz).localize(ds) if stz else tz_hint.localize(ds))
+        elif s.get("date"):
             d = _date.fromisoformat(s["date"])
-            ds = ( _pytz.timezone(stz).localize(datetime(d.year, d.month, d.day))
-                   if stz else tz_hint.localize(datetime(d.year, d.month, d.day)) )
+            ds = tz_hint.localize(datetime(d.year, d.month, d.day))
         else:
             return (None, None)
-
-        # End (Google all-day end.date is exclusive)
-        if "dateTime" in e and e["dateTime"]:
-            de = isoparse(e["dateTime"])
+        # End
+        if e.get("dateTime"):
+            de = _isoparse(e["dateTime"])
             if de.tzinfo is None:
-                de = ( _pytz.timezone(etz).localize(de) if etz else tz_hint.localize(de) )
-        elif "date" in e and e["date"]:
+                de = (_TZMOD.timezone(etz).localize(de) if etz else tz_hint.localize(de))
+        elif e.get("date"):
             d = _date.fromisoformat(e["date"])
-            de = ( _pytz.timezone(etz).localize(datetime(d.year, d.month, d.day))
-                   if etz else tz_hint.localize(datetime(d.year, d.month, d.day)) )
+            de = tz_hint.localize(datetime(d.year, d.month, d.day))  # Google all-day end is exclusive
         else:
             return (None, None)
 
-        return (ds.astimezone(_pytz.UTC), de.astimezone(_pytz.UTC))
+        return (ds.astimezone(_TZMOD.UTC), de.astimezone(_TZMOD.UTC))
 
     # ---- normalize requested window (UTC, aware) -----------------------------
     try:
-        start_dt = _aware_utc(isoparse(start_iso))
-        end_dt   = _aware_utc(isoparse(end_iso))
+        start_dt = _aware_utc(_isoparse(start_iso))
+        end_dt   = _aware_utc(_isoparse(end_iso))
     except Exception as e:
         debug_print(f"is_time_slot_available: ❌ invalid start/end iso → {e}")
         return False
 
-    # ±60s guard for edge cases where an event starts/ends exactly at boundaries
+    # ---- clinic policy (local tz) -------------------------------------------
+    tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
+    try:
+        tz_local = _TZMOD.timezone(tz_name)
+    except Exception:
+        tz_local = _TZMOD.timezone("America/Chicago")
+
+    s_loc = start_dt.astimezone(tz_local)
+    e_loc = end_dt.astimezone(tz_local)
+
+    # Past?
+    now_loc = datetime.now(tz_local)
+    if e_loc <= now_loc:
+        debug_print("is_time_slot_available: ⛔ blocked by clinic policy → past")
+        return False
+
+    # Working days
+    try:
+        wd_src = globals().get("WORKING_DAYS", {0,1,2,3,4})
+        WORKING_DAYS = set(int(x) for x in (wd_src if isinstance(wd_src, (list,set,tuple)) else [0,1,2,3,4]))
+    except Exception:
+        WORKING_DAYS = {0,1,2,3,4}
+    if s_loc.weekday() not in WORKING_DAYS:
+        debug_print(f"is_time_slot_available: ⛔ blocked by clinic policy → non_working_day (weekday={s_loc.weekday()})")
+        return False
+
+    # Working hours
+    WSTART = int(globals().get("WORKING_HOURS_START", globals().get("WORKIN_HOURS_START", 8)))
+    WEND   = int(globals().get("WORKING_HOURS_END", 17))
+    if not (_time(WSTART, 0) <= s_loc.time() and e_loc.time() <= _time(WEND, 0)):
+        debug_print(f"is_time_slot_available: ⛔ blocked by clinic policy → outside_hours ({WSTART}:00–{WEND}:00)")
+        return False
+
+    # Lunch overlap (if both defined)
+    LUNCH_START = _to_time(globals().get("LUNCH_BREAK_START"))
+    LUNCH_END   = _to_time(globals().get("LUNCH_BREAK_END"))
+    if LUNCH_START and LUNCH_END:
+        if s_loc.time() < LUNCH_END and e_loc.time() > LUNCH_START:
+            debug_print("is_time_slot_available: ⛔ blocked by clinic policy → lunch_overlap")
+            return False
+
+    # ---- proceed with Google checks -----------------------------------------
+    # ±60s guard for edges
     tmin = (start_dt - timedelta(seconds=60)).isoformat()
     tmax = (end_dt   + timedelta(seconds=60)).isoformat()
 
@@ -3264,8 +3329,9 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
         f"(padded {tmin}→{tmax})"
     )
 
-    # ---- 1) FreeBusy (preferred) --------------------------------------------
+    # 1) FreeBusy
     try:
+        service = build("calendar", "v3", credentials=creds)
         fb = service.freebusy().query(body={
             "timeMin": tmin,
             "timeMax": tmax,
@@ -3285,13 +3351,13 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
     except Exception as e:
         debug_print(f"is_time_slot_available: ⚠️ FreeBusy error → {e} (will check events().list)")
 
-    # ---- 2) Fallback/double-check: events().list with explicit overlap -------
+    # 2) Fallback: events().list overlap
     try:
         items = service.events().list(
             calendarId=calendar_id,
             timeMin=tmin,
             timeMax=tmax,
-            singleEvents=True,   # expand recurrences
+            singleEvents=True,
             showDeleted=False,
             orderBy="startTime",
             maxResults=250,
@@ -3302,7 +3368,6 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
         for ev in items:
             if ev.get("status") == "cancelled":
                 continue
-            # 'transparent' shouldn't block; 'opaque' (default) does
             if ev.get("transparency") == "transparent":
                 continue
 
@@ -3310,7 +3375,6 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
             if not es_utc or not ee_utc:
                 continue
 
-            # Overlap rule: (start < ev_end) AND (end > ev_start)
             if start_dt < ee_utc and end_dt > es_utc:
                 title = ev.get("summary", "")
                 debug_print(
@@ -3322,7 +3386,6 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
 
         debug_print("is_time_slot_available: ✅ No overlapping events found via events().list")
     except Exception as e:
-        # Safer to fail closed than double-book if both checks error out.
         debug_print(f"is_time_slot_available: ❗ events.list error → {e}; treating as NOT available (fail-closed)")
         return False
 
