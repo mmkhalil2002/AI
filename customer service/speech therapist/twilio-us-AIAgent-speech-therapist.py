@@ -659,7 +659,6 @@ def get_next_available_slots(
 
     # ---- slot checker (support both spellings) ----
     slot_check = (globals().get("is_time_slot_available")
-                  or globals().get("is_time_slot_avaiable"))
     if not callable(slot_check):
         _dbg("get_next_available_slots: ❌ no slot checker callable found")
         return []
@@ -5932,7 +5931,7 @@ def voice():
         calendar_id = doctor_id
         debug_print(f"book_appt_confirm: 🔎 availability cal={calendar_id} {appointment_start}→{appointment_end}")
         try:
-            slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
+            slot_free = is_time_slot_available(calendar_id, creds,appointment_start, appointment_end)
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ availability check error → {e}")
             slot_free = False
@@ -6620,7 +6619,7 @@ def voice():
 
         # --- Availability (invert logic for cancel) -------------------------------
         try:
-            slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
+            slot_free = is_time_slot_available(calendar_id, creds,appointment_start, appointment_end)
             debug_print(f"cancel_appt_by_time_date: 🔎 is_time_slot_available → {slot_free}")
         except Exception as e:
             debug_print(f"cancel_appt_by_time_date: ⚠️ availability check error → {e}")
