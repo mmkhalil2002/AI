@@ -1,4 +1,4 @@
-# update  09/03/25 time_saved 07:56 am
+# update  09/05/25 time_saved 07:12 am
 # =========================
 # Standard library imports
 # =========================
@@ -562,16 +562,14 @@ def get_next_available_slots(
       - Google availability is necessary but NOT sufficient.
 
     If from_start_iso is past, start from NOW (rounded to grid, STRICTLY AFTER now).
+    If from_start_iso is far in the future (beyond the search horizon), clamp to NOW.
     """
     # ---- local imports (3.8-safe) ----
-    try:
-        import pytz as _pytz
-    except Exception:  # pragma: no cover
-        raise
     from datetime import datetime, timedelta, time as dtime
     try:
+        import pytz as _pytz
         from dateutil.parser import isoparse
-    except Exception:  # pragma: no cover
+    except Exception:
         raise
 
     def _dbg(msg: str) -> None:
@@ -591,15 +589,10 @@ def get_next_available_slots(
 
     # ---- defaults from globals ----
     if duration_minutes is None:
-        try:
-            duration_minutes = int(
-                globals().get(
-                    "APPOINTMENT_DURATION_MINUTES",
-                    globals().get("SESSION_TIME", globals().get("SESSIUON_TIME", 30))
-                )
-            )
-        except Exception:
-            duration_minutes = 30
+        duration_minutes = int(globals().get(
+            "APPOINTMENT_DURATION_MINUTES",
+            globals().get("SESSION_TIME", globals().get("SESSIUON_TIME", 30))
+        ))
     if duration_minutes not in (15, 30, 45, 60):
         duration_minutes = 30
 
@@ -624,15 +617,15 @@ def get_next_available_slots(
     except Exception:
         WORKING_DAYS = {0,1,2,3,4}
 
-    # ---- lunch window (optional) ----
-    def _as_time(val, default_h=12, default_m=0):
+    # Lunch window (optional)
+    def _as_time(val, default_h=None, default_m=0):
         if val is None:
-            return None
+            return None if default_h is None else dtime(default_h, default_m)
         if isinstance(val, dtime):
             return val
         s = str(val).strip()
         if not s:
-            return None
+            return None if default_h is None else dtime(default_h, default_m)
         if ":" in s:
             hh, mm = (s.split(":", 1) + ["0"])[:2]
         else:
@@ -640,26 +633,36 @@ def get_next_available_slots(
         try:
             return dtime(max(0, min(23, int(hh))), max(0, min(59, int(mm))))
         except Exception:
-            return dtime(default_h, default_m)
+            return None if default_h is None else dtime(default_h, default_m)
 
     LUNCH_START = _as_time(globals().get("LUNCH_BREAK_START"))
     LUNCH_END   = _as_time(globals().get("LUNCH_BREAK_END"))
 
     if search_days is None:
-        try:
-            search_days = int(globals().get("SEARCH_DAYS", 14))
-        except Exception:
-            search_days = 14
+        search_days = int(globals().get("SEARCH_DAYS", 14))
 
     # ---- utilities ----
     def _ceil_to_next_step_strict(dt, minutes):
-        """Ceil to the next grid; if exactly on grid, push one step to be strictly future."""
+        """Ceil to grid; if exactly on grid, push one step to be strictly future."""
         base = dt.replace(second=0, microsecond=0)
         rem = base.minute % minutes
         rounded = base if rem == 0 else base + timedelta(minutes=(minutes - rem))
-        if dt >= rounded:  # strictly future
+        if dt >= rounded:
             rounded = rounded + timedelta(minutes=minutes)
         return rounded
+
+    def _friendly(dt_local, now_local):
+        # Include year if different from current year to avoid "August confusion"
+        if dt_local.year != now_local.year:
+            try:
+                return dt_local.strftime("%A, %B %-d, %Y at %-I:%M %p")
+            except Exception:
+                return dt_local.strftime("%A, %B %d, %Y at %I:%M %p").replace(" 0", " ")
+        else:
+            try:
+                return dt_local.strftime("%A, %B %-d at %-I:%M %p")
+            except Exception:
+                return dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
 
     def _inside_hours(start_loc):
         end_loc = start_loc + timedelta(minutes=duration_minutes)
@@ -671,82 +674,52 @@ def get_next_available_slots(
         end_loc = start_loc + timedelta(minutes=duration_minutes)
         return (start_loc.time() < LUNCH_END and end_loc.time() > LUNCH_START)
 
-    def _friendly(dt_local):
-        try:
-            return dt_local.strftime("%A, %B %-d at %-I:%M %p")
-        except Exception:
-            return dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
+    # ---- seed start & clamp to NOW-window -----------------------------------
+    now_loc = datetime.now(tz_local)
 
-    # ---- seed start (NEVER in the past) ----
-    now_utc = datetime.utcnow().replace(tzinfo=_pytz.UTC)
-    now_loc = now_utc.astimezone(tz_local)
-
-    # Parse requested start. If naive, treat as LOCAL (more intuitive for callers).
+    # Parse requested; if naive, treat as LOCAL
     req_local = None
     try:
         parsed = isoparse((from_start_iso or "").strip())
-        if parsed.tzinfo is None:
-            req_local = tz_local.localize(parsed)
-        else:
-            req_local = parsed.astimezone(tz_local)
+        req_local = (tz_local.localize(parsed) if parsed.tzinfo is None else parsed.astimezone(tz_local))
     except Exception:
         req_local = None
 
-    base_local = req_local if (req_local and req_local > now_loc) else now_loc
-    # Strictly after "now": ceil to next step (even if exactly on boundary)
+    # Define the allowed search window: NOW → NOW + search_days
+    search_window_start = now_loc
+    search_window_end   = now_loc + timedelta(days=search_days)
+
+    # Choose base start:
+    #  - if req_local is within [now, now+search_days], use req_local
+    #  - else, clamp to NOW (so far-future or past requests don't hijack the window)
+    if req_local and (search_window_start <= req_local <= search_window_end):
+        base_local = req_local
+    else:
+        base_local = search_window_start
+
+    # Cursor is strictly after base, aligned to grid
     cur_local = _ceil_to_next_step_strict(base_local, slot_step_minutes)
 
-    # Snap into a valid working window for today; else jump to next working day
-    if cur_local.weekday() not in WORKING_DAYS:
-        _dbg(f"get_next_available_slots: 📅 non-working day {cur_local.weekday()} → next working day")
-        d = cur_local
-        while True:
-            d = (d + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-            if d.weekday() in WORKING_DAYS:
-                cur_local = d.replace(hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0)
-                break
-    else:
-        windows_today = [(int(ws), int(we)) for (ws, we) in work_hours if int(ws) < int(we)]
-        if windows_today:
-            first_ws = windows_today[0][0]
-            last_we  = windows_today[-1][1]
-            if cur_local.time() < dtime(first_ws, 0):
-                cur_local = cur_local.replace(hour=first_ws, minute=0, second=0, microsecond=0)
-            elif cur_local.time() >= dtime(last_we, 0):
-                d = cur_local
-                while True:
-                    d = (d + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-                    if d.weekday() in WORKING_DAYS:
-                        cur_local = d.replace(hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0)
-                        break
+    _dbg(f"get_next_available_slots: ⏱️ now_local={now_loc.isoformat()} start_cursor={cur_local.isoformat()} (window_end={search_window_end.isoformat()})")
 
-    end_of_search = cur_local + timedelta(days=search_days)
+    # ---- main scan (clinic policy first, then Google) -----------------------
     results, seen = [], set()
 
-    _dbg(f"get_next_available_slots: ⏱️ now_local={now_loc.isoformat()} start_cursor={cur_local.isoformat()}")
-
-    # ---- main scan (clinic schedule first, then Google) ----
-    while cur_local < end_of_search and len(results) < limit:
-        # enforce future-only (strict)
-        if cur_local <= now_loc:
-            cur_local = _ceil_to_next_step_strict(now_loc, slot_step_minutes)
-
-        # enforce WORKING_DAYS
+    while cur_local < search_window_end and len(results) < limit:
+        # Only on working days
         if cur_local.weekday() not in WORKING_DAYS:
-            _dbg(f"get_next_available_slots: ⤴️ skip non-working day {cur_local.weekday()}")
-            d = cur_local
-            while True:
-                d = (d + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-                if d.weekday() in WORKING_DAYS:
-                    cur_local = d.replace(hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0)
-                    break
+            _dbg(f"get_next_available_slots: 📅 non-working day {cur_local.weekday()} → next working day")
+            d = (cur_local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            while d.weekday() not in WORKING_DAYS:
+                d = d + timedelta(days=1)
+            cur_local = d.replace(hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0)
             continue
 
-        # build windows (tz-aware)
+        # Build working windows (today)
         day = cur_local.date()
         windows = []
         for ws, we in work_hours:
-            ws = int(ws); we = int(we)
+            ws, we = int(ws), int(we)
             if ws >= we:
                 continue
             wstart = tz_local.localize(datetime(day.year, day.month, day.day, ws, 0, 0))
@@ -759,33 +732,26 @@ def get_next_available_slots(
                 continue
             if cur_local < wstart:
                 cur_local = wstart
-            # keep aligned to grid for this window
             cur_local = _ceil_to_next_step_strict(cur_local, slot_step_minutes)
 
             while cur_local + timedelta(minutes=duration_minutes) <= wend and len(results) < limit:
-                # strictly inside working hours
                 if not _inside_hours(cur_local):
                     break
-                # exclude lunch overlap (jump to end of lunch, then realign)
                 if _in_lunch(cur_local):
                     if LUNCH_END:
                         cur_local = tz_local.localize(datetime.combine(cur_local.date(), LUNCH_END))
                         cur_local = _ceil_to_next_step_strict(cur_local, slot_step_minutes)
                         continue
-                # must be strictly future
                 if cur_local <= now_loc:
                     cur_local = _ceil_to_next_step_strict(now_loc, slot_step_minutes)
                     if cur_local >= wend:
                         break
 
-                start_dt_utc = cur_local.astimezone(_pytz.UTC)
-                end_dt_utc   = (cur_local + timedelta(minutes=duration_minutes)).astimezone(_pytz.UTC)
-                start_iso = start_dt_utc.isoformat().replace("+00:00", "Z")
-                end_iso   = end_dt_utc.isoformat().replace("+00:00", "Z")
+                # Google checks (UTC Z)
+                start_iso = cur_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
+                end_iso   = (cur_local + timedelta(minutes=duration_minutes)).astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
 
-                # Only now ask Google — clinic policy already satisfied
                 try:
-                    # 🔧 FIX: correct argument order (calendar_id, creds, start_iso, end_iso)
                     ok = bool(slot_check(calendar_id, creds, start_iso, end_iso))
                 except Exception as e:
                     _dbg(f"get_next_available_slots: slot_check error → {e}")
@@ -796,7 +762,7 @@ def get_next_available_slots(
                     results.append({
                         "start": start_iso,
                         "end": end_iso,
-                        "friendly": _friendly(cur_local),
+                        "friendly": _friendly(cur_local, now_loc),
                         "tz": tz_name,
                     })
                     _dbg(f"get_next_available_slots: ✅ add {results[-1]['friendly']}")
@@ -812,20 +778,16 @@ def get_next_available_slots(
         if len(results) >= limit:
             break
 
-        # advance to next working day’s first window
-        if progressed:
-            d = tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day)) + timedelta(days=1)
-        else:
-            d = (cur_local + timedelta(days=1))
-        while True:
-            d = d.replace(hour=0, minute=0, second=0, microsecond=0)
-            if d.weekday() in WORKING_DAYS:
-                cur_local = d.replace(hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0)
-                break
+        # Move to next working day’s first window
+        d = (tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day)) + timedelta(days=1)
+             if progressed else (cur_local + timedelta(days=1)))
+        while d.weekday() not in WORKING_DAYS:
             d = d + timedelta(days=1)
+        cur_local = d.replace(hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0)
 
     _dbg(f"get_next_available_slots: ✅ suggestions={len(results)}")
     return results
+
 
 
 
