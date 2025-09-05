@@ -642,12 +642,7 @@ def get_next_available_slots(
     If from_start_iso is far in the future (beyond the search horizon), clamp to NOW.
     """
     # ---- local imports (3.8-safe) ----
-    from datetime import datetime, timedelta, time as dtime
-    try:
-        import pytz as _pytz
-        from dateutil.parser import isoparse
-    except Exception:
-        raise
+    
 
     def _dbg(msg: str) -> None:
         try:
@@ -658,7 +653,7 @@ def get_next_available_slots(
     _dbg(f"get_next_available_slots: ▶️ cal={calendar_id} from={from_start_iso} limit={limit}")
 
     # ---- slot checker (support both spellings) ----
-    slot_check = (globals().get("is_time_slot_available")
+    slot_check = globals().get("is_time_slot_available")
     if not callable(slot_check):
         _dbg("get_next_available_slots: ❌ no slot checker callable found")
         return []
@@ -3262,24 +3257,7 @@ def is_time_slot_available(calendar_id: str, creds, start_iso: str, end_iso: str
       - Fallback: events().list explicit overlap
     """
     # ---- lazy imports / aliases ---------------------------------------------
-    try:
-        import pytz as _TZMOD
-    except Exception:
-        raise
-    from datetime import datetime, date as _date, time as _time, timedelta
-    try:
-        from dateutil.parser import isoparse as _isoparse
-    except Exception:
-        raise
-    try:
-        from googleapiclient.discovery import build
-    except Exception as _e:
-        # If the Google client isn't available, fail-closed.
-        try:
-            debug_print(f"is_time_slot_available: ❌ google client import error → {_e}")
-        except Exception:
-            pass
-        return False
+    
 
     # ---- safe debug wrapper --------------------------------------------------
     def _dbg(msg: str) -> None:
@@ -3330,21 +3308,21 @@ def is_time_slot_available(calendar_id: str, creds, start_iso: str, end_iso: str
 
         # Start
         if s.get("dateTime"):
-            ds = _isoparse(s["dateTime"])
+            ds = isoparse(s["dateTime"])
             if ds.tzinfo is None:
                 ds = (_TZMOD.timezone(stz).localize(ds) if stz else tz_hint.localize(ds))
         elif s.get("date"):
-            d = _date.fromisoformat(s["date"])
+            d = date.fromisoformat(s["date"])
             ds = tz_hint.localize(datetime(d.year, d.month, d.day))
         else:
             return (None, None)
         # End (Google all-day 'date' end is exclusive at 00:00 next day)
         if e.get("dateTime"):
-            de = _isoparse(e["dateTime"])
+            de = isoparse(e["dateTime"])
             if de.tzinfo is None:
                 de = (_TZMOD.timezone(etz).localize(de) if etz else tz_hint.localize(de))
         elif e.get("date"):
-            d = _date.fromisoformat(e["date"])
+            d = date.fromisoformat(e["date"])
             de = tz_hint.localize(datetime(d.year, d.month, d.day))
         else:
             return (None, None)
@@ -3353,8 +3331,8 @@ def is_time_slot_available(calendar_id: str, creds, start_iso: str, end_iso: str
 
     # ---- normalize requested window (UTC, aware) -----------------------------
     try:
-        start_dt = _aware_utc(_isoparse(start_iso))
-        end_dt   = _aware_utc(_isoparse(end_iso))
+        start_dt = _aware_utc(isoparse(start_iso))
+        end_dt   = _aware_utc(isoparse(end_iso))
     except Exception as e:
         _dbg(f"is_time_slot_available: ❌ invalid start/end iso → {e}")
         return False
