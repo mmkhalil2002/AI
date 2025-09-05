@@ -1,4 +1,4 @@
-# update  09/05/25 time_saved 08:44 am
+# update  09/05/25 time_saved 09:52 am
 # =========================
 # Standard library imports
 # =========================
@@ -4393,6 +4393,7 @@ def voice():
             return str(resp)
 
         # ✅ Save E.164 (primary) and mirror to 'phone' for compatibility
+
         session_data[call_sid]["customer"]["phone_e164"] = phone_e164
         session_data[call_sid]["customer"]["phone"] = phone_e164
         session_data[call_sid]["phone_e164"] = phone_e164
@@ -4454,7 +4455,7 @@ def voice():
         # ----------------------------------------------------------------------
         DOB_PROMPT_SHORT = (
             "Please say your birth date, for example 'July third 1990'. "
-            "Or type MMDDYYYY then press pound."
+            "Or type  2 digsts for month, 2 digits for day and 4 dgits for year then press pound."
         )
         TIME_PROMPT_SHORT = "Please say the date and time, for example 'August 12 at 5 PM'."
 
