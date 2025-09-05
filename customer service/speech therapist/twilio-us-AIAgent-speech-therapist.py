@@ -1,4 +1,4 @@
-# update  09/05/25 time_saved 08:28 am
+# update  09/05/25 time_saved 08:44 am
 # =========================
 # Standard library imports
 # =========================
@@ -4621,7 +4621,7 @@ def voice():
 
 
 
-    # ----------------------------------------------------------------------
+       # ----------------------------------------------------------------------
     # 📅 Stage: ask_time_date
     # Purpose:
     #   - Parse spoken date/time (e.g., “August 12 at 5 PM”).
@@ -4780,73 +4780,6 @@ def voice():
         missing_date = _is_blank(spoken_day)
         missing_time = _is_blank(spoken_time)
 
-        # 🆕 SPECIAL CASE: time present but date missing → offer TODAY's earliest options (start at 8:00), don't hang up
-        if missing_date and not missing_time:
-            debug_print("ask_time_date: ℹ️ Missing date but detected time → offering today’s options starting at workday start")
-
-            # Build work-hours windows (respect lunch if within the day)
-            WSTART = int(globals().get("WORKING_HOURS_START", 8))
-            WEND   = int(globals().get("WORKING_HOURS_END", 17))
-            LBS = globals().get("LUNCH_BREAK_START")
-            LBE = globals().get("LUNCH_BREAK_END")
-            try:
-                lbs_h = getattr(LBS, "hour", None)
-                lbe_h = getattr(LBE, "hour", None)
-            except Exception:
-                lbs_h, lbe_h = None, None
-
-            if isinstance(lbs_h, int) and isinstance(lbe_h, int) and WSTART < lbs_h < lbe_h < WEND:
-                work_windows = ((WSTART, lbs_h), (lbe_h, WEND))
-            else:
-                work_windows = ((WSTART, WEND),)
-
-            # Start TODAY at workday start (8:00 local)
-            try:
-                tz = _pytz.timezone(globals().get("CLINIC_TZ") or "America/Chicago")
-            except Exception:
-                tz = _pytz.timezone("America/Chicago")
-            now_loc = datetime.now(tz)
-            day_start_loc = now_loc.replace(hour=WSTART, minute=0, second=0, microsecond=0)
-            from_start_iso = day_start_loc.astimezone(_pytz.UTC).isoformat().replace("+00:00","Z")
-
-            try:
-                dur_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES",
-                                globals().get("SESSION_TIME", globals().get("SESSIUON_TIME", 30))))
-            except Exception:
-                dur_minutes = 30
-
-            alts = []
-            try:
-                alts = get_next_available_slots(
-                    calendar_id,
-                    creds,
-                    from_start_iso=from_start_iso,
-                    duration_minutes=dur_minutes,
-                    limit=3,
-                    tz_name=(globals().get("CLINIC_TZ") or "America/Chicago"),
-                    work_hours=work_windows,
-                    slot_step_minutes=dur_minutes,
-                    search_days=int(globals().get("SEARCH_DAYS", 14))
-                ) or []
-            except Exception as e:
-                debug_print(f"ask_time_date: ⚠️ get_next_available_slots error (missing date branch) → {e}")
-                alts = []
-
-            if alts:
-                try:
-                    options = " or ".join([a.get("friendly") for a in alts if a.get("friendly")])
-                except Exception:
-                    options = ""
-            else:
-                options = ""
-
-            prompt = (f"I can suggest times for today. Would you like {options}?"
-                      if options else
-                      "I can suggest times for today. Please say a time, like '9 AM'.")
-            gather = make_gather(prompt)
-            resp.append(gather)
-            return str(resp)
-
         if missing_date or missing_time:
             if missing_date and missing_time:
                 prompt = PROMPT_NEED_BOTH
@@ -4908,7 +4841,7 @@ def voice():
             start_dt = _as_utc_dt(appointment_start).astimezone(_pytz.UTC)
             end_dt   = _as_utc_dt(appointment_end).astimezone(_pytz.UTC)
 
-            # 🆕 Only reject if the slot has fully ended (avoid false negatives for soon-upcoming starts)
+            # FIX: only treat as past if the slot has fully ended
             if end_dt <= now_utc:
                 debug_print("ask_time_date: 🕒 requested time is in the past → suggesting alternatives")
 
@@ -4944,7 +4877,7 @@ def voice():
                 else:
                     work_windows = ((WSTART, WEND),)
 
-                # 🆕 Start alternatives at TODAY's workday start (8:00) to propose the earliest possible slot
+                # FIX: start alternatives at TODAY's workday start (8:00)
                 try:
                     tz = _pytz.timezone(globals().get("CLINIC_TZ") or "America/Chicago")
                 except Exception:
@@ -5058,7 +4991,7 @@ def voice():
 
         slot_available = False
         try:
-            # 🆕 FIX: correct argument order (calendar_id, creds, start, end)
+            # FIX: correct argument order
             slot_available = is_time_slot_available(calendar_id, creds, appointment_start, appointment_end)
             if slot_available:
                 debug_print("ask_time_date: ✅ Slot free (first check) → proceed to customer lookup/confirmation")
@@ -5094,7 +5027,7 @@ def voice():
                 work_windows = ((WSTART, WEND),)
 
             try:
-                # 🆕 Begin at the requested day's workday start (8:00), so the earliest valid time is first.
+                # FIX: start alternatives at the requested day's workday start (8:00), not the requested minute
                 try:
                     tz = _pytz.timezone(globals().get("CLINIC_TZ") or "America/Chicago")
                 except Exception:
@@ -5112,7 +5045,7 @@ def voice():
                 alts = get_next_available_slots(
                     calendar_id,
                     creds,
-                    from_start_iso=from_start_iso,              # <-- start searching at workday start
+                    from_start_iso=from_start_iso,              # <-- 8:00 local of requested day
                     duration_minutes=dur_minutes,
                     limit=3,
                     tz_name=(globals().get("CLINIC_TZ") or "America/Chicago"),
