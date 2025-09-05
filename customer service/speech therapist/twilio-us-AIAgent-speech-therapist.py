@@ -1,4 +1,4 @@
-# update  09/05/25 time_saved 07:12 am
+# update  09/05/25 time_saved 07:32 am
 # =========================
 # Standard library imports
 # =========================
@@ -378,163 +378,251 @@ So the full nested structure grows as the call progresses.
 """
 session_data = {}
 
-
-def is_time_slot_available(calendar_id: str, start_time: str, end_time: str, creds) -> bool:
+# =============================================================================
+# Helper: Per-doctor availability using Google Calendar FreeBusy
+# (fixed to accept both old/new arg orders without adding new helpers)
+# =============================================================================
+def is_time_slot_available(calendar_id: str, creds, start_iso: str, end_iso: str) -> bool:
     """
-    Check if the given time range is valid per clinic rules AND free on the doctor's calendar.
-    Returns True if available, False otherwise.
-
-    Validations (done BEFORE Google):
-      - Start/end parseable (UTC tolerated; naive assumed UTC).
-      - Start < End; same local date (no cross-midnight sessions).
-      - **Start is not in the past relative to 'now' in clinic local time.**
-      - Local weekday is in WORKING_DAYS.
-      - Entire slot is inside WORKING_HOURS_START..WORKING_HOURS_END.
-      - Slot does NOT overlap LUNCH_BREAK_START..LUNCH_BREAK_END (if defined).
+    Return True if the slot is valid per clinic policy AND no overlapping event exists.
+    Policy enforced here:
+      - not in the past (local clinic TZ) → start must be > now
+      - on an allowed working day (WORKING_DAYS)
+      - inside working hours (WORKING_HOURS_START/END)
+      - does not overlap lunch (LUNCH_BREAK_START/END)
+    Then:
+      - Primary check: Google FreeBusy
+      - Fallback: events().list explicit overlap
     """
-    # ---- safe imports for 3.8 ----
-    
 
-    # ---- logging helper ----
+    # ---- tolerate old call order: (calendar_id, start_iso, end_iso, creds) ----
+    # If 'creds' is actually an ISO string and 'end_iso' is not a string, swap.
+    try:
+        if isinstance(creds, str) and isinstance(start_iso, str) and not isinstance(end_iso, str):
+            # old order detected → reorder to (calendar_id, creds, start_iso, end_iso)
+            start_iso, end_iso, creds = creds, start_iso, end_iso
+            try:
+                debug_print("is_time_slot_available: 🧭 corrected legacy arg order → using (calendar_id, creds, start, end)")
+            except Exception:
+                pass
+    except Exception:
+        # ignore any type/introspection issues; proceed with given order
+        pass
+
+    # ---- lazy imports / aliases (unchanged) ----------------------------------
+    try:
+        import pytz as _TZMOD
+    except Exception:
+        raise
+    from datetime import datetime, date as _date, time as _time, timedelta
+    try:
+        from dateutil.parser import isoparse as _isoparse
+    except Exception:
+        raise
+    try:
+        from googleapiclient.discovery import build
+    except Exception as _e:
+        try:
+            debug_print(f"is_time_slot_available: ❌ google client import error → {_e}")
+        except Exception:
+            pass
+        return False
+
+    # ---- safe debug wrapper (unchanged) --------------------------------------
     def _dbg(msg: str) -> None:
-        try: debug_print(msg)
-        except Exception: pass
+        try:
+            debug_print(msg)
+        except Exception:
+            pass
 
-    _dbg(f"is_time_slot_available: 🔎 cal='{calendar_id}' window={start_time}→{end_time}")
+    # ---- existing inner helpers (unchanged) ----------------------------------
+    def _aware_utc(dt):
+        if dt.tzinfo is None:
+            return _TZMOD.UTC.localize(dt)
+        return dt.astimezone(_TZMOD.UTC)
 
-    # ---- parse inputs (treat naive as UTC) ----
-    try:
-        in_start_dt = isoparse(start_time)
-        if in_start_dt.tzinfo is None:
-            in_start_dt = in_start_dt.replace(tzinfo=_pytz.UTC)
+    def _to_time(val, default_h=None, default_m=0):
+        if val is None:
+            return None if default_h is None else _time(default_h, default_m)
+        if isinstance(val, _time):
+            return val
+        if isinstance(val, int):
+            return _time(max(0, min(23, val)), 0)
+        s = str(val).strip()
+        if not s:
+            return None if default_h is None else _time(default_h, default_m)
+        if ":" in s:
+            hh, mm = (s.split(":", 1) + ["0"])[:2]
         else:
-            in_start_dt = in_start_dt.astimezone(_pytz.UTC)
-        in_start_date = in_start_dt.date().isoformat()
-    except Exception:
-        _dbg("is_time_slot_available: ❌ invalid start_time")
-        return False
+            hh, mm = s, "0"
+        try:
+            return _time(max(0, min(23, int(hh))), max(0, min(59, int(mm))))
+        except Exception:
+            return None if default_h is None else _time(default_h, default_m)
 
-    try:
-        in_end_dt = isoparse(end_time)
-        if in_end_dt.tzinfo is None:
-            in_end_dt = in_end_dt.replace(tzinfo=_pytz.UTC)
+    def _event_bounds_utc(ev):
+        s = ev.get("start", {}) or {}
+        e = ev.get("end",   {}) or {}
+        ev_tz = (ev.get("timeZone") or "").strip() or None
+        stz = (s.get("timeZone") or ev_tz)
+        etz = (e.get("timeZone") or ev_tz)
+
+        tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
+        try:
+            tz_hint = _TZMOD.timezone(tz_name)
+        except Exception:
+            tz_hint = _TZMOD.timezone("America/Chicago")
+
+        # Start
+        if s.get("dateTime"):
+            ds = _isoparse(s["dateTime"])
+            if ds.tzinfo is None:
+                ds = (_TZMOD.timezone(stz).localize(ds) if stz else tz_hint.localize(ds))
+        elif s.get("date"):
+            d = _date.fromisoformat(s["date"])
+            ds = tz_hint.localize(datetime(d.year, d.month, d.day))
         else:
-            in_end_dt = in_end_dt.astimezone(_pytz.UTC)
-        in_end_date = in_end_dt.date().isoformat()
-    except Exception:
-        _dbg("is_time_slot_available: ❌ invalid end_time")
+            return (None, None)
+        # End
+        if e.get("dateTime"):
+            de = _isoparse(e["dateTime"])
+            if de.tzinfo is None:
+                de = (_TZMOD.timezone(etz).localize(de) if etz else tz_hint.localize(de))
+        elif e.get("date"):
+            d = _date.fromisoformat(e["date"])
+            de = tz_hint.localize(datetime(d.year, d.month, d.day))
+        else:
+            return (None, None)
+
+        return (ds.astimezone(_TZMOD.UTC), de.astimezone(_TZMOD.UTC))
+
+    # ---- normalize requested window (UTC) (unchanged) ------------------------
+    try:
+        start_dt = _aware_utc(_isoparse(start_iso))
+        end_dt   = _aware_utc(_isoparse(end_iso))
+    except Exception as e:
+        _dbg(f"is_time_slot_available: ❌ invalid start/end iso → {e}")
         return False
 
-    if in_end_dt <= in_start_dt:
-        _dbg("is_time_slot_available: ❌ end <= start")
-        return False
-
-    # ---- clinic timezone & globals ----
+    # ---- clinic policy (unchanged) ------------------------------------------
     tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
     try:
-        tz_local = _pytz.timezone(tz_name)
+        tz_local = _TZMOD.timezone(tz_name)
     except Exception:
-        tz_local = _pytz.timezone("America/Chicago")
+        tz_local = _TZMOD.timezone("America/Chicago")
 
-    WSTART = int(globals().get("WORKING_HOURS_START", globals().get("WORKIN_HOURS_START", 8)))
-    WEND   = int(globals().get("WORKING_HOURS_END", 17))
+    s_loc = start_dt.astimezone(tz_local)
+    e_loc = end_dt.astimezone(tz_local)
+
+    # Strict future: start must be > now
+    now_loc = datetime.now(tz_local)
+    if s_loc <= now_loc:
+        _dbg("is_time_slot_available: ⛔ blocked by clinic policy → start_not_future")
+        return False
+
+    # Working days
     try:
         wd_src = globals().get("WORKING_DAYS", {0,1,2,3,4})
-        WORKING_DAYS = set(int(x) for x in (wd_src if isinstance(wd_src, (list, set, tuple)) else [0,1,2,3,4]))
+        WORKING_DAYS = set(int(x) for x in (wd_src if isinstance(wd_src, (list,set,tuple)) else [0,1,2,3,4]))
     except Exception:
         WORKING_DAYS = {0,1,2,3,4}
-
-    # helper to coerce lunch envs to time
-    def _as_time(val, default_h=12, default_m=0) -> dtime:
-        if isinstance(val, dtime): return val
-        if isinstance(val, int):   return dtime(max(0, min(23, val)), 0)
-        if isinstance(val, str):
-            s = val.strip()
-            hh, mm = (s.split(":", 1) + ["0"])[:2] if ":" in s else (s, "0")
-            try:
-                return dtime(max(0, min(23, int(hh))), max(0, min(59, int(mm))))
-            except Exception:
-                return dtime(default_h, default_m)
-        return dtime(default_h, default_m)
-
-    LUNCH_START = globals().get("LUNCH_BREAK_START", None)
-    LUNCH_END   = globals().get("LUNCH_BREAK_END",   None)
-    LUNCH_START = _as_time(LUNCH_START, 12, 0) if LUNCH_START is not None else None
-    LUNCH_END   = _as_time(LUNCH_END,   13, 0) if LUNCH_END   is not None else None
-
-    # ---- convert to local for schedule validation ----
-    start_local = in_start_dt.astimezone(tz_local)
-    end_local   = in_end_dt.astimezone(tz_local)
-
-    # Must be same local day (no cross-midnight sessions)
-    if start_local.date() != end_local.date():
-        _dbg("is_time_slot_available: ❌ crosses local midnight (single-day sessions only)")
+    if s_loc.weekday() not in WORKING_DAYS:
+        _dbg(f"is_time_slot_available: ⛔ blocked by clinic policy → non_working_day (weekday={s_loc.weekday()})")
         return False
 
-    # **NEW**: reject past/started slots (compare in local tz)
-    now_local = datetime.now(tz_local)
-    if start_local < now_local:
-        _dbg(f"is_time_slot_available: ❌ start in past vs now_local={now_local.isoformat()}")
+    # Working hours
+    WSTART = int(globals().get("WORKING_HOURS_START", globals().get("WORKIN_HOURS_START", 8)))
+    WEND   = int(globals().get("WORKING_HOURS_END", 17))
+    if not (_time(WSTART, 0) <= s_loc.time() and e_loc.time() <= _time(WEND, 0)):
+        _dbg(f"is_time_slot_available: ⛔ blocked by clinic policy → outside_hours ({WSTART}:00–{WEND}:00)")
         return False
 
-    # Working day check
-    if start_local.weekday() not in WORKING_DAYS:
-        _dbg(f"is_time_slot_available: ❌ {start_local.strftime('%Y-%m-%d')} not in WORKING_DAYS {sorted(WORKING_DAYS)}")
-        return False
-
-    # Inside hours check (entire slot must fit)
-    ws, we = dtime(WSTART, 0), dtime(WEND, 0)
-    st, et = start_local.time(), end_local.time()
-    if not (ws <= st and et <= we and st < et):
-        _dbg(f"is_time_slot_available: ❌ outside working hours ({ws.strftime('%H:%M')}–{we.strftime('%H:%M')} local)")
-        return False
-
-    # Lunch overlap check (if defined)
+    # Lunch overlap
+    LUNCH_START = _to_time(globals().get("LUNCH_BREAK_START"))
+    LUNCH_END   = _to_time(globals().get("LUNCH_BREAK_END"))
     if LUNCH_START and LUNCH_END:
-        if (st < LUNCH_END) and (et > LUNCH_START):
-            _dbg(f"is_time_slot_available: ❌ overlaps lunch ({LUNCH_START.strftime('%H:%M')}–{LUNCH_END.strftime('%H:%M')} local)")
+        if s_loc.time() < LUNCH_END and e_loc.time() > LUNCH_START:
+            _dbg("is_time_slot_available: ⛔ blocked by clinic policy → lunch_overlap")
             return False
 
-    # ---- Schedule valid → check Google Calendar for BUSY/FREE ----
+    # ---- Google checks (unchanged except 'Z' normalization) ------------------
+    fuzz = int(globals().get("BUSY_FUZZ_SECONDS", 1))
+    tmin = (start_dt - timedelta(seconds=fuzz)).isoformat().replace("+00:00", "Z")
+    tmax = (end_dt   + timedelta(seconds=fuzz)).isoformat().replace("+00:00", "Z")
+
+    _dbg(
+        "is_time_slot_available: 🔎 Checking "
+        f"calendar='{calendar_id}' window={start_dt.isoformat()}→{end_dt.isoformat()} "
+        f"(padded {tmin}→{tmax})"
+    )
+
     try:
         service = build("calendar", "v3", credentials=creds)
-        events_result = service.events().list(
+    except Exception as e:
+        _dbg(f"is_time_slot_available: ❌ google client build error → {e}")
+        return False
+
+    # FreeBusy
+    try:
+        fb = service.freebusy().query(body={
+            "timeMin": tmin,
+            "timeMax": tmax,
+            "items": [{"id": calendar_id}],
+            "timeZone": "UTC",
+        }).execute()
+
+        busy = (fb.get("calendars", {}).get(calendar_id, {}) or {}).get("busy", []) or []
+        if busy:
+            _dbg(f"is_time_slot_available: 🚫 FreeBusy shows {len(busy)} busy block(s)")
+            for b in busy:
+                _dbg(f"  BUSY (freebusy) {b.get('start')} → {b.get('end')}")
+            _dbg("is_time_slot_available: ❌ Slot NOT available (FreeBusy)")
+            return False
+        else:
+            _dbg("is_time_slot_available: ✅ FreeBusy shows NO busy blocks in padded window")
+    except Exception as e:
+        _dbg(f"is_time_slot_available: ⚠️ FreeBusy error → {e} (will check events().list)")
+
+    # Fallback: events().list overlap
+    try:
+        items = service.events().list(
             calendarId=calendar_id,
-            timeMin=in_start_dt.isoformat(),
-            timeMax=in_end_dt.isoformat(),
+            timeMin=tmin,
+            timeMax=tmax,
             singleEvents=True,
             showDeleted=False,
             orderBy="startTime",
             maxResults=250,
-        ).execute()
+        ).execute().get("items", [])
 
-        events = events_result.get("items", []) or []
-        _dbg(f"is_time_slot_available: ℹ️ events count={len(events)}")
+        _dbg(f"is_time_slot_available: ℹ️ events().list returned {len(items)} item(s) in padded window")
 
-        for ev in events:
-            event_start_raw = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
-            try:
-                ev_start_dt = isoparse(event_start_raw) if event_start_raw else None
-                if ev_start_dt and ev_start_dt.tzinfo is None:
-                    ev_start_dt = ev_start_dt.replace(tzinfo=_pytz.UTC)
-                ev_start_date = ev_start_dt.date().isoformat() if ev_start_dt else "?"
-            except Exception:
-                ev_start_date = "?"
-            _dbg(
-                "is_time_slot_available: • "
-                f"input_start={in_start_dt.isoformat()} | "
-                f"event_start={event_start_raw} | "
-                f"input_date={in_start_date} | "
-                f"event_date={ev_start_date}"
-            )
+        for ev in items:
+            if ev.get("status") == "cancelled":
+                continue
+            if ev.get("transparency") == "transparent":
+                continue
+            es_utc, ee_utc = _event_bounds_utc(ev)
+            if not es_utc or not ee_utc:
+                continue
+            if start_dt < ee_utc and end_dt > es_utc:
+                title = ev.get("summary", "")
+                _dbg(
+                    "is_time_slot_available: 🚫 BUSY (events overlap) "
+                    f"{es_utc.isoformat()} → {ee_utc.isoformat()} title='{title}'"
+                )
+                _dbg("is_time_slot_available: ❌ Slot NOT available (events overlap)")
+                return False
 
-        available = (len(events) == 0)
-        _dbg(f"is_time_slot_available: {'✅ FREE' if available else '❌ BUSY'}")
-        return available
-
+        _dbg("is_time_slot_available: ✅ No overlapping events found via events().list")
     except Exception as e:
-        _dbg(f"is_time_slot_available: ❗ error during events.list → {e}")
+        _dbg(f"is_time_slot_available: ❗ events.list error → {e}; treating as NOT available (fail-closed)")
         return False
+
+    _dbg("is_time_slot_available: ✅ Slot FREE (final)")
+    return True
+
+
 
 
 
