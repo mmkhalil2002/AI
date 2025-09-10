@@ -1,4 +1,4 @@
-# update  09/10/25 time_saved 11:47am
+# update  09/10/25 time_saved 11:56am
 # =========================
 # Standard library imports
 # =========================
@@ -1036,7 +1036,6 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
 
 
 
-
 def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     """
     Parse ("Friday, August 17", "5:00 AM") into a UTC start/end ISO pair.
@@ -1050,6 +1049,10 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     Note:
       - Whether this slot is in the past/future is handled by the caller (e.g., ask_time_date’s past-time guard).
         This function focuses on faithful parsing + normalization, not “forcing future”.
+
+    Expects globals/utilities already present:
+      - _pytz, _re, _dtparse (dateutil.parser.parse), datetime/timedelta, debug_print (optional)
+      - CLINIC_TZ/LOCAL_TZ and APPOINTMENT_DURATION_MINUTES/SESSION_TIME/SESSIUON_TIME
     """
     # ---- config / tz ----
     tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
@@ -1072,50 +1075,42 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     if dur not in (15, 30, 45, 60):
         dur = 30
 
-    # ---- normalize phrasing ----
+    # ---- normalize phrasing (keep time colons intact) ----
     def _strip_ordinals(s: str) -> str:
         # "17th" -> "17", "1st" -> "1", etc.
         return _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", (s or ""))
 
-    # Unify into one phrase the parser can handle well: "<day> at <time>"
+    # Join to a parser-friendly phrase: "<day> at <time>"
     raw = " ".join(part for part in [spoken_day or "", "at", spoken_time or ""] if part).strip()
 
-    # Keep a copy for “said year” detection (we’ll do a *light* cleanup on this copy only)
+    # Keep a copy *before* heavy cleanup for “did caller say a year?” detection
     _raw_for_year = raw
 
-    # Remove ordinal suffixes (DOM stays intact), normalize AM/PM variants
-    # Convert ordinal day suffixes to plain numbers so the parser doesn't choke.
-    # Examples: "1st"→"1", "2nd"→"2", "3rd"→"3", "21st"→"21", "30th"→"30"
+    # Remove ordinal suffixes (DOM stays intact)
     raw = _strip_ordinals(raw)
 
-    # Normalize *any* AM spelling/spacing/punctuation to lowercase "am".
-    # Regex breakdown:
-    #   \b                → word boundary
-    #   (a\s*\.?\s*m\.?)  → 'a' + optional spaces + optional dot + optional spaces + 'm' + optional dot
-    #   flags=IGNORECASE  → matches A/a and M/m
-    # Matches (all become "am"): "AM", "A.M.", "A. M.", "a m", "a.m", "a.m.", "am"
+    # Normalize AM/PM variants to plain "am"/"pm"
+    # \s* means “zero or more spaces”. We also accept optional dots.
     raw = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", raw, flags=_re.IGNORECASE)
-
-    # Normalize *any* PM spelling/spacing/punctuation to lowercase "pm".
     raw = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", raw, flags=_re.IGNORECASE)
 
-    # NEW: help dateutil with compact times like "4pm" → "4 pm" and "4am" → "4 am"
-    raw = _re.sub(r"(\d)(am|pm)\b", r"\1 \2", raw, flags=_re.IGNORECASE)
+    # Make STT punctuation harmless *without* destroying ':' (we need it for times like 12:30)
+    # - Strip trailing punctuation (.,;) at end of string (NOT ':')
+    raw = _re.sub(r"[.,;]+$", "", raw)
+    # - Replace remaining commas/periods/semicolons with a space (keep ':')
+    raw = _re.sub(r"[,\.;]", " ", raw)
 
-    # Make STT punctuation harmless for parsing:
-    # - Strip trailing punctuation at end of string (one or more . , ; :)
-    raw = _re.sub(r"[.,;:]+$", "", raw)
-    # - Replace any remaining . , ; : anywhere with a space (acts as a token separator)
-    raw = _re.sub(r"[,\.;:]", " ", raw)
-    # - Collapse whitespace
+    # If an upstream step or ASR dropped the colon, restore "HH MM am/pm" → "HH:MM am/pm"
+    # Examples:
+    #   "9 15 am"   → "9:15 am"
+    #   "12 30 pm"  → "12:30 pm"
+    raw = _re.sub(r"\b(\d{1,2})\s+(\d{2})\s*([ap]m)\b", r"\1:\2 \3", raw, flags=_re.IGNORECASE)
+
+    # Collapse whitespace
     raw = _re.sub(r"\s+", " ", raw).strip()
 
     # ---- detect if caller explicitly said a year (4 consecutive digits) ----
-    # Lightly clean the *year-detection copy* so "2026." still counts as "2026".
-    _yf = _re.sub(r"[.,;:]+$", "", _raw_for_year)     # strip trailing punctuation
-    _yf = _re.sub(r"[,\.;:]", " ", _yf)               # internal punctuation → space
-    _yf = _re.sub(r"\s+", " ", _yf).strip()
-    said_year = bool(_re.search(r"\b\d{4}\b", _yf))
+    said_year = bool(_re.search(r"\b\d{4}\b", _raw_for_year))
 
     # ---- parse month/day/time with dateutil (fuzzy) ----
     if not _dtparse:
@@ -1123,13 +1118,12 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
 
     now_local = datetime.now(tz_local)
 
-    # Give parser a default baseline in the *current* year & local tz
-    # (The default's date is only a fallback for missing fields.)
+    # Default baseline (used only for missing fields)
     default_base = now_local.replace(month=now_local.month, day=now_local.day,
                                      hour=9, minute=0, second=0, microsecond=0)
 
     try:
-        # fuzzy parse lets us ignore stray words like "on", commas, etc.
+        # Fuzzy parse lets us ignore stray words like "on", commas, etc.
         parsed_local = _dtparse(raw, default=default_base, dayfirst=False)
 
         # Attach tz if naive; otherwise normalize to clinic tz
@@ -1138,9 +1132,9 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
         else:
             parsed_local = parsed_local.astimezone(tz_local)
 
-        # Year logic:
-        # - If the caller DID say a year, trust what the parser returned (respect the user's year).
-        # - If the caller did NOT say a year, force the year to the current year (NO auto-roll).
+        # Year rule:
+        # - If caller said a year, trust the parsed year.
+        # - If not, force current year (no auto-roll).
         if said_year:
             candidate = parsed_local
         else:
@@ -1158,9 +1152,8 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     # ---- compute end and convert to UTC ISO ----
     end_local = start_local + timedelta(minutes=dur)
 
-    # Return ISO strings; some callers prefer a 'Z' suffix for UTC, so normalize to 'Z'
-    start_utc = start_local.astimezone(tz_utc).isoformat().replace("+00:00", "Z")
-    end_utc   = end_local.astimezone(tz_utc).isoformat().replace("+00:00", "Z")
+    start_utc = start_local.astimezone(tz_utc).isoformat()
+    end_utc   = end_local.astimezone(tz_utc).isoformat()
 
     try:
         debug_print(
@@ -1172,6 +1165,7 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
         pass
 
     return start_utc, end_utc
+
 
 
 
