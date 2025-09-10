@@ -1,4 +1,4 @@
-# update  09/05/25 time_saved 09:52 am
+# update  09/10/25 time_saved 07:56 am
 # =========================
 # Standard library imports
 # =========================
@@ -642,7 +642,7 @@ def get_next_available_slots(
     If from_start_iso is far in the future (beyond the search horizon), clamp to NOW.
     """
     # ---- local imports (3.8-safe) ----
-    
+    # (Assumes _pytz, isoparse, datetime/timedelta/dtime are imported at module scope)
 
     def _dbg(msg: str) -> None:
         try:
@@ -713,14 +713,35 @@ def get_next_available_slots(
         search_days = int(globals().get("SEARCH_DAYS", 14))
 
     # ---- utilities ----
-    def _ceil_to_next_step_strict(dt, minutes):
-        """Ceil to grid; if exactly on grid, push one step to be strictly future."""
-        base = dt.replace(second=0, microsecond=0)
-        rem = base.minute % minutes
-        rounded = base if rem == 0 else base + timedelta(minutes=(minutes - rem))
-        if dt >= rounded:
-            rounded = rounded + timedelta(minutes=minutes)
-        return rounded
+    def _align_up_to_window_grid(dt_local, minutes, window_start_local, *, now_local):
+        """
+        Align 'dt_local' to the window's grid anchored at 'window_start_local'.
+        - Always consider the window's own anchor (so 8:30/any start is respected).
+        - If the day is TODAY and the aligned time <= now, push to the next tick strictly after 'now'.
+        - If the day is in the future, do NOT push past the opening tick (we want to test the window start).
+        """
+        # Ensure second/microsecond = 0 for stable math
+        dt_local = dt_local.replace(second=0, microsecond=0)
+        anchor   = window_start_local.replace(second=0, microsecond=0)
+
+        # Difference in minutes from the window's anchor
+        diff_min = int((dt_local - anchor).total_seconds() // 60)
+
+        if diff_min <= 0:
+            aligned = anchor
+        else:
+            rem = diff_min % minutes
+            aligned = dt_local if rem == 0 else (dt_local + timedelta(minutes=(minutes - rem)))
+
+        # Only enforce "strictly after now" for TODAY
+        if aligned.date() == now_local.date() and aligned <= now_local:
+            # smallest tick strictly after now, anchored at the window start
+            diff_now = int((now_local - anchor).total_seconds() // 60)
+            # steps strictly after now
+            steps = (diff_now // minutes) + 1
+            aligned = anchor + timedelta(minutes=steps * minutes)
+
+        return aligned
 
     def _friendly(dt_local, now_local):
         # Include year if different from current year to avoid "August confusion"
@@ -768,8 +789,8 @@ def get_next_available_slots(
     else:
         base_local = search_window_start
 
-    # Cursor is strictly after base, aligned to grid
-    cur_local = _ceil_to_next_step_strict(base_local, slot_step_minutes)
+    # Do NOT pre-round here; window-level alignment below ensures we don't skip the opening tick.
+    cur_local = base_local
 
     _dbg(f"get_next_available_slots: ⏱️ now_local={now_loc.isoformat()} start_cursor={cur_local.isoformat()} (window_end={search_window_end.isoformat()})")
 
@@ -801,20 +822,30 @@ def get_next_available_slots(
         for wstart, wend in windows:
             if cur_local >= wend:
                 continue
+
+            # Start scanning INSIDE the window (never before it)
             if cur_local < wstart:
                 cur_local = wstart
-            cur_local = _ceil_to_next_step_strict(cur_local, slot_step_minutes)
+
+            # 🔧 KEY FIX: align the first probe to the window's own grid (anchored to wstart).
+            cur_local = _align_up_to_window_grid(cur_local, slot_step_minutes, wstart, now_local=now_loc)
 
             while cur_local + timedelta(minutes=duration_minutes) <= wend and len(results) < limit:
+                # strictly inside working hours
                 if not _inside_hours(cur_local):
                     break
+
+                # exclude lunch overlap
                 if _in_lunch(cur_local):
                     if LUNCH_END:
                         cur_local = tz_local.localize(datetime.combine(cur_local.date(), LUNCH_END))
-                        cur_local = _ceil_to_next_step_strict(cur_local, slot_step_minutes)
+                        # realign to this window's grid after lunch
+                        cur_local = _align_up_to_window_grid(cur_local, slot_step_minutes, wstart, now_local=now_loc)
                         continue
-                if cur_local <= now_loc:
-                    cur_local = _ceil_to_next_step_strict(now_loc, slot_step_minutes)
+
+                # Final TODAY check (rare edge if time slipped back to <= now)
+                if cur_local.date() == now_loc.date() and cur_local <= now_loc:
+                    cur_local = _align_up_to_window_grid(now_loc, slot_step_minutes, wstart, now_local=now_loc)
                     if cur_local >= wend:
                         break
 
@@ -840,6 +871,7 @@ def get_next_available_slots(
                     if len(results) >= limit:
                         break
 
+                # step to next tick on this window's grid
                 cur_local = cur_local + timedelta(minutes=slot_step_minutes)
 
             progressed = True
