@@ -1,7 +1,49 @@
-# update  09/10/25 time_saved 08:08 am
+# update  09/10/25 time_saved 08:55 am
 # =========================
 # Standard library imports
 # =========================
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Regex anchors for start/end:
+    #   ^  → start of the string (or start of a line if re.MULTILINE is enabled)
+    #   $  → end of the string (or end of a line if re.MULTILINE is enabled)
+    #
+    # Notes:
+    # - By default (no MULTILINE), ^ matches only at the very start of the *entire* string,
+    #   and $ matches at the very end of the *entire* string (or just before a final '\n').
+    # - With re.MULTILINE (a.k.a. (?m)), ^ and $ also match at the start/end of *each line*
+    #   within a multi-line string.
+    # - \A and \Z are absolute anchors: \A = start of entire string, \Z = end of entire string
+    #   (these do NOT change with MULTILINE). \z (lowercase) is like \Z but doesn’t allow the
+    #   “before final newline” behavior.
+    #
+    # Examples:
+    #   _re.sub(r'^[.,;:]+', '', s)       # remove leading punctuation at the *start of string*
+    #   _re.sub(r'[.,;:]+$', '', s)       # remove trailing punctuation at the *end of string*
+    #   _re.sub(r'^\s+|\s+$', '', s)      # trim leading/trailing whitespace (string-level)
+    #
+    #   # Line-by-line (multi-line) versions:
+    #   _re.sub(r'^[.,;:]+', '', s, flags=_re.MULTILINE)  # remove leading punctuation per line
+    #   _re.sub(r'[.,;:]+$', '', s, flags=_re.MULTILINE)  # remove trailing punctuation per line
+    #
+    # Clarification about $:
+    # - Without MULTILINE, $ matches at the end of the string *or* right before a final '\n'.
+    #   If you need a true “absolute end” even when there’s a trailing newline, use \Z or \z.
+    # ─────────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Regex quantifier `+`
+    # - Means “ONE OR MORE” repetitions of the preceding token (greedy by default).
+    #   Examples:
+    #     r"a+"       → "a", "aa", "aaa", ...
+    #     r"\d+"      → one or more digits, e.g., "7", "1956", "12345"
+    #     r"(ab)+"    → "ab", "abab", "ababab", ...
+    # - Greedy vs lazy:
+    #     r".+"   → match as much as possible
+    #     r".+?"  → match as little as possible (lazy)
+    # - Inside a character class [...] the `+` has NO special meaning; it’s a literal plus.
+    #   (In your patterns the `+` appears *after* a character class, so it’s the quantifier.)
+    # - To match a literal plus outside a character class, escape it: r"\+"
+    # ─────────────────────────────────────────────────────────────────────────────        
 
 
 import os
@@ -4495,11 +4537,10 @@ def voice():
         # 🔊 Short, centralized prompts
         #   Put these near your other constants so every stage uses the same text.
         # ----------------------------------------------------------------------
-        DOB_PROMPT_SHORT = (
-            "Please say your birth date, for example 'July third 1990'. "
-            "Or type  2 digsts for month, 2 digits for day and 4 dgits for year then press pound."
-        )
-        TIME_PROMPT_SHORT = "Please say the date and time, for example 'August 12 at 5 PM'."
+        DOB_PROMPT_SAY   = "Say your date of birth, e.g., 'July 3 1990'."
+        DOB_PROMPT_DTMF  = "Or enter 8 digits as MMDDYYYY, then press # (e.g., 07031990#)."
+        DOB_PROMPT_SHORT = f"{DOB_PROMPT_SAY} {DOB_PROMPT_DTMF}"
+        TIME_PROMPT_SHORT = "Say a date and time (e.g., 'August 12 at 5 PM')."
 
         debug_print("collect_dob: 📍 Stage entered")
 
@@ -4509,14 +4550,93 @@ def voice():
         # Ensure session buckets exist
         session_data.setdefault(call_sid, {})
 
+        # ---------- small local helpers (keep it simple) ----------
+        #import re as _re
+        _ORDINALS = {
+            "first":"1","second":"2","third":"3","fourth":"4","fifth":"5","sixth":"6","seventh":"7","eighth":"8","ninth":"9","tenth":"10",
+            "eleventh":"11","twelfth":"12","thirteenth":"13","fourteenth":"14","fifteenth":"15","sixteenth":"16","seventeenth":"17",
+            "eighteenth":"18","nineteenth":"19","twentieth":"20","twenty first":"21","twenty-first":"21","twenty second":"22","twenty-second":"22",
+            "twenty third":"23","twenty-third":"23","twenty fourth":"24","twenty-fourth":"24","twenty fifth":"25","twenty-fifth":"25",
+            "twenty sixth":"26","twenty-sixth":"26","twenty seventh":"27","twenty-seventh":"27","twenty eighth":"28","twenty-eighth":"28",
+            "twenty ninth":"29","twenty-ninth":"29","thirtieth":"30","thirty first":"31","thirty-first":"31"
+        }
+        
+        def _normalize_speech(s: str) -> str:
+            """Make STT friendlier for parsing: strip trailing punctuation, normalize ordinals."""
+            if not s:
+                return s
+            t = s.strip().lower()
+            # Strip any run of ., ; : characters only at the END of the string.
+            t = _re.sub(r"[.,;:]+$", "", t)
+
+            # Replace ANY remaining ., ; : characters anywhere with a single space.
+            t = _re.sub(r"[,\.;:]", " ", t)
+
+            # normalize hyphens
+            t = t.replace("-", " ")
+            # collapse spaces
+            t = _re.sub(r"\s+", " ", t).strip()
+            # convert common ordinals to numbers (keep month names intact)
+            # ─────────────────────────────────────────────────────────────────────────────
+            # Why use an `rf` string here?
+            # - `r`  → raw string so regex escapes like \b stay as backslash-b (word boundary).
+            # - `f`  → f-string so {k} is replaced with the current ordinal word/phrase.
+            # - Combined `rf` lets us write a regex with boundaries AND inject the key safely.
+
+            # What the loop does (with real _ORDINALS examples):
+            #   for k, v in _ORDINALS.items():
+            #       t = re.sub(rf"\b{k}\b", v, t)
+            #
+            # Examples (assuming we've lowercased `t` earlier):
+            # 1) k = "third", v = "3"
+            #    pattern = rf"\b{ 'third' }\b"  → r"\bthird\b"
+            #    re.sub(r"\bthird\b", "3", "july third 1956")  → "july 3 1956"
+            #
+            # 2) k = "twenty first", v = "21"
+            #    pattern = rf"\b{ 'twenty first' }\b"  → r"\btwenty first\b"
+            #    re.sub(r"\btwenty first\b", "21", "on the twenty first of may")
+            #    → "on the 21 of may"
+            #
+            # 3) k = "twenty-first", v = "21"   (hyphen variant covered by the dict)
+            #    pattern = rf"\b{ 'twenty-first' }\b" → r"\btwenty-first\b"
+            #    re.sub(r"\btwenty-first\b", "21", "she was born on the twenty-first")
+            #    → "she was born on the 21"
+            #
+            # Why the \b boundaries?
+            # - They ensure we replace WHOLE ordinal words only:
+            #     "third" → "3", but "thirds" (plural) does NOT match.
+            #
+            # Robustness tip (optional):
+            # - If any keys might contain regex metacharacters, escape them:
+            #     safe_k = re.escape(k)
+            #     re.sub(rf"\b{safe_k}\b", v, t)
+            # - And to prefer multi-word keys like "twenty first" before "first",
+            #   iterate longest-first:
+            #     for k in sorted(_ORDINALS, key=len, reverse=True):
+            #         v = _ORDINALS[k]
+            #         t = re.sub(rf"\b{re.escape(k)}\b", v, t)
+            # ─────────────────────────────────────────────────────────────────────────────
+
+            for k, v in _ORDINALS.items():
+                t = _re.sub(rf"\b{k}\b", v, t)
+            return t
+
+        def _make_gather_dob(prompt_text: str):
+            """Call the right gather helper without duplicating prompt text."""
+            try:
+                return make_gather_dob(prompt_text)
+            except Exception:
+                return make_gather(prompt_text)
+
         # 1) Pull DTMF if present (Twilio sends digits on the same webhook), otherwise use speech.
         try:
             dtmf_digits = (request.values.get("Digits") or "").strip()
         except Exception:
             dtmf_digits = ""
 
-        speech_text = (speech_result or "").strip()
-        debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
+        speech_text_raw = (speech_result or "").strip()
+        speech_text = _normalize_speech(speech_text_raw)
+        debug_print(f"collect_dob: 🎙️ speech_text='{speech_text_raw}', 🔢 dtmf_digits='{dtmf_digits}'")
 
         # 1a) 🔁 SILENT MODE: nothing heard → re-ask up to 3 times (separate counter).
         if not dtmf_digits and not speech_text:
@@ -4525,20 +4645,15 @@ def voice():
             debug_print(f"collect_dob: 🤐 no input heard; silence retries={tries}")
 
             if tries >= 3:
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.say(gpt_speak("Sorry, I’m not hearing anything. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-prompt using short, consistent copy
-            try:
-                gather = make_gather_dob(DOB_PROMPT_SHORT)
-            except Exception:
-                gather = make_gather(DOB_PROMPT_SHORT)
+            gather = _make_gather_dob(DOB_PROMPT_SHORT)
             resp.append(gather)
-            # Always redirect back so Twilio posts again after gather
             try:
-                from flask import url_for
+                #from flask import url_for
                 resp.redirect(url_for("voice"))
             except Exception:
                 resp.redirect("/voice")
@@ -4546,6 +4661,48 @@ def voice():
 
         # We heard *something* → clear the silence counter for this stage
         session_data[call_sid].pop("silence_dob", None)
+
+        # 2) Quick sanity hints based on what we heard (keeps prompts short & relevant)
+        #    - Only year spoken? Ask for month+day+year explicitly.
+        #    - Month+day but no year? Ask for the year.
+        if not dtmf_digits and speech_text:
+            if _re.fullmatch(r"\d{4}", speech_text):  # e.g., "1956"
+                session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
+                r = session_data[call_sid]["retry_dob"]
+                debug_print(f"collect_dob: ❌ only year heard; retry_dob={r}")
+                if r >= 3:
+                    resp.say(gpt_speak("Sorry, I couldn’t get your full birth date. Please call again later."), VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    return str(resp)
+                gather = _make_gather_dob("Please say month, day, and year (e.g., 'July 3 1990'). Or enter MMDDYYYY then #.")
+                resp.append(gather)
+                try:
+                    from flask import url_for
+                    resp.redirect(url_for("voice"))
+                except Exception:
+                    resp.redirect("/voice")
+                return str(resp)
+
+            # Looks like a month/day without a 4-digit year (e.g., "july 3")
+            if _re.search(r"\b(jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec|january|february|march|april|june|august|september|october|november|december)\b", speech_text) \
+            and not _re.search(r"\b\d{4}\b", speech_text):
+                session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
+                r = session_data[call_sid]["retry_dob"]
+                debug_print(f"collect_dob: ❌ missing year; retry_dob={r}")
+                if r >= 3:
+                    resp.say(gpt_speak("Sorry, I couldn’t get your full birth date. Please call again later."), VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    return str(resp)
+                gather = _make_gather_dob("Please include the year, e.g., 'July 3 1990'. Or enter MMDDYYYY then #.")
+                resp.append(gather)
+                try:
+                    from flask import url_for
+                    resp.redirect(url_for("voice"))
+                except Exception:
+                    resp.redirect("/voice")
+                return str(resp)
 
         # 2) Parse DOB input (helper handles speech and/or MMDDYYYY).
         #    parse_dob_input should return a datetime on success, or None if missing month/day/year.
@@ -4563,11 +4720,8 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-prompt using short, consistent copy
-            try:
-                gather = make_gather_dob(DOB_PROMPT_SHORT)
-            except Exception:
-                gather = make_gather(DOB_PROMPT_SHORT)
+            # Re-prompt using one short, non-duplicated message
+            gather = _make_gather_dob(DOB_PROMPT_SHORT)
             resp.append(gather)
             try:
                 from flask import url_for
@@ -4585,10 +4739,7 @@ def voice():
                 debug_print(f"collect_dob: ⚠️ DOB out of range → {dob_date.isoformat()}")
 
                 session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-                try:
-                    gather = make_gather_dob(DOB_PROMPT_SHORT)
-                except Exception:
-                    gather = make_gather(DOB_PROMPT_SHORT)
+                gather = _make_gather_dob(DOB_PROMPT_SHORT)
                 resp.append(gather)
                 try:
                     from flask import url_for
@@ -4600,10 +4751,7 @@ def voice():
             # Do not fail the call; just log and re-prompt safely
             debug_print(f"collect_dob: ⚠️ Validation error → {e}")
             session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-            try:
-                gather = make_gather_dob(DOB_PROMPT_SHORT)
-            except Exception:
-                gather = make_gather(DOB_PROMPT_SHORT)
+            gather = _make_gather_dob(DOB_PROMPT_SHORT)
             resp.append(gather)
             try:
                 from flask import url_for
@@ -4629,8 +4777,7 @@ def voice():
         try:
             gather = make_gather("Thanks. " + TIME_PROMPT_SHORT)
         except Exception:
-            # Very defensive fallback (in case make_gather signature differs)
-            gather = make_gather("Thanks. Please say the date and time, for example 'August 12 at 5 PM'.")
+            gather = make_gather("Thanks. " + TIME_PROMPT_SHORT)
         resp.append(gather)
         try:
             from flask import url_for
@@ -4638,6 +4785,7 @@ def voice():
         except Exception:
             resp.redirect("/voice")
         return str(resp)
+
 
 
 
