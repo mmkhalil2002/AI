@@ -1,4 +1,4 @@
-# update  09/10/25 time_saved 10:00 am
+# update  09/10/25 time_saved 10:20 am
 # =========================
 # Standard library imports
 # =========================
@@ -4610,194 +4610,44 @@ def voice():
     # ----------------------------------------------------------------------
     elif stage == "collect_dob":
         # ----------------------------------------------------------------------
-        # 🔊 Short, centralized prompts
-        #   Put these near your other constants so every stage uses the same text.
+        # 🔊 Short, consistent prompts (no duplication, easy to follow)
         # ----------------------------------------------------------------------
-        DOB_PROMPT_SAY   = "Say your date of birth, e.g., 'July 3 1990'."
-        DOB_PROMPT_DTMF  = "Or enter 8 digits as MMDDYYYY, then press # (e.g., 07031990#)."
-        DOB_PROMPT_SHORT = f"{DOB_PROMPT_SAY} {DOB_PROMPT_DTMF}"
-        TIME_PROMPT_SHORT = "Say a date and time (e.g., 'August 12 at 5 PM')."
+        DOB_PROMPT = "Please say your date of birth, like 'July 3 1990'. Or enter MMDDYYYY then press #."
+        DOB_RETRY  = "Please say month, day, and year, for example 'July 3 1990'. Or enter MMDDYYYY then #."
+        DOB_YEAR_ONLY = "I only heard a year. Please include month and day, like 'July 3 1990'. Or enter MMDDYYYY then #."
+        DOB_NEED_YEAR = "Please include the year, like 'July 3 1990'. Or enter MMDDYYYY then #."
+        DOB_SILENCE   = "Sorry, I didn’t catch that. Please say your date of birth, like 'July 3 1990'. Or enter MMDDYYYY then #."
 
         debug_print("collect_dob: 📍 Stage entered")
-
-        # ⚠️ Avoid name shadowing: use `_date` for validation, not `date`
-        from datetime import date as _date
 
         # Ensure session buckets exist
         session_data.setdefault(call_sid, {})
 
-        # ---------- small local helpers (keep it simple) ----------
-        #import re as _re
-        _ORDINALS = {
-            "first":"1","second":"2","third":"3","fourth":"4","fifth":"5","sixth":"6","seventh":"7","eighth":"8","ninth":"9","tenth":"10",
-            "eleventh":"11","twelfth":"12","thirteenth":"13","fourteenth":"14","fifteenth":"15","sixteenth":"16","seventeenth":"17",
-            "eighteenth":"18","nineteenth":"19","twentieth":"20","twenty first":"21","twenty-first":"21","twenty second":"22","twenty-second":"22",
-            "twenty third":"23","twenty-third":"23","twenty fourth":"24","twenty-fourth":"24","twenty fifth":"25","twenty-fifth":"25",
-            "twenty sixth":"26","twenty-sixth":"26","twenty seventh":"27","twenty-seventh":"27","twenty eighth":"28","twenty-eighth":"28",
-            "twenty ninth":"29","twenty-ninth":"29","thirtieth":"30","thirty first":"31","thirty-first":"31"
-        }
-        
-        def _normalize_speech(s: str) -> str:
-            """Make STT friendlier for parsing: strip trailing punctuation, normalize ordinals."""
-            if not s:
-                return s
-            t = s.strip().lower()
-            # Strip any run of ., ; : characters only at the END of the string.
-            t = _re.sub(r"[.,;:]+$", "", t)
-
-            # Replace ANY remaining ., ; : characters anywhere with a single space.
-            t = _re.sub(r"[,\.;:]", " ", t)
-
-            # normalize hyphens
-            t = t.replace("-", " ")
-            # collapse spaces
-            t = _re.sub(r"\s+", " ", t).strip()
-            # convert common ordinals to numbers (keep month names intact)
-            # ─────────────────────────────────────────────────────────────────────────────
-            # Why use an `rf` string here?
-            # - `r`  → raw string so regex escapes like \b stay as backslash-b (word boundary).
-            # - `f`  → f-string so {k} is replaced with the current ordinal word/phrase.
-            # - Combined `rf` lets us write a regex with boundaries AND inject the key safely.
-
-            # What the loop does (with real _ORDINALS examples):
-            #   for k, v in _ORDINALS.items():
-            #       t = re.sub(rf"\b{k}\b", v, t)
-            #
-            # Examples (assuming we've lowercased `t` earlier):
-            # 1) k = "third", v = "3"
-            #    pattern = rf"\b{ 'third' }\b"  → r"\bthird\b"
-            #    re.sub(r"\bthird\b", "3", "july third 1956")  → "july 3 1956"
-            #
-            # 2) k = "twenty first", v = "21"
-            #    pattern = rf"\b{ 'twenty first' }\b"  → r"\btwenty first\b"
-            #    re.sub(r"\btwenty first\b", "21", "on the twenty first of may")
-            #    → "on the 21 of may"
-            #
-            # 3) k = "twenty-first", v = "21"   (hyphen variant covered by the dict)
-            #    pattern = rf"\b{ 'twenty-first' }\b" → r"\btwenty-first\b"
-            #    re.sub(r"\btwenty-first\b", "21", "she was born on the twenty-first")
-            #    → "she was born on the 21"
-            #
-            # Why the \b boundaries?
-            # - They ensure we replace WHOLE ordinal words only:
-            #     "third" → "3", but "thirds" (plural) does NOT match.
-            #
-            # Robustness tip (optional):
-            # - If any keys might contain regex metacharacters, escape them:
-            #     safe_k = re.escape(k)
-            #     re.sub(rf"\b{safe_k}\b", v, t)
-            # - And to prefer multi-word keys like "twenty first" before "first",
-            #   iterate longest-first:
-            #     for k in sorted(_ORDINALS, key=len, reverse=True):
-            #         v = _ORDINALS[k]
-            #         t = re.sub(rf"\b{re.escape(k)}\b", v, t)
-            # ─────────────────────────────────────────────────────────────────────────────
-
-            for k, v in _ORDINALS.items():
-                t = _re.sub(rf"\b{k}\b", v, t)
-            return t
-
-        def _make_gather_dob(prompt_text: str):
-            """Call the right gather helper without duplicating prompt text."""
-            try:
-                return make_gather_dob(prompt_text)
-            except Exception:
-                return make_gather(prompt_text)
-
-        # 1) Pull DTMF if present (Twilio sends digits on the same webhook), otherwise use speech.
+        # Pull DTMF if present (Twilio sends digits on this webhook), otherwise use speech.
         try:
             dtmf_digits = (request.values.get("Digits") or "").strip()
         except Exception:
             dtmf_digits = ""
+        speech_text = (speech_result or "").strip()
+        debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
 
-        speech_text_raw = (speech_result or "").strip()
-        speech_text = _normalize_speech(speech_text_raw)
-        debug_print(f"collect_dob: 🎙️ speech_text='{speech_text_raw}', 🔢 dtmf_digits='{dtmf_digits}'")
-
-        # 1a) 🔁 SILENT MODE: nothing heard → re-ask up to 3 times (separate counter).
+        # 1) SILENT MODE: nothing heard → re-ask up to 3 times (separate counter).
         if not dtmf_digits and not speech_text:
             tries = session_data[call_sid].get("silence_dob", 0) + 1
             session_data[call_sid]["silence_dob"] = tries
             debug_print(f"collect_dob: 🤐 no input heard; silence retries={tries}")
 
             if tries >= 3:
-                resp.say(gpt_speak("Sorry, I’m not hearing anything. Please call again later."), VOICE)
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            gather = _make_gather_dob(DOB_PROMPT_SHORT)
-            resp.append(gather)
+            # Short, clear re-prompt
             try:
-                #from flask import url_for
-                resp.redirect(url_for("voice"))
+                gather = make_gather_dob(DOB_SILENCE)
             except Exception:
-                resp.redirect("/voice")
-            return str(resp)
-
-        # We heard *something* → clear the silence counter for this stage
-        session_data[call_sid].pop("silence_dob", None)
-
-        # 2) Quick sanity hints based on what we heard (keeps prompts short & relevant)
-        #    - Only year spoken? Ask for month+day+year explicitly.
-        #    - Month+day but no year? Ask for the year.
-        if not dtmf_digits and speech_text:
-            if _re.fullmatch(r"\d{4}", speech_text):  # e.g., "1956"
-                session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-                r = session_data[call_sid]["retry_dob"]
-                debug_print(f"collect_dob: ❌ only year heard; retry_dob={r}")
-                if r >= 3:
-                    resp.say(gpt_speak("Sorry, I couldn’t get your full birth date. Please call again later."), VOICE)
-                    resp.hangup()
-                    session_data.pop(call_sid, None)
-                    return str(resp)
-                gather = _make_gather_dob("Please say month, day, and year (e.g., 'July 3 1990'). Or enter MMDDYYYY then #.")
-                resp.append(gather)
-                try:
-                    from flask import url_for
-                    resp.redirect(url_for("voice"))
-                except Exception:
-                    resp.redirect("/voice")
-                return str(resp)
-
-            # Looks like a month/day without a 4-digit year (e.g., "july 3")
-            if _re.search(r"\b(jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec|january|february|march|april|june|august|september|october|november|december)\b", speech_text) \
-            and not _re.search(r"\b\d{4}\b", speech_text):
-                session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-                r = session_data[call_sid]["retry_dob"]
-                debug_print(f"collect_dob: ❌ missing year; retry_dob={r}")
-                if r >= 3:
-                    resp.say(gpt_speak("Sorry, I couldn’t get your full birth date. Please call again later."), VOICE)
-                    resp.hangup()
-                    session_data.pop(call_sid, None)
-                    return str(resp)
-                gather = _make_gather_dob("Please include the year, e.g., 'July 3 1990'. Or enter MMDDYYYY then #.")
-                resp.append(gather)
-                try:
-                    from flask import url_for
-                    resp.redirect(url_for("voice"))
-                except Exception:
-                    resp.redirect("/voice")
-                return str(resp)
-
-        # 2) Parse DOB input (helper handles speech and/or MMDDYYYY).
-        #    parse_dob_input should return a datetime on success, or None if missing month/day/year.
-        dt = parse_dob_input(speech_text, dtmf_digits)
-        if not dt:
-            # Retry counter (so we don’t loop forever on parsing errors)
-            session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-            r = session_data[call_sid]["retry_dob"]
-            debug_print(f"collect_dob: ❌ Parse failed. retry_dob={r}")
-
-            if r >= 3:
-                # Fail out cleanly if user can’t provide a DOB we can parse
-                resp.say(gpt_speak("Sorry, I couldn’t understand your date of birth. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            # Re-prompt using one short, non-duplicated message
-            gather = _make_gather_dob(DOB_PROMPT_SHORT)
+                gather = make_gather(DOB_SILENCE)
             resp.append(gather)
             try:
                 from flask import url_for
@@ -4806,16 +4656,120 @@ def voice():
                 resp.redirect("/voice")
             return str(resp)
 
-        # 3) Validate DOB sanity window (e.g., 1900..today)
+        # We heard something → clear silence counter
+        session_data[call_sid].pop("silence_dob", None)
+
+        # 2) Handle DTMF first (8 digits expected)
+        if dtmf_digits:
+            # Keep it strict & simple: MMDDYYYY (exactly 8 digits)
+            import re as _re
+            digits = _re.sub(r"\D", "", dtmf_digits)
+            if len(digits) == 8:
+                mm, dd, yyyy = digits[:2], digits[2:4], digits[4:]
+                try:
+                    from datetime import date as _date
+                    dob_date = _date(int(yyyy), int(mm), int(dd))
+                    # Range guard (1900..today)
+                    today = _date.today()
+                    if _date(1900, 1, 1) <= dob_date <= today:
+                        iso_dob = dob_date.isoformat()
+                        session_data[call_sid].setdefault("customer", {})
+                        session_data[call_sid]["customer"]["dob"] = iso_dob
+                        debug_print(f"collect_dob: ✅ Stored DOB (DTMF) → {iso_dob}")
+
+                        # Reset retry counter
+                        session_data[call_sid].pop("retry_dob", None)
+
+                        # Move to ask_time_date
+                        session_data[call_sid]["stage"] = "ask_time_date"
+                        debug_print("collect_dob: ➡️ Next stage → ask_time_date")
+                        try:
+                            gather = make_gather("Thanks. Please say the appointment date and time, like 'September 12 at 4 PM'.")
+                        except Exception:
+                            gather = make_gather("Thanks. Please say the appointment date and time, like 'September 12 at 4 PM'.")
+                        resp.append(gather)
+                        try:
+                            from flask import url_for
+                            resp.redirect(url_for("voice"))
+                        except Exception:
+                            resp.redirect("/voice")
+                        return str(resp)
+                except Exception as e:
+                    debug_print(f"collect_dob: ⚠️ DTMF parse error → {e}")
+
+            # DTMF was present but not valid → treat as parse failure below (single clear re-prompt)
+            session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
+            r = session_data[call_sid]["retry_dob"]
+            if r >= 3:
+                resp.say(gpt_speak("Sorry, I couldn’t get your birth date. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+            try:
+                gather = make_gather_dob(DOB_RETRY)
+            except Exception:
+                gather = make_gather(DOB_RETRY)
+            resp.append(gather)
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
+            return str(resp)
+
+        # 3) Handle speech via your helper. Keep prompts simple on failure cases.
+        #    parse_dob_input should return a datetime on success, or None if missing parts.
+        dt = parse_dob_input(speech_text, "")
+        if not dt:
+            # Lightweight heuristics for targeted re-prompts
+            import re as _re
+            only_year = _re.fullmatch(r"\D*(19\d{2}|20\d{2})\D*", speech_text or "", flags=_re.IGNORECASE)
+            md_no_year = (_re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\b", (speech_text or "").lower())
+                        and not _re.search(r"\b(19\d{2}|20\d{2})\b", (speech_text or "")))
+
+            session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
+            r = session_data[call_sid]["retry_dob"]
+            debug_print(f"collect_dob: ❌ Parse failed. retry_dob={r}")
+
+            if r >= 3:
+                resp.say(gpt_speak("Sorry, I couldn’t get your birth date. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            # Targeted, concise re-prompts
+            if only_year:
+                text = DOB_YEAR_ONLY
+            elif md_no_year:
+                text = DOB_NEED_YEAR
+            else:
+                text = DOB_RETRY
+
+            try:
+                gather = make_gather_dob(text)
+            except Exception:
+                gather = make_gather(text)
+            resp.append(gather)
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
+            return str(resp)
+
+        # 4) Validate DOB range (1900..today) and store
         try:
+            from datetime import date as _date
             today = _date.today()
             min_date = _date(1900, 1, 1)
             dob_date = dt.date()
             if not (min_date <= dob_date <= today):
                 debug_print(f"collect_dob: ⚠️ DOB out of range → {dob_date.isoformat()}")
-
                 session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-                gather = _make_gather_dob(DOB_PROMPT_SHORT)
+                try:
+                    gather = make_gather_dob(DOB_RETRY)
+                except Exception:
+                    gather = make_gather(DOB_RETRY)
                 resp.append(gather)
                 try:
                     from flask import url_for
@@ -4827,7 +4781,10 @@ def voice():
             # Do not fail the call; just log and re-prompt safely
             debug_print(f"collect_dob: ⚠️ Validation error → {e}")
             session_data[call_sid]["retry_dob"] = session_data[call_sid].get("retry_dob", 0) + 1
-            gather = _make_gather_dob(DOB_PROMPT_SHORT)
+            try:
+                gather = make_gather_dob(DOB_RETRY)
+            except Exception:
+                gather = make_gather(DOB_RETRY)
             resp.append(gather)
             try:
                 from flask import url_for
@@ -4836,24 +4793,24 @@ def voice():
                 resp.redirect("/voice")
             return str(resp)
 
-        # 4) Store ISO DOB in session
+        # 5) Store ISO DOB in session
         iso_dob = dt.strftime("%Y-%m-%d")
         session_data[call_sid].setdefault("customer", {})
         session_data[call_sid]["customer"]["dob"] = iso_dob
         debug_print(f"collect_dob: ✅ Stored DOB → {iso_dob}")
 
-        # Reset the parse retry counter on success so it doesn't affect later stages
+        # Reset retry counter on success
         session_data[call_sid].pop("retry_dob", None)
 
-        # 5) Always move to ask_time_date next (your booking flow expects this)
+        # 6) Always move to ask_time_date next
         session_data[call_sid]["stage"] = "ask_time_date"
         debug_print("collect_dob: ➡️ Next stage → ask_time_date")
 
-        # 6) Prompt for appointment time/date using the short prompt
+        # 7) Short, clear next prompt (no extra explanations)
         try:
-            gather = make_gather("Thanks. " + TIME_PROMPT_SHORT)
+            gather = make_gather("Thanks. Please say the appointment date and time, like 'September 12 at 4 PM'.")
         except Exception:
-            gather = make_gather("Thanks. " + TIME_PROMPT_SHORT)
+            gather = make_gather("Thanks. Please say the appointment date and time, like 'September 12 at 4 PM'.")
         resp.append(gather)
         try:
             from flask import url_for
@@ -4861,6 +4818,11 @@ def voice():
         except Exception:
             resp.redirect("/voice")
         return str(resp)
+
+
+
+
+
 
 
 
