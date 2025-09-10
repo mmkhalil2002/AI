@@ -1,4 +1,4 @@
-# update  09/10/25 time_saved 08:55 am
+# update  09/10/25 time_saved 09:29 am
 # =========================
 # Standard library imports
 # =========================
@@ -44,6 +44,26 @@
     #   (In your patterns the `+` appears *after* a character class, so it’s the quantifier.)
     # - To match a literal plus outside a character class, escape it: r"\+"
     # ─────────────────────────────────────────────────────────────────────────────        
+    # About `\s*` in the regex:
+    # - `\s`  matches any whitespace character (space, tab, newline, carriage return, form feed, vertical tab).
+    #          In Python 3 it’s Unicode-aware, so it also matches non-ASCII spaces.
+    # - `*`   is the “zero-or-more” quantifier (greedy by default).
+    # - `\s*` therefore matches ZERO OR MORE whitespace chars.
+    #
+    # Why it matters here:
+    #   (a\s*\.?\s*m\.?) will match all of these as "am":
+    #     "am"           → \s* matches zero spaces
+    #     "a m"          → \s* matches one space
+    #     "a    m"       → \s* matches multiple spaces
+    #     "a. m"         → \s* after the dot matches one space
+    #     "a.m"          → both \s* match zero spaces
+    #     "A.    M."     → case-insensitive; \s* matches many spaces
+    #
+    # Tips:
+    # - If you need "one or more" spaces, use `\s+`.
+    # - If you need an "optional single" space, use `\s?`.
+    # - If you want to allow only ASCII spaces (not tabs/newlines), use `[ ]*` (a literal space in a char class).
+    # - `\s*` can also match newlines; if you want to avoid crossing lines, consider replacing `\s*` with `[ ]*`.
 
 
 import os
@@ -996,14 +1016,19 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
 
 
 
-
 def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     """
-    Parse ("Friday, August 17", "5:00 AM") into a future UTC start/end ISO pair.
+    Parse ("Friday, August 17", "5:00 AM") into a UTC start/end ISO pair.
+
     Rules:
       - Robustly keep the DOM (17th -> 17).
-      - If the resulting local datetime is before 'now' in CLINIC_TZ, roll +1 year.
+      - If the caller did NOT say a year, keep the current year (do NOT auto-roll).
+      - If the caller DID say a year, respect it (even if it's in the past).
       - End = start + SESSION_TIME/APPOINTMENT_DURATION_MINUTES (15/30/45/60).
+
+    Note:
+      - Whether this slot is in the past/future is handled by the caller (e.g., ask_time_date’s past-time guard).
+        This function focuses on faithful parsing + normalization, not “forcing future”.
     """
     # ---- config / tz ----
     tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
@@ -1013,6 +1038,7 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     else:
         raise RuntimeError("pytz is required")
 
+    # Appointment duration from globals, with sane defaults
     dur = None
     for k in ("APPOINTMENT_DURATION_MINUTES", "SESSION_TIME", "SESSIUON_TIME"):
         v = globals().get(k)
@@ -1030,11 +1056,53 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
         # "17th" -> "17", "1st" -> "1", etc.
         return _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", (s or ""))
 
+    # Unify into one phrase the parser can handle well: "<day> at <time>"
     raw = " ".join(part for part in [spoken_day or "", "at", spoken_time or ""] if part).strip()
+
+    # Keep a copy for “said year” detection (after light cleanup)
+    _raw_for_year = raw
+
+    # Remove ordinal suffixes (DOM stays intact), normalize AM/PM variants
+    # Convert ordinal day suffixes to plain numbers so the parser doesn't choke.
+    # Examples: "1st"→"1", "2nd"→"2", "3rd"→"3", "21st"→"21", "30th"→"30"
     raw = _strip_ordinals(raw)
-    # normalize AM/PM variants
+
+    # Normalize *any* AM spelling/spacing/punctuation to lowercase "am".
+    # Regex breakdown:
+    #   \b                → word boundary so we don't hit "example"
+    #   (a\s*\.?\s*m\.?)  → the letter 'a', then optional spaces, optional dot,
+    #                       optional spaces, the letter 'm', optional trailing dot
+    #   flags=IGNORECASE  → matches A/a and M/m
+    # Matches (all become "am"):
+    #   "AM", "A.M.", "A. M.", "a m", "a.m", "a.m.", "am"
+    # Example transforms:
+    #   "5 A.M."   → "5 am"
+    #   "5 a m"    → "5 am"
+    #   "5am"      → "5 am"   # (if you’ve added a space before this step; if not, still becomes "am")
     raw = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", raw, flags=_re.IGNORECASE)
+
+    # Normalize *any* PM spelling/spacing/punctuation to lowercase "pm".
+    # Same pattern idea as above, but starting with 'p' instead of 'a'.
+    # Matches (all become "pm"):
+    #   "PM", "P.M.", "P. M.", "p m", "p.m", "p.m.", "pm"
+    # Example transforms:
+    #   "7 P.M."   → "7 pm"
+    #   "7 p m"    → "7 pm"
+    #   "7pm"      → "7 pm"   # (same note about optional space as above)
     raw = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", raw, flags=_re.IGNORECASE)
+
+
+    # Make STT punctuation harmless for parsing:
+    # - Strip trailing punctuation at end of string (one or more . , ; :)
+    raw = _re.sub(r"[.,;:]+$", "", raw)
+    # - Replace any remaining . , ; : anywhere with a space (acts as a token separator)
+    raw = _re.sub(r"[,\.;:]", " ", raw)
+    # - Collapse whitespace
+    raw = _re.sub(r"\s+", " ", raw).strip()
+
+    # ---- detect if caller explicitly said a year (4 consecutive digits) ----
+    # We use the lightly cleaned text to avoid false negatives due to punctuation.
+    said_year = bool(_re.search(r"\b\d{4}\b", _raw_for_year))
 
     # ---- parse month/day/time with dateutil (fuzzy) ----
     if not _dtparse:
@@ -1043,23 +1111,27 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     now_local = datetime.now(tz_local)
 
     # Give parser a default baseline in the *current* year & local tz
-    default_base = now_local.replace(month=now_local.month, day=now_local.day, hour=9, minute=0, second=0, microsecond=0)
+    # (The default's date is only a fallback for missing fields.)
+    default_base = now_local.replace(month=now_local.month, day=now_local.day,
+                                     hour=9, minute=0, second=0, microsecond=0)
 
     try:
-        # fuzzy parse lets us ignore stray words; keep day >9 intact
+        # fuzzy parse lets us ignore stray words like "on", commas, etc.
         parsed_local = _dtparse(raw, default=default_base, dayfirst=False)
-        # Attach tz if naive
+
+        # Attach tz if naive; otherwise normalize to clinic tz
         if parsed_local.tzinfo is None:
             parsed_local = tz_local.localize(parsed_local)
         else:
             parsed_local = parsed_local.astimezone(tz_local)
 
-        # We only trust month/day/time from the phrase. Force the year logic:
-        # Set year to this year; if that local datetime < now, bump to next year.
-        candidate = parsed_local.replace(year=now_local.year)
-
-        if candidate < now_local:
-            candidate = candidate.replace(year=now_local.year + 1)
+        # Year logic:
+        # - If the caller DID say a year, trust what the parser returned (respect the user's year).
+        # - If the caller did NOT say a year, force the year to the current year (NO auto-roll).
+        if said_year:
+            candidate = parsed_local
+        else:
+            candidate = parsed_local.replace(year=now_local.year)
 
         start_local = candidate
 
@@ -1077,7 +1149,11 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     end_utc   = end_local.astimezone(tz_utc).isoformat()
 
     try:
-        debug_print(f"build_timeslot_range: ✅ local {start_local.isoformat()}→{end_local.isoformat()} | UTC {start_utc}→{end_utc}")
+        debug_print(
+            "build_timeslot_range: ✅ "
+            f"local {start_local.isoformat()}→{end_local.isoformat()} | "
+            f"UTC {start_utc}→{end_utc}"
+        )
     except Exception:
         pass
 
