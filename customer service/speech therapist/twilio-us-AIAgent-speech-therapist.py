@@ -1,4 +1,4 @@
-# update  09/10/25 time_saved 10:20 am
+# update  09/10/25 time_saved 10:41 am
 # =========================
 # Standard library imports
 # =========================
@@ -4429,6 +4429,12 @@ def voice():
         # ----------------------------------------------------------------------
         debug_print("collect_phone: 📍 Stage entered")
 
+        # ✅ Ensure the regex module alias exists at runtime (prevents UnboundLocalError)
+        try:
+            _re  # type: ignore[name-defined]
+        except NameError:
+            import re as _re  # single import; never reassign inside functions
+
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
 
@@ -4457,10 +4463,8 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            prompt = (
-                "Please say or type your ten digit phone number including area code. "
-                "You can also type the digits, then press pound."
-            )
+            # Short, clear prompt; avoid over-explaining
+            prompt = "Say or type your 10-digit phone number, then press #."
             gather = make_gather(prompt, hints="zero one two three four five six seven eight nine double triple")
             resp.append(gather)
             return str(resp)
@@ -4515,6 +4519,7 @@ def voice():
 
         # Prefer DTMF for the actual value we normalize; speech is kept for logging visibility
         if dtmf_digits:
+            # Remove anything that isn't 0-9
             raw_digits = _re.sub(r"\D", "", dtmf_digits)
         else:
             raw_digits = _re.sub(r"\D", "", _spoken_to_digits(speech_text))
@@ -4526,11 +4531,16 @@ def voice():
         try:
             phone_e164 = normalize_phone_e164(raw_digits, country)  # expects '+<cc><nsn>' or ''
         except NameError:
-            # If helper is missing, do a minimal US-only fallback from 10-digit local
+            # If helper is missing, do a minimal US-only fallback from local digits
             debug_print("collect_phone: ⚠️ normalize_phone_e164 not defined; using minimal US fallback")
             phone_e164 = ""
-            if country == "US" and len(raw_digits) == 10:
-                phone_e164 = f"+1{raw_digits}"
+            if country == "US":
+                d = raw_digits
+                # Accept 11-digit NANP starting with '1'
+                if len(d) == 11 and d.startswith("1"):
+                    d = d[1:]
+                if len(d) == 10:
+                    phone_e164 = f"+1{d}"
 
         # Validate E.164
         if not phone_e164:
@@ -4544,16 +4554,13 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            prompt = (
-                "Please say or type your ten digit phone number including area code. "
-                "You can also type the digits, then press pound."
-            )
+            # Short, consistent re-prompt
+            prompt = "Say or type your 10-digit phone number, then press #."
             gather = make_gather(prompt, hints="zero one two three four five six seven eight nine double triple")
             resp.append(gather)
             return str(resp)
 
         # ✅ Save E.164 (primary) and mirror to 'phone' for compatibility
-
         session_data[call_sid]["customer"]["phone_e164"] = phone_e164
         session_data[call_sid]["customer"]["phone"] = phone_e164
         session_data[call_sid]["phone_e164"] = phone_e164
@@ -4578,15 +4585,13 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # Default: ask DOB
+        # Default: ask DOB (short, clear)
         session_data[call_sid]["stage"] = "collect_dob"
         gather = make_gather(
-            "Thanks. Please provide your date of birth. You can say it, or enter two digits for month, "
-            "two for day, and four for year, then press pound."
+            "Thanks. What’s your date of birth? You can say it, or enter MMDDYYYY then press #."
         )
         resp.append(gather)
         return str(resp)
-
 
 
 
