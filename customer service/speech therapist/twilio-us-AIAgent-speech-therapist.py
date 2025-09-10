@@ -1,4 +1,4 @@
-# update  09/10/25 time_saved 07:56 am
+# update  09/10/25 time_saved 08:08 am
 # =========================
 # Standard library imports
 # =========================
@@ -713,13 +713,17 @@ def get_next_available_slots(
         search_days = int(globals().get("SEARCH_DAYS", 14))
 
     # ---- utilities ----
+    # ---- utilities ----
     def _align_up_to_window_grid(dt_local, minutes, window_start_local, *, now_local):
         """
         Align 'dt_local' to the window's grid anchored at 'window_start_local'.
-        - Always consider the window's own anchor (so 8:30/any start is respected).
-        - If the day is TODAY and the aligned time <= now, push to the next tick strictly after 'now'.
-        - If the day is in the future, do NOT push past the opening tick (we want to test the window start).
+        - Always consider the window's own anchor (so 8:00/8:30/etc. is respected).
+        - If the day is TODAY and the aligned time <= now, normally push strictly after 'now'.
+        ⭐ BUT: allow a small grace at the window opening so we don't skip 8:00 for being a few seconds late.
         """
+        # Optional grace at the opening of the window (in seconds). Set to 0 to disable.
+        GRACE_SECONDS = int(globals().get("WINDOW_START_GRACE_SECONDS", 180))  # 3 minutes
+
         # Ensure second/microsecond = 0 for stable math
         dt_local = dt_local.replace(second=0, microsecond=0)
         anchor   = window_start_local.replace(second=0, microsecond=0)
@@ -735,13 +739,19 @@ def get_next_available_slots(
 
         # Only enforce "strictly after now" for TODAY
         if aligned.date() == now_local.date() and aligned <= now_local:
-            # smallest tick strictly after now, anchored at the window start
+            # ⭐ Grace: if we're at the window's opening tick and only slightly late, keep the opening tick
+            if aligned == anchor:
+                late_seconds = (now_local - aligned).total_seconds()
+                if 0 < late_seconds <= GRACE_SECONDS:
+                    return aligned  # allow 8:00 (or 8:30) within the grace window
+
+            # Otherwise push to the smallest tick strictly after now, anchored at the window start
             diff_now = int((now_local - anchor).total_seconds() // 60)
-            # steps strictly after now
             steps = (diff_now // minutes) + 1
             aligned = anchor + timedelta(minutes=steps * minutes)
 
         return aligned
+
 
     def _friendly(dt_local, now_local):
         # Include year if different from current year to avoid "August confusion"
