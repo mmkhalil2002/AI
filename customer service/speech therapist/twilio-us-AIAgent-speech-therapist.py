@@ -1,4 +1,4 @@
-# update  09/10/25 time_saved 09:29 am
+# update  09/10/25 time_saved 10:00 am
 # =========================
 # Standard library imports
 # =========================
@@ -5054,7 +5054,6 @@ def voice():
         # 2) Convert to concrete UTC timeslot (start/end)
         try:
             appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
-            session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
             session_data[call_sid]["retry_time"] = 0
             debug_print(f"ask_time_date: ⏰ Built slot → Start: {appointment_start}, End: {appointment_end}")
         except Exception as e:
@@ -5089,6 +5088,9 @@ def voice():
             if end_dt <= now_utc:
                 debug_print("ask_time_date: 🕒 requested time is in the past → suggesting alternatives")
 
+                # FIX: clear any stale chosen time before suggesting alternatives
+                session_data[call_sid].pop("appointment_time", None)
+
                 try:
                     dur_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES",
                                     globals().get("SESSION_TIME", globals().get("SESSIUON_TIME", 30))))
@@ -5121,14 +5123,15 @@ def voice():
                 else:
                     work_windows = ((WSTART, WEND),)
 
-                # FIX: start alternatives at TODAY's workday start (8:00)
+                # FIX: start alternatives at TODAY's workday start (8:00) *minus one second*
+                #      so strict "ceil to next step" logic inside get_next_available_slots won't skip 8:00.
                 try:
                     tz = _pytz.timezone(globals().get("CLINIC_TZ") or "America/Chicago")
                 except Exception:
                     tz = _pytz.timezone("America/Chicago")
                 now_loc = datetime.utcnow().replace(tzinfo=_pytz.UTC).astimezone(tz)
                 day_start_loc = now_loc.replace(hour=WSTART, minute=0, second=0, microsecond=0)
-                from_start_iso = day_start_loc.astimezone(_pytz.UTC).isoformat().replace("+00:00","Z")
+                from_start_iso = (day_start_loc - timedelta(seconds=1)).astimezone(_pytz.UTC).isoformat().replace("+00:00","Z")
 
                 # Try modern signature first, then gracefully degrade
                 alts = []
@@ -5162,7 +5165,6 @@ def voice():
                 if alts:
                     try:
                         """
-
                             alts is a list of dicts, each like {"start": "...", "end": "...", "friendly": "Friday, August 15 at 8:30 AM"}.
 
                             [a.get("friendly") for a in alts if a.get("friendly")]
@@ -5188,31 +5190,6 @@ def voice():
                             .get() avoids KeyError if "friendly" is missing.
 
                             It assumes the "friendly" values are strings; if any aren’t, you’d need to cast to str().
-
-                            Tiny example:
-
-                            alts = [
-                            {"friendly": "Friday, Aug 15 at 8:30 AM"},
-                            {"friendly": "Friday, Aug 15 at 9:00 AM"},
-                            {"friendly": "Friday, Aug 15 at 9:30 AM"},
-                            ]
-                            options = " or ".join([a.get("friendly") for a in alts if a.get("friendly")])
-                            # options == "Friday, Aug 15 at 8:30 AM or Friday, Aug 15 at 9:00 AM or Friday, Aug 15 at 9:30 AM"
-
-                            
-                            When join runs, it inserts that exact text between each item:
-
-                            Separator: " or " → looks like ␠or␠ (spaces on both sides)
-
-                            Result: "A or B or C"
-
-                            If you changed the separator, you’d change how the list is glued together:
-
-                            ", ".join(["A","B","C"]) → "A, B, C"
-
-                            " / ".join(["A","B","C"]) → "A / B / C"
-
-                            " or ".join([]) → "" (empty string; nothing to join)
                         """
                         options = " or ".join([a.get("friendly") for a in alts if a.get("friendly")])
                     except Exception:
@@ -5235,7 +5212,7 @@ def voice():
 
         slot_available = False
         try:
-            # FIX: correct argument order
+            # FIX: correct argument order (calendar_id, creds, start_iso, end_iso)
             slot_available = is_time_slot_available(calendar_id, creds, appointment_start, appointment_end)
             if slot_available:
                 debug_print("ask_time_date: ✅ Slot free (first check) → proceed to customer lookup/confirmation")
@@ -5245,6 +5222,9 @@ def voice():
 
         if not slot_available:
             debug_print("ask_time_date: ❌ Slot not available")
+
+            # FIX: clear any stale chosen time before suggesting alternatives
+            session_data[call_sid].pop("appointment_time", None)
 
             # Find nearby alternatives (friendly strings already included by helper).
             alts = []
@@ -5271,7 +5251,8 @@ def voice():
                 work_windows = ((WSTART, WEND),)
 
             try:
-                # FIX: start alternatives at the requested day's workday start (8:00), not the requested minute
+                # FIX: start alternatives at the requested day's workday start (8:00) *minus one second*
+                #      so strict "ceil to next step" logic inside get_next_available_slots won't skip 8:00.
                 try:
                     tz = _pytz.timezone(globals().get("CLINIC_TZ") or "America/Chicago")
                 except Exception:
@@ -5283,13 +5264,13 @@ def voice():
                     req_dt_utc = req_dt_utc.replace(tzinfo=_pytz.UTC)
                 req_loc = req_dt_utc.astimezone(tz)
                 day_start_loc = req_loc.replace(hour=WSTART, minute=0, second=0, microsecond=0)
-                from_start_iso = day_start_loc.astimezone(_pytz.UTC).isoformat().replace("+00:00","Z")
+                from_start_iso = (day_start_loc - timedelta(seconds=1)).astimezone(_pytz.UTC).isoformat().replace("+00:00","Z")
 
                 # Try modern signature
                 alts = get_next_available_slots(
                     calendar_id,
                     creds,
-                    from_start_iso=from_start_iso,              # <-- 8:00 local of requested day
+                    from_start_iso=from_start_iso,              # <-- 07:59:59 local → allows 8:00 to be considered
                     duration_minutes=dur_minutes,
                     limit=3,
                     tz_name=(globals().get("CLINIC_TZ") or "America/Chicago"),
@@ -5336,6 +5317,12 @@ def voice():
 
         # 4) Slot is available → decide whether to confirm or collect name details
         debug_print("ask_time_date: ✅ Slot free (per strict check) → proceed to customer lookup/confirmation")
+
+        # FIX: Only now that it passed all checks, persist the chosen slot for confirm stage
+        session_data[call_sid]["appointment_time"] = {
+            "start": appointment_start,
+            "end": appointment_end
+        }
 
         customer = session_data[call_sid].get("customer", {})
         customer_phone = (customer.get("phone") or "").strip()
