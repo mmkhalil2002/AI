@@ -1,4 +1,4 @@
-# update  09/10/25 time_saved 11:18 am
+# update  09/10/25 time_saved 11:47am
 # =========================
 # Standard library imports
 # =========================
@@ -677,7 +677,6 @@ def is_time_slot_available(calendar_id: str, creds, start_iso: str, end_iso: str
 
 
 
-
 def get_next_available_slots(
     calendar_id: str,
     creds,
@@ -718,6 +717,13 @@ def get_next_available_slots(
     if not callable(slot_check):
         _dbg("get_next_available_slots: ❌ no slot checker callable found")
         return []
+
+    # Small, configurable tolerance to avoid 1-second boundary “phantom busy” at :00 / :30.
+    # Example: FreeBusy returns a 1s busy exactly at 17:00:00Z; some implementations pad
+    # by ±1s and mark 16:30–17:00 as "busy". By shrinking the check window *inside* the
+    # requested slot by a couple seconds, we avoid false negatives while still staying
+    # entirely within the slot.
+    EDGE_LENIENCY_SECONDS = int(globals().get("EDGE_LENIENCY_SECONDS", 2))
 
     # ---- defaults from globals ----
     if duration_minutes is None:
@@ -828,6 +834,14 @@ def get_next_available_slots(
         end_loc = start_loc + timedelta(minutes=duration_minutes)
         return (start_loc.time() < LUNCH_END and end_loc.time() > LUNCH_START)
 
+    # Safe call that supports either slot_check signature:
+    #   (calendar_id, start_iso, end_iso, creds)  OR  (calendar_id, creds, start_iso, end_iso)
+    def _check_range(start_iso: str, end_iso: str) -> bool:
+        try:
+            return bool(slot_check(calendar_id, start_iso, end_iso, creds))
+        except TypeError:
+            return bool(slot_check(calendar_id, creds, start_iso, end_iso))
+
     # ---- seed start & clamp to NOW-window -----------------------------------
     now_loc = datetime.now(tz_local)
 
@@ -913,18 +927,27 @@ def get_next_available_slots(
                 start_iso = cur_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
                 end_iso   = (cur_local + timedelta(minutes=duration_minutes)).astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
 
-                # Safe-call: support either signature (calendar_id, start, end, creds) or (calendar_id, creds, start, end)
+                # Primary check
+                ok = False
                 try:
-                    ok = bool(slot_check(calendar_id, start_iso, end_iso, creds))
-                except TypeError:
-                    try:
-                        ok = bool(slot_check(calendar_id, creds, start_iso, end_iso))
-                    except Exception as e:
-                        _dbg(f"get_next_available_slots: slot_check error → {e}")
-                        ok = False
+                    ok = _check_range(start_iso, end_iso)
                 except Exception as e:
                     _dbg(f"get_next_available_slots: slot_check error → {e}")
                     ok = False
+
+                # ⭐ Edge leniency: if the primary window looks busy, retry a slightly
+                #    *shrunken* window inside the slot to ignore 1s boundary artifacts.
+                if (not ok) and EDGE_LENIENCY_SECONDS > 0:
+                    try:
+                        inset_start = (cur_local + timedelta(seconds=EDGE_LENIENCY_SECONDS)).astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
+                        inset_end   = (cur_local + timedelta(minutes=duration_minutes, seconds=-EDGE_LENIENCY_SECONDS)).astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
+                        # Only retry if we still have a valid positive window
+                        if inset_start < inset_end:
+                            ok = _check_range(inset_start, inset_end)
+                            if ok:
+                                _dbg("get_next_available_slots: ✅ edge-leniency unblocked boundary artifact")
+                    except Exception as e:
+                        _dbg(f"get_next_available_slots: edge-leniency error → {e}")
 
                 if ok and start_iso not in seen:
                     seen.add(start_iso)
@@ -938,7 +961,7 @@ def get_next_available_slots(
                     if len(results) >= limit:
                         break
 
-                # step to next tick on this window's grid (ensures we test 11:30, 12:30, 1:30, etc.)
+                # step to next tick on this window's grid (ensures we test 11:30, 12:00, 12:30, 1:00, 1:30, …)
                 cur_local = cur_local + timedelta(minutes=slot_step_minutes)
 
             progressed = True
@@ -957,6 +980,7 @@ def get_next_available_slots(
 
     _dbg(f"get_next_available_slots: ✅ suggestions={len(results)}")
     return results
+
 
 
 
