@@ -1,4 +1,4 @@
-# update  09/10/25 time_saved 10:41 am
+# update  09/10/25 time_saved 11:18 am
 # =========================
 # Standard library imports
 # =========================
@@ -678,7 +678,6 @@ def is_time_slot_available(calendar_id: str, creds, start_iso: str, end_iso: str
 
 
 
-
 def get_next_available_slots(
     calendar_id: str,
     creds,
@@ -714,7 +713,7 @@ def get_next_available_slots(
 
     _dbg(f"get_next_available_slots: ▶️ cal={calendar_id} from={from_start_iso} limit={limit}")
 
-    # ---- slot checker (support both spellings) ----
+    # ---- slot checker ----
     slot_check = globals().get("is_time_slot_available")
     if not callable(slot_check):
         _dbg("get_next_available_slots: ❌ no slot checker callable found")
@@ -750,7 +749,7 @@ def get_next_available_slots(
     except Exception:
         WORKING_DAYS = {0,1,2,3,4}
 
-    # Lunch window (optional)
+    # ---- lunch window (optional) --------------------------------------------
     def _as_time(val, default_h=None, default_m=0):
         if val is None:
             return None if default_h is None else dtime(default_h, default_m)
@@ -774,46 +773,37 @@ def get_next_available_slots(
     if search_days is None:
         search_days = int(globals().get("SEARCH_DAYS", 14))
 
-    # ---- utilities ----
-    # ---- utilities ----
+    # ---- utilities -----------------------------------------------------------
     def _align_up_to_window_grid(dt_local, minutes, window_start_local, *, now_local):
         """
         Align 'dt_local' to the window's grid anchored at 'window_start_local'.
-        - Always consider the window's own anchor (so 8:00/8:30/etc. is respected).
-        - If the day is TODAY and the aligned time <= now, normally push strictly after 'now'.
-        ⭐ BUT: allow a small grace at the window opening so we don't skip 8:00 for being a few seconds late.
+        - Always anchor to the window's own start (so 8:00/8:30/etc. is respected).
+        - If TODAY and aligned <= now, push to the smallest tick strictly after 'now'.
+        ⭐ Grace at opening: allow a tiny delay at the very first tick so we don't miss 8:00
+          just because we're a few seconds late.
         """
-        # Optional grace at the opening of the window (in seconds). Set to 0 to disable.
         GRACE_SECONDS = int(globals().get("WINDOW_START_GRACE_SECONDS", 180))  # 3 minutes
 
-        # Ensure second/microsecond = 0 for stable math
         dt_local = dt_local.replace(second=0, microsecond=0)
         anchor   = window_start_local.replace(second=0, microsecond=0)
 
-        # Difference in minutes from the window's anchor
         diff_min = int((dt_local - anchor).total_seconds() // 60)
-
         if diff_min <= 0:
             aligned = anchor
         else:
             rem = diff_min % minutes
             aligned = dt_local if rem == 0 else (dt_local + timedelta(minutes=(minutes - rem)))
 
-        # Only enforce "strictly after now" for TODAY
         if aligned.date() == now_local.date() and aligned <= now_local:
-            # ⭐ Grace: if we're at the window's opening tick and only slightly late, keep the opening tick
             if aligned == anchor:
                 late_seconds = (now_local - aligned).total_seconds()
                 if 0 < late_seconds <= GRACE_SECONDS:
-                    return aligned  # allow 8:00 (or 8:30) within the grace window
-
-            # Otherwise push to the smallest tick strictly after now, anchored at the window start
+                    return aligned  # keep the opening tick
             diff_now = int((now_local - anchor).total_seconds() // 60)
             steps = (diff_now // minutes) + 1
             aligned = anchor + timedelta(minutes=steps * minutes)
 
         return aligned
-
 
     def _friendly(dt_local, now_local):
         # Include year if different from current year to avoid "August confusion"
@@ -855,13 +845,13 @@ def get_next_available_slots(
 
     # Choose base start:
     #  - if req_local is within [now, now+search_days], use req_local
-    #  - else, clamp to NOW (so far-future or past requests don't hijack the window)
+    #  - else, clamp to NOW
     if req_local and (search_window_start <= req_local <= search_window_end):
         base_local = req_local
     else:
         base_local = search_window_start
 
-    # Do NOT pre-round here; window-level alignment below ensures we don't skip the opening tick.
+    # Do NOT pre-round here; we align per-window so we never skip the opening tick.
     cur_local = base_local
 
     _dbg(f"get_next_available_slots: ⏱️ now_local={now_loc.isoformat()} start_cursor={cur_local.isoformat()} (window_end={search_window_end.isoformat()})")
@@ -870,7 +860,7 @@ def get_next_available_slots(
     results, seen = [], set()
 
     while cur_local < search_window_end and len(results) < limit:
-        # Only on working days
+        # enforce WORKING_DAYS
         if cur_local.weekday() not in WORKING_DAYS:
             _dbg(f"get_next_available_slots: 📅 non-working day {cur_local.weekday()} → next working day")
             d = (cur_local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -879,7 +869,7 @@ def get_next_available_slots(
             cur_local = d.replace(hour=int(work_hours[0][0]), minute=0, second=0, microsecond=0)
             continue
 
-        # Build working windows (today)
+        # Build windows (tz-aware) for that day
         day = cur_local.date()
         windows = []
         for ws, we in work_hours:
@@ -894,12 +884,10 @@ def get_next_available_slots(
         for wstart, wend in windows:
             if cur_local >= wend:
                 continue
-
-            # Start scanning INSIDE the window (never before it)
             if cur_local < wstart:
                 cur_local = wstart
 
-            # 🔧 KEY FIX: align the first probe to the window's own grid (anchored to wstart).
+            # 🔧 KEY: align to the window grid anchored at wstart so we probe 8:00, 8:30, 9:00, ...
             cur_local = _align_up_to_window_grid(cur_local, slot_step_minutes, wstart, now_local=now_loc)
 
             while cur_local + timedelta(minutes=duration_minutes) <= wend and len(results) < limit:
@@ -907,15 +895,15 @@ def get_next_available_slots(
                 if not _inside_hours(cur_local):
                     break
 
-                # exclude lunch overlap
+                # exclude lunch overlap (no partial overlap)
                 if _in_lunch(cur_local):
                     if LUNCH_END:
                         cur_local = tz_local.localize(datetime.combine(cur_local.date(), LUNCH_END))
-                        # realign to this window's grid after lunch
+                        # realign after lunch to the same window grid
                         cur_local = _align_up_to_window_grid(cur_local, slot_step_minutes, wstart, now_local=now_loc)
                         continue
 
-                # Final TODAY check (rare edge if time slipped back to <= now)
+                # after-now enforcement for TODAY
                 if cur_local.date() == now_loc.date() and cur_local <= now_loc:
                     cur_local = _align_up_to_window_grid(now_loc, slot_step_minutes, wstart, now_local=now_loc)
                     if cur_local >= wend:
@@ -925,8 +913,15 @@ def get_next_available_slots(
                 start_iso = cur_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
                 end_iso   = (cur_local + timedelta(minutes=duration_minutes)).astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
 
+                # Safe-call: support either signature (calendar_id, start, end, creds) or (calendar_id, creds, start, end)
                 try:
-                    ok = bool(slot_check(calendar_id, creds, start_iso, end_iso))
+                    ok = bool(slot_check(calendar_id, start_iso, end_iso, creds))
+                except TypeError:
+                    try:
+                        ok = bool(slot_check(calendar_id, creds, start_iso, end_iso))
+                    except Exception as e:
+                        _dbg(f"get_next_available_slots: slot_check error → {e}")
+                        ok = False
                 except Exception as e:
                     _dbg(f"get_next_available_slots: slot_check error → {e}")
                     ok = False
@@ -943,7 +938,7 @@ def get_next_available_slots(
                     if len(results) >= limit:
                         break
 
-                # step to next tick on this window's grid
+                # step to next tick on this window's grid (ensures we test 11:30, 12:30, 1:30, etc.)
                 cur_local = cur_local + timedelta(minutes=slot_step_minutes)
 
             progressed = True
@@ -953,7 +948,7 @@ def get_next_available_slots(
         if len(results) >= limit:
             break
 
-        # Move to next working day’s first window
+        # advance to next working day’s first window
         d = (tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day)) + timedelta(days=1)
              if progressed else (cur_local + timedelta(days=1)))
         while d.weekday() not in WORKING_DAYS:
@@ -1016,6 +1011,8 @@ def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
 
 
 
+
+
 def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     """
     Parse ("Friday, August 17", "5:00 AM") into a UTC start/end ISO pair.
@@ -1059,7 +1056,7 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     # Unify into one phrase the parser can handle well: "<day> at <time>"
     raw = " ".join(part for part in [spoken_day or "", "at", spoken_time or ""] if part).strip()
 
-    # Keep a copy for “said year” detection (after light cleanup)
+    # Keep a copy for “said year” detection (we’ll do a *light* cleanup on this copy only)
     _raw_for_year = raw
 
     # Remove ordinal suffixes (DOM stays intact), normalize AM/PM variants
@@ -1069,28 +1066,17 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
 
     # Normalize *any* AM spelling/spacing/punctuation to lowercase "am".
     # Regex breakdown:
-    #   \b                → word boundary so we don't hit "example"
-    #   (a\s*\.?\s*m\.?)  → the letter 'a', then optional spaces, optional dot,
-    #                       optional spaces, the letter 'm', optional trailing dot
+    #   \b                → word boundary
+    #   (a\s*\.?\s*m\.?)  → 'a' + optional spaces + optional dot + optional spaces + 'm' + optional dot
     #   flags=IGNORECASE  → matches A/a and M/m
-    # Matches (all become "am"):
-    #   "AM", "A.M.", "A. M.", "a m", "a.m", "a.m.", "am"
-    # Example transforms:
-    #   "5 A.M."   → "5 am"
-    #   "5 a m"    → "5 am"
-    #   "5am"      → "5 am"   # (if you’ve added a space before this step; if not, still becomes "am")
+    # Matches (all become "am"): "AM", "A.M.", "A. M.", "a m", "a.m", "a.m.", "am"
     raw = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", raw, flags=_re.IGNORECASE)
 
     # Normalize *any* PM spelling/spacing/punctuation to lowercase "pm".
-    # Same pattern idea as above, but starting with 'p' instead of 'a'.
-    # Matches (all become "pm"):
-    #   "PM", "P.M.", "P. M.", "p m", "p.m", "p.m.", "pm"
-    # Example transforms:
-    #   "7 P.M."   → "7 pm"
-    #   "7 p m"    → "7 pm"
-    #   "7pm"      → "7 pm"   # (same note about optional space as above)
     raw = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", raw, flags=_re.IGNORECASE)
 
+    # NEW: help dateutil with compact times like "4pm" → "4 pm" and "4am" → "4 am"
+    raw = _re.sub(r"(\d)(am|pm)\b", r"\1 \2", raw, flags=_re.IGNORECASE)
 
     # Make STT punctuation harmless for parsing:
     # - Strip trailing punctuation at end of string (one or more . , ; :)
@@ -1101,8 +1087,11 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     raw = _re.sub(r"\s+", " ", raw).strip()
 
     # ---- detect if caller explicitly said a year (4 consecutive digits) ----
-    # We use the lightly cleaned text to avoid false negatives due to punctuation.
-    said_year = bool(_re.search(r"\b\d{4}\b", _raw_for_year))
+    # Lightly clean the *year-detection copy* so "2026." still counts as "2026".
+    _yf = _re.sub(r"[.,;:]+$", "", _raw_for_year)     # strip trailing punctuation
+    _yf = _re.sub(r"[,\.;:]", " ", _yf)               # internal punctuation → space
+    _yf = _re.sub(r"\s+", " ", _yf).strip()
+    said_year = bool(_re.search(r"\b\d{4}\b", _yf))
 
     # ---- parse month/day/time with dateutil (fuzzy) ----
     if not _dtparse:
@@ -1145,8 +1134,9 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
     # ---- compute end and convert to UTC ISO ----
     end_local = start_local + timedelta(minutes=dur)
 
-    start_utc = start_local.astimezone(tz_utc).isoformat()
-    end_utc   = end_local.astimezone(tz_utc).isoformat()
+    # Return ISO strings; some callers prefer a 'Z' suffix for UTC, so normalize to 'Z'
+    start_utc = start_local.astimezone(tz_utc).isoformat().replace("+00:00", "Z")
+    end_utc   = end_local.astimezone(tz_utc).isoformat().replace("+00:00", "Z")
 
     try:
         debug_print(
@@ -1158,6 +1148,7 @@ def build_timeslot_range(spoken_day: str, spoken_time: str) -> Tuple[str, str]:
         pass
 
     return start_utc, end_utc
+
 
 
 
@@ -3404,7 +3395,7 @@ def get_docotor_appt_for(doctor_name: str, phone: str, dob: str = None) -> list:
 # - UPDATED: reject if start <= now (strictly future)
 # - UPDATED: safe debug wrapper + single client build for FB and events()
 # =============================================================================
-def is_time_slot_available(calendar_id: str, creds, start_iso: str, end_iso: str) -> bool:
+def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str,creds) -> bool:
     """
     Return True if the slot is valid per clinic policy AND no overlapping event exists.
     Policy enforced here (no extra helpers):
@@ -5180,7 +5171,7 @@ def voice():
         slot_available = False
         try:
             # FIX: correct argument order (calendar_id, creds, start_iso, end_iso)
-            slot_available = is_time_slot_available(calendar_id, creds, appointment_start, appointment_end)
+            slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
             if slot_available:
                 debug_print("ask_time_date: ✅ Slot free (first check) → proceed to customer lookup/confirmation")
         except Exception as e:
@@ -6130,7 +6121,7 @@ def voice():
         calendar_id = doctor_id
         debug_print(f"book_appt_confirm: 🔎 availability cal={calendar_id} {appointment_start}→{appointment_end}")
         try:
-            slot_free = is_time_slot_available(calendar_id, creds,appointment_start, appointment_end)
+            slot_free =  is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ availability check error → {e}")
             slot_free = False
@@ -6818,7 +6809,7 @@ def voice():
 
         # --- Availability (invert logic for cancel) -------------------------------
         try:
-            slot_free = is_time_slot_available(calendar_id, creds,appointment_start, appointment_end)
+            slot_free = slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
             debug_print(f"cancel_appt_by_time_date: 🔎 is_time_slot_available → {slot_free}")
         except Exception as e:
             debug_print(f"cancel_appt_by_time_date: ⚠️ availability check error → {e}")
