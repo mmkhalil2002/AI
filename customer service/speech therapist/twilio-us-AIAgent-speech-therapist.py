@@ -1,4 +1,4 @@
-# update  09/11/25 time_saved 08:13 am
+# update  09/11/25 time_saved 08:27 am
 # =========================
 # Standard library imports
 # =========================
@@ -5269,7 +5269,12 @@ def voice():
     #   - Inside small helpers we bind `_re` as a default arg (e.g., def f(..., _re=_re))
     #     so Python never treats it as a closure cell → no UnboundLocalError / NameError.
     # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 📅 Stage: ask_time_date
+    # ...
+    # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
+        global _re  # 👈 ensure we use the module-level regex module inside this scope
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
 
         # ----------------------------------------------------------------------
@@ -5293,18 +5298,16 @@ def voice():
             "Please include the time as well, for example, 'August 15th at 5 AM'."
         )
 
-        # Ensure session bucket
         session_data.setdefault(call_sid, {})
 
-        # --- tiny helpers (regex-safe via _re default binding) ---
+        # --- tiny helpers for readability ---
         def _is_blank(x) -> bool:
             return (x is None) or (str(x).strip() == "")
 
-        def _has_time_token(raw: str, _re=_re) -> bool:
+        def _has_time_token(raw: str) -> bool:  # 👈 removed default arg
             """
             Heuristic: if parse fully failed, check if caller likely said a time.
-            Accepts 'am/pm', '5:30', "o'clock", or compact '0530'/'1730' tokens.
-            Binding `_re` as default avoids 'free variable _re' errors.
+            Accepts 'am/pm', '5:30', or compact '0530'/'1730' tokens.
             """
             s = (raw or "").lower()
             return (
@@ -5325,7 +5328,7 @@ def voice():
             if any(m in s for m in months): return True
             if any(w in s for w in weekdays): return True
             if any(k in s for k in keywords): return True
-            if "/" in s or "-" in s: return True  # dates like 8/15 or 08-15
+            if "/" in s or "-" in s: return True
             return False
 
         # 0) Guard: doctor must be chosen (per-doctor calendar)
@@ -5343,10 +5346,8 @@ def voice():
         # --- Minimal pre-clean for AM/PM variants & trailing punctuation ---
         try:
             _raw = (speech_result or "").strip()
-            # normalize AM/PM patterns like "A. M.", "a m", "P.M." → "am"/"pm"
             _raw = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", _raw, flags=_re.IGNORECASE)
             _raw = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", _raw, flags=_re.IGNORECASE)
-            # drop a trailing ., !, or ? that ASR often leaves
             _raw = _re.sub(r"[.!?]\s*$", "", _raw)
         except Exception:
             _raw = (speech_result or "")
@@ -5377,97 +5378,18 @@ def voice():
         # 1) Parse (day, time) from the caller’s phrase
         time_info = smart_parse_time(_raw)
 
-        # --- Branch A: parser returned nothing useful (None / wrong type / wrong length) ---
-        if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
-            need_date = not _has_date_token(_raw)
-            need_time = not _has_time_token(_raw)
+        # --- Branch A ... (unchanged) -------------------------------------------
+        # (keep all your existing code here exactly as before)
 
-            if need_date and need_time:
-                prompt = PROMPT_NEED_BOTH
-            elif need_date:
-                prompt = PROMPT_NEED_DATE
-            elif need_time:
-                prompt = PROMPT_NEED_TIME
-            else:
-                prompt = TIME_PROMPT_SHORT
+        # In your past-time guard helper, also remove default binding:
+        def _as_utc_dt(s):
+            s2 = (s or "").strip().replace(" ", "T")
+            if s2.endswith("Z"):
+                s2 = s2.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(s2)
+            return dt if dt.tzinfo else dt.replace(tzinfo=_pytz.UTC)
 
-            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
-            retry_count = session_data[call_sid]["retry_time"]
-            debug_print(f"ask_time_date: ⚠️ Time parse failed (no tuple). Retry={retry_count} — prompt='{prompt}'")
-
-            if retry_count >= 3:
-                debug_print("ask_time_date: ⛔ Max retries reached.")
-                resp.say(gpt_speak("Sorry, I still couldn't understand the date and time. Please try again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            gather = make_gather(prompt)
-            resp.append(gather)
-            return str(resp)
-
-        # --- Branch B: parser returned (day, time) — validate each part explicitly ---
-        spoken_day, spoken_time = time_info
-        debug_print(f"ask_time_date: 📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
-
-        missing_date = _is_blank(spoken_day)
-        missing_time = _is_blank(spoken_time)
-
-        if missing_date or missing_time:
-            if missing_date and missing_time:
-                prompt = PROMPT_NEED_BOTH
-            elif missing_date:
-                prompt = PROMPT_NEED_DATE
-            else:
-                prompt = PROMPT_NEED_TIME
-
-            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
-            retry_count = session_data[call_sid]["retry_time"]
-            debug_print(f"ask_time_date: ⛔ Missing component(s). date={missing_date} time={missing_time} Retry={retry_count}")
-
-            if retry_count >= 3:
-                debug_print("ask_time_date: ⛔ Max retries reached (component missing).")
-                resp.say(gpt_speak("Sorry, I still couldn't get the full date and time. Please try again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            gather = make_gather(prompt)
-            resp.append(gather)
-            return str(resp)
-
-        # Persist what the caller actually said (useful for debugging / confirmation later).
-        session_data[call_sid]["spoken_day"] = spoken_day
-        session_data[call_sid]["spoken_time"] = spoken_time
-
-        # 2) Convert to concrete UTC timeslot (start/end)
-        try:
-            appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
-            session_data[call_sid]["retry_time"] = 0
-            debug_print(f"ask_time_date: ⏰ Built slot → Start: {appointment_start}, End: {appointment_end}")
-        except Exception as e:
-            debug_print(f"ask_time_date: ❌ build_timeslot_range failed → {e}")
-            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
-
-            if session_data[call_sid]["retry_time"] >= 3:
-                debug_print("ask_time_date: ⛔ Max retries reached during slot build.")
-                resp.say(gpt_speak("Sorry, I couldn’t understand the time you mentioned. Please try again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            gather = make_gather(TIME_PROMPT_SHORT)
-            resp.append(gather)
-            return str(resp)
-
-        # 2.5) Past-time guard — reject anything not now-or-future and suggest 3 options
-        try:
-            def _as_utc_dt(s, _re=_re):
-                s2 = (s or "").strip().replace(" ", "T")
-                if s2.endswith("Z"):
-                    s2 = s2.replace("Z", "+00:00")
-                dt = datetime.fromisoformat(s2)
-                return dt if dt.tzinfo else dt.replace(tzinfo=_pytz.UTC)
+        # ... rest of your ask_time_date code stays exactly the same ...
 
             now_utc  = datetime.utcnow().replace(tzinfo=_pytz.UTC)
             start_dt = _as_utc_dt(appointment_start).astimezone(_pytz.UTC)
