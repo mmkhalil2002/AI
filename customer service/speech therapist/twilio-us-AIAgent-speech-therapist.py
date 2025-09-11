@@ -4367,6 +4367,7 @@ def voice():
     # ----------------------------------------------------------------------
 
     elif stage == "collect_dob":
+        import re as _re
         debug_print("collect_dob: 📍 Stage entered")
 
         # Short, clear prompts (no “MMDDYYYY” wording anywhere)
