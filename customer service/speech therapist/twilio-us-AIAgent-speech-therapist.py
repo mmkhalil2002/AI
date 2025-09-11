@@ -1,4 +1,4 @@
-# update  09/10/25 time_saved 11:56am
+# update  09/11/25 time_saved 07:26 am
 # =========================
 # Standard library imports
 # =========================
@@ -349,6 +349,32 @@ def make_gather_dtmf(
     )
 
 
+# Prefer speech+DTMF first; escalate to DTMF-only when caller struggles.
+def prompt_for_value(prompt_text: str, *, dtmf_only: bool = False, max_digits: int = None):
+    # DTMF-only path (e.g., after an invalid attempt or for CVV/ZIP)
+    if dtmf_only and "make_gather_dtmf" in globals() and callable(globals()["make_gather_dtmf"]):
+        # Keep '#" as the terminator so callers can press pound when done.
+        return make_gather_dtmf(
+            prompt_text,
+            max_digits=max_digits,     # leave as None to require '#'
+            finish_on_key="#",
+        )
+
+    # Speech + DTMF (default) — do NOT pass input="speech dtmf" unless your helper supports it
+    if "make_gather" in globals() and callable(globals()["make_gather"]):
+        return make_gather(
+            prompt_text,
+            hints="zero one two three four five six seven eight nine double triple",
+        )
+
+    # Ultra-compact fallback (prevents crashes if helpers aren’t available)
+    try:
+        #from twilio.twiml.voice_response import Gather
+        g = Gather(input=("dtmf" if dtmf_only else "speech dtmf"))
+        g.say(prompt_text)
+        return g
+    except Exception:
+        return None
 
 
 
@@ -3236,6 +3262,386 @@ def normalize_phone_e164(raw: str, country: str = "US") -> str:
     # Unknown country → fail closed
     return ""
 
+
+
+
+# ------------------------
+# ➕ Add appointment
+# ------------------------
+
+
+def confirm_appointment_by_name(
+    doctor_name: str,
+    phone: str,
+    utc_start: str,
+    calendar_id: str,
+    name: str = None,
+    dob: str = None,
+    address: str = None,
+    event_id: str = None,
+    debug: bool = False,
+):
+    """
+    Add a new appointment to the doctor's table and save to JSON file.
+
+    Compatibility:
+      - Required params remain: doctor_name, phone, utc_start, calendar_id.
+      - Optional params (name, dob, address, event_id, debug) have defaults, so existing
+        call sites won't break if they don't pass them.
+
+    Behavior:
+      - Normalizes phone to digits-only.
+      - Ensures utc_start is UTC ISO8601 (e.g., '2025-08-07T10:00:00Z').
+      - Searches existing file by (phone + dob) if dob provided; otherwise by phone only.
+      - Skips exact duplicates (same phone + dob + time + calendar_id).
+      - Appends record with optional name/dob/address/event_id.
+      - Saves back to disk and refreshes in-memory cache doctor_appointments[filename], if defined.
+
+    Returns:
+      dict with:
+        created: bool           # True if appended, False if duplicate
+        record: dict            # The record (new or existing)
+        reason: str | None      # 'duplicate' if not created, else None
+    """
+    
+    
+    # -----------------------
+    # Normalize phone digits
+    # -----------------------
+    digits_only_phone = _re.sub(r"\D", "", phone or "")
+    if not digits_only_phone:
+        raise ValueError("Phone is required and must contain digits.")
+
+    # -----------------------------------------
+    # Normalize DOB into ISO YYYY-MM-DD (if any)
+    # -----------------------------------------
+    dob_iso = (dob or "").strip()
+    if dob_iso:
+        # Already ISO?
+        if _re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None:
+            # Try MM/DD/YYYY or MM-DD-YYYY
+            m = _re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
+            if m:
+                mm, dd, yyyy = m.groups()
+                dob_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
+            else:
+                # Light normalization: 2025/08/07 → 2025-08-07
+                dob_iso = dob_iso.replace("/", "-")
+
+    # --------------------------------------
+    # Ensure utc_start is UTC ISO8601 string
+    # --------------------------------------
+    def ensure_utc_iso(ts: str) -> str:
+        """
+        Accepts:
+          - '2025-08-07T10:00:00Z'
+          - '2025-08-07T10:00:00+00:00'
+          - '2025-08-07 10:00:00' (assumed UTC if naive)
+        Returns: 'YYYY-MM-DDTHH:MM:SSZ'
+        """
+        if not ts:
+            raise ValueError("utc_start is required")
+        s = ts.strip().replace(" ", "T")
+        try:
+            # Handle trailing Z by converting to +00:00 for fromisoformat
+            if s.endswith("Z"):
+                dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            else:
+                dt = datetime.fromisoformat(s)
+        except Exception:
+            # If naive pattern 'YYYY-MM-DDTHH:MM:SS', try that
+            if _re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", s):
+                dt = datetime.fromisoformat(s)
+            else:
+                raise
+        # Force UTC tz-aware
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    utc_start_iso = ensure_utc_iso(utc_start)
+
+    # --------------------------
+    # Resolve file paths/keys
+    # --------------------------
+    filename = sanitize_filename(doctor_name).replace(".json", "")
+    full_path = get_doctor_filename(doctor_name)
+    debug_print(f"🔍 File → {full_path}")
+
+    # --------------------------
+    # Load existing appointments
+    # --------------------------
+    appts = []
+    if os.path.exists(full_path):
+        try:
+            with open(full_path, "r") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                appts = data
+                debug_print(f"✅ Loaded list with {len(appts)} appointment(s)")
+            else:
+                debug_print("⚠️ Root JSON was not a list; reinitializing")
+        except Exception as e:
+            debug_print(f"⚠️ Failed to parse JSON → {e}")
+    else:
+        debug_print("📂 No file found — starting new list")
+
+    # -------------------------------------------------------
+    # Search by phone (+ dob if provided) for duplicates/info
+    # -------------------------------------------------------
+    matches = []
+    for idx, appt in enumerate(appts):
+        p = _re.sub(r"\D", "", appt.get("phone", ""))
+        d = (appt.get("dob") or "").strip()
+        if dob_iso:
+            if p == digits_only_phone and d == dob_iso:
+                matches.append((idx, appt))
+        else:
+            if p == digits_only_phone:
+                matches.append((idx, appt))
+
+    debug_print(f"🔎 Search by phone+dob → {len(matches)} match(es) "
+         f"(phone={digits_only_phone}, dob={dob_iso or 'N/A'})")
+
+    # -----------------------------------------------------------
+    # Skip exact duplicate (same phone + dob + time + calendar)
+    # -----------------------------------------------------------
+    for _, appt in matches:
+        try:
+            appt_time_iso = ensure_utc_iso(appt.get("time", ""))
+        except Exception:
+            # If bad time in file, don't treat as duplicate
+            appt_time_iso = None
+
+        if appt_time_iso == utc_start_iso and appt.get("calendar_id") == calendar_id:
+            debug_print("🔁 Exact duplicate detected — skipping append")
+            # Normalize record before returning
+            appt_norm = dict(appt)
+            appt_norm["phone"] = _re.sub(r"\D", "", appt_norm.get("phone", ""))
+            appt_norm["time"] = utc_start_iso
+            return {"created": False, "record": appt_norm, "reason": "duplicate"}
+
+    # ---------------------------------
+    # Append new appointment record
+    # ---------------------------------
+    new_record = {
+        "phone": digits_only_phone,
+        "time": utc_start_iso,
+        "calendar_id": calendar_id,
+    }
+    if name:
+        new_record["name"] = name
+    if dob_iso:
+        new_record["dob"] = dob_iso
+    if address:
+        new_record["address"] = address
+    if event_id:
+        new_record["event_id"] = event_id
+
+    appts.append(new_record)
+    debug_print(f"➕ Appended: {new_record}")
+
+    # -----------------------------
+    # Save back to disk (+ cache)
+    # -----------------------------
+    try:
+        with open(full_path, "w") as f:
+            json.dump(appts, f, indent=2)
+        debug_print(f"💾 Saved to {full_path}")
+
+        # Update in-memory cache if present
+        try:
+            doctor_appointments[filename] = appts
+        except Exception:
+            pass
+
+        return {"created": True, "record": new_record, "reason": None}
+    except Exception as e:
+        debug_print(f"❌ Failed to write JSON → {e}")
+        raise
+
+
+
+
+
+
+
+
+
+# ===== local doctor JSON cancellation (by doctor+phone+dob+utc_start) =====
+
+
+
+def cancel_appointment_by_name(
+    doctor_name: str,
+    phone: str,
+    dob: str,
+    utc_start: str,
+    *,
+    default_country: str = COUNTRY  # e.g., "US" or "EG"
+) -> bool:
+    """
+    Remove a single appointment from appointment_data/doctors/<doctor>.json
+    matching ALL of:
+      • phone  → E.164 ('+<cc><nsn>') **only**
+      • dob    → exact string match; expected ISO 'YYYY-MM-DD'
+      • time   → exact UTC ISO match (after normalization)
+
+    Returns True if a record was removed, else False.
+
+    Notes:
+      - Input `phone` can be already E.164; otherwise we normalize with `normalize_phone_e164`.
+      - Records may be mixed (older ones may only have 'phone' digits). We *derive* an E.164
+        per record (US/EG supported) and compare E.164 ↔ E.164 only.
+    """
+
+    # ---------- inputs (raw) ----------
+    debug_print(
+        "cancel_appointment_by_name: 🟡 inputs"
+        f"\n  doctor_name = '{doctor_name}'"
+        f"\n  phone(raw)  = '{(phone or '').strip()}'"
+        f"\n  dob         = '{(dob or '').strip()}'"
+        f"\n  utc_start   = '{(utc_start or '').strip()}'"
+        f"\n  country     = '{(default_country or 'US')}'"
+    )
+
+    # ---------- normalize input phone to E.164 ----------
+    raw = (phone or "").strip()
+    phone_e164 = ""
+    if raw.startswith("+") and raw[1:].replace(" ", "").isdigit():
+        phone_e164 = "+" + raw[1:].replace(" ", "")
+        debug_print(f"cancel_appointment_by_name: 📞 pass-through E.164 = '{phone_e164}'")
+    else:
+        try:
+            debug_print(f"cancel_appointment_by_name: 📞 trying normalize_phone_e164(raw, {default_country})")
+            phone_e164 = normalize_phone_e164(raw, (default_country or "US").upper()) or ""
+            debug_print(f"cancel_appointment_by_name: 📞 result (default) = '{phone_e164 or '∅'}'")
+            if not phone_e164:
+                alt = "EG" if (default_country or "US").upper() != "EG" else "US"
+                debug_print(f"cancel_appointment_by_name: 📞 trying normalize_phone_e164(raw, {alt})")
+                phone_e164 = normalize_phone_e164(raw, alt) or ""
+                debug_print(f"cancel_appointment_by_name: 📞 result (alt) = '{phone_e164 or '∅'}'")
+        except Exception as e:
+            debug_print(f"cancel_appointment_by_name: ⚠️ normalize_phone_e164 error → {e}")
+            phone_e164 = ""
+
+    dob_str = (dob or "").strip()
+    full_path = get_doctor_filename(doctor_name)
+    debug_print(
+        "cancel_appointment_by_name: 🟡 normalized inputs"
+        f"\n  phone_e164  = '{phone_e164 or '∅'}'"
+        f"\n  dob_iso     = '{dob_str or '∅'}'"
+        f"\n  file_path   = '{full_path}'"
+    )
+
+    if not os.path.exists(full_path):
+        debug_print("cancel_appointment_by_name: ❌ file not found")
+        return False
+    if not phone_e164 or not dob_str or not utc_start:
+        debug_print("cancel_appointment_by_name: ❌ missing one of (phone_e164, dob, utc_start)")
+        return False
+
+    # ---------- load list ----------
+    try:
+        with open(full_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            debug_print("cancel_appointment_by_name: ❌ JSON root is not a list")
+            return False
+        debug_print(f"cancel_appointment_by_name: 📄 loaded {len(data)} record(s)")
+    except Exception as e:
+        debug_print(f"cancel_appointment_by_name: ❌ read/parse error → {e}")
+        return False
+
+    # ---------- normalize times to comparable UTC ISO (no micros) ----------
+    def _to_utc_iso(s: str) -> str:
+        dt = dtparser.isoparse(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        out = dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        debug_print(f"_to_utc_iso: '{s}' → '{out}'")
+        return out
+
+    try:
+        target_norm = _to_utc_iso(utc_start)
+        debug_print(f"cancel_appointment_by_name: 🎯 target UTC   = '{target_norm}'")
+    except Exception as e:
+        debug_print(f"cancel_appointment_by_name: ❌ utc parse error → {e}")
+        return False
+
+    # ---------- helper: derive E.164 for a stored appt record ----------
+    def _appt_e164(appt: dict) -> str:
+        pe = (appt.get("phone_e164") or "").strip()
+        if pe.startswith("+") and pe[1:].replace(" ", "").isdigit():
+            debug_print(f"_appt_e164: using record phone_e164 = '{pe}'")
+            return "+" + pe[1:].replace(" ", "")
+        cand = (appt.get("phone") or "").strip()
+        if cand:
+            try:
+                e164 = normalize_phone_e164(cand, (default_country or "US").upper()) or ""
+                if not e164:
+                    alt = "EG" if (default_country or "US").upper() != "EG" else "US"
+                    e164 = normalize_phone_e164(cand, alt) or ""
+                debug_print(f"_appt_e164: derived from 'phone'='{cand}' → '{e164 or '∅'}'")
+                if e164:
+                    return e164
+            except Exception as e:
+                debug_print(f"_appt_e164: ⚠️ normalize error for '{cand}' → {e}")
+        debug_print("_appt_e164: no usable phone on record")
+        return ""
+
+    kept = []
+    removed = 0
+
+    for idx, appt in enumerate(data):
+        if not isinstance(appt, dict):
+            debug_print(f"[{idx}] skip non-dict record")
+            kept.append(appt)
+            continue
+
+        ap_e164 = _appt_e164(appt)
+        ap_dob  = (appt.get("dob", "") or "").strip()
+        ap_time_raw = (appt.get("time") or appt.get("start") or "").strip()
+
+        try:
+            ap_time_norm = _to_utc_iso(ap_time_raw) if ap_time_raw else ""
+        except Exception as e:
+            debug_print(f"[{idx}] time parse error for '{ap_time_raw}' → {e} (keeping record)")
+            kept.append(appt)
+            continue
+
+        debug_print(
+            f"[{idx}] record"
+            f"\n     phone_e164(rec) = '{ap_e164 or '∅'}'"
+            f"\n     dob(rec)        = '{ap_dob or '∅'}'"
+            f"\n     time(raw)       = '{ap_time_raw or '∅'}'"
+            f"\n     time(norm)      = '{ap_time_norm or '∅'}'"
+        )
+
+        matched = (ap_e164 == phone_e164) and (ap_dob == dob_str) and (ap_time_norm == target_norm)
+        debug_print(f"[{idx}] match? {matched}")
+        if matched:
+            removed += 1
+        else:
+            kept.append(appt)
+
+    if removed == 0:
+        debug_print("cancel_appointment_by_name: ❌ no matching record found")
+        return False
+
+    # ---------- write back ----------
+    try:
+        with open(full_path, "w", encoding="utf-8") as f:
+            json.dump(kept, f, indent=2, ensure_ascii=False)
+        debug_print(f"cancel_appointment_by_name: ✅ deleted {removed} appt(s); kept {len(kept)}")
+        return True
+    except Exception as e:
+        debug_print(f"cancel_appointment_by_name: ❌ write error → {e}")
+        return False
 
 
 
