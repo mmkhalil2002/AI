@@ -1,4 +1,4 @@
-# update  09/11/25 time_saved 08:40 am
+# update  09/11/25 time_saved 08:48 am
 # =========================
 # Standard library imports
 # =========================
@@ -5246,13 +5246,12 @@ def voice():
 
 
 
-
-     # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
     # 📅 Stage: ask_time_date
     # Purpose:
     #   - Parse spoken date/time (e.g., “August 12 at 5 PM”).
     #   - Compute a UTC timeslot window for the appointment.
-    #   - Check provider availability; if busy, offer next available options.
+    #   - Check provider availability; if busy/past, offer next available options.
     #   - If free:
     #       * If (phone + dob) exists in DB → skip name collection and go to confirm.
     #       * Else → collect first name.
@@ -5264,37 +5263,8 @@ def voice():
     #   - Globals referenced: APPOINTMENT_DURATION_MINUTES, googleid_dr_name_map, creds
     # 🆕 Silent mode:
     #   - If we hear nothing, re-ask up to 3 times via a separate counter (silence_time).
-    # Notes about regex:
-    #   - We import `re` at module scope as `_re` (see imports).
-    #   - Inside small helpers we bind `_re` as a default arg (e.g., def f(..., _re=_re))
-    #     so Python never treats it as a closure cell → no UnboundLocalError / NameError.
     # ----------------------------------------------------------------------
-    # ----------------------------------------------------------------------
-    # 📅 Stage: ask_time_date
-    # ...
-    # ----------------------------------------------------------------------
-    # ----------------------------------------------------------------------
-# 📅 Stage: ask_time_date
-# Purpose:
-#   - Parse spoken date/time (e.g., “August 12 at 5 PM”).
-#   - Compute a UTC timeslot window for the appointment.
-#   - Check provider availability; if busy/past, offer next available options.
-#   - If free:
-#       * If (phone + dob) exists in DB → skip name collection and go to confirm.
-#       * Else → collect first name.
-# Prompts:
-#   - Uses TIME_PROMPT_SHORT when re-prompting.
-# Integration points:
-#   - Uses: smart_parse_time(), build_timeslot_range(), is_time_slot_available(),
-#           get_next_available_slots(), customer_search(), make_gather()
-#   - Globals referenced: APPOINTMENT_DURATION_MINUTES, googleid_dr_name_map, creds
-# 🆕 Silent mode:
-#   - If we hear nothing, re-ask up to 3 times via a separate counter (silence_time).
-# ----------------------------------------------------------------------
     elif stage == "ask_time_date":
-        # 👇 Ensure we reference the module-level regex object everywhere in this scope
-        global _re
-
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
 
         # ----------------------------------------------------------------------
@@ -5497,12 +5467,9 @@ def voice():
             start_dt = _as_utc_dt(appointment_start).astimezone(_pytz.UTC)
             end_dt   = _as_utc_dt(appointment_end).astimezone(_pytz.UTC)
 
-            # Treat as past only if the slot has fully ended
             if end_dt <= now_utc:
                 debug_print("ask_time_date: 🕒 requested time is in the past → suggesting alternatives")
-
-                # Clear any stale chosen time before suggesting alternatives
-                session_data[call_sid].pop("appointment_time", None)
+                session_data[call_sid].pop("appointment_time", None)  # clear stale choice
 
                 # Build work-hours windows (respect lunch if within the day)
                 try:
@@ -5581,11 +5548,10 @@ def voice():
 
         slot_available = False
         try:
-            # Prefer signature (calendar_id, start_iso, end_iso, creds)
+            # Prefer signature (calendar_id, start_iso, end_iso, creds); support legacy fallback.
             try:
                 slot_available = bool(is_time_slot_available(calendar_id, appointment_start, appointment_end, creds))
             except TypeError:
-                # Support legacy signature (calendar_id, creds, start_iso, end_iso)
                 slot_available = bool(is_time_slot_available(calendar_id, creds, appointment_start, appointment_end))
 
             if slot_available:
@@ -5596,19 +5562,15 @@ def voice():
 
         if not slot_available:
             debug_print("ask_time_date: ❌ Slot not available")
+            session_data[call_sid].pop("appointment_time", None)  # clear stale choice
 
-            # Clear any stale chosen time before suggesting alternatives
-            session_data[call_sid].pop("appointment_time", None)
-
-            # Find nearby alternatives (friendly strings already included by helper).
-            alts = []
+            # Build work-hours windows (respect lunch if within the day)
             try:
                 dur_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES",
                                 globals().get("SESSION_TIME", globals().get("SESSIUON_TIME", 30))))
             except Exception:
                 dur_minutes = 30
 
-            # Build work-hours windows (respect lunch if within the day)
             WSTART = int(globals().get("WORKING_HOURS_START", globals().get("WORKIN_HOURS_START", 8)))
             WEND   = int(globals().get("WORKING_HOURS_END", 17))
             LBS = globals().get("LUNCH_BREAK_START")
@@ -5624,25 +5586,31 @@ def voice():
             else:
                 work_windows = ((WSTART, WEND),)
 
+            # Start alternatives at the requested day's workday start (minus one second so 8:00 is considered)
             try:
-                # Start scanning at the requested day's workday start (minus one second to keep 8:00)
-                try:
-                    tz = _pytz.timezone(globals().get("CLINIC_TZ") or "America/Chicago")
-                except Exception:
-                    tz = _pytz.timezone("America/Chicago")
+                tz = _pytz.timezone(globals().get("CLINIC_TZ") or "America/Chicago")
+            except Exception:
+                tz = _pytz.timezone("America/Chicago")
 
+            try:
                 s2 = appointment_start.replace("Z", "+00:00") if appointment_start.endswith("Z") else appointment_start
                 req_dt_utc = datetime.fromisoformat(s2)
                 if req_dt_utc.tzinfo is None:
                     req_dt_utc = req_dt_utc.replace(tzinfo=_pytz.UTC)
                 req_loc = req_dt_utc.astimezone(tz)
-                day_start_loc = req_loc.replace(hour=WSTART, minute=0, second=0, microsecond=0)
-                from_start_iso = (day_start_loc - timedelta(seconds=1)).astimezone(_pytz.UTC).isoformat().replace("+00:00","Z")
+            except Exception:
+                # If parsing fails, just use "now" in clinic tz
+                req_loc = datetime.utcnow().replace(tzinfo=_pytz.UTC).astimezone(tz)
 
+            day_start_loc = req_loc.replace(hour=WSTART, minute=0, second=0, microsecond=0)
+            from_start_iso = (day_start_loc - timedelta(seconds=1)).astimezone(_pytz.UTC).isoformat().replace("+00:00","Z")
+
+            alts = []
+            try:
                 alts = get_next_available_slots(
                     calendar_id,
                     creds,
-                    from_start_iso=from_start_iso,              # 07:59:59 local → allows 8:00 to be considered
+                    from_start_iso=from_start_iso,
                     duration_minutes=dur_minutes,
                     limit=3,
                     tz_name=(globals().get("CLINIC_TZ") or "America/Chicago"),
@@ -5663,10 +5631,8 @@ def voice():
             if alts:
                 try:
                     options = " or ".join([slot.get("friendly") for slot in alts if slot.get("friendly")])
-                except Exception as e:
-                    debug_print(f"ask_time_date: ⚠️ options build error → {e}")
+                except Exception:
                     options = ""
-
                 if options:
                     prompt = f"That time is not available. Would you like {options}?"
                     debug_print(f"ask_time_date: 💡 Offering alternatives → {options}")
@@ -5720,7 +5686,6 @@ def voice():
             gather = make_gather("Thanks. What is your first name?")
             resp.append(gather)
             return str(resp)
-
 
 
 
