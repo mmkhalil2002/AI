@@ -4871,6 +4871,7 @@ def voice():
     #     separate counter (silence_dob), then hang up politely.
     # ----------------------------------------------------------------------
     elif stage == "collect_dob":
+        import re as _re
         # ----------------------------------------------------------------------
         # 📍 Stage: collect_dob
         # Goal: capture caller's date of birth via speech or keypad.
@@ -6707,7 +6708,7 @@ def voice():
 
             prompt_text = (
                 "Please say your birth date, for example July third nineteen fifty six, "
-                "or type MMDDYYYY, then press pound."
+                "or type 2 digits for month 2 digits for day and 4 digits for year, then press pound."
             )
             session_data[call_sid]["stage"] = "cancel_appt_get_dob"
             try:
