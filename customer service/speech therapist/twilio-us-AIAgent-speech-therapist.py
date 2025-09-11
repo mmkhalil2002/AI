@@ -4349,49 +4349,35 @@ def voice():
 
 
 
-
     # ----------------------------------------------------------------------
     # 🎂 Stage: collect_dob
     # Purpose:
-    #   - Accept DOB via speech (e.g., “July third 1990”) or keypad (MMDDYYYY#).
+    #   - Accept DOB via speech (e.g., “July third 1956”) or keypad (two-digit month, two-digit day, four-digit year + #).
     #   - Parse and validate reasonable date range.
     #   - Store DOB as ISO (YYYY-MM-DD) in session.
-    #   - On failure, re-prompt with the SHORT prompt (DOB_PROMPT_SHORT).
+    #   - On failure, re-prompt (briefly) asking for the FULL birth date again.
     # Integration points:
-    #   - Uses: parse_dob_input(), make_gather_dob(), debug_print, session_data, call_sid
-    #   - Next stage: ask_time_date (always, after successful DOB store)
+    #   - Uses: make_gather(), gpt_speak(), session_data, call_sid, request, url_for
+    #   - Uses global imports: _re, _dtparse, datetime/date from python-dateutil & stdlib
+    #   - Next stage: ask_time_date (after successful DOB store)
     # 🆕 Silent mode:
-    #   - If neither speech nor digits were received, re-prompt up to 3 times using a
-    #     separate counter (silence_dob), then hang up politely.
+    #   - If neither speech nor digits were received, re-prompt up to 3 times
+    #     using a separate counter (silence_dob), then hang up politely.
     # ----------------------------------------------------------------------
     elif stage == "collect_dob":
-        import re as _re
-        # ----------------------------------------------------------------------
-        # 📍 Stage: collect_dob
-        # Goal: capture caller's date of birth via speech or keypad.
-        #  - Robust to slow speech: "July ... 3rd ... 1956"
-        #  - Short prompts, no "MMDDYYYY" jargon
-        #  - Accepts keypad: "07 03 1956#" or "07031956#"
-        #  - Uses global `_re` and dateutil.parse (`_dtparse`)
-        #  - Validates 1900..today
-        # ----------------------------------------------------------------------
         debug_print("collect_dob: 📍 Stage entered")
 
-        # Short, clear prompts (no jargon)
+        # Short, clear prompts (no “MMDDYYYY” jargon)
         PROMPT_DOB_SHORT = (
-            "Say your birth date, for example 'July 3 1956'. "
-            "Or type month, day, year, then press #. Example: 07 03 1956#."
+            "Say your birth date, for example, 'July 3 1956'. "
+            "Or enter two digits for month, two for day, and four for year, then press #. Example: 07 03 1956#."
         )
-        PROMPT_NEED_MONTH_DAY = (
-            "I only heard a year. Please add the month and day, for example "
-            "'July 3 1956' or type 07 03 1956#."
+        PROMPT_REPEAT_FULL = (
+            "I didn’t catch your full birth date. Please say the complete date, for example, 'July 3 1956'. "
+            "You can also enter two digits for month, two for day, and four for year, then press #. Example: 07 03 1956#."
         )
-        PROMPT_TRY_AGAIN = (
-            "Please say your birth date, for example 'July 3 1956'. "
-            "You can also type month, day, year, then press #."
-        )
-        PROMPT_FINAL = (
-            "Please type month, day, year, then press #. Example: 07 03 1956#."
+        PROMPT_FINAL_DTMF = (
+            "Please enter two digits for month, two for day, and four for year, then press #. Example: 07 03 1956#."
         )
 
         # Ensure session buckets exist
@@ -4421,11 +4407,8 @@ def voice():
                 return str(resp)
 
             # Re-prompt (speech+DTMF)
-            try:
-                gather = make_gather(PROMPT_DOB_SHORT, input="speech dtmf")
-            except Exception:
-                gather = make_gather(PROMPT_DOB_SHORT)
-            resp.append(gather)
+            g = make_gather(PROMPT_DOB_SHORT, input="speech dtmf")
+            resp.append(g)
             try:
                 resp.redirect(url_for("voice"))
             except Exception:
@@ -4437,36 +4420,29 @@ def voice():
 
         # -----------------------------------------------------
         # 1) KEYPAD path (preferred if provided)
-        #  - Accepts "07 03 1956#", "07031956#", "07-03-1956#", etc.
+        #    Accepts "07 03 1956#", "07031956#", "07-03-1956#", etc.
         # -----------------------------------------------------
         dob_date = None
         if dtmf_digits:
-            # Keep only digits
-            d = _re.sub(r"\D", "", dtmf_digits)
-            # Expected total: 8 digits (MMDDYYYY) — but user didn't need to know the name
+            d = _re.sub(r"\D", "", dtmf_digits)  # keep only digits
             if len(d) == 8:
-                mm = int(d[0:2])
-                dd = int(d[2:4])
-                yyyy = int(d[4:8])
                 try:
+                    mm = int(d[0:2]); dd = int(d[2:4]); yyyy = int(d[4:8])
                     dob_date = date(yyyy, mm, dd)
                 except Exception:
                     dob_date = None
             else:
-                # Try very tolerant split like "07 03 1956" captured as "07031956" already.
                 dob_date = None
 
-            if not dob_date:
-                # Invalid keypad DOB → reprompt; after 3 misses, force keypad-only
+            if dob_date is None:
+                # Invalid keypad DOB → ask for the FULL birth date again.
                 r = session_data[call_sid].get("retry_dob", 0) + 1
                 session_data[call_sid]["retry_dob"] = r
                 debug_print(f"collect_dob: ❌ invalid keypad DOB '{dtmf_digits}' retry={r}")
 
-                if r >= 3:
-                    gather = make_gather(PROMPT_FINAL, input="dtmf")
-                else:
-                    gather = make_gather(PROMPT_TRY_AGAIN, input="speech dtmf")
-                resp.append(gather)
+                g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
+                                input=("dtmf" if r >= 3 else "speech dtmf"))
+                resp.append(g)
                 try:
                     resp.redirect(url_for("voice"))
                 except Exception:
@@ -4475,59 +4451,67 @@ def voice():
 
         # -----------------------------------------------------
         # 2) SPEECH path (when no valid keypad DOB)
-        #  - Handle slow speech with ordinals and punctuation
-        #  - Require that a year is present
+        #    - Handle slow speech with ordinals and punctuation
+        #    - Require that a 4-digit year is present
+        #    - If ANY part is unclear → ask for FULL date again
         # -----------------------------------------------------
         if dob_date is None:
             t = speech_text
 
-            # Strip trailing punctuation and replace inner punctuation with spaces
-            t = _re.sub(r"[.,;:]+$", "", t)
-            t = _re.sub(r"[,\.;:]", " ", t)
-
-            # Normalize ordinal suffixes: "3rd"→"3", "21st"→"21"
-            t = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=_re.IGNORECASE)
-
-            # Collapse spaces
+            # Make STT punctuation harmless; collapse spaces
+            t = _re.sub(r"[.,;:]+$", "", t)         # trim trailing punctuation
+            t = _re.sub(r"[,\.;:]", " ", t)         # inner punctuation → space
+            t = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=_re.IGNORECASE)  # 3rd→3, 21st→21
             t = _re.sub(r"\s+", " ", t).strip()
 
-            # If the caller said only a year (e.g., "1956.")
-            if _re.fullmatch(r"\d{4}", _re.sub(r"\D", "", t) or ""):
+            # If only a 4-digit year was heard → missing parts → ask for FULL date again
+            only_digits = _re.sub(r"\D", "", t) or ""
+            if _re.fullmatch(r"\d{4}", only_digits):
                 r = session_data[call_sid].get("retry_dob", 0) + 1
                 session_data[call_sid]["retry_dob"] = r
                 debug_print(f"collect_dob: ❌ only year heard; retry_dob={r}")
 
-                prompt = PROMPT_NEED_MONTH_DAY if r < 3 else PROMPT_FINAL
-                gather = make_gather(prompt, input=("dtmf" if r >= 3 else "speech dtmf"))
-                resp.append(gather)
+                g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
+                                input=("dtmf" if r >= 3 else "speech dtmf"))
+                resp.append(g)
                 try:
                     resp.redirect(url_for("voice"))
                 except Exception:
                     resp.redirect("/voice")
                 return str(resp)
 
-            # Parse with dateutil (fuzzy=True tolerates filler words)
+            # Require an explicit 4-digit year in the spoken text (avoid parser’s default year)
+            said_year = bool(_re.search(r"\b\d{4}\b", t))
+            if not said_year:
+                r = session_data[call_sid].get("retry_dob", 0) + 1
+                session_data[call_sid]["retry_dob"] = r
+                debug_print(f"collect_dob: ❌ year missing in speech; retry_dob={r}")
+
+                g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
+                                input=("dtmf" if r >= 3 else "speech dtmf"))
+                resp.append(g)
+                try:
+                    resp.redirect(url_for("voice"))
+                except Exception:
+                    resp.redirect("/voice")
+                return str(resp)
+
+            # Try to parse month/day/year from speech
             try:
                 today = _date_local.today()
                 default_base = datetime(today.year, today.month, today.day, 9, 0, 0)
-
                 parsed = _dtparse(t, default=default_base, dayfirst=False, fuzzy=True)
 
-                # Require a 4-digit year in what the caller said (avoid defaulted year)
-                said_year = bool(_re.search(r"\b\d{4}\b", t))
-                if not said_year:
-                    raise ValueError("year missing in speech")
-
-                # Build a pure date (ignore time if any)
+                # Build pure date (ignore time if any)
                 dob_date = date(parsed.year, parsed.month, parsed.day)
             except Exception as e:
                 r = session_data[call_sid].get("retry_dob", 0) + 1
                 session_data[call_sid]["retry_dob"] = r
-                debug_print(f"collect_dob: ❌ Parse failed. retry_dob={r} reason={e}")
+                debug_print(f"collect_dob: ❌ speech parse failed; retry_dob={r} reason={e}")
 
-                prompt = PROMPT_TRY_AGAIN if r < 3 else PROMPT_FINAL
-                gather = make_gather(prompt, input=("speech dtmf" if r < 3 else "dtmf"))
-                resp.append(gather)
+                g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
+                                input=("dtmf" if r >= 3 else "speech dtmf"))
+                resp.append(g)
                 try:
                     resp.redirect(url_for("voice"))
                 except Exception:
@@ -4547,9 +4531,9 @@ def voice():
             session_data[call_sid]["retry_dob"] = r
             debug_print(f"collect_dob: ⚠️ Validation error → {e} (retry={r})")
 
-            prompt = PROMPT_TRY_AGAIN if r < 3 else PROMPT_FINAL
-            gather = make_gather(prompt, input=("speech dtmf" if r < 3 else "dtmf"))
-            resp.append(gather)
+            g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
+                            input=("dtmf" if r >= 3 else "speech dtmf"))
+            resp.append(g)
             try:
                 resp.redirect(url_for("voice"))
             except Exception:
@@ -4566,16 +4550,14 @@ def voice():
 
         # Next stage: ask for appointment date/time
         session_data[call_sid]["stage"] = "ask_time_date"
-        try:
-            gather = make_gather("Thanks. Please say the appointment date and time, for example 'September 12 at 10 AM'.")
-        except Exception:
-            gather = make_gather("Thanks. Please say the date and time, for example 'September 12 at 10 AM'.")
-        resp.append(gather)
+        g = make_gather("Thanks. Please say the appointment date and time, for example, 'September 12 at 10 AM'.")
+        resp.append(g)
         try:
             resp.redirect(url_for("voice"))
         except Exception:
             resp.redirect("/voice")
         return str(resp)
+
 
 
 
@@ -5434,233 +5416,323 @@ def voice():
 
 
 
+        elif stage == "book_appt_confirm":
+            debug_print("book_appt_confirm: 📍 Stage entered")
 
+            # ----------------------------------------------------------------------
+            # 📌 We DO NOT ignore speech here anymore.
+            #     - Accept 'confirm/yes/book' (or DTMF 1)
+            #     - Accept 'change/no/different' (or DTMF 2)
+            #     - Accept 'cancel' (or DTMF 3)
+            #     - Small silence/bad-input retry budget
+            # ----------------------------------------------------------------------
 
-    elif stage == "book_appt_confirm":
-        debug_print("book_appt_confirm: 📍 Stage entered")
+            # ---- Doctor info --------------------------------------------------------
+            doctor_id = session_data[call_sid].get("doctor_id")
+            if not doctor_id:
+                debug_print("book_appt_confirm: ❌ missing doctor_id → choose_doctor")
+                session_data[call_sid]["stage"] = "choose_doctor"
+                resp.append(make_gather("Which doctor would you like to see?"))
+                return str(resp)
 
-        # Ignore any incidental speech here; we do not re-parse time at confirm stage.
-        if (speech_result or "").strip():
-            try: debug_print("book_appt_confirm: 🛡️ ignoring incidental speech at confirm stage")
-            except Exception: pass
+            doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
+            debug_print(f"book_appt_confirm: doctor_id={doctor_id} name={doctor_name}")
 
-        # ---- Doctor info --------------------------------------------------------
-        doctor_id = session_data[call_sid].get("doctor_id")
-        if not doctor_id:
-            debug_print("book_appt_confirm: ❌ missing doctor_id → choose_doctor")
-            session_data[call_sid]["stage"] = "choose_doctor"
-            resp.append(make_gather("Which doctor would you like to see?"))
-            return str(resp)
+            # ---- Appointment time (need start; compute end if missing) --------------
+            appt_payload      = session_data[call_sid].get("appointment_time", {}) or {}
+            appointment_start = appt_payload.get("start")
+            appointment_end   = appt_payload.get("end")
+            debug_print(f"book_appt_confirm: utc_start={appointment_start} utc_end={appointment_end}")
 
-        doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
-        debug_print(f"book_appt_confirm: doctor_id={doctor_id} name={doctor_name}")
+            if not appointment_start:
+                debug_print("book_appt_confirm: ❌ missing appointment_start")
+                resp.say(gpt_speak("Appointment time is missing. Goodbye!"), VOICE)
+                resp.hangup()
+                return str(resp)
 
-        # ---- Appointment time (need start; compute end if missing) --------------
-        appt_payload     = session_data[call_sid].get("appointment_time", {}) or {}
-        appointment_start = appt_payload.get("start")
-        appointment_end   = appt_payload.get("end")
-        debug_print(f"book_appt_confirm: utc_start={appointment_start} utc_end={appointment_end}")
-
-        if not appointment_start:
-            debug_print("book_appt_confirm: ❌ missing appointment_start")
-            resp.say(gpt_speak("Appointment time is missing. Goodbye!"), VOICE)
-            resp.hangup()
-            return str(resp)
-
-        # Format local friendly time (uses CLINIC_TZ or America/Chicago)
-        tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
-        try:
-            dt_utc   = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
-            dt_local = dt_utc.astimezone(_pytz.timezone(tz_name))
+            # Format local friendly time (uses CLINIC_TZ or America/Chicago)
+            tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
             try:
-                formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")  # Unix-like
+                tz = _pytz.timezone(tz_name)
             except Exception:
-                formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")  # Windows fallback
-        except Exception as e:
-            debug_print(f"book_appt_confirm: time format error → {e}")
-            resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
-            resp.hangup()
-            return str(resp)
+                tz = _pytz.timezone("America/Chicago")
 
-        # Compute end if missing (duration from globals, default 30m)
-        if not appointment_end:
             try:
-                dur_min = None
-                for k in ("APPOINTMENT_DURATION_MINUTES", "SESSION_TIME", "SESSIUON_TIME"):
-                    v = globals().get(k)
-                    if v:
-                        try: dur_min = int(v); break
-                        except Exception: pass
-                if dur_min not in (15, 30, 45, 60): dur_min = 30
-                end_dt = dt_utc + timedelta(minutes=dur_min)
-                appointment_end = end_dt.astimezone(_pytz.UTC).isoformat()
-                debug_print(f"book_appt_confirm: computed utc_end={appointment_end} (duration={dur_min}m)")
+                dt_utc   = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
+                dt_local = dt_utc.astimezone(tz)
+                try:
+                    formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")  # Unix-like
+                except Exception:
+                    formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")  # Windows fallback
             except Exception as e:
-                debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
+                debug_print(f"book_appt_confirm: time format error → {e}")
                 resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
                 resp.hangup()
                 return str(resp)
 
-        # ---- Customer info (E.164 + DOB) ---------------------------------------
-        customer           = session_data[call_sid].get("customer", {}) or {}
-        customer_name      = (customer.get("name") or "").strip()
-        first_name         = (customer.get("first_name") or "").strip()
-        last_name          = (customer.get("last_name")  or "").strip()
-        if not first_name and customer_name:
-            parts = customer_name.split()
-            first_name = parts[0]
-            last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
-        effective_name     = customer_name or " ".join([n for n in (first_name, last_name) if n]).strip()
-        customer_address   = (customer.get("address") or "").strip()
-        customer_dob       = (customer.get("dob") or "").strip()
-
-        # E.164 normalization (prefer already-stored phone_e164)
-        phone_raw          = (customer.get("phone_e164") or customer.get("phone") or "").strip()
-        customer_phone_e164 = ""
-        if phone_raw.startswith("+") and phone_raw[1:].replace(" ", "").isdigit():
-            customer_phone_e164 = "+" + phone_raw[1:].replace(" ", "")
-        else:
-            try:
-                default_country = (session_data[call_sid].get("phone_country") or globals().get("COUNTRY") or "US").upper()
-                customer_phone_e164 = normalize_phone_e164(phone_raw, default_country) or ""
-                if not customer_phone_e164:
-                    alt = "EG" if default_country != "EG" else "US"
-                    customer_phone_e164 = normalize_phone_e164(phone_raw, alt) or ""
-            except Exception:
-                customer_phone_e164 = ""
-
-        if not customer_phone_e164:
-            debug_print("book_appt_confirm: ❌ missing/invalid E.164 phone → collect_phone")
-            session_data[call_sid]["stage"] = "collect_phone"
-            resp.append(make_gather("Before we confirm your appointment, please provide your phone number."))
-            return str(resp)
-
-        if not customer_dob:
-            debug_print("book_appt_confirm: ❌ missing DOB → collect_dob")
-            session_data[call_sid]["stage"] = "collect_dob"
-            resp.append(make_gather(
-                "Before we confirm, please provide your date of birth. "
-                "You can say it, or type month, day, and year, then press pound."
-            ))
-            return str(resp)
-
-        # ---- Upsert customer (best-effort) --------------------------------------
-        try:
-            init_db()
-            insert_customer(
-                phone=customer_phone_e164,
-                dob=customer_dob,
-                first_name=first_name,
-                last_name=last_name,
-                address=customer_address,
-                cc_name=(customer.get("cc_name") or effective_name or ""),
-                cc_number=(customer.get("cc_number") or ""),
-                cc_exp=(customer.get("cc_exp") or ""),
-                cc_cvv=(customer.get("cc_cvv") or "")
-            )
-            debug_print("book_appt_confirm: customers DB → inserted/updated")
-        except Exception as e:
-            debug_print(f"book_appt_confirm: insert_customer failed → {e}")
-
-        # ---- Availability check (enforces working hours/days/past-time) ---------
-        calendar_id = doctor_id
-        debug_print(f"book_appt_confirm: 🔎 availability cal={calendar_id} {appointment_start}→{appointment_end}")
-        try:
-            slot_free =  is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ availability check error → {e}")
-            slot_free = False
-
-        if not slot_free:
-            debug_print("book_appt_confirm: ❌ Slot not free → alternatives")
-            try:
-                alts = get_next_available_slots(
-                    calendar_id,
-                    creds,
-                    from_start_iso=appointment_start,
-                    limit=3
-                ) or []
-                if alts:
-                    options = " or ".join([a.get("friendly","") for a in alts if a.get("friendly")])
-                    session_data[call_sid]["stage"] = "ask_time_date"
-                    resp.append(make_gather(f"That time is not available. Would you like {options}?"))
+            # Compute end if missing (duration from globals, default 30m)
+            if not appointment_end:
+                try:
+                    dur_min = None
+                    for k in ("APPOINTMENT_DURATION_MINUTES", "SESSION_TIME", "SESSIUON_TIME"):
+                        v = globals().get(k)
+                        if v:
+                            try:
+                                dur_min = int(v); break
+                            except Exception:
+                                pass
+                    if dur_min not in (15, 30, 45, 60):
+                        dur_min = 30
+                    end_dt = dt_utc + timedelta(minutes=dur_min)
+                    appointment_end = end_dt.astimezone(_pytz.UTC).isoformat()
+                    debug_print(f"book_appt_confirm: computed utc_end={appointment_end} (duration={dur_min}m)")
+                except Exception as e:
+                    debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
+                    resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+                    resp.hangup()
                     return str(resp)
-            except Exception as e:
-                debug_print(f"book_appt_confirm: ⚠️ get_next_available_slots error → {e}")
 
-            session_data[call_sid]["stage"] = "ask_time_date"
-            resp.append(make_gather("That time is not available. Please say another date and time, for example, 'tomorrow at 3:30 PM'."))
-            return str(resp)
+            # ---- Customer info (E.164 + DOB) ---------------------------------------
+            customer           = session_data[call_sid].get("customer", {}) or {}
+            customer_name      = (customer.get("name") or "").strip()
+            first_name         = (customer.get("first_name") or "").strip()
+            last_name          = (customer.get("last_name")  or "").strip()
+            if not first_name and customer_name:
+                parts = customer_name.split()
+                first_name = parts[0]
+                last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
+            effective_name     = customer_name or " ".join([n for n in (first_name, last_name) if n]).strip()
+            customer_address   = (customer.get("address") or "").strip()
+            customer_dob       = (customer.get("dob") or "").strip()
 
-        # ---- Save internally (optional) -----------------------------------------
-        try:
-            if "confirm_appointment_by_name" in globals() and callable(globals()["confirm_appointment_by_name"]):
-                confirm_appointment_by_name(
-                    doctor_name=doctor_name,
+            # E.164 normalization (prefer already-stored phone_e164)
+            phone_raw           = (customer.get("phone_e164") or customer.get("phone") or "").strip()
+            customer_phone_e164 = ""
+            if phone_raw.startswith("+") and phone_raw[1:].replace(" ", "").isdigit():
+                customer_phone_e164 = "+" + phone_raw[1:].replace(" ", "")
+            else:
+                try:
+                    default_country = (session_data[call_sid].get("phone_country") or globals().get("COUNTRY") or "US").upper()
+                    customer_phone_e164 = normalize_phone_e164(phone_raw, default_country) or ""
+                    if not customer_phone_e164:
+                        alt = "EG" if default_country != "EG" else "US"
+                        customer_phone_e164 = normalize_phone_e164(phone_raw, alt) or ""
+                except Exception:
+                    customer_phone_e164 = ""
+
+            if not customer_phone_e164:
+                debug_print("book_appt_confirm: ❌ missing/invalid E.164 phone → collect_phone")
+                session_data[call_sid]["stage"] = "collect_phone"
+                resp.append(make_gather("Before we confirm your appointment, please provide your phone number."))
+                return str(resp)
+
+            if not customer_dob:
+                debug_print("book_appt_confirm: ❌ missing DOB → collect_dob")
+                session_data[call_sid]["stage"] = "collect_dob"
+                resp.append(make_gather(
+                    "Before we confirm, please say your date of birth, for example, 'July 3 1990'. "
+                    "You can also enter month, day, and year, then press pound."
+                ))
+                return str(resp)
+
+            # ---- Upsert customer (best-effort) --------------------------------------
+            try:
+                init_db()
+                insert_customer(
                     phone=customer_phone_e164,
                     dob=customer_dob,
-                    name=effective_name,
+                    first_name=first_name,
+                    last_name=last_name,
                     address=customer_address,
-                    utc_start=appointment_start,
-                    calendar_id=calendar_id
+                    cc_name=(customer.get("cc_name") or effective_name or ""),
+                    cc_number=(customer.get("cc_number") or ""),
+                    cc_exp=(customer.get("cc_exp") or ""),
+                    cc_cvv=(customer.get("cc_cvv") or "")
                 )
-                debug_print("book_appt_confirm: ✅ internal appointment saved")
-            else:
-                debug_print("book_appt_confirm: ℹ️ internal save function not present; skipping")
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ❌ internal save failed → {e}")
+                debug_print("book_appt_confirm: customers DB → inserted/updated")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: insert_customer failed → {e}")
 
-        # ---- Create Google Calendar event ---------------------------------------
-        try:
-            service = build("calendar", "v3", credentials=creds)
-            event_body = {
-                "summary": f"Appointment: {doctor_name}",
-                "description": f"Clinic appointment for {effective_name or 'patient'}.",
-                "start": {"dateTime": appointment_start, "timeZone": "UTC"},
-                "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
-                "transparency": "opaque",
-                "extendedProperties": {
-                    "private": {
-                        "patient_name": effective_name,
-                        "phone_e164": customer_phone_e164,
-                        "dob": customer_dob,
-                        "call_sid": call_sid,
+            # ---- Availability check (enforces working hours/days/past-time) ---------
+            calendar_id = doctor_id
+            debug_print(f"book_appt_confirm: 🔎 availability cal={calendar_id} {appointment_start}→{appointment_end}")
+            try:
+                slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ⚠️ availability check error → {e}")
+                slot_free = False
+
+            # Fast path: if caller was auto-confirm eligible AND slot is free, book immediately.
+            if session_data[call_sid].get("auto_confirm", False) and slot_free:
+                try:
+                    service = build("calendar", "v3", credentials=creds)
+                    event_body = {
+                        "summary": f"Appointment: {doctor_name}",
+                        "description": f"Clinic appointment for {effective_name or 'patient'}.",
+                        "start": {"dateTime": appointment_start, "timeZone": "UTC"},
+                        "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
+                        "transparency": "opaque",
+                        "extendedProperties": {
+                            "private": {
+                                "patient_name": effective_name,
+                                "phone_e164": customer_phone_e164,
+                                "dob": customer_dob,
+                                "call_sid": call_sid,
+                            }
+                        },
                     }
-                },
-            }
-            debug_print(f"book_appt_confirm: 📝 creating Google event cal={calendar_id} {appointment_start}→{appointment_end}")
-            ev = service.events().insert(calendarId=calendar_id, body=event_body, sendUpdates="none").execute()
-            google_event_id   = ev.get("id")
-            google_event_link = ev.get("htmlLink")
-            debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id} link={google_event_link}")
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ❌ Google Calendar insert failed → {e}")
-            session_data[call_sid]["stage"] = "ask_time_date"
-            resp.append(make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, August 14th at 10 AM."))
+                    ev = service.events().insert(calendarId=calendar_id, body=event_body, sendUpdates="none").execute()
+                    debug_print(f"book_appt_confirm: ✅ Google event created id={ev.get('id')}")
+
+                    resp.say(gpt_speak(f"Your appointment with {doctor_name} is booked for {formatted_time}. See you then!"), VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    return str(resp)
+                except Exception as e:
+                    debug_print(f"book_appt_confirm: ❌ auto-confirm booking error → {e}")
+                    # fall back to interactive confirm below (do not exit)
+
+            # If slot not free → suggest next options and bounce back to ask_time_date.
+            if not slot_free:
+                debug_print("book_appt_confirm: ❌ Slot not free → alternatives")
+                try:
+                    alts = get_next_available_slots(
+                        calendar_id,
+                        creds,
+                        from_start_iso=appointment_end,  # absolute; no +/- 1s
+                        limit=3
+                    ) or []
+                    if alts:
+                        options = " or ".join([a.get("friendly","") for a in alts if a.get("friendly")])
+                        session_data[call_sid]["stage"] = "ask_time_date"
+                        resp.append(make_gather(f"That time is not available. Would you like {options}?"))
+                        return str(resp)
+                except Exception as e:
+                    debug_print(f"book_appt_confirm: ⚠️ get_next_available_slots error → {e}")
+
+                session_data[call_sid]["stage"] = "ask_time_date"
+                resp.append(make_gather("That time is not available. Please say another date and time, for example, 'today at 3:30 PM'."))
+                return str(resp)
+
+            # ----------------------------------------------------------------------
+            # Interactive confirm (speech or DTMF)
+            # ----------------------------------------------------------------------
+            dtmf   = (request.values.get("Digits") or "").strip()
+            speech = (speech_result or "").strip().lower()
+
+            # Silence handling (2 tries max)
+            if not (dtmf or speech):
+                tries = session_data[call_sid].get("silence_confirm", 0) + 1
+                session_data[call_sid]["silence_confirm"] = tries
+                if tries > 2:
+                    resp.say(gpt_speak("I’m still not hearing anything. Let’s try again later."), VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    return str(resp)
+
+                prompt = f"To book {formatted_time} with {doctor_name}, say 'confirm' or press 1. To change, say 'change' or press 2."
+                g = make_gather(prompt, input="speech dtmf", hints="yes confirm book no change cancel")
+                resp.append(g)
+                return str(resp)
+
+            # Map intents
+            intent = ""
+            if dtmf == "1":
+                intent = "confirm"
+            elif dtmf == "2":
+                intent = "change"
+            elif dtmf == "3":
+                intent = "cancel"
+            else:
+                if any(k in speech for k in ("yes","confirm","book","okay","ok")):
+                    intent = "confirm"
+                elif any(k in speech for k in ("no","change","different","another")):
+                    intent = "change"
+                elif "cancel" in speech:
+                    intent = "cancel"
+
+            # Branch on intent
+            if intent == "confirm":
+                # Re-check slot just before booking, then create the event.
+                try:
+                    if not is_time_slot_available(calendar_id, appointment_start, appointment_end, creds):
+                        debug_print("book_appt_confirm: ❌ slot became busy at confirm")
+                        session_data[call_sid]["stage"] = "ask_time_date"
+                        resp.append(make_gather(f"Sorry, {formatted_time} just became unavailable. Please say another time."))
+                        return str(resp)
+
+                    service = build("calendar", "v3", credentials=creds)
+                    event_body = {
+                        "summary": f"Appointment: {doctor_name}",
+                        "description": f"Clinic appointment for {effective_name or 'patient'}.",
+                        "start": {"dateTime": appointment_start, "timeZone": "UTC"},
+                        "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
+                        "transparency": "opaque",
+                        "extendedProperties": {
+                            "private": {
+                                "patient_name": effective_name,
+                                "phone_e164": customer_phone_e164,
+                                "dob": customer_dob,
+                                "call_sid": call_sid,
+                            }
+                        },
+                    }
+                    ev = service.events().insert(calendarId=calendar_id, body=event_body, sendUpdates="none").execute()
+                    google_event_id   = ev.get("id")
+                    google_event_link = ev.get("htmlLink")
+                    debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id} link={google_event_link}")
+
+                    # Voice + SMS confirmation
+                    msg = f"Your appointment with {doctor_name} has been booked"
+                    if formatted_time: msg += f" on {formatted_time}"
+                    msg += ". We look forward to seeing you. Goodbye!"
+                    debug_print("book_appt_confirm: 🎉 success → speaking confirmation")
+                    resp.say(gpt_speak(msg), VOICE)
+
+                    try:
+                        sms_text = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
+                        if formatted_time: sms_text += f" on {formatted_time}"
+                        sms_text += ". Thank you for choosing Epic Therapist Clinic."
+                        message = client.messages.create(body=sms_text, from_=TWILIO_PHONE_NUMBER, to=customer_phone_e164)
+                        debug_print(f"book_appt_confirm: 📩 SMS sent to {customer_phone_e164}, SID={message.sid}")
+                    except Exception as e:
+                        debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
+
+                    # Cleanup
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    debug_print("book_appt_confirm: ✅ session cleared and call ended")
+                    return str(resp)
+                except Exception as e:
+                    debug_print(f"book_appt_confirm: ❌ booking error → {e}")
+                    session_data[call_sid]["stage"] = "ask_time_date"
+                    resp.append(make_gather("Sorry, I couldn’t finish the booking. Please say another date and time."))
+                    return str(resp)
+
+            if intent == "change":
+                session_data[call_sid]["stage"] = "ask_time_date"
+                resp.append(make_gather("Okay. Please say the new date and time you prefer."))
+                return str(resp)
+
+            if intent == "cancel":
+                session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
+                resp.append(make_gather("Okay. Tell me the date and time of the appointment you want to cancel."))
+                return str(resp)
+
+            # Didn’t recognize answer → reprompt (short budget)
+            tries = session_data[call_sid].get("bad_confirm", 0) + 1
+            session_data[call_sid]["bad_confirm"] = tries
+            if tries > 2:
+                resp.say(gpt_speak("Sorry, I’m not getting that. Let’s try again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            resp.append(make_gather(
+                f"I heard {speech_result or dtmf}. To confirm {formatted_time} with {doctor_name}, say 'confirm' or press 1. "
+                "To change, say 'change' or press 2."
+            ))
             return str(resp)
-
-        # ---- Voice + SMS confirmation -------------------------------------------
-        msg = f"Your appointment with {doctor_name} has been booked"
-        if formatted_time: msg += f" on {formatted_time}"
-        msg += ". We look forward to seeing you. Goodbye!"
-        debug_print("book_appt_confirm: 🎉 success → speaking confirmation")
-        resp.say(gpt_speak(msg), VOICE)
-
-        try:
-            sms_text = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
-            if formatted_time: sms_text += f" on {formatted_time}"
-            sms_text += ". Thank you for choosing Epic Therapist Clinic."
-            message = client.messages.create(body=sms_text, from_=TWILIO_PHONE_NUMBER, to=customer_phone_e164)
-            debug_print(f"book_appt_confirm: 📩 SMS sent to {customer_phone_e164}, SID={message.sid}")
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
-
-        # ---- Cleanup -------------------------------------------------------------
-        resp.hangup()
-        session_data.pop(call_sid, None)
-        debug_print("book_appt_confirm: ✅ session cleared and call ended")
-        return str(resp)
-
 
 
 
