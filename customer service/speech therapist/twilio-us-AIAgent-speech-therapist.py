@@ -4364,10 +4364,12 @@ def voice():
     #   - If neither speech nor digits were received, re-prompt up to 3 times
     #     using a separate counter (silence_dob), then hang up politely.
     # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+
     elif stage == "collect_dob":
         debug_print("collect_dob: 📍 Stage entered")
 
-        # Short, clear prompts (no “MMDDYYYY” jargon)
+        # Short, clear prompts (no “MMDDYYYY” wording anywhere)
         PROMPT_DOB_SHORT = (
             "Say your birth date, for example, 'July 3 1956'. "
             "Or enter two digits for month, two for day, and four for year, then press #. Example: 07 03 1956#."
@@ -4557,7 +4559,6 @@ def voice():
         except Exception:
             resp.redirect("/voice")
         return str(resp)
-
 
 
 
