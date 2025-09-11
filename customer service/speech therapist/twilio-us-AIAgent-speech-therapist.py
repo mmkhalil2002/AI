@@ -1,4 +1,4 @@
-# update  09/11/25 time_saved 08:27 am
+# update  09/11/25 time_saved 08:40 am
 # =========================
 # Standard library imports
 # =========================
@@ -5273,8 +5273,28 @@ def voice():
     # 📅 Stage: ask_time_date
     # ...
     # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+# 📅 Stage: ask_time_date
+# Purpose:
+#   - Parse spoken date/time (e.g., “August 12 at 5 PM”).
+#   - Compute a UTC timeslot window for the appointment.
+#   - Check provider availability; if busy/past, offer next available options.
+#   - If free:
+#       * If (phone + dob) exists in DB → skip name collection and go to confirm.
+#       * Else → collect first name.
+# Prompts:
+#   - Uses TIME_PROMPT_SHORT when re-prompting.
+# Integration points:
+#   - Uses: smart_parse_time(), build_timeslot_range(), is_time_slot_available(),
+#           get_next_available_slots(), customer_search(), make_gather()
+#   - Globals referenced: APPOINTMENT_DURATION_MINUTES, googleid_dr_name_map, creds
+# 🆕 Silent mode:
+#   - If we hear nothing, re-ask up to 3 times via a separate counter (silence_time).
+# ----------------------------------------------------------------------
     elif stage == "ask_time_date":
-        global _re  # 👈 ensure we use the module-level regex module inside this scope
+        # 👇 Ensure we reference the module-level regex object everywhere in this scope
+        global _re
+
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
 
         # ----------------------------------------------------------------------
@@ -5298,13 +5318,14 @@ def voice():
             "Please include the time as well, for example, 'August 15th at 5 AM'."
         )
 
+        # Ensure session bucket
         session_data.setdefault(call_sid, {})
 
         # --- tiny helpers for readability ---
         def _is_blank(x) -> bool:
             return (x is None) or (str(x).strip() == "")
 
-        def _has_time_token(raw: str) -> bool:  # 👈 removed default arg
+        def _has_time_token(raw: str) -> bool:
             """
             Heuristic: if parse fully failed, check if caller likely said a time.
             Accepts 'am/pm', '5:30', or compact '0530'/'1730' tokens.
@@ -5328,7 +5349,7 @@ def voice():
             if any(m in s for m in months): return True
             if any(w in s for w in weekdays): return True
             if any(k in s for k in keywords): return True
-            if "/" in s or "-" in s: return True
+            if "/" in s or "-" in s: return True  # dates like 8/15 or 08-15
             return False
 
         # 0) Guard: doctor must be chosen (per-doctor calendar)
@@ -5346,8 +5367,10 @@ def voice():
         # --- Minimal pre-clean for AM/PM variants & trailing punctuation ---
         try:
             _raw = (speech_result or "").strip()
+            # Normalize "A.M.", "a m", "a.m" → "am"; same for pm
             _raw = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", _raw, flags=_re.IGNORECASE)
             _raw = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", _raw, flags=_re.IGNORECASE)
+            # Strip trailing punctuation like "." "?" "!"
             _raw = _re.sub(r"[.!?]\s*$", "", _raw)
         except Exception:
             _raw = (speech_result or "")
@@ -5378,35 +5401,116 @@ def voice():
         # 1) Parse (day, time) from the caller’s phrase
         time_info = smart_parse_time(_raw)
 
-        # --- Branch A ... (unchanged) -------------------------------------------
-        # (keep all your existing code here exactly as before)
+        # --- Branch A: parser returned nothing useful (None / wrong type / wrong length) ---
+        if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
+            need_date = not _has_date_token(_raw)
+            need_time = not _has_time_token(_raw)
 
-        # In your past-time guard helper, also remove default binding:
-        def _as_utc_dt(s):
-            s2 = (s or "").strip().replace(" ", "T")
-            if s2.endswith("Z"):
-                s2 = s2.replace("Z", "+00:00")
-            dt = datetime.fromisoformat(s2)
-            return dt if dt.tzinfo else dt.replace(tzinfo=_pytz.UTC)
+            if need_date and need_time:
+                prompt = PROMPT_NEED_BOTH
+            elif need_date:
+                prompt = PROMPT_NEED_DATE
+            elif need_time:
+                prompt = PROMPT_NEED_TIME
+            else:
+                prompt = TIME_PROMPT_SHORT
 
-        # ... rest of your ask_time_date code stays exactly the same ...
+            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
+            retry_count = session_data[call_sid]["retry_time"]
+            debug_print(f"ask_time_date: ⚠️ Time parse failed (no tuple). Retry={retry_count} — prompt='{prompt}'")
+
+            if retry_count >= 3:
+                debug_print("ask_time_date: ⛔ Max retries reached.")
+                resp.say(gpt_speak("Sorry, I still couldn't understand the date and time. Please try again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            gather = make_gather(prompt)
+            resp.append(gather)
+            return str(resp)
+
+        # --- Branch B: parser returned (day, time) — validate each part explicitly ---
+        spoken_day, spoken_time = time_info
+        debug_print(f"ask_time_date: 📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
+
+        missing_date = _is_blank(spoken_day)
+        missing_time = _is_blank(spoken_time)
+
+        if missing_date or missing_time:
+            if missing_date and missing_time:
+                prompt = PROMPT_NEED_BOTH
+            elif missing_date:
+                prompt = PROMPT_NEED_DATE
+            else:
+                prompt = PROMPT_NEED_TIME
+
+            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
+            retry_count = session_data[call_sid]["retry_time"]
+            debug_print(f"ask_time_date: ⛔ Missing component(s). date={missing_date} time={missing_time} Retry={retry_count}")
+
+            if retry_count >= 3:
+                debug_print("ask_time_date: ⛔ Max retries reached (component missing).")
+                resp.say(gpt_speak("Sorry, I still couldn't get the full date and time. Please try again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            gather = make_gather(prompt)
+            resp.append(gather)
+            return str(resp)
+
+        # Persist what the caller actually said (useful for debugging / confirmation later).
+        session_data[call_sid]["spoken_day"] = spoken_day
+        session_data[call_sid]["spoken_time"] = spoken_time
+
+        # 2) Convert to concrete UTC timeslot (start/end)
+        try:
+            appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
+            session_data[call_sid]["retry_time"] = 0
+            debug_print(f"ask_time_date: ⏰ Built slot → Start: {appointment_start}, End: {appointment_end}")
+        except Exception as e:
+            debug_print(f"ask_time_date: ❌ build_timeslot_range failed → {e}")
+            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
+
+            if session_data[call_sid]["retry_time"] >= 3:
+                debug_print("ask_time_date: ⛔ Max retries reached during slot build.")
+                resp.say(gpt_speak("Sorry, I couldn’t understand the time you mentioned. Please try again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            gather = make_gather(TIME_PROMPT_SHORT)
+            resp.append(gather)
+            return str(resp)
+
+        # 2.5) Past-time guard — reject anything not now-or-future and suggest 3 options
+        try:
+            def _as_utc_dt(s):
+                s2 = (s or "").strip().replace(" ", "T")
+                if s2.endswith("Z"):
+                    s2 = s2.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(s2)
+                return dt if dt.tzinfo else dt.replace(tzinfo=_pytz.UTC)
 
             now_utc  = datetime.utcnow().replace(tzinfo=_pytz.UTC)
             start_dt = _as_utc_dt(appointment_start).astimezone(_pytz.UTC)
             end_dt   = _as_utc_dt(appointment_end).astimezone(_pytz.UTC)
 
-            # Only treat as past if the slot has fully ended
+            # Treat as past only if the slot has fully ended
             if end_dt <= now_utc:
                 debug_print("ask_time_date: 🕒 requested time is in the past → suggesting alternatives")
-                session_data[call_sid].pop("appointment_time", None)  # clear any stale selection
 
+                # Clear any stale chosen time before suggesting alternatives
+                session_data[call_sid].pop("appointment_time", None)
+
+                # Build work-hours windows (respect lunch if within the day)
                 try:
                     dur_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES",
                                     globals().get("SESSION_TIME", globals().get("SESSIUON_TIME", 30))))
                 except Exception:
                     dur_minutes = 30
 
-                # Build work-hours windows (respect lunch if within the day)
                 WSTART = int(globals().get("WORKING_HOURS_START", 8))
                 WEND   = int(globals().get("WORKING_HOURS_END", 17))
                 LBS = globals().get("LUNCH_BREAK_START")
@@ -5422,7 +5526,7 @@ def voice():
                 else:
                     work_windows = ((WSTART, WEND),)
 
-                # Start alternatives at TODAY's workday start minus 1s (prevents skipping 8:00)
+                # Start alts at TODAY 8:00 (local) minus 1 second to avoid skipping 8:00
                 try:
                     tz = _pytz.timezone(globals().get("CLINIC_TZ") or "America/Chicago")
                 except Exception:
@@ -5431,7 +5535,7 @@ def voice():
                 day_start_loc = now_loc.replace(hour=WSTART, minute=0, second=0, microsecond=0)
                 from_start_iso = (day_start_loc - timedelta(seconds=1)).astimezone(_pytz.UTC).isoformat().replace("+00:00","Z")
 
-                # Suggest next 3
+                # Ask for next 3 free slots
                 alts = []
                 try:
                     alts = get_next_available_slots(
@@ -5477,13 +5581,13 @@ def voice():
 
         slot_available = False
         try:
-            # Support either signature:
-            #   (calendar_id, start_iso, end_iso, creds)  ← preferred
-            #   (calendar_id, creds, start_iso, end_iso)  ← legacy
+            # Prefer signature (calendar_id, start_iso, end_iso, creds)
             try:
                 slot_available = bool(is_time_slot_available(calendar_id, appointment_start, appointment_end, creds))
             except TypeError:
+                # Support legacy signature (calendar_id, creds, start_iso, end_iso)
                 slot_available = bool(is_time_slot_available(calendar_id, creds, appointment_start, appointment_end))
+
             if slot_available:
                 debug_print("ask_time_date: ✅ Slot free (first check) → proceed to customer lookup/confirmation")
         except Exception as e:
@@ -5492,9 +5596,11 @@ def voice():
 
         if not slot_available:
             debug_print("ask_time_date: ❌ Slot not available")
-            session_data[call_sid].pop("appointment_time", None)  # do not persist a busy choice
 
-            # Find nearby alternatives
+            # Clear any stale chosen time before suggesting alternatives
+            session_data[call_sid].pop("appointment_time", None)
+
+            # Find nearby alternatives (friendly strings already included by helper).
             alts = []
             try:
                 dur_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES",
@@ -5518,25 +5624,25 @@ def voice():
             else:
                 work_windows = ((WSTART, WEND),)
 
-            # Start alternatives at the requested day's workday start minus 1s
             try:
-                tz = _pytz.timezone(globals().get("CLINIC_TZ") or "America/Chicago")
-            except Exception:
-                tz = _pytz.timezone("America/Chicago")
+                # Start scanning at the requested day's workday start (minus one second to keep 8:00)
+                try:
+                    tz = _pytz.timezone(globals().get("CLINIC_TZ") or "America/Chicago")
+                except Exception:
+                    tz = _pytz.timezone("America/Chicago")
 
-            s2 = appointment_start.replace("Z", "+00:00") if appointment_start.endswith("Z") else appointment_start
-            req_dt_utc = datetime.fromisoformat(s2)
-            if req_dt_utc.tzinfo is None:
-                req_dt_utc = req_dt_utc.replace(tzinfo=_pytz.UTC)
-            req_loc = req_dt_utc.astimezone(tz)
-            day_start_loc = req_loc.replace(hour=WSTART, minute=0, second=0, microsecond=0)
-            from_start_iso = (day_start_loc - timedelta(seconds=1)).astimezone(_pytz.UTC).isoformat().replace("+00:00","Z")
+                s2 = appointment_start.replace("Z", "+00:00") if appointment_start.endswith("Z") else appointment_start
+                req_dt_utc = datetime.fromisoformat(s2)
+                if req_dt_utc.tzinfo is None:
+                    req_dt_utc = req_dt_utc.replace(tzinfo=_pytz.UTC)
+                req_loc = req_dt_utc.astimezone(tz)
+                day_start_loc = req_loc.replace(hour=WSTART, minute=0, second=0, microsecond=0)
+                from_start_iso = (day_start_loc - timedelta(seconds=1)).astimezone(_pytz.UTC).isoformat().replace("+00:00","Z")
 
-            try:
                 alts = get_next_available_slots(
                     calendar_id,
                     creds,
-                    from_start_iso=from_start_iso,     # 07:59:59 local → allows the first tick (e.g., 8:00)
+                    from_start_iso=from_start_iso,              # 07:59:59 local → allows 8:00 to be considered
                     duration_minutes=dur_minutes,
                     limit=3,
                     tz_name=(globals().get("CLINIC_TZ") or "America/Chicago"),
@@ -5578,8 +5684,11 @@ def voice():
         # 4) Slot is available → decide whether to confirm or collect name details
         debug_print("ask_time_date: ✅ Slot free (per strict check) → proceed to customer lookup/confirmation")
 
-        # Only now that it passed all checks, persist the chosen slot for confirm stage
-        session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
+        # ✅ Only now (after all checks) persist the chosen slot for confirm stage
+        session_data[call_sid]["appointment_time"] = {
+            "start": appointment_start,
+            "end": appointment_end
+        }
 
         customer = session_data[call_sid].get("customer", {})
         customer_phone = (customer.get("phone") or "").strip()
@@ -5611,6 +5720,7 @@ def voice():
             gather = make_gather("Thanks. What is your first name?")
             resp.append(gather)
             return str(resp)
+
 
 
 
