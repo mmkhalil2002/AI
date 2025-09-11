@@ -1,4 +1,5 @@
-# update  09/11/25 time_saved 08:48 am
+# update  09/11/25 time_saved 08:48
+#  am
 # =========================
 # Standard library imports
 # =========================
@@ -469,235 +470,76 @@ session_data = {}
 
 
 
-
-def is_time_slot_available(calendar_id: str, creds, start_iso: str, end_iso: str) -> bool:
+def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds) -> bool:
     """
-    Return True if the slot is valid per clinic policy AND no overlapping event exists.
-    Policy enforced here (no imports inside this function):
-      - not fully in the past (local clinic TZ) → end must be > now
-      - on an allowed working day (WORKING_DAYS)
-      - inside working hours (WORKING_HOURS_START/END)
-      - does not overlap lunch (LUNCH_BREAK_START/END)
-    Then:
-      - Primary: Google FreeBusy
-      - Fallback: events().list overlap
+    Return True iff the requested slot [start, end) is free.
+    EXACT times (no padding). Half-open overlap logic:
+      overlap ⇔ (slot_start < busy_end) and (busy_start < slot_end)
+    So touching at a boundary (==) does NOT count as overlap.
     """
-    # --- tolerate old call order: (calendar_id, start_iso, end_iso, creds) ---
-    try:
-        if isinstance(creds, str) and isinstance(start_iso, str) and not isinstance(end_iso, str):
-            start_iso, end_iso, creds = creds, start_iso, end_iso
-            try:
-                debug_print("is_time_slot_available: 🧭 corrected legacy arg order → (calendar_id, creds, start, end)")
-            except Exception:
-                pass
-    except Exception:
-        pass
+    from datetime import datetime, timedelta
+    import pytz as _pytz
 
-    # --- resolve required globals (no imports here) ---------------------------
-    _dbg = lambda m: (debug_print(m) if 'debug_print' in globals() else None)
+    def _iso_to_utc(iso_s: str):
+        s2 = iso_s.replace("Z", "+00:00") if iso_s.endswith("Z") else iso_s
+        dt = datetime.fromisoformat(s2)
+        return dt if dt.tzinfo else dt.replace(tzinfo=_pytz.UTC)
 
-    tz_mod = globals().get("_pytz") or globals().get("pytz")
-    isoparse_fn = globals().get("isoparse")
-    build_fn = globals().get("build")
-    datetime_cls = globals().get("datetime")
-    timedelta_cls = globals().get("timedelta")
+    def _overlap_half_open(a0, a1, b0, b1) -> bool:
+        # True if [a0, a1) overlaps [b0, b1)
+        return (a0 < b1) and (b0 < a1)
 
-    if not (tz_mod and isoparse_fn and build_fn and datetime_cls and timedelta_cls):
-        _dbg("is_time_slot_available: ❌ missing globals (pytz/isoparse/build/datetime/timedelta)")
-        return False
+    s_req = _iso_to_utc(start_iso).astimezone(_pytz.UTC)
+    e_req = _iso_to_utc(end_iso).astimezone(_pytz.UTC)
+    if not (s_req < e_req):
+        return False  # bad window
 
-    # --- small inner helpers (no imports) ------------------------------------
-    def _aware_utc(dt):
-        return (tz_mod.UTC.localize(dt) if dt.tzinfo is None else dt.astimezone(tz_mod.UTC))
+    # --- Google Calendar client
+    service = build("calendar", "v3", credentials=creds)
 
-    def _parse_hhmm_to_minutes(val):
-        """Return minutes since midnight or None."""
-        if val is None:
-            return None
-        s = str(val).strip()
-        if not s:
-            return None
-        if ":" in s:
-            hh, mm = (s.split(":", 1) + ["0"])[:2]
-        else:
-            hh, mm = s, "0"
-        try:
-            h = max(0, min(23, int(hh))); m = max(0, min(59, int(mm)))
-            return h * 60 + m
-        except Exception:
-            return None
-
-    def _event_bounds_utc(ev):
-        s = ev.get("start", {}) or {}
-        e = ev.get("end",   {}) or {}
-        ev_tz = (ev.get("timeZone") or "").strip() or None
-        stz = (s.get("timeZone") or ev_tz)
-        etz = (e.get("timeZone") or ev_tz)
-
-        tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
-        try:
-            tz_hint = tz_mod.timezone(tz_name)
-        except Exception:
-            tz_hint = tz_mod.timezone("America/Chicago")
-
-        # Start
-        if s.get("dateTime"):
-            ds = isoparse_fn(s["dateTime"])
-            if ds.tzinfo is None:
-                ds = (tz_mod.timezone(stz).localize(ds) if stz else tz_hint.localize(ds))
-        elif s.get("date"):
-            try:
-                y, m, d = map(int, s["date"].split("-"))
-            except Exception:
-                return (None, None)
-            ds = tz_hint.localize(datetime_cls(y, m, d, 0, 0, 0))
-        else:
-            return (None, None)
-
-        # End (Google all-day 'date' end is exclusive next day 00:00)
-        if e.get("dateTime"):
-            de = isoparse_fn(e["dateTime"])
-            if de.tzinfo is None:
-                de = (tz_mod.timezone(etz).localize(de) if etz else tz_hint.localize(de))
-        elif e.get("date"):
-            try:
-                y, m, d = map(int, e["date"].split("-"))
-            except Exception:
-                return (None, None)
-            de = tz_hint.localize(datetime_cls(y, m, d, 0, 0, 0))
-        else:
-            return (None, None)
-
-        return (ds.astimezone(tz_mod.UTC), de.astimezone(tz_mod.UTC))
-
-    # --- normalize requested window (UTC aware) -------------------------------
-    try:
-        start_dt = _aware_utc(isoparse_fn(start_iso))
-        end_dt   = _aware_utc(isoparse_fn(end_iso))
-    except Exception as e:
-        _dbg(f"is_time_slot_available: ❌ invalid start/end iso → {e}")
-        return False
-
-    # --- clinic policy (local tz) --------------------------------------------
-    tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
-    try:
-        tz_local = tz_mod.timezone(tz_name)
-    except Exception:
-        tz_local = tz_mod.timezone("America/Chicago")
-
-    s_loc = start_dt.astimezone(tz_local)
-    e_loc = end_dt.astimezone(tz_local)
-
-    # Past check: only reject if slot has fully ended
-    now_loc = datetime_cls.now(tz_local)
-    if e_loc <= now_loc:
-        _dbg("is_time_slot_available: ⛔ blocked by clinic policy → past (slot end <= now)")
-        return False
-
-    # Working days
-    try:
-        wd_src = globals().get("WORKING_DAYS", {0,1,2,3,4})
-        WORKING_DAYS = set(int(x) for x in (wd_src if isinstance(wd_src, (list,set,tuple)) else [0,1,2,3,4]))
-    except Exception:
-        WORKING_DAYS = {0,1,2,3,4}
-    if s_loc.weekday() not in WORKING_DAYS:
-        _dbg(f"is_time_slot_available: ⛔ blocked by clinic policy → non_working_day (weekday={s_loc.weekday()})")
-        return False
-
-    # Working hours (inclusive bounds)
-    WSTART = int(globals().get("WORKING_HOURS_START", globals().get("WORKIN_HOURS_START", 8)))
-    WEND   = int(globals().get("WORKING_HOURS_END", 17))
-    if not ( (s_loc.hour > WSTART or (s_loc.hour == WSTART and s_loc.minute >= 0)) and
-             (e_loc.hour < WEND   or (e_loc.hour == WEND   and e_loc.minute == 0)) ):
-        _dbg(f"is_time_slot_available: ⛔ blocked by clinic policy → outside_hours ({WSTART}:00–{WEND}:00)")
-        return False
-
-    # Lunch overlap (if both defined)
-    ls_min = _parse_hhmm_to_minutes(globals().get("LUNCH_BREAK_START"))
-    le_min = _parse_hhmm_to_minutes(globals().get("LUNCH_BREAK_END"))
-    if ls_min is not None and le_min is not None:
-        s_min = s_loc.hour * 60 + s_loc.minute
-        e_min = e_loc.hour * 60 + e_loc.minute
-        if s_min < le_min and e_min > ls_min:
-            _dbg("is_time_slot_available: ⛔ blocked by clinic policy → lunch_overlap")
+    # 1) FreeBusy (NO PADDING)
+    fb_body = {
+        "timeMin": s_req.isoformat().replace("+00:00", "Z"),
+        "timeMax": e_req.isoformat().replace("+00:00", "Z"),
+        "timeZone": "UTC",
+        "items": [{"id": calendar_id}],
+    }
+    fb = service.freebusy().query(body=fb_body).execute()
+    for item in fb.get("calendars", {}).get(calendar_id, {}).get("busy", []):
+        b0 = _iso_to_utc(item["start"]).astimezone(_pytz.UTC)
+        b1 = _iso_to_utc(item["end"]).astimezone(_pytz.UTC)
+        if _overlap_half_open(s_req, e_req, b0, b1):
+            # Exact-time conflict → NOT available
             return False
 
-    # --- Google checks --------------------------------------------------------
-    fuzz = int(globals().get("BUSY_FUZZ_SECONDS", 1))
-    tmin = (start_dt - timedelta_cls(seconds=fuzz)).isoformat().replace("+00:00", "Z")
-    tmax = (end_dt   + timedelta_cls(seconds=fuzz)).isoformat().replace("+00:00", "Z")
+    # 2) events().list (NO PADDING)
+    events = service.events().list(
+        calendarId=calendar_id,
+        timeMin=s_req.isoformat().replace("+00:00", "Z"),
+        timeMax=e_req.isoformat().replace("+00:00", "Z"),
+        singleEvents=True,
+        orderBy="startTime",
+    ).execute()
 
-    _dbg(
-        "is_time_slot_available: 🔎 Checking "
-        f"calendar='{calendar_id}' window={start_dt.isoformat()}→{end_dt.isoformat()} "
-        f"(padded {tmin}→{tmax})"
-    )
-
-    try:
-        service = build_fn("calendar", "v3", credentials=creds)
-    except Exception as e:
-        _dbg(f"is_time_slot_available: ❌ google client build error → {e}")
-        return False
-
-    # 1) FreeBusy
-    try:
-        fb = service.freebusy().query(body={
-            "timeMin": tmin,
-            "timeMax": tmax,
-            "items": [{"id": calendar_id}],
-            "timeZone": "UTC",
-        }).execute()
-
-        busy = (fb.get("calendars", {}).get(calendar_id, {}) or {}).get("busy", []) or []
-        if busy:
-            _dbg(f"is_time_slot_available: 🚫 FreeBusy shows {len(busy)} busy block(s)")
-            for b in busy:
-                _dbg(f"  BUSY (freebusy) {b.get('start')} → {b.get('end')}")
-            _dbg("is_time_slot_available: ❌ Slot NOT available (FreeBusy)")
-            return False
+    for ev in events.get("items", []):
+        # Handle all-day or timed events
+        if "dateTime" in ev.get("start", {}):
+            b0 = _iso_to_utc(ev["start"]["dateTime"]).astimezone(_pytz.UTC)
+            b1 = _iso_to_utc(ev["end"]["dateTime"]).astimezone(_pytz.UTC)
         else:
-            _dbg("is_time_slot_available: ✅ FreeBusy shows NO busy blocks in padded window")
-    except Exception as e:
-        _dbg(f"is_time_slot_available: ⚠️ FreeBusy error → {e} (will check events().list)")
+            # all-day: Google gives date (midnight to midnight in calendar’s TZ); treat as blocking that day
+            # Convert date-only to UTC datetimes
+            day_start = ev["start"]["date"] + "T00:00:00+00:00"
+            day_end   = ev["end"]["date"]   + "T00:00:00+00:00"
+            b0 = _iso_to_utc(day_start).astimezone(_pytz.UTC)
+            b1 = _iso_to_utc(day_end).astimezone(_pytz.UTC)
 
-    # 2) events().list overlap fallback
-    try:
-        items = service.events().list(
-            calendarId=calendar_id,
-            timeMin=tmin,
-            timeMax=tmax,
-            singleEvents=True,
-            showDeleted=False,
-            orderBy="startTime",
-            maxResults=250,
-        ).execute().get("items", [])
+        if _overlap_half_open(s_req, e_req, b0, b1):
+            return False
 
-        _dbg(f"is_time_slot_available: ℹ️ events().list returned {len(items)} item(s) in padded window")
-
-        for ev in items:
-            if ev.get("status") == "cancelled":
-                continue
-            if ev.get("transparency") == "transparent":
-                continue
-            es_utc, ee_utc = _event_bounds_utc(ev)
-            if not es_utc or not ee_utc:
-                continue
-            if start_dt < ee_utc and end_dt > es_utc:
-                title = ev.get("summary", "")
-                _dbg(
-                    "is_time_slot_available: 🚫 BUSY (events overlap) "
-                    f"{es_utc.isoformat()} → {ee_utc.isoformat()} title='{title}'"
-                )
-                _dbg("is_time_slot_available: ❌ Slot NOT available (events overlap)")
-                return False
-
-        _dbg("is_time_slot_available: ✅ No overlapping events found via events().list")
-    except Exception as e:
-        _dbg(f"is_time_slot_available: ❗ events.list error → {e}; treating as NOT available (fail-closed)")
-        return False
-
-    _dbg("is_time_slot_available: ✅ Slot FREE (final)")
+    # No overlaps at exact boundaries → FREE
     return True
+
 
 
 
@@ -5263,13 +5105,13 @@ def voice():
     #   - Globals referenced: APPOINTMENT_DURATION_MINUTES, googleid_dr_name_map, creds
     # 🆕 Silent mode:
     #   - If we hear nothing, re-ask up to 3 times via a separate counter (silence_time).
-    # ----------------------------------------------------------------------
+
     elif stage == "ask_time_date":
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
 
-        # ----------------------------------------------------------------------
-        # Prompt constants (short = consistent muscle memory for callers)
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # Short prompt constants
+        # ------------------------------------------------------------------
         TIME_PROMPT_SHORT = (
             "That doesn't sound like a valid date or time. "
             "Please say the appointment time again, for example, "
@@ -5291,14 +5133,17 @@ def voice():
         # Ensure session bucket
         session_data.setdefault(call_sid, {})
 
-        # --- tiny helpers for readability ---
+        # -------------------------------
+        # Tiny helpers (read-only globals)
+        # -------------------------------
         def _is_blank(x) -> bool:
             return (x is None) or (str(x).strip() == "")
 
         def _has_time_token(raw: str) -> bool:
             """
-            Heuristic: if parse fully failed, check if caller likely said a time.
-            Accepts 'am/pm', '5:30', or compact '0530'/'1730' tokens.
+            Heuristic: if parse failed, check if caller likely said a time.
+            Accepts 'am/pm', '5:30', "o'clock", or compact '0530'/'1730' tokens.
+            Uses global `_re` (imported at module level).
             """
             s = (raw or "").lower()
             return (
@@ -5308,7 +5153,7 @@ def voice():
             )
 
         def _has_date_token(raw: str) -> bool:
-            """Heuristic: check for month/weekday/date words/tokens."""
+            """Heuristic: check for month/weekday/date tokens."""
             s = (raw or "").lower()
             months = ("january","february","march","april","may","june","july",
                     "august","september","october","november","december",
@@ -5322,7 +5167,7 @@ def voice():
             if "/" in s or "-" in s: return True  # dates like 8/15 or 08-15
             return False
 
-        # 0) Guard: doctor must be chosen (per-doctor calendar)
+        # Guard: doctor must be chosen (per-doctor calendar)
         doctor_id = session_data.get(call_sid, {}).get("doctor_id")
         if not doctor_id:
             debug_print("ask_time_date: ❌ no doctor selected → sending user to pick a doctor")
@@ -5334,13 +5179,14 @@ def voice():
 
         calendar_id = doctor_id
 
-        # --- Minimal pre-clean for AM/PM variants & trailing punctuation ---
+        # ---------------------------------------------
+        # Minimal pre-clean for AM/PM & trailing punctuation
+        # (use absolute values; no ±1s tricks anywhere)
+        # ---------------------------------------------
         try:
             _raw = (speech_result or "").strip()
-            # Normalize "A.M.", "a m", "a.m" → "am"; same for pm
             _raw = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", _raw, flags=_re.IGNORECASE)
             _raw = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", _raw, flags=_re.IGNORECASE)
-            # Strip trailing punctuation like "." "?" "!"
             _raw = _re.sub(r"[.!?]\s*$", "", _raw)
         except Exception:
             _raw = (speech_result or "")
@@ -5368,10 +5214,12 @@ def voice():
         # We heard something → clear silence counter
         session_data[call_sid].pop("silence_time", None)
 
-        # 1) Parse (day, time) from the caller’s phrase
+        # ------------------------------
+        # 1) Parse (day, time) from text
+        # ------------------------------
         time_info = smart_parse_time(_raw)
 
-        # --- Branch A: parser returned nothing useful (None / wrong type / wrong length) ---
+        # If parse failed, tailor the re-prompt
         if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
             need_date = not _has_date_token(_raw)
             need_time = not _has_time_token(_raw)
@@ -5387,10 +5235,9 @@ def voice():
 
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
             retry_count = session_data[call_sid]["retry_time"]
-            debug_print(f"ask_time_date: ⚠️ Time parse failed (no tuple). Retry={retry_count} — prompt='{prompt}'")
+            debug_print(f"ask_time_date: ⚠️ Time parse failed. Retry={retry_count} — prompt='{prompt}'")
 
             if retry_count >= 3:
-                debug_print("ask_time_date: ⛔ Max retries reached.")
                 resp.say(gpt_speak("Sorry, I still couldn't understand the date and time. Please try again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
@@ -5400,27 +5247,20 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # --- Branch B: parser returned (day, time) — validate each part explicitly ---
+        # Got both pieces — sanity check blanks
         spoken_day, spoken_time = time_info
         debug_print(f"ask_time_date: 📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
 
-        missing_date = _is_blank(spoken_day)
-        missing_time = _is_blank(spoken_time)
-
-        if missing_date or missing_time:
-            if missing_date and missing_time:
+        if _is_blank(spoken_day) or _is_blank(spoken_time):
+            if _is_blank(spoken_day) and _is_blank(spoken_time):
                 prompt = PROMPT_NEED_BOTH
-            elif missing_date:
+            elif _is_blank(spoken_day):
                 prompt = PROMPT_NEED_DATE
             else:
                 prompt = PROMPT_NEED_TIME
 
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
-            retry_count = session_data[call_sid]["retry_time"]
-            debug_print(f"ask_time_date: ⛔ Missing component(s). date={missing_date} time={missing_time} Retry={retry_count}")
-
-            if retry_count >= 3:
-                debug_print("ask_time_date: ⛔ Max retries reached (component missing).")
+            if session_data[call_sid]["retry_time"] >= 3:
                 resp.say(gpt_speak("Sorry, I still couldn't get the full date and time. Please try again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
@@ -5430,11 +5270,13 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # Persist what the caller actually said (useful for debugging / confirmation later).
+        # Persist what the caller said (handy for logs)
         session_data[call_sid]["spoken_day"] = spoken_day
         session_data[call_sid]["spoken_time"] = spoken_time
 
-        # 2) Convert to concrete UTC timeslot (start/end)
+        # -------------------------------------------------
+        # 2) Build the absolute UTC slot (no auto-roll, no padding)
+        # -------------------------------------------------
         try:
             appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
             session_data[call_sid]["retry_time"] = 0
@@ -5444,7 +5286,6 @@ def voice():
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
 
             if session_data[call_sid]["retry_time"] >= 3:
-                debug_print("ask_time_date: ⛔ Max retries reached during slot build.")
                 resp.say(gpt_speak("Sorry, I couldn’t understand the time you mentioned. Please try again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
@@ -5454,12 +5295,13 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # 2.5) Past-time guard — reject anything not now-or-future and suggest 3 options
+        # -------------------------------------------------
+        # 2.5) Past-time guard (absolute): reject slots that already ended
+        # -------------------------------------------------
         try:
             def _as_utc_dt(s):
                 s2 = (s or "").strip().replace(" ", "T")
-                if s2.endswith("Z"):
-                    s2 = s2.replace("Z", "+00:00")
+                if s2.endswith("Z"): s2 = s2.replace("Z", "+00:00")
                 dt = datetime.fromisoformat(s2)
                 return dt if dt.tzinfo else dt.replace(tzinfo=_pytz.UTC)
 
@@ -5467,190 +5309,89 @@ def voice():
             start_dt = _as_utc_dt(appointment_start).astimezone(_pytz.UTC)
             end_dt   = _as_utc_dt(appointment_end).astimezone(_pytz.UTC)
 
+            # Only treat as past if the slot has fully ended
             if end_dt <= now_utc:
-                debug_print("ask_time_date: 🕒 requested time is in the past → suggesting alternatives")
-                session_data[call_sid].pop("appointment_time", None)  # clear stale choice
+                debug_print("ask_time_date: 🕒 requested time is in the past → suggest next slots AFTER requested time")
+                session_data[call_sid].pop("appointment_time", None)
 
-                # Build work-hours windows (respect lunch if within the day)
-                try:
-                    dur_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES",
-                                    globals().get("SESSION_TIME", globals().get("SESSIUON_TIME", 30))))
-                except Exception:
-                    dur_minutes = 30
-
-                WSTART = int(globals().get("WORKING_HOURS_START", 8))
-                WEND   = int(globals().get("WORKING_HOURS_END", 17))
-                LBS = globals().get("LUNCH_BREAK_START")
-                LBE = globals().get("LUNCH_BREAK_END")
-                try:
-                    lbs_h = getattr(LBS, "hour", None)
-                    lbe_h = getattr(LBE, "hour", None)
-                except Exception:
-                    lbs_h, lbe_h = None, None
-
-                if isinstance(lbs_h, int) and isinstance(lbe_h, int) and WSTART < lbs_h < lbe_h < WEND:
-                    work_windows = ((WSTART, lbs_h), (lbe_h, WEND))
-                else:
-                    work_windows = ((WSTART, WEND),)
-
-                # Start alts at TODAY 8:00 (local) minus 1 second to avoid skipping 8:00
-                try:
-                    tz = _pytz.timezone(globals().get("CLINIC_TZ") or "America/Chicago")
-                except Exception:
-                    tz = _pytz.timezone("America/Chicago")
-                now_loc = datetime.utcnow().replace(tzinfo=_pytz.UTC).astimezone(tz)
-                day_start_loc = now_loc.replace(hour=WSTART, minute=0, second=0, microsecond=0)
-                from_start_iso = (day_start_loc - timedelta(seconds=1)).astimezone(_pytz.UTC).isoformat().replace("+00:00","Z")
-
-                # Ask for next 3 free slots
-                alts = []
+                # Keep it simple: ask the suggester for the next 3 free slots **from the requested time**
                 try:
                     alts = get_next_available_slots(
                         calendar_id,
                         creds,
-                        from_start_iso=from_start_iso,
-                        duration_minutes=dur_minutes,
-                        limit=3,
-                        tz_name=(globals().get("CLINIC_TZ") or "America/Chicago"),
-                        work_hours=work_windows,
-                        slot_step_minutes=dur_minutes,
-                        search_days=int(globals().get("SEARCH_DAYS", 14))
+                        from_start_iso=appointment_start,  # absolute (no -1s)
+                        limit=3
                     ) or []
-                except TypeError:
-                    try:
-                        alts = get_next_available_slots(calendar_id, creds, from_start_iso=from_start_iso, limit=3) or []
-                    except Exception as e2:
-                        debug_print(f"ask_time_date: ⚠️ get_next_available_slots fallback error (past guard) → {e2}")
-                        alts = []
                 except Exception as e:
                     debug_print(f"ask_time_date: ⚠️ get_next_available_slots error (past guard) → {e}")
                     alts = []
 
-                if alts:
-                    try:
-                        options = " or ".join([a.get("friendly") for a in alts if a.get("friendly")])
-                    except Exception:
-                        options = ""
-                    prompt = (f"That time has already passed. Would you like {options}?"
-                            if options else
-                            "That time has already passed. Please say another date and time.")
-                else:
-                    prompt = "That time has already passed, and I couldn’t find open slots soon. Please say another date and time."
-
+                options = " or ".join([a.get("friendly") for a in alts if a.get("friendly")]) if alts else ""
+                prompt = (
+                    f"That time has already passed. Would you like {options}?"
+                    if options else
+                    "That time has already passed. Please say another date and time."
+                )
                 gather = make_gather(prompt)
                 resp.append(gather)
                 return str(resp)
         except Exception as e:
             debug_print(f"ask_time_date: ⚠️ past-time guard error → {e}")
 
-        # 3) Check the doctor’s calendar availability for this slot (per-doctor only)
+        # -------------------------------------------------
+        # 3) Exact availability check (no padding; absolute start/end)
+        # -------------------------------------------------
+        def _avail(cal_id, s_iso, e_iso, cr):
+            try:
+                return bool(is_time_slot_available(cal_id, s_iso, e_iso, cr))
+            except TypeError:
+                # Support older signature (calendar_id, creds, start, end)
+                return bool(is_time_slot_available(cal_id, cr, s_iso, e_iso))
+
         debug_print(f"ask_time_date: 👨‍⚕️ Checking calendar → {calendar_id}")
 
-        slot_available = False
         try:
-            # Prefer signature (calendar_id, start_iso, end_iso, creds); support legacy fallback.
-            try:
-                slot_available = bool(is_time_slot_available(calendar_id, appointment_start, appointment_end, creds))
-            except TypeError:
-                slot_available = bool(is_time_slot_available(calendar_id, creds, appointment_start, appointment_end))
-
-            if slot_available:
-                debug_print("ask_time_date: ✅ Slot free (first check) → proceed to customer lookup/confirmation")
+            slot_ok = _avail(calendar_id, appointment_start, appointment_end, creds)
         except Exception as e:
             debug_print(f"ask_time_date: ⚠️ Availability check error → {e}")
-            slot_available = False
+            slot_ok = False
 
-        if not slot_available:
-            debug_print("ask_time_date: ❌ Slot not available")
-            session_data[call_sid].pop("appointment_time", None)  # clear stale choice
+        if not slot_ok:
+            debug_print("ask_time_date: ❌ Slot not available (exact)")
 
-            # Build work-hours windows (respect lunch if within the day)
-            try:
-                dur_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES",
-                                globals().get("SESSION_TIME", globals().get("SESSIUON_TIME", 30))))
-            except Exception:
-                dur_minutes = 30
+            # Do not persist a busy time
+            session_data[call_sid].pop("appointment_time", None)
 
-            WSTART = int(globals().get("WORKING_HOURS_START", globals().get("WORKIN_HOURS_START", 8)))
-            WEND   = int(globals().get("WORKING_HOURS_END", 17))
-            LBS = globals().get("LUNCH_BREAK_START")
-            LBE = globals().get("LUNCH_BREAK_END")
-            try:
-                lbs_h = getattr(LBS, "hour", None)
-                lbe_h = getattr(LBE, "hour", None)
-            except Exception:
-                lbs_h, lbe_h = None, None
-
-            if isinstance(lbs_h, int) and isinstance(lbe_h, int) and WSTART < lbs_h < lbe_h < WEND:
-                work_windows = ((WSTART, lbs_h), (lbe_h, WEND))
-            else:
-                work_windows = ((WSTART, WEND),)
-
-            # Start alternatives at the requested day's workday start (minus one second so 8:00 is considered)
-            try:
-                tz = _pytz.timezone(globals().get("CLINIC_TZ") or "America/Chicago")
-            except Exception:
-                tz = _pytz.timezone("America/Chicago")
-
-            try:
-                s2 = appointment_start.replace("Z", "+00:00") if appointment_start.endswith("Z") else appointment_start
-                req_dt_utc = datetime.fromisoformat(s2)
-                if req_dt_utc.tzinfo is None:
-                    req_dt_utc = req_dt_utc.replace(tzinfo=_pytz.UTC)
-                req_loc = req_dt_utc.astimezone(tz)
-            except Exception:
-                # If parsing fails, just use "now" in clinic tz
-                req_loc = datetime.utcnow().replace(tzinfo=_pytz.UTC).astimezone(tz)
-
-            day_start_loc = req_loc.replace(hour=WSTART, minute=0, second=0, microsecond=0)
-            from_start_iso = (day_start_loc - timedelta(seconds=1)).astimezone(_pytz.UTC).isoformat().replace("+00:00","Z")
-
-            alts = []
+            # Offer **next 3 free slots after the requested time** (absolute)
             try:
                 alts = get_next_available_slots(
                     calendar_id,
                     creds,
-                    from_start_iso=from_start_iso,
-                    duration_minutes=dur_minutes,
-                    limit=3,
-                    tz_name=(globals().get("CLINIC_TZ") or "America/Chicago"),
-                    work_hours=work_windows,
-                    slot_step_minutes=dur_minutes,
-                    search_days=int(globals().get("SEARCH_DAYS", 14))
+                    from_start_iso=appointment_start,  # start searching at requested time
+                    limit=3
                 ) or []
-            except TypeError:
-                try:
-                    alts = get_next_available_slots(calendar_id, creds, from_start_iso=from_start_iso, limit=3) or []
-                except Exception as e2:
-                    debug_print(f"ask_time_date: ⚠️ get_next_available_slots fallback error → {e2}")
-                    alts = []
             except Exception as e:
                 debug_print(f"ask_time_date: ⚠️ get_next_available_slots error → {e}")
                 alts = []
 
-            if alts:
-                try:
-                    options = " or ".join([slot.get("friendly") for slot in alts if slot.get("friendly")])
-                except Exception:
-                    options = ""
-                if options:
-                    prompt = f"That time is not available. Would you like {options}?"
-                    debug_print(f"ask_time_date: 💡 Offering alternatives → {options}")
-                else:
-                    prompt = "That time is not available. Please say another time, for example, 'today at 3:30 PM'."
-                    debug_print("ask_time_date: ⚠️ Alternatives missing friendly labels")
+            options = " or ".join([slot.get("friendly") for slot in alts if slot.get("friendly")]) if alts else ""
+            if options:
+                prompt = f"That time is not available. Would you like {options}?"
+                debug_print(f"ask_time_date: 💡 Offering alternatives → {options}")
             else:
-                prompt = "That time is not available, and I couldn't find open slots soon. Please say another date and time."
+                prompt = "That time is not available. Please say another date and time."
                 debug_print("ask_time_date: ⚠️ No alternatives found")
 
             gather = make_gather(prompt)
             resp.append(gather)
             return str(resp)
 
-        # 4) Slot is available → decide whether to confirm or collect name details
-        debug_print("ask_time_date: ✅ Slot free (per strict check) → proceed to customer lookup/confirmation")
+        # -------------------------------------------------
+        # 4) Slot is free → persist and continue flow
+        # -------------------------------------------------
+        debug_print("ask_time_date: ✅ Slot free (exact) → proceed to customer lookup/confirmation")
 
-        # ✅ Only now (after all checks) persist the chosen slot for confirm stage
+        # Persist only after passing availability checks
         session_data[call_sid]["appointment_time"] = {
             "start": appointment_start,
             "end": appointment_end
@@ -5665,7 +5406,7 @@ def voice():
             if customer_phone and customer_dob and customer_search(customer_phone, customer_dob):
                 debug_print("ask_time_date: 📋 Customer on file — skip name collection")
                 session_data[call_sid]["stage"] = "book_appt_confirm"
-                session_data[call_sid]["auto_confirm"] = True  # optional flag for that stage
+                session_data[call_sid]["auto_confirm"] = True
                 debug_print("ask_time_date: ➡️ Redirecting to book_appt_confirm (auto_confirm=True)")
                 try:
                     resp.redirect(url_for("voice"))
@@ -5686,8 +5427,6 @@ def voice():
             gather = make_gather("Thanks. What is your first name?")
             resp.append(gather)
             return str(resp)
-
-
 
 
 
