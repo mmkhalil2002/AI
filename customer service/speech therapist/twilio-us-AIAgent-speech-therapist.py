@@ -5577,14 +5577,14 @@ def voice():
             debug_print("book_appt_confirm: 📍 Stage entered")
 
             # ----------------------------------------------------------------------
-            # 📌 We DO NOT ignore speech here anymore.
-            #     - Accept 'confirm/yes/book' (or DTMF 1)
-            #     - Accept 'change/no/different' (or DTMF 2)
-            #     - Accept 'cancel' (or DTMF 3)
-            #     - Small silence/bad-input retry budget
+            # ✅ Booking-only confirm stage
+            #   - We ONLY accept 'confirm/yes/book/ok' (or DTMF 1) to book.
+            #   - Any other speech is ignored and we re-prompt briefly.
+            #   - If the slot is no longer free, we bounce back to ask_time_date.
+            #   - Every branch returns a TwiML response.
             # ----------------------------------------------------------------------
 
-            # ---- Doctor info --------------------------------------------------------
+            # ---- Doctor info ----------------------------------------------------
             doctor_id = session_data[call_sid].get("doctor_id")
             if not doctor_id:
                 debug_print("book_appt_confirm: ❌ missing doctor_id → choose_doctor")
@@ -5595,7 +5595,7 @@ def voice():
             doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
             debug_print(f"book_appt_confirm: doctor_id={doctor_id} name={doctor_name}")
 
-            # ---- Appointment time (need start; compute end if missing) --------------
+            # ---- Appointment time (need start; compute end if missing) ----------
             appt_payload      = session_data[call_sid].get("appointment_time", {}) or {}
             appointment_start = appt_payload.get("start")
             appointment_end   = appt_payload.get("end")
@@ -5607,7 +5607,7 @@ def voice():
                 resp.hangup()
                 return str(resp)
 
-            # Format local friendly time (uses CLINIC_TZ or America/Chicago)
+            # Local friendly time
             tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
             try:
                 tz = _pytz.timezone(tz_name)
@@ -5618,9 +5618,9 @@ def voice():
                 dt_utc   = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
                 dt_local = dt_utc.astimezone(tz)
                 try:
-                    formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")  # Unix-like
+                    formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
                 except Exception:
-                    formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")  # Windows fallback
+                    formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
             except Exception as e:
                 debug_print(f"book_appt_confirm: time format error → {e}")
                 resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
@@ -5635,14 +5635,13 @@ def voice():
                         v = globals().get(k)
                         if v:
                             try:
-                                dur_min = int(v)
-                                break
+                                dur_min = int(v); break
                             except Exception:
                                 pass
                     if dur_min not in (15, 30, 45, 60):
                         dur_min = 30
                     end_dt = dt_utc + timedelta(minutes=dur_min)
-                    appointment_end = end_dt.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
+                    appointment_end = end_dt.astimezone(_pytz.UTC).isoformat()
                     debug_print(f"book_appt_confirm: computed utc_end={appointment_end} (duration={dur_min}m)")
                 except Exception as e:
                     debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
@@ -5650,22 +5649,22 @@ def voice():
                     resp.hangup()
                     return str(resp)
 
-            # ---- Customer info (E.164 + DOB) ---------------------------------------
-            customer           = session_data[call_sid].get("customer", {}) or {}
-            customer_name      = (customer.get("name") or "").strip()
-            first_name         = (customer.get("first_name") or "").strip()
-            last_name          = (customer.get("last_name")  or "").strip()
+            # ---- Customer info (E.164 + DOB) -----------------------------------
+            customer            = session_data[call_sid].get("customer", {}) or {}
+            customer_name       = (customer.get("name") or "").strip()
+            first_name          = (customer.get("first_name") or "").strip()
+            last_name           = (customer.get("last_name")  or "").strip()
             if not first_name and customer_name:
                 parts = customer_name.split()
                 first_name = parts[0]
                 last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
-            effective_name     = customer_name or " ".join([n for n in (first_name, last_name) if n]).strip()
-            customer_address   = (customer.get("address") or "").strip()
-            customer_dob       = (customer.get("dob") or "").strip()
+            effective_name      = customer_name or " ".join([n for n in (first_name, last_name) if n]).strip()
+            customer_address    = (customer.get("address") or "").strip()
+            customer_dob        = (customer.get("dob") or "").strip()
 
             # E.164 normalization (prefer already-stored phone_e164)
-            phone_raw           = (customer.get("phone_e164") or customer.get("phone") or "").strip()
-            customer_phone_e164 = ""
+            phone_raw            = (customer.get("phone_e164") or customer.get("phone") or "").strip()
+            customer_phone_e164  = ""
             if phone_raw.startswith("+") and phone_raw[1:].replace(" ", "").isdigit():
                 customer_phone_e164 = "+" + phone_raw[1:].replace(" ", "")
             else:
@@ -5689,11 +5688,11 @@ def voice():
                 session_data[call_sid]["stage"] = "collect_dob"
                 resp.append(make_gather(
                     "Before we confirm, please say your date of birth, for example, 'July 3 1990'. "
-                    "You can also enter two digits for month, two for day, and four for year, then press #."
+                    "You can also enter month, day, and year, then press pound."
                 ))
                 return str(resp)
 
-            # ---- Upsert customer (best-effort) --------------------------------------
+            # ---- Upsert customer (best-effort) ----------------------------------
             try:
                 init_db()
                 insert_customer(
@@ -5711,7 +5710,7 @@ def voice():
             except Exception as e:
                 debug_print(f"book_appt_confirm: insert_customer failed → {e}")
 
-            # ---- Availability check (enforces working hours/days/past-time) ---------
+            # ---- Availability check (past-time / hours / lunch enforced) --------
             calendar_id = doctor_id
             debug_print(f"book_appt_confirm: 🔎 availability cal={calendar_id} {appointment_start}→{appointment_end}")
             try:
@@ -5720,8 +5719,14 @@ def voice():
                 debug_print(f"book_appt_confirm: ⚠️ availability check error → {e}")
                 slot_free = False
 
-            # Fast path: auto-confirm callers (e.g., returning patients) when slot is free
-            if session_data[call_sid].get("auto_confirm", False) and slot_free:
+            if not slot_free:
+                # Slot became busy → route back to pick a new time
+                session_data[call_sid]["stage"] = "ask_time_date"
+                resp.append(make_gather("Sorry, that time is no longer available. Please say another date and time."))
+                return str(resp)
+
+            # ---- Auto-confirm path (if you use it elsewhere) --------------------
+            if session_data[call_sid].get("auto_confirm", False):
                 try:
                     service = build("calendar", "v3", credentials=creds)
                     event_body = {
@@ -5741,6 +5746,7 @@ def voice():
                     }
                     ev = service.events().insert(calendarId=calendar_id, body=event_body, sendUpdates="none").execute()
                     debug_print(f"book_appt_confirm: ✅ Google event created id={ev.get('id')}")
+
                     resp.say(gpt_speak(f"Your appointment with {doctor_name} is booked for {formatted_time}. See you then!"), VOICE)
                     resp.hangup()
                     session_data.pop(call_sid, None)
@@ -5749,35 +5755,16 @@ def voice():
                     debug_print(f"book_appt_confirm: ❌ auto-confirm booking error → {e}")
                     # fall through to interactive confirm
 
-            # If slot not free → suggest next options and bounce back to ask_time_date.
-            if not slot_free:
-                debug_print("book_appt_confirm: ❌ Slot not free → alternatives")
-                try:
-                    alts = get_next_available_slots(
-                        calendar_id,
-                        creds,
-                        from_start_iso=appointment_end,  # absolute; no +/- 1s
-                        limit=3
-                    ) or []
-                    if alts:
-                        options = " or ".join([a.get("friendly","") for a in alts if a.get("friendly")])
-                        session_data[call_sid]["stage"] = "ask_time_date"
-                        resp.append(make_gather(f"That time is not available. Would you like {options}?"))
-                        return str(resp)
-                except Exception as e:
-                    debug_print(f"book_appt_confirm: ⚠️ get_next_available_slots error → {e}")
-
-                session_data[call_sid]["stage"] = "ask_time_date"
-                resp.append(make_gather("That time is not available. Please say another date and time, for example, 'today at 3:30 PM'."))
-                return str(resp)
-
-            # ----------------------------------------------------------------------
-            # Interactive confirm (speech or DTMF)
-            # ----------------------------------------------------------------------
+            # ----------------------- Interactive Confirm (booking-only) -----------
             dtmf   = (request.values.get("Digits") or "").strip()
             speech = (speech_result or "").strip().lower()
+            debug_print(f"book_appt_confirm: input dtmf='{dtmf}' speech='{speech}'")
 
-            # Silence handling (2 tries max)
+            # If silence or non-confirm speech → short retry budget
+            def wants_confirm(txt: str) -> bool:
+                s = txt.lower()
+                return any(k in s for k in ("confirm", "yes", "book", "okay", "ok", "sure"))
+
             if not (dtmf or speech):
                 tries = session_data[call_sid].get("silence_confirm", 0) + 1
                 session_data[call_sid]["silence_confirm"] = tries
@@ -5786,31 +5773,12 @@ def voice():
                     resp.hangup()
                     session_data.pop(call_sid, None)
                     return str(resp)
-
-                prompt = f"To book {formatted_time} with {doctor_name}, say 'confirm' or press 1. To change, say 'change' or press 2. To cancel, say 'cancel' or press 3."
-                g = make_gather(prompt, input="speech dtmf", hints="yes confirm book no change different cancel")
-                resp.append(g)
+                prompt = f"To book {formatted_time} with {doctor_name}, say 'confirm' or press 1."
+                resp.append(make_gather(prompt, input="speech dtmf", hints="confirm yes book ok okay"))
                 return str(resp)
 
-            # Map intents
-            intent = ""
-            if dtmf == "1":
-                intent = "confirm"
-            elif dtmf == "2":
-                intent = "change"
-            elif dtmf == "3":
-                intent = "cancel"
-            else:
-                if any(k in speech for k in ("yes","confirm","book","okay","ok")):
-                    intent = "confirm"
-                elif any(k in speech for k in ("no","change","different","another")):
-                    intent = "change"
-                elif "cancel" in speech:
-                    intent = "cancel"
-
-            # Branch on intent
-            if intent == "confirm":
-                # Re-check slot just before booking, then create the event.
+            if dtmf == "1" or wants_confirm(speech):
+                # Re-check, then create event
                 try:
                     if not is_time_slot_available(calendar_id, appointment_start, appointment_end, creds):
                         debug_print("book_appt_confirm: ❌ slot became busy at confirm")
@@ -5843,7 +5811,6 @@ def voice():
                     msg = f"Your appointment with {doctor_name} has been booked"
                     if formatted_time: msg += f" on {formatted_time}"
                     msg += ". We look forward to seeing you. Goodbye!"
-                    debug_print("book_appt_confirm: 🎉 success → speaking confirmation")
                     resp.say(gpt_speak(msg), VOICE)
 
                     try:
@@ -5855,7 +5822,6 @@ def voice():
                     except Exception as e:
                         debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
 
-                    # Cleanup
                     resp.hangup()
                     session_data.pop(call_sid, None)
                     debug_print("book_appt_confirm: ✅ session cleared and call ended")
@@ -5866,17 +5832,7 @@ def voice():
                     resp.append(make_gather("Sorry, I couldn’t finish the booking. Please say another date and time."))
                     return str(resp)
 
-            if intent == "change":
-                session_data[call_sid]["stage"] = "ask_time_date"
-                resp.append(make_gather("Okay. Please say the new date and time you prefer."))
-                return str(resp)
-
-            if intent == "cancel":
-                session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
-                resp.append(make_gather("Okay. Tell me the date and time of the appointment you want to cancel."))
-                return str(resp)
-
-            # Didn’t recognize answer → reprompt (short budget)
+            # Not a confirmation → reprompt with small budget
             tries = session_data[call_sid].get("bad_confirm", 0) + 1
             session_data[call_sid]["bad_confirm"] = tries
             if tries > 2:
@@ -5886,10 +5842,10 @@ def voice():
                 return str(resp)
 
             resp.append(make_gather(
-                f"I heard {speech_result or dtmf}. To confirm {formatted_time} with {doctor_name}, say 'confirm' or press 1. "
-                "To change, say 'change' or press 2. To cancel, say 'cancel' or press 3."
-            ))
+                f"To book {formatted_time} with {doctor_name}, say 'confirm' or press 1."
+            , input="speech dtmf", hints="confirm yes book ok okay"))
             return str(resp)
+
 
 
 
