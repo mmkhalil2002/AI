@@ -4566,15 +4566,18 @@ def voice():
 
 
 
-    # ----------------------------------------------------------------------
+       # ----------------------------------------------------------------------
     # 📅 Stage: ask_time_date
     # Purpose:
-    #   - Parse spoken date/time (e.g., “September 12 at 10 AM”).
-    #   - Build concrete UTC start/end via build_timeslot_range().
-    #   - Check calendar availability via is_time_slot_available().
-    #   - If busy/past: suggest 3 next free slots via get_next_available_slots().
-    #   - If free: jump to confirm (or collect first name if not known).
-    # Prompts are kept short; all paths end with `return str(resp)`.
+    #   - Extract (day, time) from caller speech (no smart_parse_time).
+    #   - Build concrete UTC slot with build_timeslot_range(day, time).
+    #   - Check availability with is_time_slot_available(calendar_id, start, end, creds).
+    #   - If busy/past → suggest next 3 via get_next_available_slots(calendar_id, creds, from_start_iso=end).
+    #   - If free → proceed to confirm or collect first name.
+    # Notes:
+    #   - Uses global `_re` imported at module level.
+    #   - Uses absolute times only (no ±1s).
+    #   - Every path ends with `return str(resp)`.
     # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
@@ -4584,20 +4587,14 @@ def voice():
             "That doesn't sound like a valid date or time. "
             "Please say it again, for example, 'September 12 at 10 AM'."
         )
-        PROMPT_NEED_BOTH = (
-            "Please say the date and the time, for example, 'September 12 at 10 AM'."
-        )
-        PROMPT_NEED_DATE = (
-            "I didn't hear the date. Please include it, for example, 'September 12 at 10 AM'."
-        )
-        PROMPT_NEED_TIME = (
-            "I didn't hear the time. Please include it, for example, 'September 12 at 10 AM'."
-        )
+        PROMPT_NEED_BOTH = "Please say the date and the time, for example, 'September 12 at 10 AM'."
+        PROMPT_NEED_DATE = "I didn't hear the date. Please include it, for example, 'September 12 at 10 AM'."
+        PROMPT_NEED_TIME = "I didn't hear the time. Please include it, for example, 'September 12 at 10 AM'."
 
         # Ensure session bucket
         session_data.setdefault(call_sid, {})
 
-        # Must have a selected doctor (we check per-doctor calendar)
+        # Must have a selected doctor (per-doctor calendar)
         doctor_id = session_data.get(call_sid, {}).get("doctor_id")
         if not doctor_id:
             debug_print("ask_time_date: ❌ no doctor selected → choose_doctor")
@@ -4605,10 +4602,9 @@ def voice():
             doctor_list = ", ".join(googleid_dr_name_map.values())
             resp.append(make_gather("Which doctor would you like to see?", hints=doctor_list))
             return str(resp)
-
         calendar_id = doctor_id
 
-        # Normalize AM/PM variants; strip trailing punctuation
+        # ----- Normalize raw utterance -----
         raw = (speech_result or "").strip()
         if not raw:
             tries = session_data[call_sid].get("silence_time", 0) + 1
@@ -4623,27 +4619,23 @@ def voice():
             try: resp.redirect(url_for("voice"))
             except Exception: resp.redirect("/voice")
             return str(resp)
-
-        # heard something → clear silence counter
         session_data[call_sid].pop("silence_time", None)
 
-        # AM/PM cleanup & punctuation smoothing
-        try:
-            raw = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", raw, flags=_re.IGNORECASE)
-            raw = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", raw, flags=_re.IGNORECASE)
-            raw = _re.sub(r"[.!?]\s*$", "", raw)
-        except Exception:
-            pass
+        # Unify AM/PM variants and trim trailing punctuation (keep ':')
+        raw = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", raw, flags=_re.IGNORECASE)
+        raw = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", raw, flags=_re.IGNORECASE)
+        raw = _re.sub(r"[!?]\s*$", "", raw)  # keep periods if part of abbreviations, but drop final !?
+        raw = raw.strip()
 
-        # ------------------------------------------------------------------
-        # Parse (day, time)
-        # ------------------------------------------------------------------
+        # ----- Lightweight extractor: split into (day, time) -----
         def _has_time_token(s: str) -> bool:
             s = (s or "").lower()
             return (
                 ("am" in s) or ("pm" in s) or (":" in s)
                 or ("o'clock" in s) or ("oclock" in s)
-                or (_re.search(r"\b\d{3,4}\b", s) is not None)
+                or (_re.search(r"\b\d{1,2}\s*(am|pm)\b", s) is not None)
+                or (_re.search(r"\b\d{3,4}\b", s) is not None)  # 900 / 0930 / 1730
+                or ("noon" in s) or ("midnight" in s)
             )
 
         def _has_date_token(s: str) -> bool:
@@ -4656,13 +4648,78 @@ def voice():
             if any(m in s for m in months): return True
             if any(w in s for w in weekdays): return True
             if "/" in s or "-" in s: return True
+            # We do not rely on dateutil to parse "today/tomorrow" here,
+            # but we still accept them and let build_timeslot_range handle.
             if "today" in s or "tomorrow" in s or "tmrw" in s: return True
             return False
 
-        time_info = smart_parse_time(raw)
+        def _normalize_time_words(t: str) -> str:
+            t = t.strip().lower()
+            # keep colons; normalize whitespace
+            t = _re.sub(r"\s+", " ", t)
+            # map special words
+            t = t.replace("noon", "12:00 pm").replace("midnight", "12:00 am")
+            # normalize "a. m." / "p m" → "am"/"pm"
+            t = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", t, flags=_re.IGNORECASE)
+            t = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", t, flags=_re.IGNORECASE)
+            return t
 
-        # If parser returned nothing useful, guide specifically
-        if not time_info or not isinstance(time_info, tuple) or len(time_info) != 2:
+        def _strip_ordinals(s: str) -> str:
+            # 1st→1, 2nd→2, 3rd→3, 21st→21, 30th→30
+            return _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", s, flags=_re.IGNORECASE)
+
+        def _extract_day_time(text: str):
+            """
+            Best-effort splitter:
+              1) Prefer 'X at Y' (date before time).
+              2) Else 'Y on X' (time before date).
+              3) Else find a time token via regex and split around it.
+            Returns (day_str, time_str) or (None, None).
+            """
+            t = text.strip()
+            # collapse excessive punctuation (keep ':', '/')
+            t = _re.sub(r"[,\.;]+", " ", t)
+            t = _re.sub(r"\s+", " ", t).strip()
+
+            # case 1: "... at ..."
+            idx = t.lower().rfind(" at ")
+            if idx != -1:
+                day = _strip_ordinals(t[:idx].strip())
+                tim = _normalize_time_words(t[idx+4:].strip())
+                return (day, tim) if day and tim else (None, None)
+
+            # case 2: "... on ..."
+            idx = t.lower().rfind(" on ")
+            if idx != -1:
+                left = t[:idx].strip()
+                right = t[idx+4:].strip()
+                # assume time on the left, date on the right
+                if _has_time_token(left) and _has_date_token(right):
+                    day = _strip_ordinals(right)
+                    tim = _normalize_time_words(left)
+                    return (day, tim) if day and tim else (None, None)
+
+            # case 3: detect a time token anywhere, split around it
+            m = _re.search(
+                r"\b(\d{1,2}(:\d{2})?\s*(am|pm)\b|\b\d{3,4}\b|\bnoon\b|\bmidnight\b)",
+                t, flags=_re.IGNORECASE
+            )
+            if m:
+                tim = _normalize_time_words(m.group(0))
+                # day = text without that time token (and nearby fillers like "at"/"on")
+                before = t[:m.start()].strip()
+                after  = t[m.end():].strip()
+                # remove a leading connector from 'after' if present
+                after = _re.sub(r"^(at|on|for|the)\s+", "", after, flags=_re.IGNORECASE)
+                day_raw = (before + " " + after).strip()
+                day = _strip_ordinals(day_raw)
+                return (day, tim) if day and tim else (None, None)
+
+            return (None, None)
+
+        # Extract (day, time) with the lightweight splitter
+        spoken_day, spoken_time = _extract_day_time(raw)
+        if not (spoken_day and spoken_time):
             need_date = not _has_date_token(raw)
             need_time = not _has_time_token(raw)
             prompt = PROMPT_NEED_BOTH if (need_date and need_time) else (PROMPT_NEED_DATE if need_date else PROMPT_NEED_TIME if need_time else TIME_PROMPT_SHORT)
@@ -4675,23 +4732,9 @@ def voice():
             resp.append(make_gather(prompt))
             return str(resp)
 
-        spoken_day, spoken_time = time_info
         debug_print(f"ask_time_date: 📆 Extracted → Day: {spoken_day}, Time: {spoken_time}")
 
-        if not (spoken_day and spoken_time):
-            prompt = PROMPT_NEED_BOTH if not spoken_day and not spoken_time else (PROMPT_NEED_DATE if not spoken_day else PROMPT_NEED_TIME)
-            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
-            if session_data[call_sid]["retry_time"] >= 3:
-                resp.say(gpt_speak("Sorry, I still couldn't get the full date and time. Please try again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-            resp.append(make_gather(prompt))
-            return str(resp)
-
-        # ------------------------------------------------------------------
-        # Build concrete UTC slot (absolute times, no ±1s fudge)
-        # ------------------------------------------------------------------
+        # ----- Build concrete UTC slot (absolute) -----
         try:
             appointment_start, appointment_end = build_timeslot_range(spoken_day, spoken_time)
             session_data[call_sid]["retry_time"] = 0
@@ -4707,7 +4750,7 @@ def voice():
             resp.append(make_gather(TIME_PROMPT_SHORT))
             return str(resp)
 
-        # Past-time guard (treat as past only if the slot has fully ended)
+        # ----- Past-time guard (only if the slot has fully ended) -----
         try:
             def _as_utc_dt(s):
                 s2 = (s or "").strip().replace("Z", "+00:00")
@@ -4719,37 +4762,25 @@ def voice():
             end_dt   = _as_utc_dt(appointment_end).astimezone(_pytz.UTC)
 
             if end_dt <= now_utc:
-                debug_print("ask_time_date: 🕒 requested time has fully passed → offer next free slots")
-                # clear any stale chosen time
+                debug_print("ask_time_date: 🕒 requested time has fully passed → suggest next 3 after requested")
                 session_data[call_sid].pop("appointment_time", None)
-
-                # Start alternatives from the requested end (strictly after what they asked)
                 try:
-                    alts = get_next_available_slots(
-                        calendar_id,
-                        creds,
-                        from_start_iso=appointment_end,
-                        limit=3
-                    ) or []
+                    alts = get_next_available_slots(calendar_id, creds, from_start_iso=appointment_end, limit=3) or []
                 except Exception as e:
                     debug_print(f"ask_time_date: ⚠️ get_next_available_slots error (past guard) → {e}")
                     alts = []
-
                 if alts:
-                    options = " or ".join([a.get("friendly") for a in alts if a.get("friendly")])
+                    options = " or ".join([a.get("friendly") for a in alts if a.get("friendly")]) or ""
                     prompt = f"That time has already passed. Would you like {options}?" if options else \
                              "That time has already passed. Please say another date and time."
                 else:
                     prompt = "That time has already passed. Please say another date and time."
-
                 resp.append(make_gather(prompt))
                 return str(resp)
         except Exception as e:
             debug_print(f"ask_time_date: ⚠️ past-time guard error → {e}")
 
-        # ------------------------------------------------------------------
-        # Check availability (absolute start/end, no ±1s fudge here)
-        # ------------------------------------------------------------------
+        # ----- Availability check (absolute, no ±1s) -----
         debug_print(f"ask_time_date: 👨‍⚕️ Checking calendar → {calendar_id}")
         try:
             slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
@@ -4758,33 +4789,23 @@ def voice():
             slot_available = False
 
         if not slot_available:
-            debug_print("ask_time_date: ❌ Slot not available → suggest 3 next slots after requested end")
+            debug_print("ask_time_date: ❌ Slot not available → suggest next 3 after requested end")
             session_data[call_sid].pop("appointment_time", None)
-
             try:
-                alts = get_next_available_slots(
-                    calendar_id,
-                    creds,
-                    from_start_iso=appointment_end,   # start search right after the requested slot
-                    limit=3
-                ) or []
+                alts = get_next_available_slots(calendar_id, creds, from_start_iso=appointment_end, limit=3) or []
             except Exception as e:
                 debug_print(f"ask_time_date: ⚠️ get_next_available_slots error → {e}")
                 alts = []
-
             if alts:
                 options = " or ".join([s.get("friendly") for s in alts if s.get("friendly")]) or ""
                 prompt = f"That time is not available. Would you like {options}?" if options else \
                          "That time is not available. Please say another date and time."
             else:
                 prompt = "That time is not available, and I couldn’t find open slots soon. Please say another date and time."
-
             resp.append(make_gather(prompt))
             return str(resp)
 
-        # ------------------------------------------------------------------
-        # Slot is free → store and continue
-        # ------------------------------------------------------------------
+        # ----- Slot free → store and continue -----
         debug_print("ask_time_date: ✅ Slot free → proceed to confirmation/customer flow")
         session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
 
@@ -4793,15 +4814,12 @@ def voice():
         customer_dob   = (customer.get("dob") or "").strip()
 
         try:
-            # If both phone & DOB exist in DB → skip name collection and go confirm
             if customer_phone and customer_dob and customer_search(customer_phone, customer_dob):
                 session_data[call_sid]["stage"] = "book_appt_confirm"
-                debug_print("ask_time_date: 📋 known customer → go to book_appt_confirm")
                 try: resp.redirect(url_for("voice"))
                 except Exception: resp.redirect("/voice")
                 return str(resp)
             else:
-                # Otherwise, ask for first name
                 session_data[call_sid]["stage"] = "collect_first_name"
                 resp.append(make_gather("Thanks. What is your first name?"))
                 return str(resp)
@@ -4811,9 +4829,9 @@ def voice():
             resp.append(make_gather("Thanks. What is your first name?"))
             return str(resp)
 
-        # --- SAFETY NET: if we somehow reach here without returning, re-prompt ---
-        debug_print("ask_time_date: ⚠️ fell through without a return; using safety-net reprompt")
-        resp.append(make_gather("Please say the appointment date and time, for example, 'September 12 at 10 AM'."))
+        # Safety net (should never happen)
+        debug_print("ask_time_date: ⚠️ fell through; reprompting")
+        resp.append(make_gather("Please say the date and time, for example, 'September 12 at 10 AM'."))
         try: resp.redirect(url_for("voice"))
         except Exception: resp.redirect("/voice")
         return str(resp)
