@@ -469,75 +469,78 @@ session_data = {}
 
 
 
-
 def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds) -> bool:
     """
-    Return True iff the requested slot [start, end) is free.
-    EXACT times (no padding). Half-open overlap logic:
-      overlap ⇔ (slot_start < busy_end) and (busy_start < slot_end)
-    So touching at a boundary (==) does NOT count as overlap.
+    Return True if [start, end) is free on Google Calendar.
+    Boundary rule: touching at start/end is OK (no +/- 1s padding).
     """
-    from datetime import datetime, timedelta
+    from googleapiclient.discovery import build
+    from dateutil.parser import isoparse
     import pytz as _pytz
 
-    def _iso_to_utc(iso_s: str):
-        s2 = iso_s.replace("Z", "+00:00") if iso_s.endswith("Z") else iso_s
-        dt = datetime.fromisoformat(s2)
+    # Parse to aware datetimes (UTC)
+    def _as_utc_dt(s: str):
+        s2 = s.replace("Z", "+00:00")
+        dt = isoparse(s2)
         return dt if dt.tzinfo else dt.replace(tzinfo=_pytz.UTC)
 
-    def _overlap_half_open(a0, a1, b0, b1) -> bool:
-        # True if [a0, a1) overlaps [b0, b1)
-        return (a0 < b1) and (b0 < a1)
+    start_dt = _as_utc_dt(start_iso).astimezone(_pytz.UTC)
+    end_dt   = _as_utc_dt(end_iso).astimezone(_pytz.UTC)
 
-    s_req = _iso_to_utc(start_iso).astimezone(_pytz.UTC)
-    e_req = _iso_to_utc(end_iso).astimezone(_pytz.UTC)
-    if not (s_req < e_req):
-        return False  # bad window
+    if end_dt <= start_dt:
+        return False  # invalid window
 
-    # --- Google Calendar client
     service = build("calendar", "v3", credentials=creds)
 
-    # 1) FreeBusy (NO PADDING)
-    fb_body = {
-        "timeMin": s_req.isoformat().replace("+00:00", "Z"),
-        "timeMax": e_req.isoformat().replace("+00:00", "Z"),
-        "timeZone": "UTC",
+    # ---- FreeBusy (no padding)
+    fb = service.freebusy().query(body={
+        "timeMin": start_dt.isoformat().replace("+00:00", "Z"),
+        "timeMax": end_dt.isoformat().replace("+00:00", "Z"),
         "items": [{"id": calendar_id}],
-    }
-    fb = service.freebusy().query(body=fb_body).execute()
-    for item in fb.get("calendars", {}).get(calendar_id, {}).get("busy", []):
-        b0 = _iso_to_utc(item["start"]).astimezone(_pytz.UTC)
-        b1 = _iso_to_utc(item["end"]).astimezone(_pytz.UTC)
-        if _overlap_half_open(s_req, e_req, b0, b1):
-            # Exact-time conflict → NOT available
+    }).execute()
+
+    busy_blocks = fb.get("calendars", {}).get(calendar_id, {}).get("busy", [])
+
+    # Overlap check for half-open intervals
+    def _overlaps(a_start, a_end, b_start, b_end):
+        # True only if there is real overlap inside (touching edges is free)
+        return (a_start < b_end) and (b_start < a_end)
+
+    for b in busy_blocks:
+        bs = _as_utc_dt(b["start"])
+        be = _as_utc_dt(b["end"])
+        if _overlaps(start_dt, end_dt, bs, be):
             return False
 
-    # 2) events().list (NO PADDING)
-    events = service.events().list(
+    # ---- Events list (no padding)
+    ev = service.events().list(
         calendarId=calendar_id,
-        timeMin=s_req.isoformat().replace("+00:00", "Z"),
-        timeMax=e_req.isoformat().replace("+00:00", "Z"),
+        timeMin=start_dt.isoformat().replace("+00:00", "Z"),
+        timeMax=end_dt.isoformat().replace("+00:00", "Z"),
         singleEvents=True,
+        maxResults=1,
         orderBy="startTime",
     ).execute()
 
-    for ev in events.get("items", []):
-        # Handle all-day or timed events
-        if "dateTime" in ev.get("start", {}):
-            b0 = _iso_to_utc(ev["start"]["dateTime"]).astimezone(_pytz.UTC)
-            b1 = _iso_to_utc(ev["end"]["dateTime"]).astimezone(_pytz.UTC)
-        else:
-            # all-day: Google gives date (midnight to midnight in calendar’s TZ); treat as blocking that day
-            # Convert date-only to UTC datetimes
-            day_start = ev["start"]["date"] + "T00:00:00+00:00"
-            day_end   = ev["end"]["date"]   + "T00:00:00+00:00"
-            b0 = _iso_to_utc(day_start).astimezone(_pytz.UTC)
-            b1 = _iso_to_utc(day_end).astimezone(_pytz.UTC)
+    items = ev.get("items", [])
+    if items:
+        # Double-check overlap (some recurring instances can edge-touch)
+        for it in items:
+            # Get event start/end in UTC
+            def _evt_to_dt(evt_key):
+                val = it.get("start", {}).get(evt_key) or it.get("end", {}).get(evt_key)
+                return _as_utc_dt(val) if val else None
 
-        if _overlap_half_open(s_req, e_req, b0, b1):
-            return False
+            estart_raw = it.get("start", {}).get("dateTime") or it.get("start", {}).get("date")
+            eend_raw   = it.get("end",   {}).get("dateTime") or it.get("end",   {}).get("date")
+            if not (estart_raw and eend_raw):
+                # All-day or malformed — conservatively block if there’s any real overlap
+                return False
+            estart = _as_utc_dt(estart_raw)
+            eend   = _as_utc_dt(eend_raw)
+            if _overlaps(start_dt, end_dt, estart, eend):
+                return False
 
-    # No overlaps at exact boundaries → FREE
     return True
 
 
