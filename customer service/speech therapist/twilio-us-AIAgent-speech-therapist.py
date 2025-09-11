@@ -4567,23 +4567,24 @@ def voice():
 
 
         # ----------------------------------------------------------------------
-    # 📅 Stage: ask_time_date
-    # Purpose:
-    #   - Parse spoken date/time (e.g., “September 12 at 10 AM”) without external helpers.
-    #   - Build a concrete UTC timeslot (start/end) using clinic TZ and duration.
-    #   - Check availability via is_time_slot_available(calendar_id, start_iso, end_iso, creds).
-    #   - If the slot is busy or has fully passed, suggest the next 3 free slots
-    #     AFTER the requested *end* via get_next_available_slots(...).
-    #   - If free, persist slot and advance the flow.
-    #
-    # Notes:
-    #   - Uses absolute times only (no ±1s padding in this stage).
-    #   - We never assign to `_re`, so it stays global and safe.
-    #   - Every code path returns `str(resp)` (Flask requirement).
-    # ----------------------------------------------------------------------
+        # 📅 Stage: ask_time_date
+        # Purpose:
+        #   - Parse spoken date/time (e.g., “September 12 at 10 AM”) without external helpers.
+        #   - Build a concrete UTC timeslot (start/end) using clinic TZ and duration.
+        #   - Check availability via is_time_slot_available(calendar_id, start_iso, end_iso, creds).
+        #   - If the slot is busy or has fully passed, suggest the next 3 free slots
+        #     AFTER the requested *end* via get_next_available_slots(...).
+        #   - If free, persist slot and advance the flow.
+        #
+        # Notes:
+        #   - Uses absolute times only (no ±1s padding in this stage).
+        #   - We never assign to `_re`, so it stays global and safe.
+        #   - Every code path returns `str(resp)` (Flask requirement).
+        # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
-        import re as _re
+        import re as _re  # ← per your request: keep this import here
+
         # ------------------------------------------------------------------
         # Prompts
         # ------------------------------------------------------------------
@@ -4628,10 +4629,9 @@ def voice():
         session_data[call_sid].pop("silence_time", None)
 
         # ------------------------------------------------------------------
-        # Tiny helpers (local to this stage)
+        # Tiny helpers (local to this stage) — they close over `_re` imported above
         # ------------------------------------------------------------------
         def _has_time_token(s: str) -> bool:
-            """Heuristic to decide if a time was said."""
             s = (s or "").lower()
             return (
                 ("am" in s) or ("pm" in s) or (":" in s)
@@ -4642,26 +4642,25 @@ def voice():
             )
 
         def _has_date_token(s: str) -> bool:
-            """Heuristic to decide if a date was said."""
             s = (s or "").lower()
             months = ("january","february","march","april","may","june","july",
-                      "august","september","october","november","december",
-                      "jan","feb","mar","apr","may","jun","jul","aug","sep","sept","oct","nov","dec")
+                    "august","september","october","november","december",
+                    "jan","feb","mar","apr","may","jun","jul","aug","sep","sept","oct","nov","dec")
             if any(m in s for m in months): return True
             if "/" in s or "-" in s: return True  # 9/12, 09-12
             weekdays = ("monday","tuesday","wednesday","thursday","friday","saturday","sunday",
                         "mon","tue","tues","wed","thu","thur","thurs","fri","sat","sun")
             if any(w in s for w in weekdays): return True
-            if _re.search(r"\b\d{1,2}\b", s): return True  # day of month spoken alone
+            if _re.search(r"\b\d{1,2}\b", s): return True  # day-of-month alone
             return False
 
         def _extract_day_time(s: str) -> tuple:
             """
             Normalize and split into (day_str, time_str).
             Accepts forms like:
-              'September 11 at 10 am'
-              'Thu, September 11, 10:30 am'
-              '9/11 at 10'
+            'September 11 at 10 am'
+            'Thu, September 11, 10:30 am'
+            '9/11 at 10'
             """
             if not s: return ("", "")
 
@@ -4669,9 +4668,14 @@ def voice():
             s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s, flags=_re.IGNORECASE)
             s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s, flags=_re.IGNORECASE)
             s = _re.sub(r"[!?]+\s*$", "", s)
-            # Remove extra commas/periods but keep colons
-            s = _re.sub(r"[;,]+", " ", s)
-            s = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", s, flags=_re.IGNORECASE)  # 11th→11
+
+            # Remove stray commas/periods/semicolons (keep colons)
+            s = _re.sub(r"[.,;]+", " ", s)
+
+            # Ordinals → cardinals (11th→11)
+            s = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", s, flags=_re.IGNORECASE)
+
+            # Collapse spaces
             s = _re.sub(r"\s+", " ", s).strip()
 
             # Map "noon"/"midnight"
@@ -4679,27 +4683,23 @@ def voice():
             s_low = s_low.replace(" at noon", " at 12 pm").replace(" noon", " 12 pm")
             s_low = s_low.replace(" at midnight", " at 12 am").replace(" midnight", " 12 am")
 
-            # If there's an explicit " at " split, use it
+            # Prefer explicit " at "
             if " at " in s_low:
                 day, timep = s_low.split(" at ", 1)
                 return (day.strip().rstrip(","), timep.strip())
 
-            # Otherwise, try to locate a time token and split around it
+            # Otherwise, find a time token and split
             m = _re.search(r"\b(\d{1,2}(:\d{2})?\s*(am|pm)?)\b", s_low)
             if m:
                 timep = m.group(1)
                 day = s_low[:m.start()].strip().rstrip(",")
-                # If day ended up empty (e.g., "10 am"), leave it ""
                 return (day, timep)
 
-            # Last resort: maybe compact "930", "1000"
+            # Compact times like 930, 1000
             m2 = _re.search(r"\b(\d{3,4})\b", s_low)
             if m2:
                 t = m2.group(1)
-                if len(t) == 3:  # "930" → "9:30"
-                    timep = f"{int(t[0]):d}:{t[1:]}"
-                else:            # "1030" → "10:30"
-                    timep = f"{int(t[:-2]):d}:{t[-2:]}"
+                timep = (f"{int(t[0]):d}:{t[1:]}" if len(t) == 3 else f"{int(t[:-2]):d}:{t[-2:]}")
                 day = s_low[:m2.start()].strip().rstrip(",")
                 return (day, timep)
 
@@ -4708,7 +4708,7 @@ def voice():
         def _build_slot(day_str: str, time_str: str) -> tuple:
             """
             Build (start_iso_utc, end_iso_utc) using clinic TZ and duration.
-            If year not said, force current year (do NOT auto-roll to next year).
+            If year not said, force current year (no auto-roll to next year).
             """
             tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
             try:
@@ -4728,31 +4728,29 @@ def voice():
             if dur not in (15, 30, 45, 60):
                 dur = 30
 
-            # Clean pieces
             d = (day_str or "").strip()
             t = (time_str or "").strip()
             if not d or not t:
                 raise ValueError("missing date or time")
 
-            # Ensure common formats
+            # Ensure common time format
             t = _re.sub(r"\s*(am|pm)\b", r" \1", t)  # "10am" → "10 am"
             t = t.replace(" o'clock", "")
 
-            # Compose a single phrase: "<day> at <time>"
             combined = f"{d} at {t}"
 
-            # Parse with a default baseline (today in local tz)
+            # Parse with local baseline
             today = _date_local.today()
             default_base = datetime(today.year, today.month, today.day, 9, 0, 0)
-
             parsed = _dtparse(combined, default=default_base, dayfirst=False, fuzzy=True)
+
             # Attach/normalize tz
             if parsed.tzinfo is None:
                 parsed = tz_local.localize(parsed)
             else:
                 parsed = parsed.astimezone(tz_local)
 
-            # If the caller did NOT say a year, force current year
+            # Force current year if none was said
             said_year = bool(_re.search(r"\b\d{4}\b", combined))
             if not said_year:
                 parsed = parsed.replace(year=today.year)
@@ -4761,21 +4759,8 @@ def voice():
             end_local   = start_local + timedelta(minutes=dur)
 
             start_utc = start_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
-            end_utc   = end_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
+            end_utc   = end_local  .astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
             return (start_utc, end_utc)
-
-        def _friendly(dt_utc_iso: str) -> str:
-            """Make a friendly local label for prompts."""
-            tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
-            try:
-                dt_utc = datetime.fromisoformat(dt_utc_iso.replace("Z", "+00:00"))
-                dt_loc = dt_utc.astimezone(_pytz.timezone(tz_name))
-                try:
-                    return dt_loc.strftime("%A, %B %-d at %-I:%M %p")
-                except Exception:
-                    return dt_loc.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
-            except Exception:
-                return ""
 
         # ------------------------------------------------------------------
         # Extract (day, time)
@@ -4785,7 +4770,6 @@ def voice():
 
         need_date = not _has_date_token(day_part)
         need_time = not _has_time_token(time_part)
-
         if need_date or need_time:
             if need_date and need_time: prompt = PROMPT_NEED_BOTH
             elif need_date:              prompt = PROMPT_NEED_DATE
@@ -4821,29 +4805,21 @@ def voice():
         # Past-time guard (absolute): only if the slot has fully ended
         # ------------------------------------------------------------------
         try:
-            now_utc  = datetime.utcnow().replace(tzinfo=_pytz.UTC)
-            end_dt   = datetime.fromisoformat(appointment_end.replace("Z", "+00:00")).astimezone(_pytz.UTC)
+            now_utc = datetime.utcnow().replace(tzinfo=_pytz.UTC)
+            end_dt  = datetime.fromisoformat(appointment_end.replace("Z", "+00:00")).astimezone(_pytz.UTC)
             if end_dt <= now_utc:
                 debug_print("ask_time_date: 🕒 requested time is in the past → suggest next slots AFTER requested time")
-                # Ask for the next 3 free slots AFTER the requested end
                 try:
-                    alts = get_next_available_slots(
-                        calendar_id,
-                        creds,
-                        from_start_iso=appointment_end,
-                        limit=3
-                    ) or []
+                    alts = get_next_available_slots(calendar_id, creds, from_start_iso=appointment_end, limit=3) or []
                 except Exception as e:
                     debug_print(f"ask_time_date: ⚠️ get_next_available_slots error → {e}")
                     alts = []
-
                 if alts:
                     options = " or ".join([a.get("friendly","") for a in alts if a.get("friendly")])
-                    prompt = f"That time has already passed. Would you like {options}?" if options else \
-                             "That time has already passed. Please say another date and time."
+                    prompt = f"That time has already passed. Would you like {options}?" if options \
+                            else "That time has already passed. Please say another date and time."
                 else:
                     prompt = "That time has already passed. Please say another date and time."
-
                 resp.append(make_gather(prompt))
                 return str(resp)
         except Exception as e:
@@ -4861,42 +4837,35 @@ def voice():
 
         if not slot_available:
             debug_print("ask_time_date: ❌ Slot not available → suggesting alternatives")
-            # Next 3 free AFTER the requested end (absolute)
             try:
-                alts = get_next_available_slots(
-                    calendar_id,
-                    creds,
-                    from_start_iso=appointment_end,
-                    limit=3
-                ) or []
+                alts = get_next_available_slots(calendar_id, creds, from_start_iso=appointment_end, limit=3) or []
             except Exception as e:
                 debug_print(f"ask_time_date: ⚠️ get_next_available_slots error → {e}")
                 alts = []
-
             if alts:
                 options = " or ".join([a.get("friendly","") for a in alts if a.get("friendly")])
                 prompt = f"That time is not available. Would you like {options}?" if options \
-                         else "That time is not available. Please say another date and time."
+                        else "That time is not available. Please say another date and time."
             else:
                 prompt = "That time is not available. Please say another date and time."
-
             resp.append(make_gather(prompt))
             return str(resp)
 
         # ------------------------------------------------------------------
-        # Slot free → persist and advance
+        # ✅ Slot free → save and advance to confirm (NO Gather here)
         # ------------------------------------------------------------------
-        debug_print("ask_time_date: ✅ Slot free → proceed to confirmation flow")
-        session_data[call_sid]["appointment_time"] = {
-            "start": appointment_start,
-            "end": appointment_end
-        }
-
-        # Keep the flow simple/independent: go to confirm stage.
+        session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
         session_data[call_sid]["stage"] = "book_appt_confirm"
-        try: resp.redirect(url_for("voice"))
-        except Exception: resp.redirect("/voice")
+        debug_print("ask_time_date: ✅ Slot free → proceed to confirmation flow")
+
+        # IMPORTANT: do NOT append a Gather here — just redirect
+        try:
+            resp.redirect(url_for("voice"))
+        except Exception:
+            resp.redirect("/voice")
         return str(resp)
+
+
 
 
 
@@ -5575,25 +5544,14 @@ def voice():
     elif stage == "book_appt_confirm":
         debug_print("book_appt_confirm: 📍 Stage entered")
 
-        # ----------------------------------------------------------------------
-        # ✅ Simple booking stage
-        # - Availability was already checked in the previous step.
-        # - We ignore incidental speech/DTMF here: this stage just books.
-        # - Flow:
-        #     1) Validate required context (doctor, start time, phone, DOB).
-        #     2) Compute end time if missing.
-        #     3) Create Google Calendar event.
-        #     4) Speak confirmation + send SMS (best-effort) → hang up.
-        # ----------------------------------------------------------------------
-
-        # Ignore any incidental speech here; we do NOT parse commands at confirm stage.
+        # Ignore any incidental speech/DTMF here — this stage auto-books.
         try:
-            if (speech_result or "").strip():
-                debug_print("book_appt_confirm: 🛡️ ignoring incidental speech at confirm stage")
+            if (speech_result or "").strip() or (request.values.get("Digits") or "").strip():
+                debug_print("book_appt_confirm: 🛡️ ignoring incidental input at confirm stage")
         except Exception:
             pass
 
-        # ---- Doctor info --------------------------------------------------------
+        # ---- Doctor info ----
         doctor_id = session_data[call_sid].get("doctor_id")
         if not doctor_id:
             debug_print("book_appt_confirm: ❌ missing doctor_id → choose_doctor")
@@ -5602,21 +5560,18 @@ def voice():
             return str(resp)
 
         doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
-        debug_print(f"book_appt_confirm: doctor_id={doctor_id} name={doctor_name}")
 
-        # ---- Appointment time (need start; compute end if missing) --------------
-        appt_payload      = session_data[call_sid].get("appointment_time", {}) or {}
-        appointment_start = appt_payload.get("start")
-        appointment_end   = appt_payload.get("end")
-        debug_print(f"book_appt_confirm: utc_start={appointment_start} utc_end={appointment_end}")
-
+        # ---- Appointment time ----
+        appt = session_data[call_sid].get("appointment_time", {}) or {}
+        appointment_start = appt.get("start")
+        appointment_end   = appt.get("end")
         if not appointment_start:
             debug_print("book_appt_confirm: ❌ missing appointment_start")
             resp.say(gpt_speak("Appointment time is missing. Goodbye!"), VOICE)
             resp.hangup()
             return str(resp)
 
-        # Local-friendly time for TTS/SMS (uses CLINIC_TZ or America/Chicago)
+        # Local-friendly time
         tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
         try:
             tz = _pytz.timezone(tz_name)
@@ -5627,42 +5582,41 @@ def voice():
             dt_utc   = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
             dt_local = dt_utc.astimezone(tz)
             try:
-                formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")  # Unix-like
+                formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
             except Exception:
-                formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")  # Windows fallback
+                formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
         except Exception as e:
             debug_print(f"book_appt_confirm: time format error → {e}")
             resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
             resp.hangup()
             return str(resp)
 
-        # Compute end if missing (duration from globals, default 30m)
+        # Compute end if missing (default 30m)
         if not appointment_end:
             try:
-                dur_min = None
+                dur = None
                 for k in ("APPOINTMENT_DURATION_MINUTES", "SESSION_TIME", "SESSIUON_TIME"):
                     v = globals().get(k)
                     if v:
                         try:
-                            dur_min = int(v); break
+                            dur = int(v); break
                         except Exception:
                             pass
-                if dur_min not in (15, 30, 45, 60):
-                    dur_min = 30
-                end_dt = dt_utc + timedelta(minutes=dur_min)
+                if dur not in (15, 30, 45, 60):
+                    dur = 30
+                end_dt = dt_utc + timedelta(minutes=dur)
                 appointment_end = end_dt.astimezone(_pytz.UTC).isoformat()
-                debug_print(f"book_appt_confirm: computed utc_end={appointment_end} (duration={dur_min}m)")
             except Exception as e:
                 debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
                 resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
                 resp.hangup()
                 return str(resp)
 
-        # ---- Customer info (E.164 + DOB) ---------------------------------------
-        customer           = session_data[call_sid].get("customer", {}) or {}
-        customer_name      = (customer.get("name") or "").strip()
-        first_name         = (customer.get("first_name") or "").strip()
-        last_name          = (customer.get("last_name")  or "").strip()
+        # ---- Customer info ----
+        customer         = session_data[call_sid].get("customer", {}) or {}
+        customer_name    = (customer.get("name") or "").strip()
+        first_name       = (customer.get("first_name") or "").strip()
+        last_name        = (customer.get("last_name")  or "").strip()
         if not first_name and customer_name:
             parts = customer_name.split()
             first_name = parts[0]
@@ -5671,29 +5625,25 @@ def voice():
         customer_address = (customer.get("address") or "").strip()
         customer_dob     = (customer.get("dob") or "").strip()
 
-        # E.164 normalization (prefer already-stored phone_e164)
-        phone_raw            = (customer.get("phone_e164") or customer.get("phone") or "").strip()
-        customer_phone_e164  = ""
+        phone_raw = (customer.get("phone_e164") or customer.get("phone") or "").strip()
         if phone_raw.startswith("+") and phone_raw[1:].replace(" ", "").isdigit():
-            customer_phone_e164 = "+" + phone_raw[1:].replace(" ", "")
+            phone_e164 = "+" + phone_raw[1:].replace(" ", "")
         else:
             try:
                 default_country = (session_data[call_sid].get("phone_country") or globals().get("COUNTRY") or "US").upper()
-                customer_phone_e164 = normalize_phone_e164(phone_raw, default_country) or ""
-                if not customer_phone_e164:
+                phone_e164 = normalize_phone_e164(phone_raw, default_country) or ""
+                if not phone_e164:
                     alt = "EG" if default_country != "EG" else "US"
-                    customer_phone_e164 = normalize_phone_e164(phone_raw, alt) or ""
+                    phone_e164 = normalize_phone_e164(phone_raw, alt) or ""
             except Exception:
-                customer_phone_e164 = ""
+                phone_e164 = ""
 
-        if not customer_phone_e164:
-            debug_print("book_appt_confirm: ❌ missing/invalid E.164 phone → collect_phone")
+        if not phone_e164:
             session_data[call_sid]["stage"] = "collect_phone"
             resp.append(make_gather("Before we confirm your appointment, please provide your phone number."))
             return str(resp)
 
         if not customer_dob:
-            debug_print("book_appt_confirm: ❌ missing DOB → collect_dob")
             session_data[call_sid]["stage"] = "collect_dob"
             resp.append(make_gather(
                 "Before we confirm, please say your date of birth, for example, 'July 3 1990'. "
@@ -5701,26 +5651,21 @@ def voice():
             ))
             return str(resp)
 
-        # ---- Upsert customer (best-effort) --------------------------------------
+        # ---- Upsert customer (best-effort) ----
         try:
             init_db()
             insert_customer(
-                phone=customer_phone_e164,
-                dob=customer_dob,
-                first_name=first_name,
-                last_name=last_name,
-                address=customer_address,
+                phone=phone_e164, dob=customer_dob,
+                first_name=first_name, last_name=last_name, address=customer_address,
                 cc_name=(customer.get("cc_name") or effective_name or ""),
                 cc_number=(customer.get("cc_number") or ""),
                 cc_exp=(customer.get("cc_exp") or ""),
                 cc_cvv=(customer.get("cc_cvv") or "")
             )
-            debug_print("book_appt_confirm: customers DB → inserted/updated")
         except Exception as e:
             debug_print(f"book_appt_confirm: insert_customer failed → {e}")
 
-        # ---- Create Google Calendar event (NO re-check; book now) ---------------
-        calendar_id = doctor_id
+        # ---- Create Google Calendar event (no re-check) ----
         try:
             service = build("calendar", "v3", credentials=creds)
             event_body = {
@@ -5732,46 +5677,38 @@ def voice():
                 "extendedProperties": {
                     "private": {
                         "patient_name": effective_name,
-                        "phone_e164": customer_phone_e164,
+                        "phone_e164": phone_e164,
                         "dob": customer_dob,
                         "call_sid": call_sid,
                     }
                 },
             }
-            debug_print(f"book_appt_confirm: 📝 creating Google event cal={calendar_id} {appointment_start}→{appointment_end}")
-            ev = service.events().insert(calendarId=calendar_id, body=event_body, sendUpdates="none").execute()
-            google_event_id   = ev.get("id")
-            google_event_link = ev.get("htmlLink")
-            debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id} link={google_event_link}")
+            ev = service.events().insert(calendarId=doctor_id, body=event_body, sendUpdates="none").execute()
+            debug_print(f"book_appt_confirm: ✅ Google event created id={ev.get('id')}")
         except Exception as e:
-            # If insert fails (rare), bounce back for a fresh time.
-            debug_print(f"book_appt_confirm: ❌ Google Calendar insert failed → {e}")
+            debug_print(f"book_appt_confirm: ❌ Google insert failed → {e}")
             session_data[call_sid]["stage"] = "ask_time_date"
             resp.append(make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, September 14th at 10 AM."))
             return str(resp)
 
-        # ---- Voice + SMS confirmation, then HANG UP -----------------------------
+        # ---- Voice confirmation + SMS, then hang up ----
         msg = f"Your appointment with {doctor_name} has been booked"
         if formatted_time: msg += f" on {formatted_time}"
         msg += ". We look forward to seeing you. Goodbye!"
-        debug_print("book_appt_confirm: 🎉 success → speaking confirmation")
         resp.say(gpt_speak(msg), VOICE)
 
-        # Best-effort SMS (non-fatal if fails)
         try:
-            sms_text = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
-            if formatted_time: sms_text += f" on {formatted_time}"
-            sms_text += ". Thank you for choosing Epic Therapist Clinic."
-            message = client.messages.create(body=sms_text, from_=TWILIO_PHONE_NUMBER, to=customer_phone_e164)
-            debug_print(f"book_appt_confirm: 📩 SMS sent to {customer_phone_e164}, SID={message.sid}")
+            sms = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
+            if formatted_time: sms += f" on {formatted_time}"
+            sms += ". Thank you for choosing Epic Therapist Clinic."
+            _ = client.messages.create(body=sms, from_=TWILIO_PHONE_NUMBER, to=phone_e164)
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
 
-        # ---- Cleanup & end call -------------------------------------------------
         resp.hangup()
         session_data.pop(call_sid, None)
-        debug_print("book_appt_confirm: ✅ session cleared and call ended")
         return str(resp)
+
 
 
 
