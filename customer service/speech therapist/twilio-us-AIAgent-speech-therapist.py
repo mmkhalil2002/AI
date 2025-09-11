@@ -4637,6 +4637,7 @@ def voice():
 #   - get_next_available_slots(...)
 # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
+        import re as _re
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
 
         # Short prompts
