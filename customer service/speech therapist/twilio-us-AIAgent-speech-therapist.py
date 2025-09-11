@@ -5108,7 +5108,7 @@ def voice():
 
     elif stage == "ask_time_date":
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
-
+        _local_re = _re
         # ------------------------------------------------------------------
         # Short prompt constants
         # ------------------------------------------------------------------
@@ -5149,7 +5149,7 @@ def voice():
             return (
                 ("am" in s) or ("pm" in s) or (":" in s)
                 or ("o'clock" in s) or ("oclock" in s)
-                or (_re.search(r"\b\d{3,4}\b", s) is not None)
+                or (_local_re.search(r"\b\d{3,4}\b", s) is not None)
             )
 
         def _has_date_token(raw: str) -> bool:
