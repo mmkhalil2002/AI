@@ -1,4 +1,4 @@
-# update  09/11/25 time_saved 08:48
+# update  09/11/25 time_saved 02:3f pm
 #  am
 # =========================
 # Standard library imports
@@ -4567,20 +4567,19 @@ def voice():
 
 
 
-
     # ----------------------------------------------------------------------
-# 📅 Stage: ask_time_date
-# Purpose:
-#   - Parse spoken date/time (e.g., “August 12 at 5 PM”) inline (no extra helpers).
-#   - Build UTC start/end for the slot (duration from globals; default 30).
-#   - If START < now (in clinic tz) → offer the next 3 free slots after the requested time.
-#   - Else check Google calendar:
-#       • if FREE → save slot & continue flow
-#       • if BUSY → offer the next 3 free slots after the requested time
-# Availability logic uses ONLY:
-#   - is_time_slot_available(...)
-#   - get_next_available_slots(...)
-# ----------------------------------------------------------------------
+    # 📅 Stage: ask_time_date
+    # Purpose:
+    #   - Parse spoken date/time (e.g., “August 12 at 5 PM”) inline (no extra helpers).
+    #   - Build UTC start/end for the slot (duration from globals; default 30).
+    #   - If START < now (in clinic tz) → offer the next 3 free slots after the requested time.
+    #   - Else check Google calendar:
+    #       • if FREE → save slot & continue flow
+    #       • if BUSY → offer the next 3 free slots after the requested time
+    # Availability logic uses ONLY:
+    #   - is_time_slot_available(...)
+    #   - get_next_available_slots(...)
+    # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
         import re as _re
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
