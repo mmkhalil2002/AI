@@ -5635,13 +5635,14 @@ def voice():
                         v = globals().get(k)
                         if v:
                             try:
-                                dur_min = int(v); break
+                                dur_min = int(v)
+                                break
                             except Exception:
                                 pass
                     if dur_min not in (15, 30, 45, 60):
                         dur_min = 30
                     end_dt = dt_utc + timedelta(minutes=dur_min)
-                    appointment_end = end_dt.astimezone(_pytz.UTC).isoformat()
+                    appointment_end = end_dt.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
                     debug_print(f"book_appt_confirm: computed utc_end={appointment_end} (duration={dur_min}m)")
                 except Exception as e:
                     debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
@@ -5688,7 +5689,7 @@ def voice():
                 session_data[call_sid]["stage"] = "collect_dob"
                 resp.append(make_gather(
                     "Before we confirm, please say your date of birth, for example, 'July 3 1990'. "
-                    "You can also enter month, day, and year, then press pound."
+                    "You can also enter two digits for month, two for day, and four for year, then press #."
                 ))
                 return str(resp)
 
@@ -5719,7 +5720,7 @@ def voice():
                 debug_print(f"book_appt_confirm: ⚠️ availability check error → {e}")
                 slot_free = False
 
-            # Fast path: if caller was auto-confirm eligible AND slot is free, book immediately.
+            # Fast path: auto-confirm callers (e.g., returning patients) when slot is free
             if session_data[call_sid].get("auto_confirm", False) and slot_free:
                 try:
                     service = build("calendar", "v3", credentials=creds)
@@ -5740,14 +5741,13 @@ def voice():
                     }
                     ev = service.events().insert(calendarId=calendar_id, body=event_body, sendUpdates="none").execute()
                     debug_print(f"book_appt_confirm: ✅ Google event created id={ev.get('id')}")
-
                     resp.say(gpt_speak(f"Your appointment with {doctor_name} is booked for {formatted_time}. See you then!"), VOICE)
                     resp.hangup()
                     session_data.pop(call_sid, None)
                     return str(resp)
                 except Exception as e:
                     debug_print(f"book_appt_confirm: ❌ auto-confirm booking error → {e}")
-                    # fall back to interactive confirm below (do not exit)
+                    # fall through to interactive confirm
 
             # If slot not free → suggest next options and bounce back to ask_time_date.
             if not slot_free:
@@ -5787,8 +5787,8 @@ def voice():
                     session_data.pop(call_sid, None)
                     return str(resp)
 
-                prompt = f"To book {formatted_time} with {doctor_name}, say 'confirm' or press 1. To change, say 'change' or press 2."
-                g = make_gather(prompt, input="speech dtmf", hints="yes confirm book no change cancel")
+                prompt = f"To book {formatted_time} with {doctor_name}, say 'confirm' or press 1. To change, say 'change' or press 2. To cancel, say 'cancel' or press 3."
+                g = make_gather(prompt, input="speech dtmf", hints="yes confirm book no change different cancel")
                 resp.append(g)
                 return str(resp)
 
@@ -5887,9 +5887,38 @@ def voice():
 
             resp.append(make_gather(
                 f"I heard {speech_result or dtmf}. To confirm {formatted_time} with {doctor_name}, say 'confirm' or press 1. "
-                "To change, say 'change' or press 2."
+                "To change, say 'change' or press 2. To cancel, say 'cancel' or press 3."
             ))
             return str(resp)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
