@@ -1,4 +1,4 @@
-# update  09/12/25 time_saved 08:13 pm
+# update  09/12/25 time_saved 08:19 pm
 #  am
 # =========================
 # Standard library imports
@@ -4181,12 +4181,7 @@ def voice():
         # ----------------------------------------------------------------------
         debug_print("collect_phone: 📍 Stage entered")
 
-        # ✅ Ensure the regex module alias exists at runtime (prevents UnboundLocalError)
-        try:
-            _re  # type: ignore[name-defined]
-        except NameError:
-            import re as _re  # single import; never reassign inside functions
-
+       
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
 
@@ -4368,7 +4363,6 @@ def voice():
     # ----------------------------------------------------------------------
 
     elif stage == "collect_dob":
-        import re as _re
         debug_print("collect_dob: 📍 Stage entered")
 
         # Short, clear prompts (no “MMDDYYYY” wording anywhere)
@@ -4583,7 +4577,7 @@ def voice():
 # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
-        import re as _re  # keep as requested
+        #import re as _re  # keep as requested
 
         # ------------------------------------------------------------------
         # Prompts
@@ -4996,7 +4990,7 @@ def voice():
 
     # ===== collect_last_name (stage) =====
     elif stage == "collect_last_name":
-        import re as _re
+        #import re as _re
         # ----------------------------------------------------------------------
         # 🎯 Goal:
         #   - Capture LAST name via speech.
@@ -5082,7 +5076,7 @@ def voice():
 
     # ===== collect_address (stage) =====
     elif stage == "collect_address":
-        import re as _re
+        #import re as _re
         # ---------------------------------------------------------------
         # 🏠 Stage: collect_address
         # Goal:
@@ -5207,7 +5201,7 @@ def voice():
 
 
     elif stage == "collect_cc":
-        import re as _re
+        #import re as _re
         # ----------------------------------------------------------------------
         # 💳 Stage: collect_cc
         # Purpose:
