@@ -1,4 +1,4 @@
-# update  09/12/25 time_saved 07:59 pm
+# update  09/12/25 time_saved 08:13 pm
 #  am
 # =========================
 # Standard library imports
@@ -33,6 +33,7 @@
     # ─────────────────────────────────────────────────────────────────────────────
     # ─────────────────────────────────────────────────────────────────────────────
     # Regex quantifier `+`
+
     # - Means “ONE OR MORE” repetitions of the preceding token (greedy by default).
     #   Examples:
     #     r"a+"       → "a", "aa", "aaa", ...
@@ -4995,6 +4996,7 @@ def voice():
 
     # ===== collect_last_name (stage) =====
     elif stage == "collect_last_name":
+        import re as _re
         # ----------------------------------------------------------------------
         # 🎯 Goal:
         #   - Capture LAST name via speech.
@@ -5080,6 +5082,7 @@ def voice():
 
     # ===== collect_address (stage) =====
     elif stage == "collect_address":
+        import re as _re
         # ---------------------------------------------------------------
         # 🏠 Stage: collect_address
         # Goal:
@@ -5204,6 +5207,7 @@ def voice():
 
 
     elif stage == "collect_cc":
+        import re as _re
         # ----------------------------------------------------------------------
         # 💳 Stage: collect_cc
         # Purpose:
