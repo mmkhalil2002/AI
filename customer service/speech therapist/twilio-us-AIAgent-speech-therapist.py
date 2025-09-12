@@ -1,4 +1,4 @@
-# update  09/12/25 time_saved 08:19 pm
+# update  09/12/25 time_saved 09:35 pm
 #  am
 # =========================
 # Standard library imports
@@ -475,9 +475,9 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
     Return True if [start, end) is free on Google Calendar.
     Boundary rule: touching at start/end is OK (no +/- 1s padding).
     """
-    from googleapiclient.discovery import build
-    from dateutil.parser import isoparse
-    import pytz as _pytz
+    #from googleapiclient.discovery import build
+    #from dateutil.parser import isoparse
+    #import pytz as _pytz
 
     # Parse to aware datetimes (UTC)
     def _as_utc_dt(s: str):
@@ -4987,8 +4987,6 @@ def voice():
             resp.redirect("/voice")
         return str(resp)
 
-
-    # ===== collect_last_name (stage) =====
     elif stage == "collect_last_name":
         #import re as _re
         # ----------------------------------------------------------------------
@@ -4999,27 +4997,53 @@ def voice():
         #   - Store into session_data[call_sid]["customer"]["last_name"].
         #   - Advance → collect_address.
         # ----------------------------------------------------------------------
+
+        # ---------- debug hook (prefer using_debug_print if present) ----------
+        _udp = globals().get("using_debug_print")
+        def _dbg(event: str, **kw):
+            try:
+                if callable(_udp):
+                    _udp(event, **kw)
+                else:
+                    # fallback to regular debug_print
+                    msg = ", ".join(f"{k}={kw[k]!r}" for k in kw)
+                    debug_print(f"{event}: {msg}")
+            except Exception as e:
+                try: debug_print(f"collect_last_name: ⚠️ debug hook error → {e!r}")
+                except: pass
+
         session_data.setdefault(call_sid, {}).setdefault("customer", {})
         raw = (speech_result or "").strip()
         debug_print(f"collect_last_name: raw='{raw}'")
+        _dbg("collect_last_name.entry",
+            call_sid=call_sid,
+            raw=raw,
+            stage=session_data[call_sid].get("stage"),
+            prior_last_name=session_data[call_sid]["customer"].get("last_name"))
 
         # 🔇 Silent mode
         if not raw:
             tries = session_data[call_sid].get("silence_last_name", 0) + 1
             session_data[call_sid]["silence_last_name"] = tries
             debug_print(f"collect_last_name: 🤐 silence; tries={tries}")
+            _dbg("collect_last_name.silence", tries=tries)
+
             if tries >= 3:
                 resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
+                _dbg("collect_last_name.hangup_silence_limit")
                 return str(resp)
+
             gather = make_gather("I didn’t hear your last name. Please say your last name now.")
             resp.append(gather)
             try:
                 #from flask import url_for
                 resp.redirect(url_for("voice"))
+                _dbg("collect_last_name.redirect", target="url_for('voice')")
             except Exception:
                 resp.redirect("/voice")
+                _dbg("collect_last_name.redirect", target="/voice", fallback=True)
             return str(resp)
 
         # We heard something → clear silence counter
@@ -5027,29 +5051,51 @@ def voice():
 
         # 🧽 Clean & normalize (keep inner spaces; strip punctuation except apostrophe/hyphen)
         #import string
+        # Ensure `string` is available even if not imported at module scope
+        try:
+            string  # type: ignore[name-defined]
+        except NameError:
+            import string
+
         # Remove punctuation except apostrophe and hyphen: build whitelist
         punct_keep = "'-"
         trans_table = str.maketrans('', '', "".join(ch for ch in string.punctuation if ch not in punct_keep))
         cleaned = raw.translate(trans_table).strip()
         cleaned = _re.sub(r"\s+", " ", cleaned)
+        _dbg("collect_last_name.cleaned", cleaned=cleaned)
 
-        # Minimal validation: at least one letter, only letters/spaces/'/-
-        if (not cleaned) or (not _re.search(r"[A-Za-z]", cleaned)) or (not _re.fullmatch(r"[A-Za-z'\- ]{1,60}", cleaned)):
+        # Minimal validation: at least one letter, only letters/spaces/'/-, length cap
+        has_letter = bool(_re.search(r"[A-Za-z]", cleaned))
+        allowed_chars = bool(_re.fullmatch(r"[A-Za-z'\- ]{1,60}", cleaned)) if cleaned else False
+        valid = bool(cleaned and has_letter and allowed_chars)
+        _dbg("collect_last_name.validation",
+            has_letter=has_letter,
+            allowed_chars=allowed_chars,
+            cleaned_len=len(cleaned),
+            valid=valid)
+
+        if not valid:
             r = session_data[call_sid].get("retry_last_name", 0) + 1
             session_data[call_sid]["retry_last_name"] = r
             debug_print(f"collect_last_name: ❌ invalid last name '{cleaned}' retry={r}")
+            _dbg("collect_last_name.invalid", cleaned=cleaned, retry=r)
+
             if r >= 3:
                 resp.say(gpt_speak("Sorry, I couldn’t capture your last name. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
+                _dbg("collect_last_name.hangup_invalid_limit")
                 return str(resp)
+
             gather = make_gather("Sorry, I didn't catch your last name. Please repeat it clearly.")
             resp.append(gather)
             try:
                 from flask import url_for
                 resp.redirect(url_for("voice"))
+                _dbg("collect_last_name.redirect", target="url_for('voice')", reason="retry_invalid")
             except Exception:
                 resp.redirect("/voice")
+                _dbg("collect_last_name.redirect", target="/voice", fallback=True, reason="retry_invalid")
             return str(resp)
 
         # Store & advance
@@ -5058,15 +5104,21 @@ def voice():
         # Reset retry counter on success
         session_data[call_sid].pop("retry_last_name", None)
         debug_print(f"collect_last_name: ✅ saved last_name='{cleaned}' → next=collect_address")
+        _dbg("collect_last_name.store",
+            last_name=cleaned,
+            next_stage="collect_address")
 
         gather = make_gather("Got it. What is your full address, please?")
         resp.append(gather)
         try:
             from flask import url_for
             resp.redirect(url_for("voice"))
+            _dbg("collect_last_name.redirect", target="url_for('voice')", reason="advance_to_collect_address")
         except Exception:
             resp.redirect("/voice")
+            _dbg("collect_last_name.redirect", target="/voice", fallback=True, reason="advance_to_collect_address")
         return str(resp)
+
 
 
 
@@ -5219,8 +5271,13 @@ def voice():
         #   - Requires phone **E.164** and DOB before collecting CC.
         #   - Never store full PAN/CVV in production (tokenize with Twilio <Pay> instead).
         # ----------------------------------------------------------------------
+        #from flask import request  # safe even if imported elsewhere
+        #import time as _time_mod
 
-        # --- helpers ----------------------------------------------------------
+        # --- configuration ------------------------------------------------------
+        STORE_CVV = True  # ⚠️ consider False in production (prefer tokenization)
+
+        # --- helpers ------------------------------------------------------------
         def luhn_check(number: str) -> bool:
             s, alt = 0, False
             for ch in number[::-1]:
@@ -5278,7 +5335,11 @@ def voice():
 
             # If we've escalated to DTMF-only, force keypad
             if session_data[call_sid].get("enforce_dtmf_cc"):
-                resp.append(make_gather_dtmf(prompt_text=prompt, num_digits=None))
+                if 'make_gather_dtmf' in globals():
+                    resp.append(make_gather_dtmf(prompt_text=prompt, num_digits=None))
+                else:
+                    # Fallback DTMF-only gather if you don't have make_gather_dtmf
+                    resp.append(make_gather(prompt, input="dtmf", finish_on_key="#", timeout=25, action="/voice"))
             else:
                 # Longer timeouts so speech has time to finish the digits
                 resp.append(make_gather(
@@ -5291,10 +5352,29 @@ def voice():
                     barge_in=True,
                     action="/voice",
                 ))
-            resp.redirect("/voice")
+            try: resp.redirect(url_for("voice"))
+            except Exception: resp.redirect("/voice")
             return str(resp)
 
-        # --- session buckets --------------------------------------------------
+        def _mask_pan(pan: str) -> str:
+            pan = (pan or "")
+            if len(pan) <= 4:
+                return pan
+            return "*" * (len(pan) - 4) + pan[-4:]
+
+        # Prefer DTMF if present; else speech
+        def _get_digits(dtmf_digits: str, speech_text: str, *, enforce_dtmf: bool) -> str:
+            if enforce_dtmf:
+                return _re.sub(r"\D", "", dtmf_digits or "")
+            if dtmf_digits:
+                return _re.sub(r"\D", "", dtmf_digits)
+            return _re.sub(r"\D", "", normalize_spoken_digits(speech_text or ""))
+
+        def _speak_digits(d: str) -> str:
+            """Return digits spaced so TTS reads them distinctly."""
+            return " ".join(list(d or ""))
+
+        # --- session buckets ----------------------------------------------------
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
         customer = session_data[call_sid]["customer"]
@@ -5313,29 +5393,42 @@ def voice():
                 "Before payment details, please provide your date of birth. You can say it, or enter MMDDYYYY then press pound."
             )
             resp.append(make_gather(prompt_txt, hints="zero one two three four five six seven eight nine", action="/voice"))
-            resp.redirect("/voice")
+            try: resp.redirect(url_for("voice"))
+            except Exception: resp.redirect("/voice")
             return str(resp)
 
         # Mini-step tracker: 1=number, 2=exp, 3=cvv
-        cc_step = session_data[call_sid].get("cc_step", 1)
+        cc_step = int(session_data[call_sid].get("cc_step", 1))
 
-        # Retries, speech tries, partial buffer for PAN, last-digit mode, and DTMF enforcement
+        # Retries/counters & flags
         session_data[call_sid]["retry_cc"] = session_data[call_sid].get("retry_cc", 0)
         session_data[call_sid]["cc_speech_tries"] = session_data[call_sid].get("cc_speech_tries", 0)
         cc_partial = session_data[call_sid].get("cc_partial", "")
         cc_expect_last_digit = session_data[call_sid].get("cc_expect_last_digit", False)
         enforce_dtmf = session_data[call_sid].get("enforce_dtmf_cc", False)
 
-        # Pull inputs
-        try:
-            dtmf_digits = (request.values.get("Digits") or "").strip()
-        except Exception:
-            dtmf_digits = ""
-        speech_text = (speech_result or "").strip()
-        debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{dtmf_digits}', speech='{speech_text}'")
+        # --- de-dupe guard (Twilio sometimes replays the same POST on redirect) --
+        raw_speech = (speech_result or "").strip()
+        raw_dtmf   = (request.values.get("Digits") or "").strip()
+        dedupe_key = f"{session_data[call_sid].get('stage')}|{cc_step}|{raw_dtmf}|{raw_speech}"
+        now_ts     = _time_mod.time()
+        last_key   = session_data[call_sid].get("_last_cc_key")
+        last_ts    = session_data[call_sid].get("_last_cc_ts", 0.0)
+
+        if last_key == dedupe_key and (now_ts - last_ts) < 1.25:
+            debug_print("collect_cc: 🔁 duplicate submission detected — gentle reprompt")
+            resp.append(make_gather("Sorry, I didn’t catch that. Please repeat."))
+            try: resp.redirect(url_for("voice"))
+            except Exception: resp.redirect("/voice")
+            return str(resp)
+
+        session_data[call_sid]["_last_cc_key"] = dedupe_key
+        session_data[call_sid]["_last_cc_ts"]  = now_ts
+
+        debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{raw_dtmf}', speech='{raw_speech}'")
 
         # 🔇 Silent-mode: if both DTMF and speech are empty → reprompt w/out penalizing Luhn tries
-        if not dtmf_digits and not speech_text:
+        if not raw_dtmf and not raw_speech:
             tries = session_data[call_sid].get("silence_cc", 0) + 1
             session_data[call_sid]["silence_cc"] = tries
             debug_print(f"collect_cc: 🤐 silence/no input; tries={tries}")
@@ -5347,54 +5440,40 @@ def voice():
                 return str(resp)
 
             if cc_step == 1:
-                prompt = "Please enter your card number now, then press pound."
-                hints  = "zero one two three four five six seven eight nine double triple"
+                return _reprompt(
+                    "Please enter your card number now, then press pound.",
+                    hints="zero one two three four five six seven eight nine double triple"
+                )
             elif cc_step == 2:
-                prompt = "Please enter the expiration as four digits MMYY, then press pound."
-                hints  = "zero one two three four five six seven eight nine"
+                return _reprompt(
+                    "Please enter the expiration as four digits MMYY, then press pound.",
+                    hints="zero one two three four five six seven eight nine"
+                )
             else:
-                prompt = "Please enter the three or four digit security code, then press pound."
-                hints  = "zero one two three four five six seven eight nine"
-
-            if enforce_dtmf:
-                resp.append(make_gather_dtmf(prompt_text=prompt, num_digits=None))
-            else:
-                resp.append(make_gather(prompt, hints=hints, input="speech dtmf",
-                                        timeout=25, speech_timeout="10", finish_on_key="#", action="/voice"))
-            resp.redirect("/voice")
-            return str(resp)
+                return _reprompt(
+                    "Please enter the three or four digit security code, then press pound.",
+                    hints="zero one two three four five six seven eight nine"
+                )
 
         # Clear silence counter once we hear something
         session_data[call_sid].pop("silence_cc", None)
-
-        # Prefer DTMF; otherwise convert spoken words to digits
-        def get_digits() -> str:
-            if enforce_dtmf:
-                if not dtmf_digits:
-                    return ""
-                return _re.sub(r"\D", "", dtmf_digits)
-            if dtmf_digits:
-                return _re.sub(r"\D", "", dtmf_digits)
-            return _re.sub(r"\D", "", normalize_spoken_digits(speech_text))
 
         # -------------------------------
         # Step 1: Card Number (13–19)
         # -------------------------------
         if cc_step == 1:
-            new_digits = get_digits()
+            digits = _get_digits(raw_dtmf, raw_speech, enforce_dtmf=enforce_dtmf)
 
             # Handle "expect last digit" path (after spoken 15 digits)
             if cc_expect_last_digit:
-                if len(new_digits) == 1:
-                    digits = (cc_partial or "") + new_digits
-                    debug_print(f"collect_cc: 🔚 appended last digit → '{digits}'")
+                if len(digits) == 1:
+                    digits = (cc_partial or "") + digits
+                    debug_print(f"collect_cc: 🔚 appended last digit → '{_mask_pan(digits)}'")
                 else:
                     debug_print("collect_cc: ℹ️ expected 1 digit, got fresh entry → clearing partial")
                     session_data[call_sid]["cc_partial"] = ""
                     session_data[call_sid]["cc_expect_last_digit"] = False
-                    digits = new_digits
-            else:
-                digits = new_digits
+                    # keep digits as-is
 
             if not digits:
                 debug_print("collect_cc: ℹ️ no digits heard → reprompt")
@@ -5407,10 +5486,10 @@ def voice():
                 digits = digits[:19]
 
             # If we heard exactly 15 digits via speech (not DTMF), ask for final digit
-            if not enforce_dtmf and not dtmf_digits and len(digits) == 15:
+            if not enforce_dtmf and not raw_dtmf and len(digits) == 15:
                 session_data[call_sid]["cc_partial"] = digits
                 session_data[call_sid]["cc_expect_last_digit"] = True
-                debug_print(f"collect_cc: 🧩 Heard 15 digits '{digits}'; asking for the last single digit")
+                debug_print(f"collect_cc: 🧩 Heard 15 digits '{_mask_pan(digits)}'; asking for the last single digit")
                 return _reprompt(
                     "I heard fifteen digits. Please say or type the last single digit now, then press pound.",
                     hints="zero one two three four five six seven eight nine"
@@ -5419,21 +5498,24 @@ def voice():
             # Full validation
             if not (13 <= len(digits) <= 19) or not luhn_check(digits):
                 # Count speech failures to decide DTMF enforcement
-                if not dtmf_digits:  # speech path
+                if not raw_dtmf:  # speech path
                     session_data[call_sid]["cc_speech_tries"] += 1
-                escalate = (session_data[call_sid]["cc_speech_tries"] >= 2 and not dtmf_digits)
+                escalate = (session_data[call_sid]["cc_speech_tries"] >= 2 and not raw_dtmf)
 
-                debug_print(f"collect_cc: ❌ Invalid card number: '{digits}' (len={len(digits)}), escalate={escalate}")
+                debug_print(f"collect_cc: ❌ Invalid card number: len={len(digits)}, escalate={escalate}")
 
                 # Always clear partial/expect flags on invalid
                 session_data[call_sid]["cc_partial"] = ""
                 session_data[call_sid]["cc_expect_last_digit"] = False
 
                 if escalate:
-                    # Force DTMF-only from now on for PAN entry
                     session_data[call_sid]["enforce_dtmf_cc"] = True
-                    resp.append(make_gather_dtmf("That number didn’t sound clear. Please TYPE the full card number now, then press pound.", num_digits=None))
-                    resp.redirect("/voice")
+                    if 'make_gather_dtmf' in globals():
+                        resp.append(make_gather_dtmf("That number didn’t sound clear. Please TYPE the full card number now, then press pound.", num_digits=None))
+                    else:
+                        resp.append(make_gather("That number didn’t sound clear. Please TYPE the full card number now, then press pound.", input="dtmf", finish_on_key="#", timeout=25, action="/voice"))
+                    try: resp.redirect(url_for("voice"))
+                    except Exception: resp.redirect("/voice")
                     return str(resp)
                 else:
                     return _reprompt(
@@ -5447,28 +5529,33 @@ def voice():
             session_data[call_sid]["cc_partial"] = ""
             session_data[call_sid]["cc_expect_last_digit"] = False
             session_data[call_sid]["cc_speech_tries"] = 0
-            debug_print(f"collect_cc: ✅ Saved card number '{digits}'")
+            session_data[call_sid]["retry_cc"] = 0
+            debug_print(f"collect_cc: ✅ Saved card number '{_mask_pan(digits)}'")
 
             prompt = (
                 "Thank you. Now enter the expiration as two digits for month and two digits for year. "
                 "For example, 0527. Then press pound."
             )
             if session_data[call_sid].get("enforce_dtmf_cc"):
-                resp.append(make_gather_dtmf(prompt_text=prompt, num_digits=None))
+                if 'make_gather_dtmf' in globals():
+                    resp.append(make_gather_dtmf(prompt_text=prompt, num_digits=None))
+                else:
+                    resp.append(make_gather(prompt, input="dtmf", finish_on_key="#", timeout=25, action="/voice"))
             else:
                 resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine",
                                         input="speech dtmf", timeout=25, speech_timeout="10",
                                         finish_on_key="#", action="/voice"))
-            resp.redirect("/voice")
+            try: resp.redirect(url_for("voice"))
+            except Exception: resp.redirect("/voice")
             return str(resp)
 
         # -------------------------------
         # Step 2: Expiration (MMYY/MMYYYY, must be current/future)
         # -------------------------------
         if cc_step == 2:
-            digits = get_digits()
+            digits = _get_digits(raw_dtmf, raw_speech, enforce_dtmf=enforce_dtmf)
             if len(digits) not in (4, 6):
-                debug_print(f"collect_cc: ❌ Exp bad length: '{digits}'")
+                debug_print(f"collect_cc: ❌ Exp bad length: got={len(digits)}")
                 return _reprompt(
                     "Please enter the expiration as four digits MMYY, then press pound.",
                     hints="zero one two three four five six seven eight nine"
@@ -5477,7 +5564,7 @@ def voice():
             mm = int(digits[:2]) if digits[:2].isdigit() else 0
             yy = digits[2:]
             if not (1 <= mm <= 12):
-                debug_print(f"collect_cc: ❌ Invalid month: '{digits}'")
+                debug_print(f"collect_cc: ❌ Invalid month: mm='{digits[:2]}'")
                 return _reprompt(
                     "The month must be 01 through 12. Please re-enter expiration MMYY, then press pound.",
                     hints="zero one two three four five six seven eight nine"
@@ -5487,13 +5574,15 @@ def voice():
             if len(yy) == 4:
                 yy = yy[-2:]
 
-            # Reject past month
-            from datetime import datetime as _Datetime
-            now = _Datetime.now()
+            # Reject past month (valid through end of month)
+            from datetime import datetime as _Datetime, timezone as _Tz
+            now = _Datetime.now(tz=_Tz.utc)
             exp_year = 2000 + int(yy)
-            exp_cmp  = exp_year * 100 + mm
-            now_cmp  = now.year * 100 + now.month
-            if exp_cmp < now_cmp:
+            # Boundary = first of next month @00:00Z
+            next_month = mm + 1 if mm < 12 else 1
+            next_year  = exp_year + 1 if mm == 12 else exp_year
+            boundary   = _Datetime(next_year, next_month, 1, 0, 0, 0, tzinfo=_Tz.utc)
+            if now >= boundary:
                 debug_print(f"collect_cc: ❌ Expired card: {mm:02d}/{yy}")
                 return _reprompt(
                     "That card appears expired. Please enter a valid expiration date as MMYY, then press pound.",
@@ -5502,73 +5591,90 @@ def voice():
 
             customer["cc_exp"] = f"{mm:02d}/{yy}"
             session_data[call_sid]["cc_step"] = 3
+            session_data[call_sid]["retry_cc"] = 0
             debug_print(f"collect_cc: ✅ Saved expiration {customer['cc_exp']}")
+
+            # 🔊 Read back exactly what they entered (digits only, no month names)
+            spoken_mm_yy = _speak_digits(f"{mm:02d}{yy}")  # e.g., "0 2 2 9"
+            resp.say(gpt_speak(f"I heard {spoken_mm_yy}."), VOICE)
 
             prompt = "Great. Finally, enter the three or four digit security code, then press pound."
             if session_data[call_sid].get("enforce_dtmf_cc"):
-                resp.append(make_gather_dtmf(prompt_text=prompt, num_digits=None))
+                if 'make_gather_dtmf' in globals():
+                    resp.append(make_gather_dtmf(prompt_text=prompt, num_digits=None))
+                else:
+                    resp.append(make_gather(prompt, input="dtmf", finish_on_key="#", timeout=25, action="/voice"))
             else:
                 resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine",
                                         input="speech dtmf", timeout=25, speech_timeout="10",
                                         finish_on_key="#", action="/voice"))
-            resp.redirect("/voice")
+            try: resp.redirect(url_for("voice"))
+            except Exception: resp.redirect("/voice")
             return str(resp)
 
         # -------------------------------
         # Step 3: CVV (3–4 digits)
         # -------------------------------
         if cc_step == 3:
-            digits = get_digits()
+            digits = _get_digits(raw_dtmf, raw_speech, enforce_dtmf=enforce_dtmf)
 
             # If speech path produced nothing meaningful, try parsing the raw speech again (more tolerant)
-            if (not digits) and (not dtmf_digits) and speech_text:
-                digits = _re.sub(r"\D", "", normalize_spoken_digits(speech_text))
+            if (not digits) and (not raw_dtmf) and raw_speech:
+                digits = _re.sub(r"\D", "", normalize_spoken_digits(raw_speech))
 
             # Validate
             if not (3 <= len(digits) <= 4 and digits.isdigit()):
                 # Count speech failures and escalate to DTMF-only after first miss
-                if not dtmf_digits:
+                if not raw_dtmf:
                     session_data[call_sid]["cc_speech_tries"] += 1
-                enforce_now = session_data[call_sid]["cc_speech_tries"] >= 1 and not dtmf_digits
+                enforce_now = session_data[call_sid]["cc_speech_tries"] >= 1 and not raw_dtmf
 
-                debug_print(f"collect_cc: ❌ Invalid CVV '{digits or speech_text}' "
-                            f"len={len(digits)} enforce_dtmf={enforce_now}")
+                debug_print(f"collect_cc: ❌ Invalid CVV (len={len(digits) if digits else 0}) enforce_dtmf={enforce_now}")
 
-                # Pin the flag so next prompt uses keypad-only
                 if enforce_now:
                     session_data[call_sid]["enforce_dtmf_cc"] = True
 
-                # Reprompt (DTMF if escalated)
-                session_data[call_sid]["retry_cc"] += 1
-                if session_data[call_sid]["retry_cc"] >= 5:
-                    resp.say(gpt_speak("Sorry, we’re having trouble collecting your card details. Please call again later."), VOICE)
-                    resp.hangup()
-                    session_data.pop(call_sid, None)
-                    return str(resp)
-
-                prompt = "That security code doesn't sound right. Please enter the three or four digit code, then press pound."
-                g = prompt_for_value(prompt_text=prompt, dtmf_only=session_data[call_sid].get("enforce_dtmf_cc", False))
-                if g: resp.append(g)
-                resp.redirect("/voice")
-                return str(resp)
+                return _reprompt(
+                    "That security code doesn't sound right. Please enter the three or four digit code, then press pound.",
+                    hints="zero one two three four five six seven eight nine"
+                )
 
             # ✅ Good CVV
-            customer["cc_cvv"] = digits
+            if STORE_CVV:
+                customer["cc_cvv"] = digits
             if not customer.get("cc_name"):
                 name = customer.get("name") or " ".join(p for p in [customer.get("first_name"), customer.get("last_name")] if p)
                 customer["cc_name"] = (name or "").strip() or None
 
-            debug_print(f"collect_cc: ✅ Saved CVV '{digits}'; cc_name='{customer.get('cc_name')}'")
+            # 🔊 Speak back the CVV digits (e.g., "2 8 8")
+            spelled = _speak_digits(digits)
+            resp.say(gpt_speak(f"I heard {spelled}."), VOICE)
 
-            # Clear step tracker and branch based on origin
+            debug_print(f"collect_cc: ✅ CVV received (length={len(digits)}) ; cc_name='{customer.get('cc_name')}'")
+
+            # Clear trackers and advance
             session_data[call_sid].pop("cc_step", None)
+            session_data[call_sid]["cc_speech_tries"] = 0
+            session_data[call_sid]["retry_cc"] = 0
+
             next_stage = "update_customer_cc" if is_cc_update else "book_appt_confirm"
             session_data[call_sid]["stage"] = next_stage
             debug_print(f"collect_cc: ➡️ Auto-advancing to {next_stage}")
 
-            # Move to next stage now
-            resp.redirect("/voice")
+            # Optional: brief pause to avoid carry-over into next stage on redirect
+            # resp.pause(length=1)
+
+            try: resp.redirect(url_for("voice"))
+            except Exception: resp.redirect("/voice")
             return str(resp)
+
+
+
+
+
+
+
+
 
 
     elif stage == "book_appt_confirm":
