@@ -1,4 +1,4 @@
-# update  09/11/25 time_saved 02:3f pm
+# update  09/12/25 time_saved 07:59 pm
 #  am
 # =========================
 # Standard library imports
@@ -4565,22 +4565,21 @@ def voice():
 
 
 
-
-        # ----------------------------------------------------------------------
-        # 📅 Stage: ask_time_date
-        # Purpose:
-        #   - Parse spoken date/time (e.g., “September 12 at 10 AM”) without external helpers.
-        #   - Build a concrete UTC timeslot (start/end) using clinic TZ and duration.
-        #   - Check availability via is_time_slot_available(calendar_id, start_iso, end_iso, creds).
-        #   - If the slot is busy or has fully passed, suggest the next 3 free slots
-        #     AFTER the requested *end* via get_next_available_slots(...).
-        #   - If free, persist slot and advance the flow.
-        #
-        # Notes:
-        #   - Uses absolute times only (no ±1s padding in this stage).
-        #   - We never assign to `_re`, so it stays global and safe.
-        #   - Every code path returns `str(resp)` (Flask requirement).
-        # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# 📅 Stage: ask_time_date
+# Purpose:
+#   - Parse spoken date/time (e.g., “September 12 at 10 AM”) without external helpers.
+#   - Build a concrete UTC timeslot (start/end) using clinic TZ and duration.
+#   - Check availability via is_time_slot_available(calendar_id, start_iso, end_iso, creds).
+#   - If the slot is busy or has fully passed, suggest the next 3 free slots
+#     AFTER the requested *end* via get_next_available_slots(...).
+#   - If free, persist slot and advance the flow.
+#
+# Notes:
+#   - Uses absolute times only (no ±1s padding in this stage).
+#   - We never assign to `_re`, so it stays global and safe.
+#   - Every code path returns `str(resp)` (Flask requirement).
+# ----------------------------------------------------------------------
     elif stage == "ask_time_date":
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
         import re as _re  # keep as requested
@@ -4846,13 +4845,51 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # ✅ Slot free → save and advance to confirm (NO Gather here)
+        # ✅ Slot free → save; then customer lookup (phone+dob, country="US")
         # ------------------------------------------------------------------
-        session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
-        session_data[call_sid]["stage"] = "book_appt_confirm"
-        debug_print("ask_time_date: ✅ Slot free → proceed to confirmation flow")
+        session_data[call_sid]["appointment_time"] = {
+            "start": appointment_start,
+            "end":   appointment_end
+        }
 
-        # IMPORTANT: do NOT append a Gather here — just redirect
+        # Pull phone & DOB from session (prefer nested customer dict if present)
+        cust = session_data[call_sid].setdefault("customer", {})
+        phone_e164 = cust.get("phone_e164") or session_data[call_sid].get("phone_e164")
+        dob        = cust.get("dob")        or session_data[call_sid].get("dob")
+
+        # If either is missing, route to the specific collector stage
+        if not phone_e164 or not dob:
+            missing = "phone" if not phone_e164 else "dob"
+            debug_print(f"ask_time_date: 🧩 missing {missing} → collect it before customer_search")
+            if not phone_e164:
+                session_data[call_sid]["stage"] = "collect_phone"
+                prompt = "Please say your 10-digit phone number."
+            else:
+                session_data[call_sid]["stage"] = "collect_dob"
+                prompt = ("Please say your date of birth, for example, 'July third 1990'. "
+                        "You can also type two digits for month, two for day, four for year, then press pound.")
+            resp.append(make_gather(prompt))
+            try: resp.redirect(url_for("voice"))
+            except Exception: resp.redirect("/voice")
+            return str(resp)
+
+        # Run customer search (US only as requested)
+        try:
+            found = customer_search(phone_number=phone_e164, dob=dob, country="US")
+            debug_print(f"ask_time_date: 🔎 customer_search(phone={phone_e164}, dob={dob}, country=US) → {found}")
+        except Exception as e:
+            debug_print(f"ask_time_date: ⚠️ customer_search error → {e}")
+            found = False
+
+        # Branch by result
+        if found:
+            debug_print("ask_time_date: 📋 Customer on file — skip name collection")
+            session_data[call_sid]["stage"] = "book_appt_confirm"
+        else:
+            debug_print("ask_time_date: 🆕 New customer — go to collect_first_name")
+            session_data[call_sid]["stage"] = "collect_first_name"
+
+        # IMPORTANT: do NOT append a Gather here — just redirect to the next stage
         try:
             resp.redirect(url_for("voice"))
         except Exception:
