@@ -4583,7 +4583,7 @@ def voice():
         # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
-        import re as _re  # ← per your request: keep this import here
+        import re as _re  # keep as requested
 
         # ------------------------------------------------------------------
         # Prompts
@@ -4629,7 +4629,7 @@ def voice():
         session_data[call_sid].pop("silence_time", None)
 
         # ------------------------------------------------------------------
-        # Tiny helpers (local to this stage) — they close over `_re` imported above
+        # Local helpers (close over `_re`)
         # ------------------------------------------------------------------
         def _has_time_token(s: str) -> bool:
             s = (s or "").lower()
@@ -4637,7 +4637,7 @@ def voice():
                 ("am" in s) or ("pm" in s) or (":" in s)
                 or ("o'clock" in s) or ("oclock" in s)
                 or (_re.search(r"\b\d{1,2}\s*(am|pm)\b", s) is not None)
-                or (_re.search(r"\b\d{3,4}\b", s) is not None)  # 930, 1030
+                or (_re.search(r"\b\d{3,4}\b", s) is not None)   # 930, 1030
                 or ("noon" in s) or ("midnight" in s)
             )
 
@@ -4647,7 +4647,7 @@ def voice():
                     "august","september","october","november","december",
                     "jan","feb","mar","apr","may","jun","jul","aug","sep","sept","oct","nov","dec")
             if any(m in s for m in months): return True
-            if "/" in s or "-" in s: return True  # 9/12, 09-12
+            if "/" in s or "-" in s: return True
             weekdays = ("monday","tuesday","wednesday","thursday","friday","saturday","sunday",
                         "mon","tue","tues","wed","thu","thur","thurs","fri","sat","sun")
             if any(w in s for w in weekdays): return True
@@ -4657,45 +4657,45 @@ def voice():
         def _extract_day_time(s: str) -> tuple:
             """
             Normalize and split into (day_str, time_str).
-            Accepts forms like:
-            'September 11 at 10 am'
-            'Thu, September 11, 10:30 am'
-            '9/11 at 10'
+            Handles cases like: 'September 12 at. 8:30, a.m.' → 'september 12' / '8:30 am'
             """
             if not s: return ("", "")
 
-            # Normalize AM/PM variants & punctuation; keep ':' for times
+            # 1) Normalize AM/PM variants BEFORE stripping punctuation
             s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s, flags=_re.IGNORECASE)
             s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s, flags=_re.IGNORECASE)
-            s = _re.sub(r"[!?]+\s*$", "", s)
 
-            # Remove stray commas/periods/semicolons (keep colons)
-            s = _re.sub(r"[.,;]+", " ", s)
+            # 2) Smooth 'at' with trailing punctuation/spaces: 'at.' / 'at,' / 'at    ' → ' at '
+            s = _re.sub(r"\bat\s*[.,]?\s+", " at ", s, flags=_re.IGNORECASE)
 
-            # Ordinals → cardinals (11th→11)
-            s = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", s, flags=_re.IGNORECASE)
-
-            # Collapse spaces
+            # 3) Light punctuation cleanup (keep colons inside times)
+            s = _re.sub(r"[!?]+\s*$", "", s)      # trailing !?
+            s = _re.sub(r"[;,]+", " ", s)         # inner ; or , → space
+            s = _re.sub(r"\.\s+(?=\d)", " ", s)   # dot before a number → space (e.g., "at.  8:30")
             s = _re.sub(r"\s+", " ", s).strip()
 
-            # Map "noon"/"midnight"
+            # 4) Ordinals → cardinals (11th → 11)
+            s = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", s, flags=_re.IGNORECASE)
+
+            # 5) 'noon' / 'midnight'
             s_low = s.lower()
             s_low = s_low.replace(" at noon", " at 12 pm").replace(" noon", " 12 pm")
             s_low = s_low.replace(" at midnight", " at 12 am").replace(" midnight", " 12 am")
 
-            # Prefer explicit " at "
+            # 6) Prefer explicit " at " split
             if " at " in s_low:
                 day, timep = s_low.split(" at ", 1)
                 return (day.strip().rstrip(","), timep.strip())
 
-            # Otherwise, find a time token and split
-            m = _re.search(r"\b(\d{1,2}(:\d{2})?\s*(am|pm)?)\b", s_low)
+            # 7) Otherwise, locate a *real* time token (require am/pm OR a colon)
+            #    This prevents grabbing the date day ("12") as a time.
+            m = _re.search(r"\b(\d{1,2}:\d{2}\s*(am|pm)?|\d{1,2}\s*(am|pm))\b", s_low)
             if m:
                 timep = m.group(1)
                 day = s_low[:m.start()].strip().rstrip(",")
                 return (day, timep)
 
-            # Compact times like 930, 1000
+            # 8) Compact "930", "1000"
             m2 = _re.search(r"\b(\d{3,4})\b", s_low)
             if m2:
                 t = m2.group(1)
@@ -4708,7 +4708,7 @@ def voice():
         def _build_slot(day_str: str, time_str: str) -> tuple:
             """
             Build (start_iso_utc, end_iso_utc) using clinic TZ and duration.
-            If year not said, force current year (no auto-roll to next year).
+            If year not said, force current year (no auto-roll).
             """
             tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
             try:
@@ -4716,15 +4716,13 @@ def voice():
             except Exception:
                 tz_local = _pytz.timezone("America/Chicago")
 
-            # Duration (allowed set)
+            # duration
             dur = None
             for k in ("APPOINTMENT_DURATION_MINUTES", "SESSION_TIME", "SESSIUON_TIME"):
                 v = globals().get(k)
                 if v:
-                    try:
-                        dur = int(v); break
-                    except Exception:
-                        pass
+                    try: dur = int(v); break
+                    except Exception: pass
             if dur not in (15, 30, 45, 60):
                 dur = 30
 
@@ -4733,24 +4731,20 @@ def voice():
             if not d or not t:
                 raise ValueError("missing date or time")
 
-            # Ensure common time format
-            t = _re.sub(r"\s*(am|pm)\b", r" \1", t)  # "10am" → "10 am"
+            t = _re.sub(r"\s*(am|pm)\b", r" \1", t)  # 10am→10 am
             t = t.replace(" o'clock", "")
 
             combined = f"{d} at {t}"
 
-            # Parse with local baseline
             today = _date_local.today()
             default_base = datetime(today.year, today.month, today.day, 9, 0, 0)
             parsed = _dtparse(combined, default=default_base, dayfirst=False, fuzzy=True)
 
-            # Attach/normalize tz
             if parsed.tzinfo is None:
                 parsed = tz_local.localize(parsed)
             else:
                 parsed = parsed.astimezone(tz_local)
 
-            # Force current year if none was said
             said_year = bool(_re.search(r"\b\d{4}\b", combined))
             if not said_year:
                 parsed = parsed.replace(year=today.year)
@@ -4784,7 +4778,7 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # Build concrete UTC slot (start/end)
+        # Build UTC slot
         # ------------------------------------------------------------------
         try:
             appointment_start, appointment_end = _build_slot(day_part, time_part)
@@ -4802,7 +4796,7 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # Past-time guard (absolute): only if the slot has fully ended
+        # Past-time guard: only if the slot has fully ended
         # ------------------------------------------------------------------
         try:
             now_utc = datetime.utcnow().replace(tzinfo=_pytz.UTC)
@@ -4826,7 +4820,7 @@ def voice():
             debug_print(f"ask_time_date: ⚠️ past-time guard error → {e}")
 
         # ------------------------------------------------------------------
-        # Availability check for the exact requested slot
+        # Availability check
         # ------------------------------------------------------------------
         debug_print(f"ask_time_date: 👨‍⚕️ Checking calendar → {calendar_id}")
         try:
@@ -4864,6 +4858,7 @@ def voice():
         except Exception:
             resp.redirect("/voice")
         return str(resp)
+
 
 
 
