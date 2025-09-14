@@ -1,4 +1,4 @@
-# update  09/12/25 time_saved 09:35 pm
+# update  09/13/25 time_saved 09:00 pm
 #  am
 # =========================
 # Standard library imports
@@ -2588,58 +2588,6 @@ def update_cc_info(
 
 
 
-def normalize_phone_e164(raw: str, country: str = "US") -> str:
-    """
-    Return an E.164 number ('+<cc><nsn>') for the given country ('US' or 'EG'),
-    or '' if invalid.
-
-    Notes
-    -----
-    - If input already looks like +E.164, we lightly validate and normalize
-      (remove spaces/hyphens) and return it.
-    - Otherwise we strip all non-digits and apply country rules.
-    - No dependency on normalize_phone_digits.
-    """
-    s = (str(raw) if raw is not None else "").strip()
-    if not s:
-        return ""
-
-    # Pass-through for +E.164-ish input: keep only digits after '+'
-    if s.startswith("+"):
-        body_digits = "".join(ch for ch in s[1:] if ch.isdigit())
-        # Basic E.164 length sanity: total digits 8..15 is typical
-        if 8 <= len(body_digits) <= 15:
-            return f"+{body_digits}"
-        # fall through to country handling if it didn't pass
-
-    # Strip to just digits for country handling
-    d = "".join(ch for ch in s if ch.isdigit())
-    c = (country or "US").upper()
-
-    # Optional: handle international prefix like 00 / 011 (minimal support)
-    if d.startswith("00"):
-        d = d[2:]
-    elif d.startswith("011"):
-        d = d[3:]
-
-    if c == "US":
-        # Accept 11 digits starting with '1' and drop trunk '1'
-        if len(d) == 11 and d.startswith("1"):
-            d = d[1:]
-        return f"+1{d}" if len(d) == 10 else ""
-
-    if c == "EG":
-        # Egypt (+20). NSN length typically 9–10 after country code.
-        if d.startswith("20") and 11 <= len(d) <= 12:        # already has '20' prefix
-            return f"+{d}"
-        if len(d) == 11 and d.startswith("0"):               # domestic trunk '0'
-            return f"+20{d[1:]}"
-        if 9 <= len(d) <= 10:                                 # domestic without trunk
-            return f"+20{d}"
-        return ""
-
-    # Unknown country → fail closed
-    return ""
 
 
 
@@ -2647,8 +2595,6 @@ def normalize_phone_e164(raw: str, country: str = "US") -> str:
 # ------------------------
 # ➕ Add appointment
 # ------------------------
-
-
 def confirm_appointment_by_name(
     doctor_name: str,
     phone: str,
@@ -2659,31 +2605,21 @@ def confirm_appointment_by_name(
     address: str = None,
     event_id: str = None,
     debug: bool = False,
+    # NEW (optional) ----------------------------------------------------
+    utc_end: str = None,
+    friendly_local: str = None,       # ← accept formatted string from caller
+    local_date: str = None,           # ← optional override YYYY-MM-DD (clinic tz)
+    local_time_display: str = None,   # ← optional human local HH:MM AM/PM
 ):
     """
     Add a new appointment to the doctor's table and save to JSON file.
-
-    Compatibility:
-      - Required params remain: doctor_name, phone, utc_start, calendar_id.
-      - Optional params (name, dob, address, event_id, debug) have defaults, so existing
-        call sites won't break if they don't pass them.
-
-    Behavior:
-      - Normalizes phone to digits-only.
-      - Ensures utc_start is UTC ISO8601 (e.g., '2025-08-07T10:00:00Z').
-      - Searches existing file by (phone + dob) if dob provided; otherwise by phone only.
-      - Skips exact duplicates (same phone + dob + time + calendar_id).
-      - Appends record with optional name/dob/address/event_id.
-      - Saves back to disk and refreshes in-memory cache doctor_appointments[filename], if defined.
-
-    Returns:
-      dict with:
-        created: bool           # True if appended, False if duplicate
-        record: dict            # The record (new or existing)
-        reason: str | None      # 'duplicate' if not created, else None
+    - Retains existing behavior (UTC 'time', date_local, time_local=UTC HH:MM, friendly_local).
+    - If 'friendly_local' is provided, it overrides the computed friendly string.
+    - 'utc_end' is stored if provided.
+    - 'local_date' can override computed local date if you need exact control.
+    - 'local_time_display' is stored separately as 'time_local_display' (does NOT
+      replace 'time_local', which remains UTC HH:MM per your prior request).
     """
-    
-    
     # -----------------------
     # Normalize phone digits
     # -----------------------
@@ -2695,45 +2631,31 @@ def confirm_appointment_by_name(
     # Normalize DOB into ISO YYYY-MM-DD (if any)
     # -----------------------------------------
     dob_iso = (dob or "").strip()
-    if dob_iso:
-        # Already ISO?
-        if _re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None:
-            # Try MM/DD/YYYY or MM-DD-YYYY
-            m = _re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
-            if m:
-                mm, dd, yyyy = m.groups()
-                dob_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
-            else:
-                # Light normalization: 2025/08/07 → 2025-08-07
-                dob_iso = dob_iso.replace("/", "-")
+    if dob_iso and _re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None:
+        m = _re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
+        if m:
+            mm, dd, yyyy = m.groups()
+            dob_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
+        else:
+            dob_iso = dob_iso.replace("/", "-")
 
     # --------------------------------------
-    # Ensure utc_start is UTC ISO8601 string
+    # Ensure utc_start/utc_end are UTC ISO
     # --------------------------------------
+    from datetime import datetime, timezone
+    import pytz as _pytz
+
     def ensure_utc_iso(ts: str) -> str:
-        """
-        Accepts:
-          - '2025-08-07T10:00:00Z'
-          - '2025-08-07T10:00:00+00:00'
-          - '2025-08-07 10:00:00' (assumed UTC if naive)
-        Returns: 'YYYY-MM-DDTHH:MM:SSZ'
-        """
         if not ts:
             raise ValueError("utc_start is required")
         s = ts.strip().replace(" ", "T")
         try:
-            # Handle trailing Z by converting to +00:00 for fromisoformat
-            if s.endswith("Z"):
-                dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-            else:
-                dt = datetime.fromisoformat(s)
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00") if s.endswith("Z") else s)
         except Exception:
-            # If naive pattern 'YYYY-MM-DDTHH:MM:SS', try that
             if _re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", s):
                 dt = datetime.fromisoformat(s)
             else:
                 raise
-        # Force UTC tz-aware
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         else:
@@ -2741,6 +2663,37 @@ def confirm_appointment_by_name(
         return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     utc_start_iso = ensure_utc_iso(utc_start)
+    utc_end_iso   = ensure_utc_iso(utc_end) if utc_end else None
+
+    # --------------------------------------
+    # Compute local/UTC representations
+    # --------------------------------------
+    try:
+        tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
+        tz_local = _pytz.timezone(tz_name)
+    except Exception:
+        tz_local = _pytz.timezone("America/Chicago")
+
+    dt_utc = datetime.fromisoformat(utc_start_iso.replace("Z", "+00:00")).astimezone(_pytz.UTC)
+    dt_loc = dt_utc.astimezone(tz_local)
+
+    # date_local: allow override, else compute
+    if local_date and _re.fullmatch(r"\d{4}-\d{2}-\d{2}", local_date):
+        date_local = local_date
+    else:
+        date_local = dt_loc.strftime("%Y-%m-%d")
+
+    # time_local (UTC HH:MM) as requested earlier
+    time_local_utc_hhmm = dt_utc.strftime("%H:%M")
+
+    # friendly_local: allow override, else compute
+    if friendly_local and friendly_local.strip():
+        friendly = friendly_local.strip()
+    else:
+        try:
+            friendly = dt_loc.strftime("%A, %B %-d at %-I:%M %p")
+        except Exception:
+            friendly = dt_loc.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
 
     # --------------------------
     # Resolve file paths/keys
@@ -2781,35 +2734,45 @@ def confirm_appointment_by_name(
             if p == digits_only_phone:
                 matches.append((idx, appt))
 
-    debug_print(f"🔎 Search by phone+dob → {len(matches)} match(es) "
-         f"(phone={digits_only_phone}, dob={dob_iso or 'N/A'})")
+    debug_print(f"🔎 Search by phone+dob → {len(matches)} match(es) (phone={digits_only_phone}, dob={dob_iso or 'N/A'})")
 
     # -----------------------------------------------------------
     # Skip exact duplicate (same phone + dob + time + calendar)
     # -----------------------------------------------------------
     for _, appt in matches:
         try:
-            appt_time_iso = ensure_utc_iso(appt.get("time", ""))
+            appt_time_iso = ensure_utc_iso(appt.get("time", "") or appt.get("utc_start", ""))
         except Exception:
-            # If bad time in file, don't treat as duplicate
             appt_time_iso = None
-
         if appt_time_iso == utc_start_iso and appt.get("calendar_id") == calendar_id:
             debug_print("🔁 Exact duplicate detected — skipping append")
-            # Normalize record before returning
             appt_norm = dict(appt)
             appt_norm["phone"] = _re.sub(r"\D", "", appt_norm.get("phone", ""))
             appt_norm["time"] = utc_start_iso
+            appt_norm["utc_start"] = utc_start_iso
+            if utc_end_iso:
+                appt_norm["utc_end"] = utc_end_iso
+            appt_norm.setdefault("date_local", date_local)
+            appt_norm.setdefault("time_local", time_local_utc_hhmm)  # UTC HH:MM
+            appt_norm.setdefault("friendly_local", friendly)
+            if local_time_display:
+                appt_norm.setdefault("time_local_display", local_time_display)
             return {"created": False, "record": appt_norm, "reason": "duplicate"}
 
     # ---------------------------------
     # Append new appointment record
     # ---------------------------------
     new_record = {
-        "phone": digits_only_phone,
-        "time": utc_start_iso,
-        "calendar_id": calendar_id,
+        "phone":          digits_only_phone,
+        "time":           utc_start_iso,          # legacy UTC field
+        "utc_start":      utc_start_iso,          # explicit alias
+        "calendar_id":    calendar_id,
+        "date_local":     date_local,             # local clinic date
+        "time_local":     time_local_utc_hhmm,    # UTC HH:MM (per request)
+        "friendly_local": friendly,               # human-friendly local
     }
+    if utc_end_iso:
+        new_record["utc_end"] = utc_end_iso
     if name:
         new_record["name"] = name
     if dob_iso:
@@ -2818,6 +2781,8 @@ def confirm_appointment_by_name(
         new_record["address"] = address
     if event_id:
         new_record["event_id"] = event_id
+    if local_time_display:
+        new_record["time_local_display"] = local_time_display  # optional human local time
 
     appts.append(new_record)
     debug_print(f"➕ Appended: {new_record}")
@@ -2829,547 +2794,14 @@ def confirm_appointment_by_name(
         with open(full_path, "w") as f:
             json.dump(appts, f, indent=2)
         debug_print(f"💾 Saved to {full_path}")
-
-        # Update in-memory cache if present
         try:
             doctor_appointments[filename] = appts
         except Exception:
             pass
-
         return {"created": True, "record": new_record, "reason": None}
     except Exception as e:
         debug_print(f"❌ Failed to write JSON → {e}")
         raise
-
-
-
-
-
-
-
-
-
-# ===== local doctor JSON cancellation (by doctor+phone+dob+utc_start) =====
-
-
-
-def cancel_appointment_by_name(
-    doctor_name: str,
-    phone: str,
-    dob: str,
-    utc_start: str,
-    *,
-    default_country: str = COUNTRY  # e.g., "US" or "EG"
-) -> bool:
-    """
-    Remove a single appointment from appointment_data/doctors/<doctor>.json
-    matching ALL of:
-      • phone  → E.164 ('+<cc><nsn>') **only**
-      • dob    → exact string match; expected ISO 'YYYY-MM-DD'
-      • time   → exact UTC ISO match (after normalization)
-
-    Returns True if a record was removed, else False.
-
-    Notes:
-      - Input `phone` can be already E.164; otherwise we normalize with `normalize_phone_e164`.
-      - Records may be mixed (older ones may only have 'phone' digits). We *derive* an E.164
-        per record (US/EG supported) and compare E.164 ↔ E.164 only.
-    """
-
-    # ---------- inputs (raw) ----------
-    debug_print(
-        "cancel_appointment_by_name: 🟡 inputs"
-        f"\n  doctor_name = '{doctor_name}'"
-        f"\n  phone(raw)  = '{(phone or '').strip()}'"
-        f"\n  dob         = '{(dob or '').strip()}'"
-        f"\n  utc_start   = '{(utc_start or '').strip()}'"
-        f"\n  country     = '{(default_country or 'US')}'"
-    )
-
-    # ---------- normalize input phone to E.164 ----------
-    raw = (phone or "").strip()
-    phone_e164 = ""
-    if raw.startswith("+") and raw[1:].replace(" ", "").isdigit():
-        phone_e164 = "+" + raw[1:].replace(" ", "")
-        debug_print(f"cancel_appointment_by_name: 📞 pass-through E.164 = '{phone_e164}'")
-    else:
-        try:
-            debug_print(f"cancel_appointment_by_name: 📞 trying normalize_phone_e164(raw, {default_country})")
-            phone_e164 = normalize_phone_e164(raw, (default_country or "US").upper()) or ""
-            debug_print(f"cancel_appointment_by_name: 📞 result (default) = '{phone_e164 or '∅'}'")
-            if not phone_e164:
-                alt = "EG" if (default_country or "US").upper() != "EG" else "US"
-                debug_print(f"cancel_appointment_by_name: 📞 trying normalize_phone_e164(raw, {alt})")
-                phone_e164 = normalize_phone_e164(raw, alt) or ""
-                debug_print(f"cancel_appointment_by_name: 📞 result (alt) = '{phone_e164 or '∅'}'")
-        except Exception as e:
-            debug_print(f"cancel_appointment_by_name: ⚠️ normalize_phone_e164 error → {e}")
-            phone_e164 = ""
-
-    dob_str = (dob or "").strip()
-    full_path = get_doctor_filename(doctor_name)
-    debug_print(
-        "cancel_appointment_by_name: 🟡 normalized inputs"
-        f"\n  phone_e164  = '{phone_e164 or '∅'}'"
-        f"\n  dob_iso     = '{dob_str or '∅'}'"
-        f"\n  file_path   = '{full_path}'"
-    )
-
-    if not os.path.exists(full_path):
-        debug_print("cancel_appointment_by_name: ❌ file not found")
-        return False
-    if not phone_e164 or not dob_str or not utc_start:
-        debug_print("cancel_appointment_by_name: ❌ missing one of (phone_e164, dob, utc_start)")
-        return False
-
-    # ---------- load list ----------
-    try:
-        with open(full_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, list):
-            debug_print("cancel_appointment_by_name: ❌ JSON root is not a list")
-            return False
-        debug_print(f"cancel_appointment_by_name: 📄 loaded {len(data)} record(s)")
-    except Exception as e:
-        debug_print(f"cancel_appointment_by_name: ❌ read/parse error → {e}")
-        return False
-
-    # ---------- normalize times to comparable UTC ISO (no micros) ----------
-    def _to_utc_iso(s: str) -> str:
-        dt = dtparser.isoparse(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        else:
-            dt = dt.astimezone(timezone.utc)
-        out = dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        debug_print(f"_to_utc_iso: '{s}' → '{out}'")
-        return out
-
-    try:
-        target_norm = _to_utc_iso(utc_start)
-        debug_print(f"cancel_appointment_by_name: 🎯 target UTC   = '{target_norm}'")
-    except Exception as e:
-        debug_print(f"cancel_appointment_by_name: ❌ utc parse error → {e}")
-        return False
-
-    # ---------- helper: derive E.164 for a stored appt record ----------
-    def _appt_e164(appt: dict) -> str:
-        pe = (appt.get("phone_e164") or "").strip()
-        if pe.startswith("+") and pe[1:].replace(" ", "").isdigit():
-            debug_print(f"_appt_e164: using record phone_e164 = '{pe}'")
-            return "+" + pe[1:].replace(" ", "")
-        cand = (appt.get("phone") or "").strip()
-        if cand:
-            try:
-                e164 = normalize_phone_e164(cand, (default_country or "US").upper()) or ""
-                if not e164:
-                    alt = "EG" if (default_country or "US").upper() != "EG" else "US"
-                    e164 = normalize_phone_e164(cand, alt) or ""
-                debug_print(f"_appt_e164: derived from 'phone'='{cand}' → '{e164 or '∅'}'")
-                if e164:
-                    return e164
-            except Exception as e:
-                debug_print(f"_appt_e164: ⚠️ normalize error for '{cand}' → {e}")
-        debug_print("_appt_e164: no usable phone on record")
-        return ""
-
-    kept = []
-    removed = 0
-
-    for idx, appt in enumerate(data):
-        if not isinstance(appt, dict):
-            debug_print(f"[{idx}] skip non-dict record")
-            kept.append(appt)
-            continue
-
-        ap_e164 = _appt_e164(appt)
-        ap_dob  = (appt.get("dob", "") or "").strip()
-        ap_time_raw = (appt.get("time") or appt.get("start") or "").strip()
-
-        try:
-            ap_time_norm = _to_utc_iso(ap_time_raw) if ap_time_raw else ""
-        except Exception as e:
-            debug_print(f"[{idx}] time parse error for '{ap_time_raw}' → {e} (keeping record)")
-            kept.append(appt)
-            continue
-
-        debug_print(
-            f"[{idx}] record"
-            f"\n     phone_e164(rec) = '{ap_e164 or '∅'}'"
-            f"\n     dob(rec)        = '{ap_dob or '∅'}'"
-            f"\n     time(raw)       = '{ap_time_raw or '∅'}'"
-            f"\n     time(norm)      = '{ap_time_norm or '∅'}'"
-        )
-
-        matched = (ap_e164 == phone_e164) and (ap_dob == dob_str) and (ap_time_norm == target_norm)
-        debug_print(f"[{idx}] match? {matched}")
-        if matched:
-            removed += 1
-        else:
-            kept.append(appt)
-
-    if removed == 0:
-        debug_print("cancel_appointment_by_name: ❌ no matching record found")
-        return False
-
-    # ---------- write back ----------
-    try:
-        with open(full_path, "w", encoding="utf-8") as f:
-            json.dump(kept, f, indent=2, ensure_ascii=False)
-        debug_print(f"cancel_appointment_by_name: ✅ deleted {removed} appt(s); kept {len(kept)}")
-        return True
-    except Exception as e:
-        debug_print(f"cancel_appointment_by_name: ❌ write error → {e}")
-        return False
-
-
-
-
-
-
-# update remove phone 10
-def get_doctor_appts_for(doctor_name: str, phone: str, dob: str = None) -> list:
-    """
-    Read appointment_data/doctors/<doctor_name>.json and return all
-    appointment dicts that match the given caller:
-      - phone is REQUIRED (E.164 string, e.g., +12025550123 or +2011xxxxxxx)
-      - dob is OPTIONAL (normalized to YYYY-MM-DD if possible)
-
-    Returned list is sorted chronologically by start time if present.
-    Uses debug_print for logging (falls back to print if unavailable).
-
-    E.164 behavior:
-      - We normalize the input with normalize_phone_e164 using a default country
-        (GLOBAL COUNTRY if defined, else 'US'), and falling back to the other
-        supported country (US/EG) if needed.
-      - Records are matched by 'phone_e164'. If a record lacks that field but
-        has legacy 'phone' digits, we try to derive an E.164 using the input
-        phone’s country as a hint (US: +1, EG: +20).
-    """
-    # ---------- local helpers (self-contained) ----------
-
-    def _normalize_dob_iso(s: str) -> str:
-        """
-        Normalize to 'YYYY-MM-DD' when possible.
-        Accepts:
-          - 'YYYY-MM-DD' (kept)
-          - 'MM/DD/YYYY' or 'MM-DD-YYYY' (converted)
-          - empty/unknown → ''
-        """
-        s = (s or "").strip()
-        if not s:
-            return ""
-        if "T" in s:
-            s = s.split("T", 1)[0].strip()
-        if _re.match(r"^\d{4}-\d{2}-\d{2}$", s):
-            return s
-        m = _re.match(r"^\s*(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})\s*$", s)
-        if m:
-            mm, dd, yyyy = m.groups()
-            try:
-                return f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
-            except Exception:
-                return ""
-        return ""
-
-    def _extract_start_iso(appt: dict) -> str:
-        """Prefer 'start' then 'time' field; may be empty if not present."""
-        return (appt.get("start") or appt.get("time") or "").strip()
-
-    # ---------- normalize inputs ----------
-    # Choose a default country from global COUNTRY if present; else US
-    try:
-        _default_country = COUNTRY
-    except NameError:
-        _default_country = "US"
-
-    # Primary: E.164 using your helper (accepts '+E.164' as-is when valid)
-    phone_e164 = ""
-    try:
-        phone_e164 = normalize_phone_e164(phone or "", _default_country) or ""
-        if not phone_e164:
-            alt = "EG" if _default_country.upper() != "EG" else "US"
-            phone_e164 = normalize_phone_e164(phone or "", alt) or ""
-    except Exception:
-        phone_e164 = ""
-
-    if not phone_e164:
-        debug_print(f"get_doctor_appts_for: ❌ invalid phone '{phone}' (no E.164)")
-        return []
-
-    # Infer country hint from input E.164 (used only to up-convert legacy record phones)
-    if phone_e164.startswith("+1"):
-        inferred_country = "US"
-    elif phone_e164.startswith("+20"):
-        inferred_country = "EG"
-    else:
-        inferred_country = _default_country
-
-    dob_iso = _normalize_dob_iso(dob) if dob else ""
-
-    path = get_doctor_filename(doctor_name)
-    if not os.path.exists(path):
-        debug_print(f"get_doctor_appts_for: ⚠️ file not found → {path}")
-        return []
-
-    # ---------- load and filter ----------
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        debug_print(f"get_doctor_appts_for: ❌ read/parse error for {path} → {e}")
-        return []
-
-    if not isinstance(data, list):
-        debug_print(f"get_doctor_appts_for: ❌ JSON not a list in {path}")
-        return []
-
-    matches = []
-    for appt in data:
-        if not isinstance(appt, dict):
-            continue
-
-        # Prefer E.164 stored on the record
-        ap_e164 = (appt.get("phone_e164") or "").strip()
-
-        # If record lacks E.164, derive it from the legacy 'phone' field using the hint country
-        if not ap_e164:
-            raw_legacy = (appt.get("phone") or "").strip()
-            try:
-                ap_e164 = normalize_phone_e164(raw_legacy, inferred_country) or ""
-                if not ap_e164:
-                    # one last pass with the opposite of the hint if we only support US/EG
-                    alt = "EG" if inferred_country.upper() != "EG" else "US"
-                    ap_e164 = normalize_phone_e164(raw_legacy, alt) or ""
-            except Exception:
-                ap_e164 = ""
-
-        # Phone match (E.164 only)
-        if not ap_e164 or ap_e164 != phone_e164:
-            continue
-
-        # Optional DOB exact match (normalized)
-        if dob_iso:
-            ap_dob = _normalize_dob_iso(appt.get("dob", "") or "")
-            if ap_dob != dob_iso:
-                continue
-
-        matches.append(appt)
-
-    # ---------- sort by start time if available ----------
-    def _sort_key(a: dict):
-        raw = _extract_start_iso(a)
-        try:
-            return dtparser.isoparse(raw)
-        except Exception:
-            return None
-
-    try:
-        matches.sort(key=lambda a: (_sort_key(a) is None, _sort_key(a)))
-    except Exception:
-        pass
-
-    debug_print(
-        f"get_doctor_appts_for: ✅ doctor='{doctor_name}' phone='{phone_e164}' "
-        f"dob='{dob_iso or '∅'}' → {len(matches)} appt(s)"
-    )
-    return matches
-
-#   update remove phone 10
-# ----------------------------------------------------------------------
-# backward-compat alias (typo): some code may call get_docotor_appt_for
-# ----------------------------------------------------------------------
-def get_docotor_appt_for(doctor_name: str, phone: str, dob: str = None) -> list:
-    """
-    Alias for get_doctor_appts_for (typo compatibility).
-    """
-    return get_doctor_appts_for(doctor_name, phone, dob)
-
-
-
-# =============================================================================
-# Helper: Per-doctor availability using Google Calendar FreeBusy
-# - Purpose-built for availability. More reliable than events().list overlap.
-# - Adds ±1s boundary "fuzz" to avoid edge inclusivity issues. (configurable)
-# - Logs any blocking busy windows for debugging.
-# - Robust tz handling + all-day events in fallback overlap test.
-# - Enforces clinic policy (working days/hours/lunch/past) before Google.
-# - UPDATED: signature order to (calendar_id, creds, start_iso, end_iso)
-# - UPDATED: reject if start <= now (strictly future)
-# - UPDATED: safe debug wrapper + single client build for FB and events()
-# =============================================================================
-def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds) -> bool:
-    """
-    True iff the slot passes clinic policy AND no overlapping event exists.
-
-    Clinic policy (local clinic TZ):
-      • Not fully in the past  → end > now   (half-open window, so equality means past)
-      • Working day            → weekday ∈ WORKING_DAYS (defaults Mon–Fri)
-      • Working hours          → WSTART:00 ≤ start  AND  end ≤ WEND:00
-      • Lunch                  → no real overlap with [LUNCH_START, LUNCH_END)
-                                 (ending exactly at lunch start is allowed)
-
-    Calendar checks (UTC):
-      • Primary: FreeBusy      → reject if any block overlaps [start, end)
-      • Fallback: events().list→ reject if any event overlaps [start, end)
-    """
-    # ---- imports / aliases (module-level imports already exist) -------------
-    # relies on: isoparse, datetime, timedelta, date, time as _time, pytz as _TZMOD
-    def _dbg(msg: str) -> None:
-        try: debug_print(msg)
-        except Exception: pass
-
-    # ---- small helpers ------------------------------------------------------
-    def _as_utc(dt):
-        return dt if dt.tzinfo else _TZMOD.UTC.localize(dt)
-
-    def _parse_iso_utc(s: str):
-        s2 = s.replace("Z", "+00:00")
-        return _as_utc(isoparse(s2)).astimezone(_TZMOD.UTC)
-
-    def _overlap_half_open(a_start, a_end, b_start, b_end) -> bool:
-        # Real overlap only; touching at the edge is OK.
-        return (a_start < b_end) and (b_start < a_end)
-
-    def _opt_time(val, default_h=None, default_m=0):
-        """Coerce env/global value to datetime.time or None."""
-        if val is None:
-            return None if default_h is None else _time(default_h, default_m)
-        if isinstance(val, _time):
-            return val
-        s = str(val).strip()
-        if not s:
-            return None if default_h is None else _time(default_h, default_m)
-        if ":" in s:
-            hh, mm = (s.split(":", 1) + ["0"])[:2]
-        else:
-            hh, mm = s, "0"
-        try:
-            return _time(max(0, min(23, int(hh))), max(0, min(59, int(mm))))
-        except Exception:
-            return None if default_h is None else _time(default_h, default_m)
-
-    # ---- normalize requested window (UTC aware) -----------------------------
-    try:
-        start_dt = _parse_iso_utc(start_iso)
-        end_dt   = _parse_iso_utc(end_iso)
-    except Exception as e:
-        _dbg(f"is_time_slot_available: ❌ invalid start/end iso → {e}")
-        return False
-    if end_dt <= start_dt:
-        _dbg("is_time_slot_available: ❌ end <= start")
-        return False
-
-    # ---- clinic policy (local tz) -------------------------------------------
-    tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
-    try:
-        tz_local = _TZMOD.timezone(tz_name)
-    except Exception:
-        tz_local = _TZMOD.timezone("America/Chicago")
-
-    s_loc = start_dt.astimezone(tz_local)
-    e_loc = end_dt.astimezone(tz_local)
-    now_loc = datetime.now(tz_local)
-
-    # Past only if slot fully ended
-    if e_loc <= now_loc:
-        _dbg("is_time_slot_available: ⛔ blocked by clinic policy → fully_past")
-        return False
-
-    # Working days
-    try:
-        wd_src = globals().get("WORKING_DAYS", {0,1,2,3,4})
-        WORKING_DAYS = set(int(x) for x in (wd_src if isinstance(wd_src, (list,set,tuple,set)) else [0,1,2,3,4]))
-    except Exception:
-        WORKING_DAYS = {0,1,2,3,4}
-    if s_loc.weekday() not in WORKING_DAYS:
-        _dbg(f"is_time_slot_available: ⛔ non_working_day (weekday={s_loc.weekday()})")
-        return False
-
-    # Working hours (allow edge touch via half-open)
-    WSTART = int(globals().get("WORKING_HOURS_START", globals().get("WORKIN_HOURS_START", 8)))
-    WEND   = int(globals().get("WORKING_HOURS_END", 17))
-    if not (_time(WSTART, 0) <= s_loc.time() and e_loc.time() <= _time(WEND, 0)):
-        _dbg(f"is_time_slot_available: ⛔ outside_hours ({WSTART}:00–{WEND}:00)")
-        return False
-
-    # Lunch (no real overlap with [LUNCH_START, LUNCH_END))
-    LUNCH_START = _opt_time(globals().get("LUNCH_BREAK_START"))
-    LUNCH_END   = _opt_time(globals().get("LUNCH_BREAK_END"))
-    if LUNCH_START and LUNCH_END:
-        # Compare as times on the same local day; only real intersection blocks.
-        if (s_loc.time() < LUNCH_END) and (e_loc.time() > LUNCH_START):
-            _dbg("is_time_slot_available: ⛔ lunch_overlap")
-            return False
-
-    # ---- Google Calendar checks (no padding; exact [start, end) semantics) --
-    try:
-        service = build("calendar", "v3", credentials=creds)
-    except Exception as e:
-        _dbg(f"is_time_slot_available: ❌ google client build error → {e}")
-        return False  # fail closed
-
-    tmin = start_dt.isoformat().replace("+00:00", "Z")
-    tmax = end_dt.isoformat().replace("+00:00", "Z")
-
-    # 1) FreeBusy primary
-    try:
-        fb = service.freebusy().query(body={
-            "timeMin": tmin,
-            "timeMax": tmax,
-            "items": [{"id": calendar_id}],
-            "timeZone": "UTC",
-        }).execute()
-        blocks = (fb.get("calendars", {}).get(calendar_id, {}) or {}).get("busy", []) or []
-        if blocks:
-            for b in blocks:
-                bs = _parse_iso_utc(b["start"])
-                be = _parse_iso_utc(b["end"])
-                if _overlap_half_open(start_dt, end_dt, bs, be):
-                    _dbg(f"is_time_slot_available: 🚫 FreeBusy overlap {bs.isoformat()}→{be.isoformat()}")
-                    return False
-        _dbg("is_time_slot_available: ✅ FreeBusy clear")
-    except Exception as e:
-        _dbg(f"is_time_slot_available: ⚠️ FreeBusy error → {e}; will try events().list")
-
-    # 2) events().list fallback
-    try:
-        evs = service.events().list(
-            calendarId=calendar_id,
-            timeMin=tmin,
-            timeMax=tmax,
-            singleEvents=True,
-            showDeleted=False,
-            orderBy="startTime",
-            maxResults=250,
-        ).execute().get("items", [])
-
-        for ev in evs:
-            if ev.get("status") == "cancelled":   # skip cancelled
-                continue
-            if ev.get("transparency") == "transparent":  # free-time holds
-                continue
-            # derive UTC bounds from dateTime/date
-            s_raw = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
-            e_raw = ev.get("end",   {}).get("dateTime") or ev.get("end",   {}).get("date")
-            if not (s_raw and e_raw):
-                # malformed/all-day → be conservative and block
-                _dbg("is_time_slot_available: ⚠️ malformed/all-day event → blocking")
-                return False
-            es = _parse_iso_utc(s_raw if "T" in s_raw or "Z" in s_raw else s_raw + "T00:00:00Z")
-            ee = _parse_iso_utc(e_raw if "T" in e_raw or "Z" in e_raw else e_raw + "T00:00:00Z")
-            if _overlap_half_open(start_dt, end_dt, es, ee):
-                _dbg(f"is_time_slot_available: 🚫 events overlap {es.isoformat()}→{ee.isoformat()} title='{ev.get('summary','')}'")
-                return False
-
-        _dbg("is_time_slot_available: ✅ No overlaps via events().list")
-    except Exception as e:
-        _dbg(f"is_time_slot_available: ❗ events().list error → {e}; fail-closed")
-        return False
-
-    _dbg("is_time_slot_available: ✅ Slot FREE (final)")
-    return True
-
 
 
 
@@ -5820,12 +5252,40 @@ def voice():
                 },
             }
             ev = service.events().insert(calendarId=doctor_id, body=event_body, sendUpdates="none").execute()
-            debug_print(f"book_appt_confirm: ✅ Google event created id={ev.get('id')}")
+            google_event_id = ev.get("id")
+            debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id}")
         except Exception as e:
             debug_print(f"book_appt_confirm: ❌ Google insert failed → {e}")
             session_data[call_sid]["stage"] = "ask_time_date"
             resp.append(make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, September 14th at 10 AM."))
             return str(resp)
+
+        # ---- Persist locally (JSON) via confirm_appointment_by_name ---------------
+        # Pass utc_end, friendly_local (exact spoken-style), and local breakdowns.
+        try:
+            local_date_str = dt_local.strftime("%Y-%m-%d")
+            try:
+                local_time_disp = dt_local.strftime("%-I:%M %p")       # Unix-like
+            except Exception:
+                local_time_disp = dt_local.strftime("%I:%M %p").lstrip("0")  # Windows-safe
+
+            persist = confirm_appointment_by_name(
+                doctor_name=doctor_name,
+                phone=phone_e164,
+                utc_start=appointment_start,
+                utc_end=appointment_end,                 # NEW
+                calendar_id=doctor_id,
+                name=effective_name,
+                dob=customer_dob,
+                address=customer_address,
+                event_id=google_event_id,               # NEW
+                friendly_local=formatted_time,          # NEW: what you say to caller
+                local_date=local_date_str,              # NEW: YYYY-MM-DD (clinic tz)
+                local_time_display=local_time_disp,     # NEW: human local HH:MM AM/PM
+            )
+            debug_print(f"book_appt_confirm: 🗂️ local persist → created={persist.get('created')} reason={persist.get('reason')}")
+        except Exception as e:
+            debug_print(f"book_appt_confirm: ⚠️ local persist failed → {e}")
 
         # ---- Voice confirmation + SMS, then hang up ----
         msg = f"Your appointment with {doctor_name} has been booked"
@@ -5844,6 +5304,7 @@ def voice():
         resp.hangup()
         session_data.pop(call_sid, None)
         return str(resp)
+
 
 
 
