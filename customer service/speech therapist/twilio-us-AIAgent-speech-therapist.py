@@ -1,4 +1,4 @@
-# update  09/15/25 time_saved 11:22 pm
+# update  09/15/25 time_saved 01:19 pm
 #  am
 # =========================
 # Standard library imports
@@ -119,6 +119,8 @@ from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
 from twilio.rest import Client
 from dateutil.parser import parse as _dtparse
+from string import punctuation as _PUNCT
+from datetime import datetime as _Datetime, timezone as _Tz
 
 from openai import OpenAI, APIConnectionError, AuthenticationError, RateLimitError, OpenAIError
 
@@ -2694,8 +2696,8 @@ def confirm_appointment_by_name(
     # --------------------------------------
     # Ensure utc_start/utc_end are UTC ISO
     # --------------------------------------
-    from datetime import datetime, timezone
-    import pytz as _pytz
+    #from datetime import datetime, timezone
+    #import pytz as _pytz
 
     def ensure_utc_iso(ts: str) -> str:
         if not ts:
@@ -3531,10 +3533,12 @@ def voice():
             session_data[call_sid]["retry_booking"] = 0
 
         # ✅ Safe punctuation constant (avoid using `string` directly)
+        """
         try:
             from string import punctuation as _PUNCT
         except Exception:
-            _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
+        """
+        _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
 
         # 📻 Clean and normalize speech input
         spoken_text = (speech_result or "").lower().strip()
@@ -4533,14 +4537,7 @@ def voice():
         # We heard something → clear silence counter
         session_data[call_sid].pop("silence_last_name", None)
 
-        # 🧽 Clean & normalize (keep inner spaces; strip punctuation except apostrophe/hyphen)
-        #import string
-        # Ensure `string` is available even if not imported at module scope
-        try:
-            string  # type: ignore[name-defined]
-        except NameError:
-            import string
-
+       
         # Remove punctuation except apostrophe and hyphen: build whitelist
         punct_keep = "'-"
         trans_table = str.maketrans('', '', "".join(ch for ch in string.punctuation if ch not in punct_keep))
@@ -4574,7 +4571,7 @@ def voice():
             gather = make_gather("Sorry, I didn't catch your last name. Please repeat it clearly.")
             resp.append(gather)
             try:
-                from flask import url_for
+                #from flask import url_for
                 resp.redirect(url_for("voice"))
                 _dbg("collect_last_name.redirect", target="url_for('voice')", reason="retry_invalid")
             except Exception:
@@ -4595,7 +4592,7 @@ def voice():
         gather = make_gather("Got it. What is your full address, please?")
         resp.append(gather)
         try:
-            from flask import url_for
+            #from flask import url_for
             resp.redirect(url_for("voice"))
             _dbg("collect_last_name.redirect", target="url_for('voice')", reason="advance_to_collect_address")
         except Exception:
@@ -4655,7 +4652,7 @@ def voice():
             resp.append(gather)
             # redirect so Twilio posts back after the gather
             try:
-                from flask import url_for
+                #from flask import url_for
                 resp.redirect(url_for("voice"))
             except Exception:
                 resp.redirect("/voice")
@@ -4706,7 +4703,7 @@ def voice():
             gather = make_gather(prompt)
             resp.append(gather)
             try:
-                from flask import url_for
+                #from flask import url_for
                 resp.redirect(url_for("voice"))
             except Exception:
                 resp.redirect("/voice")
@@ -5059,7 +5056,7 @@ def voice():
                 yy = yy[-2:]
 
             # Reject past month (valid through end of month)
-            from datetime import datetime as _Datetime, timezone as _Tz
+            #from datetime import datetime as _Datetime, timezone as _Tz
             now = _Datetime.now(tz=_Tz.utc)
             exp_year = 2000 + int(yy)
             # Boundary = first of next month @00:00Z
