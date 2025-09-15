@@ -1,4 +1,4 @@
-# update  09/13/25 time_saved 09:00 pm
+# update  09/15/25 time_saved 11:22 pm
 #  am
 # =========================
 # Standard library imports
@@ -1393,10 +1393,6 @@ def load_doctor_appointments():
 
 
 
-def normalize_phone_digits(phone: str) -> str:
-    """Digits-only normalization for matching (calendar description & JSON)."""
-    return ''.join(ch for ch in (phone or "") if ch.isdigit())
-
 
 # ===== local doctor JSON cancellation (by doctor+phone+dob+utc_start) =====
 
@@ -2484,6 +2480,61 @@ def insert_customer(
     )
 
     return True
+
+
+def _normalize_phone_digits(s: str) -> str:
+    d = "".join(ch for ch in (s or "") if ch.isdigit())
+    return d[1:] if len(d) == 11 and d.startswith("1") else d
+
+
+def normalize_phone_e164(raw: str, country: str = "US") -> str:
+    """
+    Return an E.164 number ('+<cc><nsn>') for the given country ('US' or 'EG'),
+    or '' if invalid. Uses _normalize_phone_digits(...) underneath.
+    - Accepts inputs already in +E.164 (light validation).
+    - US: allow 11 digits starting with '1' (drop it), require 10 thereafter.
+    - EG: domestic mobile/geo numbers are typically 11 digits with trunk '0';
+          E.164 is +20 + 10/9 digits (after dropping the '0').
+    """
+    if not raw:
+        return ""
+
+    s = str(raw).strip()
+
+    # Pass-through if already E.164-ish: + and then digits
+    if s.startswith("+"):
+        body = s[1:].replace(" ", "")
+        if body.isdigit() and 8 <= len(body) <= 15:
+            return "+" + body
+        # else fall through to try normalization
+
+    # Strip to digits (keeps your existing semantics)
+    d = _normalize_phone_digits(s)
+    c = (country or "US").upper()
+
+    if c == "US":
+        # Accept 11 with leading '1' and drop it
+        if len(d) == 11 and d.startswith("1"):
+            d = d[1:]
+        return f"+1{d}" if len(d) == 10 else ""
+
+    if c == "EG":  # Egypt (+20)
+        # Already has country code (no '+'): e.g., "20XXXXXXXXXX"
+        # Egyptian NSN is typically 9–10 digits after +20 depending on fixed/mobile.
+        if d.startswith("20") and 11 <= len(d) <= 12:  # 20 + (9..10)
+            return f"+{d}"
+        # Domestic with trunk '0' → expect 11 digits like 0XXXXXXXXXX
+        if len(d) == 11 and d.startswith("0"):
+            return f"+20{d[1:]}"
+        # Domestic without trunk '0' (9–10 digits)
+        if 9 <= len(d) <= 10:
+            return f"+20{d}"
+        return ""
+
+    # Unknown country → fail closed
+    return ""
+
+
 
 
 
