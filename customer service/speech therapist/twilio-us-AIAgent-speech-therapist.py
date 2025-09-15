@@ -2481,58 +2481,59 @@ def insert_customer(
 
     return True
 
-
-def _normalize_phone_digits(s: str) -> str:
-    d = "".join(ch for ch in (s or "") if ch.isdigit())
-    return d[1:] if len(d) == 11 and d.startswith("1") else d
-
-
 def normalize_phone_e164(raw: str, country: str = "US") -> str:
     """
     Return an E.164 number ('+<cc><nsn>') for the given country ('US' or 'EG'),
-    or '' if invalid. Uses _normalize_phone_digits(...) underneath.
-    - Accepts inputs already in +E.164 (light validation).
-    - US: allow 11 digits starting with '1' (drop it), require 10 thereafter.
-    - EG: domestic mobile/geo numbers are typically 11 digits with trunk '0';
-          E.164 is +20 + 10/9 digits (after dropping the '0').
+    or '' if invalid.
+
+    Notes
+    -----
+    - If input already looks like +E.164, we lightly validate and normalize
+      (remove spaces/hyphens) and return it.
+    - Otherwise we strip all non-digits and apply country rules.
+    - No dependency on normalize_phone_digits.
     """
-    if not raw:
+    s = (str(raw) if raw is not None else "").strip()
+    if not s:
         return ""
 
-    s = str(raw).strip()
-
-    # Pass-through if already E.164-ish: + and then digits
+    # Pass-through for +E.164-ish input: keep only digits after '+'
     if s.startswith("+"):
-        body = s[1:].replace(" ", "")
-        if body.isdigit() and 8 <= len(body) <= 15:
-            return "+" + body
-        # else fall through to try normalization
+        body_digits = "".join(ch for ch in s[1:] if ch.isdigit())
+        # Basic E.164 length sanity: total digits 8..15 is typical
+        if 8 <= len(body_digits) <= 15:
+            return f"+{body_digits}"
+        # fall through to country handling if it didn't pass
 
-    # Strip to digits (keeps your existing semantics)
-    d = _normalize_phone_digits(s)
+    # Strip to just digits for country handling
+    d = "".join(ch for ch in s if ch.isdigit())
     c = (country or "US").upper()
 
+    # Optional: handle international prefix like 00 / 011 (minimal support)
+    if d.startswith("00"):
+        d = d[2:]
+    elif d.startswith("011"):
+        d = d[3:]
+
     if c == "US":
-        # Accept 11 with leading '1' and drop it
+        # Accept 11 digits starting with '1' and drop trunk '1'
         if len(d) == 11 and d.startswith("1"):
             d = d[1:]
         return f"+1{d}" if len(d) == 10 else ""
-
-    if c == "EG":  # Egypt (+20)
-        # Already has country code (no '+'): e.g., "20XXXXXXXXXX"
-        # Egyptian NSN is typically 9–10 digits after +20 depending on fixed/mobile.
-        if d.startswith("20") and 11 <= len(d) <= 12:  # 20 + (9..10)
+    if c == "EG":
+        # Egypt (+20). NSN length typically 9–10 after country code.
+        if d.startswith("20") and 11 <= len(d) <= 12:        # already has '20' prefix
             return f"+{d}"
-        # Domestic with trunk '0' → expect 11 digits like 0XXXXXXXXXX
-        if len(d) == 11 and d.startswith("0"):
+        if len(d) == 11 and d.startswith("0"):               # domestic trunk '0'
             return f"+20{d[1:]}"
-        # Domestic without trunk '0' (9–10 digits)
-        if 9 <= len(d) <= 10:
+        if 9 <= len(d) <= 10:                                 # domestic without trunk
             return f"+20{d}"
         return ""
 
     # Unknown country → fail closed
     return ""
+
+                                                    
 
 
 
