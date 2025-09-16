@@ -1,4 +1,4 @@
-# update  09/15/25 time_saved 01:19 pm
+# update  09/15/25 time_saved 09:16 am
 #  am
 # =========================
 # Standard library imports
@@ -2186,19 +2186,45 @@ def _key(phone_e164: str, dob_iso: str) -> str:
     """Stable map key: E.164 + DOB ISO."""
     return f"{(phone_e164 or '').strip()}|{(dob_iso or '').strip()}"
 
-def customer_search(phone: str, dob: str, *, default_country: str = COUNTRY) -> bool:
+
+
+def customer_search(
+    phone_number: str = None,
+    dob: str = "",
+    *,
+    default_country: str = COUNTRY,
+    phone: str = None,     # ← backward-compatible alias (if some callers still pass phone=)
+) -> bool:
     """
     Return True if a customer (phone|dob) exists in customers.json, else False.
 
+    Signature updated to match program-wide usage:
+      - Primary param: phone_number
+      - Back-compat alias: phone
+      - Other behavior unchanged.
+
     Lookup (E.164 only):
       1) Normalize input as E.164 using default_country (falls back US↔EG).
-      2) Check key = _key(phone_e164, dob_iso).
+      2) Normalize DOB to ISO (YYYY-MM-DD) when possible.
+      3) Check key = _key(phone_e164, dob_iso).
     """
-    init_db()
-    dob_iso = (dob or "").strip()
-    raw = (phone or "").strip()
+    # --- log inputs -----------------------------------------------------------
+    try:
+        debug_print(
+            f"customer_search: ▶️ inputs phone_number='{phone_number}' "
+            f"phone(alias)='{phone}' dob='{dob}' default_country='{default_country}'"
+        )
+    except Exception:
+        pass
 
-    # Try E.164 first (accept +E.164 as-is; otherwise normalize)
+    init_db()
+
+    # Prefer phone_number; fall back to phone alias
+    raw = (phone_number if phone_number is not None else phone) or ""
+    raw = raw.strip()
+    dob_iso = (dob or "").strip()
+
+    # ---- normalize phone to E.164 -------------------------------------------
     phone_e164 = ""
     if raw.startswith("+") and raw[1:].replace(" ", "").isdigit():
         phone_e164 = "+" + raw[1:].replace(" ", "")
@@ -2207,11 +2233,10 @@ def customer_search(phone: str, dob: str, *, default_country: str = COUNTRY) -> 
             phone_e164 = normalize_phone_e164(raw, default_country) or ""
         except Exception:
             phone_e164 = ""
-        # Secondary guess (useful when caller is EG and default is US, or vice versa)
         if not phone_e164:
             try:
-                alt_country = "EG" if default_country.upper() != "EG" else "US"
-                phone_e164 = normalize_phone_e164(raw, alt_country) or ""
+                alt = "EG" if str(default_country).upper() != "EG" else "US"
+                phone_e164 = normalize_phone_e164(raw, alt) or ""
             except Exception:
                 phone_e164 = ""
 
@@ -2219,161 +2244,30 @@ def customer_search(phone: str, dob: str, *, default_country: str = COUNTRY) -> 
         debug_print(f"customer_search: ❌ invalid phone '{raw}' (no E.164)")
         return False
 
+    # ---- normalize DOB to ISO if provided -----------------------------------
+    try:
+        if dob_iso:
+            # If global _re is present and dob isn't already YYYY-MM-DD, try MM/DD/YYYY or MM-DD-YYYY
+            if ('_re' in globals()) and (globals()['_re'].fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None):
+                m = globals()['_re'].match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
+                if m:
+                    mm, dd, yyyy = m.groups()
+                    dob_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
+                else:
+                    # Light normalization like 2025/08/07 → 2025-08-07
+                    dob_iso = dob_iso.replace("/", "-")
+    except Exception:
+        # If regex not available or parsing fails, keep original dob_iso
+        pass
+
+    # ---- lookup --------------------------------------------------------------
     data = _load_customers()
     key_e164 = _key(phone_e164, dob_iso)
     exists = key_e164 in data
-    debug_print(f"customer_search: phone_e164={phone_e164} dob={dob_iso or '∅'} → {exists}")
+
+    debug_print(f"customer_search: phone_e164={phone_e164} dob_iso={dob_iso or '∅'} key={key_e164} → exists={exists}")
     return exists
 
-def _save_customers(data: Dict[str, Dict[str, Any]]) -> None:
-    """Write the customers map to disk in readable (pretty) form."""
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-#  update to remove legact phone 10
-
-def _update_existing_block_in_place(
-    phone_norm: str,
-    dob_clean: str,
-    updates: dict,
-    *,
-    default_country: str = COUNTRY  # uses global COUNTRY by default
-) -> bool:
-    """
-    Edit the matching block in place:
-      - Always bump 'Last Seen At' to now
-      - If updates contain non-empty values, refresh:
-          First Name, Last Name, Address, CC Name, CC Number, CC Exp, CC CVV
-      - Preserve original 'Created At' and title line
-    Returns True if a block was updated.
-
-    E.164 ONLY:
-      - phone_norm is normalized to E.164.
-      - We normalize the block's "Phone:" line to E.164 and match by strict equality.
-      - No 10-digit (phone10) paths remain. Legacy blocks should still normalize.
-    """
-    if not os.path.exists(DB_FILE):
-        return False
-
-    with open(DB_FILE, "r", encoding="utf-8") as f:
-        lines = [ln.rstrip("\n") for ln in f]
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    changed = False
-    out: list[str] = []
-    i = 0
-
-    # ---- build target E.164 --------------------------------------------------
-    raw_in = (phone_norm or "").strip()
-
-    def _to_e164(raw: str, pref_country: str) -> str:
-        raw = (raw or "").strip()
-        if raw.startswith("+") and raw[1:].replace(" ", "").isdigit():
-            return "+" + raw[1:].replace(" ", "")
-        try:
-            e = normalize_phone_e164(raw, pref_country) or ""
-            if not e:
-                alt = "EG" if pref_country.upper() != "EG" else "US"
-                e = normalize_phone_e164(raw, alt) or ""
-            return e
-        except Exception:
-            return ""
-
-    target_e164 = _to_e164(raw_in, default_country)
-    if not target_e164:
-        # If we cannot normalize the input, we cannot match anything safely.
-        return False
-
-    # ---- DOB → ISO -----------------------------------------------------------
-    def _dob_iso(s: str) -> str:
-        s = (s or "").strip()
-        if not s:
-            return ""
-        if "T" in s:
-            s = s.split("T", 1)[0].strip()
-        if _re.match(r"^\d{4}-\d{2}-\d{2}$", s):
-            return s
-        m = _re.match(r"^\s*(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})\s*$", s)
-        if m:
-            mm, dd, yyyy = m.groups()
-            try:
-                return f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
-            except Exception:
-                return ""
-        return ""
-    dob_target_iso = _dob_iso(dob_clean)
-
-    # ---- phone matcher (E.164 only) -----------------------------------------
-    def _phones_match(block_phone: str) -> bool:
-        b_e164 = _to_e164(block_phone, default_country)
-        return bool(b_e164) and (b_e164 == target_e164)
-
-    while i < len(lines):
-        ln = lines[i]
-        if ln.startswith("insert_customer:"):
-            start = i
-            i += 1
-            while i < len(lines) and not lines[i].startswith("insert_customer:"):
-                i += 1
-            block = lines[start:i]
-
-            b_phone, b_dob = _extract_phone_dob(block)
-            b_dob_iso = _dob_iso(b_dob)
-
-            # Strict: E.164 phone equality AND ISO DOB equality
-            if _phones_match(b_phone) and (b_dob_iso == dob_target_iso):
-                # Pull existing values
-                cur = {
-                    "title":        block[0],
-                    "phone":        _get_value(block, "Phone") or "",
-                    "dob":          _get_value(block, "DOB") or "",
-                    "first_name":   _get_value(block, "First Name") or "",
-                    "last_name":    _get_value(block, "Last Name") or "",
-                    "address":      _get_value(block, "Address") or "",
-                    "cc_name":      _get_value(block, "CC Name") or "",
-                    "cc_number":    _get_value(block, "CC Number") or "",  # renderer may mask
-                    "cc_exp":       _get_value(block, "CC Exp") or "",
-                    "cc_cvv":       _get_value(block, "CC CVV") or "",     # renderer may mask
-                    "created_at":   _get_value(block, "Created At") or "—",
-                    "last_seen_at": now,
-                }
-
-                # Apply non-empty updates (one-line sanitize)
-                def pick(new_val, old_val):
-                    new_val = _oneline(new_val)
-                    return new_val if new_val else old_val
-
-                cur["first_name"] = pick(updates.get("first_name"), cur["first_name"])
-                cur["last_name"]  = pick(updates.get("last_name"),  cur["last_name"])
-                cur["address"]    = pick(updates.get("address"),    cur["address"])
-                cur["cc_name"]    = pick(updates.get("cc_name"),    cur["cc_name"])
-
-                nv = _oneline(updates.get("cc_number"))
-                if nv:
-                    cur["cc_number"] = nv
-                nv = _oneline(updates.get("cc_exp"))
-                if nv:
-                    cur["cc_exp"] = nv
-                nv = _oneline(updates.get("cc_cvv"))
-                if nv:
-                    cur["cc_cvv"] = nv
-
-                # Re-render; keep original title text
-                new_block = _render_block_lines(new=True, rec=cur)
-                new_block[0] = cur["title"]
-                out.extend(new_block)
-                changed = True
-            else:
-                out.extend(block)
-        else:
-            out.append(ln)
-            i += 1
-
-    if changed:
-        with open(DB_FILE, "w", encoding="utf-8") as f:
-            f.write("\n".join(out) + ("\n" if out else ""))
-
-    return changed
 
 
 
