@@ -5052,7 +5052,6 @@ def voice():
 
 
 
-
     elif stage == "book_appt_confirm":
         debug_print("book_appt_confirm: 📍 Stage entered")
 
@@ -5227,7 +5226,10 @@ def voice():
                 local_date=local_date_str,              # NEW: YYYY-MM-DD (clinic tz)
                 local_time_display=local_time_disp,     # NEW: human local HH:MM AM/PM
             )
-            debug_print(f"book_appt_confirm: 🗂️ local persist → created={persist.get('created')} reason={persist.get('reason')}")
+            debug_print(
+                "book_appt_confirm: 🗂️ local persist → "
+                f"created={persist.get('created')} reason={persist.get('reason')}"
+            )
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ local persist failed → {e}")
 
@@ -5248,6 +5250,7 @@ def voice():
         resp.hangup()
         session_data.pop(call_sid, None)
         return str(resp)
+
 
 
 
