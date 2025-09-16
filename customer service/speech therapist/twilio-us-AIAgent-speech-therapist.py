@@ -4245,7 +4245,7 @@ def voice():
             else:
                 session_data[call_sid]["stage"] = "collect_dob"
                 prompt = ("Please say your date of birth, for example, 'July third 1990'. "
-                        "You can also type two digits for month, two for day, four for year, then press pound.")
+                        "You can also type two digits for month, two for day, and four for year, then press pound.")
             resp.append(make_gather(prompt))
             try: resp.redirect(url_for("voice"))
             except Exception: resp.redirect("/voice")
@@ -5051,7 +5051,6 @@ def voice():
 
 
 
-
     elif stage == "book_appt_confirm":
         debug_print("book_appt_confirm: 📍 Stage entered")
 
@@ -5174,34 +5173,40 @@ def voice():
                 cc_cvv=(customer.get("cc_cvv") or "")
             )
         except Exception as e:
+            # Not fatal for booking; log and continue
             debug_print(f"book_appt_confirm: insert_customer failed → {e}")
 
         # ---- Create Google Calendar event (no re-check) ----
-        try:
-            service = build("calendar", "v3", credentials=creds)
-            event_body = {
-                "summary": f"Appointment: {doctor_name}",
-                "description": f"Clinic appointment for {effective_name or 'patient'}.",
-                "start": {"dateTime": appointment_start, "timeZone": "UTC"},
-                "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
-                "transparency": "opaque",
-                "extendedProperties": {
-                    "private": {
-                        "patient_name": effective_name,
-                        "phone_e164": phone_e164,
-                        "dob": customer_dob,
-                        "call_sid": call_sid,
-                    }
-                },
-            }
-            ev = service.events().insert(calendarId=doctor_id, body=event_body, sendUpdates="none").execute()
-            google_event_id = ev.get("id")
-            debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id}")
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ❌ Google insert failed → {e}")
-            session_data[call_sid]["stage"] = "ask_time_date"
-            resp.append(make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, September 14th at 10 AM."))
-            return str(resp)
+        google_event_id = session_data[call_sid].get("google_event_id", "")
+        if google_event_id:
+            debug_print(f"book_appt_confirm: ℹ️ event already created earlier → id={google_event_id}")
+        else:
+            try:
+                service = build("calendar", "v3", credentials=creds)
+                event_body = {
+                    "summary": f"Appointment: {doctor_name}",
+                    "description": f"Clinic appointment for {effective_name or 'patient'}.",
+                    "start": {"dateTime": appointment_start, "timeZone": "UTC"},
+                    "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
+                    "transparency": "opaque",
+                    "extendedProperties": {
+                        "private": {
+                            "patient_name": effective_name,
+                            "phone_e164": phone_e164,
+                            "dob": customer_dob,
+                            "call_sid": call_sid,
+                        }
+                    },
+                }
+                ev = service.events().insert(calendarId=doctor_id, body=event_body, sendUpdates="none").execute()
+                google_event_id = ev.get("id")
+                session_data[call_sid]["google_event_id"] = google_event_id
+                debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id}")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ❌ Google insert failed → {e}")
+                session_data[call_sid]["stage"] = "ask_time_date"
+                resp.append(make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, September 14th at 10 AM."))
+                return str(resp)
 
         # ---- Persist locally (JSON) via confirm_appointment_by_name ---------------
         # Pass utc_end, friendly_local (exact spoken-style), and local breakdowns.
@@ -5231,6 +5236,7 @@ def voice():
                 f"created={persist.get('created')} reason={persist.get('reason')}"
             )
         except Exception as e:
+            # Not fatal; booking is already on Google
             debug_print(f"book_appt_confirm: ⚠️ local persist failed → {e}")
 
         # ---- Voice confirmation + SMS, then hang up ----
@@ -5250,6 +5256,7 @@ def voice():
         resp.hangup()
         session_data.pop(call_sid, None)
         return str(resp)
+
 
 
 
