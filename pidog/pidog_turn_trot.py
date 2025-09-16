@@ -1,6 +1,9 @@
 import time
 import smbus  # I2C control for PCA9685
 
+# -----------------------------
+# 🧠 I2C + PCA9685 Definitions
+# -----------------------------
 I2C_ADDR = 0x40
 bus = smbus.SMBus(1)
 MODE1 = 0x00
@@ -10,6 +13,9 @@ PWM_FREQ = 50
 SERVO_MIN = 205
 SERVO_MAX = 410
 
+# -----------------------------
+# 🦿 Leg Joint Mapping
+# -----------------------------
 JOINT_CHANNELS = {
     "FL_HIP": 0, "FL_KNEE": 1,
     "FR_HIP": 2, "FR_KNEE": 3,
@@ -17,6 +23,9 @@ JOINT_CHANNELS = {
     "RR_HIP": 6, "RR_KNEE": 7,
 }
 
+# -----------------------------
+# 🎯 Joint Angle Reference Table
+# -----------------------------
 """
 ╔═══════╤═════════════════╤════════════════════════════════════════════╗
 ║ Angle  │ Used For        │ Why                                       ║
@@ -24,9 +33,23 @@ JOINT_CHANNELS = {
 ║ 90°    │ HIP (neutral)   │ Leg centered under body                  ║
 ║ 110°   │ HIP (step fwd)  │ Swing leg forward                        ║
 ║ 95°    │ HIP (half-step) │ Slight curve step                        ║
+║ 60°    │ KNEE (stand)    │ Slight bend for support                  ║
 ╚════════╧═════════════════╧════════════════════════════════════════════╝
 """
 
+# -----------------------------
+# 🧱 Initial Standing Posture
+# -----------------------------
+initial_angles = {
+    "FL_HIP": 90, "FL_KNEE": 60,
+    "FR_HIP": 90, "FR_KNEE": 60,
+    "RL_HIP": 90, "RL_KNEE": 60,
+    "RR_HIP": 90, "RR_KNEE": 60,
+}
+
+# -----------------------------
+# 🔧 Setup Functions
+# -----------------------------
 def init_pca9685():
     bus.write_byte_data(I2C_ADDR, MODE1, 0x00)
     set_pwm_freq(PWM_FREQ)
@@ -40,6 +63,9 @@ def set_pwm_freq(freq):
     time.sleep(0.005)
     bus.write_byte_data(I2C_ADDR, MODE1, old_mode | 0xA1)
 
+# -----------------------------
+# 🔁 Servo Control
+# -----------------------------
 def angle_to_pwm(angle):
     angle = max(0, min(180, angle))
     return int(SERVO_MIN + (angle / 180.0) * (SERVO_MAX - SERVO_MIN))
@@ -56,11 +82,16 @@ def set_servo_angle(joint, angle):
     pwm = angle_to_pwm(angle)
     set_pwm(channel, 0, pwm)
 
+# -----------------------------
+# 🦴 Posture: Stand (uses matrix)
+# -----------------------------
 def stand():
-    for joint in JOINT_CHANNELS:
-        angle = 90 if 'HIP' in joint else 60
+    for joint, angle in initial_angles.items():
         set_servo_angle(joint, angle)
 
+# -----------------------------
+# 🔁 Motion Patterns
+# -----------------------------
 def turn_left(steps=2, delay=0.3):
     for _ in range(steps):
         print("↩️ Turning Left")
@@ -118,6 +149,9 @@ def trot_forward(steps=3, delay=0.2):
         set_servo_angle("FR_HIP", 90)
         set_servo_angle("RL_HIP", 90)
 
+# -----------------------------
+# ▶️ Main Program
+# -----------------------------
 def main():
     init_pca9685()
     stand()

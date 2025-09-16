@@ -1,29 +1,25 @@
 import time
-import smbus  # Used for I2C communication with PCA9685
+import smbus
 
-# -----------------------------
-# PCA9685 I2C Setup
-# -----------------------------
+# -------------------------------------------
+# 📌 PCA9685 Setup (Servo Controller over I2C)
+# -------------------------------------------
 I2C_ADDR = 0x40       # Default I2C address of PCA9685
-bus = smbus.SMBus(1)  # Use I2C bus 1 on Raspberry Pi
+bus = smbus.SMBus(1)  # I2C bus 1 on Raspberry Pi
 
-# PCA9685 register addresses
-MODE1     = 0x00
-PRESCALE  = 0xFE
+# PCA9685 Register Addresses
+MODE1 = 0x00
+PRESCALE = 0xFE
 LED0_ON_L = 0x06
 
-# PWM timing configuration
-PWM_FREQ         = 50       # 50Hz PWM frequency for hobby servos
-TICK_COUNT       = 4096     # 12-bit PWM resolution
-TICK_DURATION_US = 20000 / TICK_COUNT  # Duration of each tick (~4.88 µs)
+PWM_FREQ = 50  # 50 Hz PWM frequency (for most hobby servos)
+TICK_COUNT = 4096
+SERVO_MIN = 205  # ≈1 ms pulse → 0°
+SERVO_MAX = 410  # ≈2 ms pulse → 180°
 
-# Pulse length ranges for servos
-SERVO_MIN = 205   # 0° → ~1ms pulse
-SERVO_MAX = 410   # 180° → ~2ms pulse
-
-# -----------------------------
-# Servo Joint-to-Channel Mapping
-# -----------------------------
+# -------------------------------------------
+# 🦿 Servo Channel Mapping
+# -------------------------------------------
 JOINT_CHANNELS = {
     "FL_HIP":  0,  # Front Left Hip
     "FL_KNEE": 1,  # Front Left Knee
@@ -36,135 +32,149 @@ JOINT_CHANNELS = {
 }
 
 """
-Angle Reference Table:
-
-╔═══════╤═════════════════╤════════════════════════════════════════════╗
-║ Angle    │ Used For        │ Why                                       ║
-╟───────┼─────────────────┼────────────────────────────────────────────╢
-║ 90°   │ HIP (neutral)   │ Leg under the body (natural standing base) ║
-║       │                 │ Default center position for servos         ║
-╟───────┼─────────────────┼────────────────────────────────────────────╢
-║ 60°   │ KNEE (standing) │ Slight bend for upright pose               ║
-╟───────┼─────────────────┼────────────────────────────────────────────╢
-║ 120°  │ KNEE (sitting)  │ Deep bend to simulate crouch/sit           ║
-╟───────┼─────────────────┼────────────────────────────────────────────╢
-║ 110°  │ HIP (walking)   │ Swing leg forward for step                 ║
-╚═══════╧═════════════════╧════════════════════════════════════════════╝
+╔════════╤═════════════════╤════════════════════════════════════════════╗
+║ Angle  │ Used For        │ Why                                       ║
+╟────────┼─────────────────┼────────────────────────────────────────────╢
+║ 90°    │ HIP (neutral)   │ Leg is centered vertically under body     ║
+║ 60°    │ KNEE (standing) │ Slight bend for stability and realism     ║
+║ 120°   │ KNEE (sitting)  │ Deep bend to tuck legs in while sitting   ║
+║ 110°   │ HIP (walking)   │ Leg swings forward to step                ║
+╚════════╧═════════════════╧════════════════════════════════════════════╝
 """
 
-# -----------------------------
-# PCA9685 Initialization
-# -----------------------------
+# -------------------------------------------
+# 🔢 Initial Joint Angles Matrix (Standing)
+# -------------------------------------------
+initial_angles = {
+    "FL_HIP":  90, "FL_KNEE": 60,
+    "FR_HIP":  90, "FR_KNEE": 60,
+    "RL_HIP":  90, "RL_KNEE": 60,
+    "RR_HIP":  90, "RR_KNEE": 60,
+}
+
+# -------------------------------------------
+# ⚙️ PCA9685 Setup
+# -------------------------------------------
 def init_pca9685():
-    """ Initialize the PCA9685 and set PWM frequency """
-    bus.write_byte_data(I2C_ADDR, MODE1, 0x00)  # Wake up PCA9685
-    set_pwm_freq(PWM_FREQ)                     # Set PWM frequency
+    bus.write_byte_data(I2C_ADDR, MODE1, 0x00)  # Wake from sleep
+    set_pwm_freq(PWM_FREQ)
 
 def set_pwm_freq(freq):
-    """ Set PWM frequency by configuring the prescaler """
-    prescale_val = int(25000000.0 / (4096 * freq) - 1)
+    prescale = int(25000000.0 / (4096 * freq) - 1)
     old_mode = bus.read_byte_data(I2C_ADDR, MODE1)
-    new_mode = (old_mode & 0x7F) | 0x10  # Sleep
-    bus.write_byte_data(I2C_ADDR, MODE1, new_mode)
-    bus.write_byte_data(I2C_ADDR, PRESCALE, prescale_val)
-    bus.write_byte_data(I2C_ADDR, MODE1, old_mode)
+    bus.write_byte_data(I2C_ADDR, MODE1, old_mode | 0x10)  # Sleep
+    bus.write_byte_data(I2C_ADDR, PRESCALE, prescale)
+    bus.write_byte_data(I2C_ADDR, MODE1, old_mode)  # Wake
     time.sleep(0.005)
-    bus.write_byte_data(I2C_ADDR, MODE1, old_mode | 0xA1)  # Restart + auto-increment
+    bus.write_byte_data(I2C_ADDR, MODE1, old_mode | 0xA1)  # Restart + Auto-Increment
 
-# -----------------------------
-# Servo Control Utilities
-# -----------------------------
+# -------------------------------------------
+# 🎯 Servo Control
+# -------------------------------------------
 def angle_to_pwm(angle):
-    """ Convert angle in degrees (0°-180°) to PCA9685 PWM ticks """
-    angle = max(0, min(180, angle))  # Clamp to valid range
+    angle = max(0, min(180, angle))  # Clamp angle within safe range
     return int(SERVO_MIN + (angle / 180.0) * (SERVO_MAX - SERVO_MIN))
 
 def set_pwm(channel, on, off):
-    """ Send PWM values to a PCA9685 channel """
     reg = LED0_ON_L + 4 * channel
-    bus.write_byte_data(I2C_ADDR, reg,     on & 0xFF)
-    bus.write_byte_data(I2C_ADDR, reg + 1, on >> 8)
-    bus.write_byte_data(I2C_ADDR, reg + 2, off & 0xFF)
-    bus.write_byte_data(I2C_ADDR, reg + 3, off >> 8)
+    bus.write_byte_data(I2C_ADDR, reg, on & 0xFF)
+    bus.write_byte_data(I2C_ADDR, reg+1, on >> 8)
+    bus.write_byte_data(I2C_ADDR, reg+2, off & 0xFF)
+    bus.write_byte_data(I2C_ADDR, reg+3, off >> 8)
 
-def set_servo_angle(joint_name, angle):
-    """ Move a servo to a specific angle by joint name """
-    channel = JOINT_CHANNELS[joint_name]
-    pwm     = angle_to_pwm(angle)
-    set_pwm(channel, 0, pwm)
+def set_servo_angle(joint, angle):
+    channel = JOINT_CHANNELS[joint]
+    pwm_val = angle_to_pwm(angle)
+    set_pwm(channel, 0, pwm_val)
 
-# -----------------------------
-# Basic Robot Postures
-# -----------------------------
-def stand_posture():
-    """ Bring all legs to a stable standing pose (HIP=90, KNEE=60) """
-    angles = {
-        "FL_HIP": 90, "FL_KNEE": 60,
-        "FR_HIP": 90, "FR_KNEE": 60,
-        "RL_HIP": 90, "RL_KNEE": 60,
-        "RR_HIP": 90, "RR_KNEE": 60,
-    }
-    for joint, angle in angles.items():
-        set_servo_angle(joint, angle)
-
-def sit_posture():
-    """ Make the robot sit by bending all knees to 120° """
-    angles = {
-        "FL_HIP": 90, "FL_KNEE": 120,
-        "FR_HIP": 90, "FR_KNEE": 120,
-        "RL_HIP": 90, "RL_KNEE": 120,
-        "RR_HIP": 90, "RR_KNEE": 120,
-    }
-    for joint, angle in angles.items():
-        set_servo_angle(joint, angle)
-
-# -----------------------------
-# Simple Gait Cycle (Walk Forward)
-# -----------------------------
-def walk_forward(steps=3, delay=0.3):
+# -------------------------------------------
+# 📏 Posture Routines
+# -------------------------------------------
+def stand():
     """
-    Perform an alternating gait:
-    - Step 1: FL and RR legs swing forward
-    - Step 2: FR and RL legs swing forward
+    Set each joint to its defined 'standing' position using the initial_angles matrix.
+    """
+    for joint, angle in initial_angles.items():
+        set_servo_angle(joint, angle)
+
+def sit():
+    """
+    Deeper bend in knees to simulate sitting posture.
+    """
+    for joint in JOINT_CHANNELS:
+        if "HIP" in joint:
+            set_servo_angle(joint, 90)
+        elif "KNEE" in joint:
+            set_servo_angle(joint, 120)
+
+# -------------------------------------------
+# 🚶 Walking (Trot Gait)
+# -------------------------------------------
+def trot_forward(steps=3, delay=0.3):
+    """
+    Simple trot gait: moves diagonal pairs (FL+RR, then FR+RL).
     """
     for i in range(steps):
-        print(f"\U0001f6b6 Walking step {i + 1}")
-
-        # Move FL and RR forward
+        print(f"Step {i+1} — Trot gait")
         set_servo_angle("FL_HIP", 110)
         set_servo_angle("RR_HIP", 110)
         time.sleep(delay)
         set_servo_angle("FL_HIP", 90)
         set_servo_angle("RR_HIP", 90)
 
-        # Move FR and RL forward
         set_servo_angle("FR_HIP", 110)
         set_servo_angle("RL_HIP", 110)
         time.sleep(delay)
         set_servo_angle("FR_HIP", 90)
         set_servo_angle("RL_HIP", 90)
 
-# -----------------------------
-# Entry Point
-# -----------------------------
+# -------------------------------------------
+# ↩️ Turning
+# -------------------------------------------
+def turn_left(steps=2, delay=0.3):
+    for i in range(steps):
+        print(f"Turning left — step {i+1}")
+        set_servo_angle("FR_HIP", 110)
+        set_servo_angle("RR_HIP", 110)
+        time.sleep(delay)
+        set_servo_angle("FR_HIP", 90)
+        set_servo_angle("RR_HIP", 90)
+
+def turn_right(steps=2, delay=0.3):
+    for i in range(steps):
+        print(f"Turning right — step {i+1}")
+        set_servo_angle("FL_HIP", 110)
+        set_servo_angle("RL_HIP", 110)
+        time.sleep(delay)
+        set_servo_angle("FL_HIP", 90)
+        set_servo_angle("RL_HIP", 90)
+
+# -------------------------------------------
+# 🚀 Main Execution
+# -------------------------------------------
 def main():
-    print("\U0001f527 Initializing PCA9685...")
+    print("🔧 Init...")
     init_pca9685()
 
-    print("\U0001f436 Standing...")
-    stand_posture()
+    print("🦴 Stand")
+    stand()
     time.sleep(1)
 
-    print("\U0001f6b6 Walking...")
-    walk_forward(steps=4, delay=0.3)
+    print("🚶 Walk Forward")
+    trot_forward(steps=3)
 
-    print("\U0001fa91 Sitting...")
-    sit_posture()
+    print("↩️ Turn Left")
+    turn_left(steps=2)
 
-    print("\u2705 Done.")
+    print("↪️ Turn Right")
+    turn_right(steps=2)
+
+    print("🪑 Sit")
+    sit()
+    print("✅ Done")
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\U0001f534 Stopped by user.")
+        print("❌ Interrupted")
