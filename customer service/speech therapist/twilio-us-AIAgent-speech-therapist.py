@@ -4524,8 +4524,6 @@ def voice():
     #   - Steps 2 & 3 mark session["no_input_expected"] = True (DTMF-only)
     # ----------------------------------------------------------------------
 
-    import re as _re
-    from datetime import datetime, timezone as _tz
 
     # --- helpers ------------------------------------------------------------
     def _luhn_ok(pan: str) -> bool:
