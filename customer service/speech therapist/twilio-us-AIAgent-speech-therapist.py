@@ -175,7 +175,7 @@ DB_FILE   = os.path.join(DB_FOLDER, "customers.json")  # human-readable, not JSO
 # Global working config
 # 2) Read from env, with a safe default
 CLINIC_TZ = os.getenv("CLINIC_TZ", "America/Chicago")
-from datetime import time
+#from datetime import time
 WORKING_DAYS = [int(x) for x in os.getenv("WORKING_DAYS", "0,1,2,3,4").split(",") if x.strip().isdigit()]
 
 WORKING_HOURS_START = int(os.getenv("WORKING_HOURS_START", 8))
@@ -4619,7 +4619,7 @@ def voice():
         gather = make_gather("Thank you. Now, please enter your card number, then press pound.")
         resp.append(gather)
         try:
-            from flask import url_for
+            #from flask import url_for
             resp.redirect(url_for("voice"))
         except Exception:
             resp.redirect("/voice")
