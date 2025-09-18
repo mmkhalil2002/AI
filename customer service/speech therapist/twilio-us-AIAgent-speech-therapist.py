@@ -1,4 +1,4 @@
-# update  09/17/25 time_saved 02:45 pm
+# update  09/18/25 time_saved 07:26 am
 #  am
 # =========================
 # Standard library imports
@@ -4499,6 +4499,81 @@ def voice():
             _dbg("collect_last_name.redirect", target="/voice", fallback=True, reason="advance_to_collect_address")
         return str(resp)
 
+
+
+
+
+    elif stage == "collect_address":
+        # ----------------------------------------------------------------------
+        # 📬 Stage: collect_address
+        # Purpose:
+        #   - Capture full street address via speech (and optionally DTMF chunks).
+        #   - Normalize punctuation/whitespace.
+        #   - Store into session_data[call_sid]["customer"]["address"].
+        #   - Advance → collect_cc.
+        # Notes:
+        #   - Make sure we ALWAYS return TwiML: return str(resp)
+        #   - Use resp.redirect("/voice") (TwiML) not Flask redirect()
+        # ----------------------------------------------------------------------
+
+        raw_addr = (speech_result or "").strip()
+        debug_print(f"collect_address: 📬 Collected address (raw): {raw_addr}")
+
+        # 🔇 Silence handling (3 tries then hang up)
+        if not raw_addr:
+            tries = session_data[call_sid].get("silence_address", 0) + 1
+            session_data[call_sid]["silence_address"] = tries
+            debug_print(f"collect_address: 🤐 silence; tries={tries}")
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            gather = make_gather("Sorry, I didn’t hear your address. Please say your full street address, city, and ZIP.")
+            resp.append(gather)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # 🧽 Normalize punctuation/whitespace
+        try:
+            import re as _re
+            addr_norm = raw_addr
+            # collapse multiple spaces
+            addr_norm = _re.sub(r"\s+", " ", addr_norm)
+            # normalize punctuation spacing (keep commas and periods if they’re spoken)
+            addr_norm = addr_norm.strip()
+            debug_print(f"collect_address: 🧽 Normalized → '{addr_norm}'")
+        except Exception as e:
+            debug_print(f"collect_address: ⚠️ normalize error → {e}")
+            addr_norm = raw_addr
+
+        # ✅ Save to session
+        session_data.setdefault(call_sid, {}).setdefault("customer", {})
+        session_data[call_sid]["customer"]["address"] = addr_norm
+        session_data[call_sid].pop("silence_address", None)  # reset silence counter
+        debug_print("collect_address: ✅ Saved address to session")
+
+        # ➡️ Advance to CC collection
+        session_data[call_sid]["stage"] = "collect_cc"
+        session_data[call_sid]["cc_step"] = 1  # ensure we begin at step 1
+
+        # Prompt for card number (DTMF preferred, speech allowed)
+        prompt_cc = "Thank you. Now, please enter your card number, then press pound."
+        gather = make_gather(
+            prompt_cc,
+            hints="zero one two three four five six seven eight nine",
+            input="speech dtmf",
+            timeout=25,
+            speech_timeout="10",
+            finish_on_key="#",
+            action="/voice",
+            barge_in=True,
+        )
+        resp.append(gather)
+        # IMPORTANT: TwiML redirect, then return TwiML
+        resp.redirect("/voice")
+        return str(resp)
 
 
 
