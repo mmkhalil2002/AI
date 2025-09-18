@@ -1,4 +1,4 @@
-# update  09/18/25 time_saved 07:26 am
+# update  09/18/25 time_saved 07:31 am
 #  am
 # =========================
 # Standard library imports
@@ -4537,7 +4537,7 @@ def voice():
 
         # 🧽 Normalize punctuation/whitespace
         try:
-            import re as _re
+            #import re as _re
             addr_norm = raw_addr
             # collapse multiple spaces
             addr_norm = _re.sub(r"\s+", " ", addr_norm)
