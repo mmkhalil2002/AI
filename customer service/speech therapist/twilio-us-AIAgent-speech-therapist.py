@@ -1,4 +1,4 @@
-# update  09/18/25 time_saved 09:55 am
+# update  09/18/25 time_saved  11:45 am  book is tested
 #  
 # =========================
 # Standard library imports
@@ -4584,6 +4584,10 @@ def voice():
 
 
    
+
+
+
+
     elif stage == "collect_cc":
         # ----------------------------------------------------------------------
         # 💳 Stage: collect_cc
@@ -4906,16 +4910,13 @@ def voice():
 
 
 
-
-
-
     elif stage == "book_appt_confirm":
         debug_print("book_appt_confirm: 📍 Stage entered")
 
         # ----------------------------------------------------------------------
         # 🔇 LOCALIZED SILENCE HANDLING FOR CONFIRM STAGE
-        # For this stage, we do NOT actually need caller input.
-        # If there's no speech or DTMF, just log and continue with auto-booking.
+        # If there's no speech or DTMF input, retry up to 3 times before hanging up.
+        # This is localized and does not touch global silence logic.
         # ----------------------------------------------------------------------
         raw_speech = (speech_result or "").strip()
         raw_dtmf   = (request.values.get("Digits") or "").strip()
@@ -4924,9 +4925,15 @@ def voice():
             session_data[call_sid]["silence_book_appt_confirm"] = silent_tries
             debug_print(f"book_appt_confirm: 🤐 silence detected (tries={silent_tries})")
 
-            # Instead of reprompting, we just move forward automatically.
-            # Reset the counter so it doesn't accumulate endlessly.
-            session_data[call_sid]["silence_book_appt_confirm"] = 0
+            if silent_tries >= 3:
+                resp.say(gpt_speak("I'm still not hearing anything. Let's try again later."), VOICE)
+                resp.hangup()
+                return str(resp)
+
+            # Re-prompt with a friendly fallback message
+            prompt = "Would you like to confirm your appointment now? You can say yes to continue."
+            resp.append(make_gather(prompt))
+            return str(resp)
 
         # ----------------------------------------------------------------------
         # Ignore any incidental speech/DTMF here — this stage auto-books.
