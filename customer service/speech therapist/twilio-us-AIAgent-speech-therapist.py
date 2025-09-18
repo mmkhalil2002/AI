@@ -1,4 +1,4 @@
-# update  09/18/25 time_saved 08:20 am
+# update  09/18/25 time_saved 08:58 am
 #  
 # =========================
 # Standard library imports
@@ -5205,234 +5205,225 @@ def voice():
 
 
 
+        elif stage == "book_appt_confirm":
+            debug_print("book_appt_confirm: 📍 Stage entered")
 
+            # ----------------------------------------------------------------------
+            # 🔇 LOCALIZED SILENCE HANDLING FOR CONFIRM STAGE
+            # For this stage, we do NOT actually need caller input.
+            # If there's no speech or DTMF, just log and continue with auto-booking.
+            # ----------------------------------------------------------------------
+            raw_speech = (speech_result or "").strip()
+            raw_dtmf   = (request.values.get("Digits") or "").strip()
+            if not raw_speech and not raw_dtmf:
+                silent_tries = session_data[call_sid].get("silence_book_appt_confirm", 0) + 1
+                session_data[call_sid]["silence_book_appt_confirm"] = silent_tries
+                debug_print(f"book_appt_confirm: 🤐 silence detected (tries={silent_tries})")
 
-    elif stage == "book_appt_confirm":
-        debug_print("book_appt_confirm: 📍 Stage entered")
+                # Instead of reprompting, we just move forward automatically.
+                # Reset the counter so it doesn't accumulate endlessly.
+                session_data[call_sid]["silence_book_appt_confirm"] = 0
 
-        # ----------------------------------------------------------------------
-        # 🔇 LOCALIZED SILENCE HANDLING FOR CONFIRM STAGE
-        # If there's no speech or DTMF input, retry up to 3 times before hanging up.
-        # This is localized and does not touch global silence logic.
-        # ----------------------------------------------------------------------
-        raw_speech = (speech_result or "").strip()
-        raw_dtmf   = (request.values.get("Digits") or "").strip()
-        if not raw_speech and not raw_dtmf:
-            silent_tries = session_data[call_sid].get("silence_book_appt_confirm", 0) + 1
-            session_data[call_sid]["silence_book_appt_confirm"] = silent_tries
-            debug_print(f"book_appt_confirm: 🤐 silence detected (tries={silent_tries})")
+            # ----------------------------------------------------------------------
+            # Ignore any incidental speech/DTMF here — this stage auto-books.
+            try:
+                if raw_speech or raw_dtmf:
+                    debug_print("book_appt_confirm: 🛡️ ignoring incidental input at confirm stage")
+            except Exception:
+                pass
 
-            if silent_tries >= 3:
-                resp.say(gpt_speak("I'm still not hearing anything. Let's try again later."), VOICE)
+            # ---- Doctor info ----
+            doctor_id = session_data[call_sid].get("doctor_id")
+            if not doctor_id:
+                debug_print("book_appt_confirm: ❌ missing doctor_id → choose_doctor")
+                session_data[call_sid]["stage"] = "choose_doctor"
+                resp.append(make_gather("Which doctor would you like to see?"))
+                return str(resp)
+
+            doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
+
+            # ---- Appointment time ----
+            appt = session_data[call_sid].get("appointment_time", {}) or {}
+            appointment_start = appt.get("start")
+            appointment_end   = appt.get("end")
+            if not appointment_start:
+                debug_print("book_appt_confirm: ❌ missing appointment_start")
+                resp.say(gpt_speak("Appointment time is missing. Goodbye!"), VOICE)
                 resp.hangup()
                 return str(resp)
 
-            # Re-prompt with a friendly fallback message
-            prompt = "Would you like to confirm your appointment now? You can say yes to continue."
-            resp.append(make_gather(prompt))
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # Ignore any incidental speech/DTMF here — this stage auto-books.
-        try:
-            if raw_speech or raw_dtmf:
-                debug_print("book_appt_confirm: 🛡️ ignoring incidental input at confirm stage")
-        except Exception:
-            pass
-
-        # ---- Doctor info ----
-        doctor_id = session_data[call_sid].get("doctor_id")
-        if not doctor_id:
-            debug_print("book_appt_confirm: ❌ missing doctor_id → choose_doctor")
-            session_data[call_sid]["stage"] = "choose_doctor"
-            resp.append(make_gather("Which doctor would you like to see?"))
-            return str(resp)
-
-        doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
-
-        # ---- Appointment time ----
-        appt = session_data[call_sid].get("appointment_time", {}) or {}
-        appointment_start = appt.get("start")
-        appointment_end   = appt.get("end")
-        if not appointment_start:
-            debug_print("book_appt_confirm: ❌ missing appointment_start")
-            resp.say(gpt_speak("Appointment time is missing. Goodbye!"), VOICE)
-            resp.hangup()
-            return str(resp)
-
-        # Local-friendly time
-        tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
-        try:
-            tz = _pytz.timezone(tz_name)
-        except Exception:
-            tz = _pytz.timezone("America/Chicago")
-
-        try:
-            dt_utc   = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
-            dt_local = dt_utc.astimezone(tz)
+            # Local-friendly time
+            tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
             try:
-                formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
+                tz = _pytz.timezone(tz_name)
             except Exception:
-                formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
-        except Exception as e:
-            debug_print(f"book_appt_confirm: time format error → {e}")
-            resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
-            resp.hangup()
-            return str(resp)
+                tz = _pytz.timezone("America/Chicago")
 
-        # Compute end if missing (default 30m)
-        if not appointment_end:
             try:
-                dur = None
-                for k in ("APPOINTMENT_DURATION_MINUTES", "SESSION_TIME", "SESSIUON_TIME"):
-                    v = globals().get(k)
-                    if v:
-                        try:
-                            dur = int(v); break
-                        except Exception:
-                            pass
-                if dur not in (15, 30, 45, 60):
-                    dur = 30
-                end_dt = dt_utc + timedelta(minutes=dur)
-                appointment_end = end_dt.astimezone(_pytz.UTC).isoformat()
+                dt_utc   = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
+                dt_local = dt_utc.astimezone(tz)
+                try:
+                    formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
+                except Exception:
+                    formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
             except Exception as e:
-                debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
+                debug_print(f"book_appt_confirm: time format error → {e}")
                 resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
                 resp.hangup()
                 return str(resp)
 
-        # ---- Customer info ----
-        customer         = session_data[call_sid].get("customer", {}) or {}
-        customer_name    = (customer.get("name") or "").strip()
-        first_name       = (customer.get("first_name") or "").strip()
-        last_name        = (customer.get("last_name")  or "").strip()
-        if not first_name and customer_name:
-            parts = customer_name.split()
-            first_name = parts[0]
-            last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
-        effective_name   = customer_name or " ".join([n for n in (first_name, last_name) if n]).strip()
-        customer_address = (customer.get("address") or "").strip()
-        customer_dob     = (customer.get("dob") or "").strip()
+            # Compute end if missing (default 30m)
+            if not appointment_end:
+                try:
+                    dur = None
+                    for k in ("APPOINTMENT_DURATION_MINUTES", "SESSION_TIME", "SESSIUON_TIME"):
+                        v = globals().get(k)
+                        if v:
+                            try:
+                                dur = int(v); break
+                            except Exception:
+                                pass
+                    if dur not in (15, 30, 45, 60):
+                        dur = 30
+                    end_dt = dt_utc + timedelta(minutes=dur)
+                    appointment_end = end_dt.astimezone(_pytz.UTC).isoformat()
+                except Exception as e:
+                    debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
+                    resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+                    resp.hangup()
+                    return str(resp)
 
-        phone_raw = (customer.get("phone_e164") or customer.get("phone") or "").strip()
-        if phone_raw.startswith("+") and phone_raw[1:].replace(" ", "").isdigit():
-            phone_e164 = "+" + phone_raw[1:].replace(" ", "")
-        else:
-            try:
-                default_country = (session_data[call_sid].get("phone_country") or globals().get("COUNTRY") or "US").upper()
-                phone_e164 = normalize_phone_e164(phone_raw, default_country) or ""
-                if not phone_e164:
-                    alt = "EG" if default_country != "EG" else "US"
-                    phone_e164 = normalize_phone_e164(phone_raw, alt) or ""
-            except Exception:
-                phone_e164 = ""
+            # ---- Customer info ----
+            customer         = session_data[call_sid].get("customer", {}) or {}
+            customer_name    = (customer.get("name") or "").strip()
+            first_name       = (customer.get("first_name") or "").strip()
+            last_name        = (customer.get("last_name")  or "").strip()
+            if not first_name and customer_name:
+                parts = customer_name.split()
+                first_name = parts[0]
+                last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
+            effective_name   = customer_name or " ".join([n for n in (first_name, last_name) if n]).strip()
+            customer_address = (customer.get("address") or "").strip()
+            customer_dob     = (customer.get("dob") or "").strip()
 
-        if not phone_e164:
-            session_data[call_sid]["stage"] = "collect_phone"
-            resp.append(make_gather("Before we confirm your appointment, please provide your phone number."))
-            return str(resp)
+            phone_raw = (customer.get("phone_e164") or customer.get("phone") or "").strip()
+            if phone_raw.startswith("+") and phone_raw[1:].replace(" ", "").isdigit():
+                phone_e164 = "+" + phone_raw[1:].replace(" ", "")
+            else:
+                try:
+                    default_country = (session_data[call_sid].get("phone_country") or globals().get("COUNTRY") or "US").upper()
+                    phone_e164 = normalize_phone_e164(phone_raw, default_country) or ""
+                    if not phone_e164:
+                        alt = "EG" if default_country != "EG" else "US"
+                        phone_e164 = normalize_phone_e164(phone_raw, alt) or ""
+                except Exception:
+                    phone_e164 = ""
 
-        if not customer_dob:
-            session_data[call_sid]["stage"] = "collect_dob"
-            resp.append(make_gather(
-                "Before we confirm, please say your date of birth, for example, 'July 3 1990'. "
-                "You can also enter month, day, and year, then press pound."
-            ))
-            return str(resp)
-
-        # ---- Upsert customer (best-effort) ----
-        try:
-            init_db()
-            insert_customer(
-                phone=phone_e164, dob=customer_dob,
-                first_name=first_name, last_name=last_name, address=customer_address,
-                cc_name=(customer.get("cc_name") or effective_name or ""),
-                cc_number=(customer.get("cc_number") or ""),
-                cc_exp=(customer.get("cc_exp") or ""),
-                cc_cvv=(customer.get("cc_cvv") or "")
-            )
-        except Exception as e:
-            debug_print(f"book_appt_confirm: insert_customer failed → {e}")
-
-        # ---- Create Google Calendar event (no re-check) ----
-        google_event_id = session_data[call_sid].get("google_event_id", "")
-        if google_event_id:
-            debug_print(f"book_appt_confirm: ℹ️ event already created earlier → id={google_event_id}")
-        else:
-            try:
-                service = build("calendar", "v3", credentials=creds)
-                event_body = {
-                    "summary": f"Appointment: {doctor_name}",
-                    "description": f"Clinic appointment for {effective_name or 'patient'}.",
-                    "start": {"dateTime": appointment_start, "timeZone": "UTC"},
-                    "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
-                    "transparency": "opaque",
-                    "extendedProperties": {
-                        "private": {
-                            "patient_name": effective_name,
-                            "phone_e164": phone_e164,
-                            "dob": customer_dob,
-                            "call_sid": call_sid,
-                        }
-                    },
-                }
-                ev = service.events().insert(calendarId=doctor_id, body=event_body, sendUpdates="none").execute()
-                google_event_id = ev.get("id")
-                session_data[call_sid]["google_event_id"] = google_event_id
-                debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id}")
-            except Exception as e:
-                debug_print(f"book_appt_confirm: ❌ Google insert failed → {e}")
-                session_data[call_sid]["stage"] = "ask_time_date"
-                resp.append(make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, September 14th at 10 AM."))
+            if not phone_e164:
+                session_data[call_sid]["stage"] = "collect_phone"
+                resp.append(make_gather("Before we confirm your appointment, please provide your phone number."))
                 return str(resp)
 
-        # ---- Persist locally (JSON) via confirm_appointment_by_name ----
-        try:
-            local_date_str = dt_local.strftime("%Y-%m-%d")
+            if not customer_dob:
+                session_data[call_sid]["stage"] = "collect_dob"
+                resp.append(make_gather(
+                    "Before we confirm, please say your date of birth, for example, 'July 3 1990'. "
+                    "You can also enter month, day, and year, then press pound."
+                ))
+                return str(resp)
+
+            # ---- Upsert customer (best-effort) ----
             try:
-                local_time_disp = dt_local.strftime("%-I:%M %p")
-            except Exception:
-                local_time_disp = dt_local.strftime("%I:%M %p").lstrip("0")
+                init_db()
+                insert_customer(
+                    phone=phone_e164, dob=customer_dob,
+                    first_name=first_name, last_name=last_name, address=customer_address,
+                    cc_name=(customer.get("cc_name") or effective_name or ""),
+                    cc_number=(customer.get("cc_number") or ""),
+                    cc_exp=(customer.get("cc_exp") or ""),
+                    cc_cvv=(customer.get("cc_cvv") or "")
+                )
+            except Exception as e:
+                debug_print(f"book_appt_confirm: insert_customer failed → {e}")
 
-            persist = confirm_appointment_by_name(
-                doctor_name=doctor_name,
-                phone=phone_e164,
-                utc_start=appointment_start,
-                utc_end=appointment_end,
-                calendar_id=doctor_id,
-                name=effective_name,
-                dob=customer_dob,
-                address=customer_address,
-                event_id=google_event_id,
-                friendly_local=formatted_time,
-                local_date=local_date_str,
-                local_time_display=local_time_disp,
-            )
-            debug_print(
-                "book_appt_confirm: 🗂️ local persist → "
-                f"created={persist.get('created')} reason={persist.get('reason')}"
-            )
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ local persist failed → {e}")
+            # ---- Create Google Calendar event (no re-check) ----
+            google_event_id = session_data[call_sid].get("google_event_id", "")
+            if google_event_id:
+                debug_print(f"book_appt_confirm: ℹ️ event already created earlier → id={google_event_id}")
+            else:
+                try:
+                    service = build("calendar", "v3", credentials=creds)
+                    event_body = {
+                        "summary": f"Appointment: {doctor_name}",
+                        "description": f"Clinic appointment for {effective_name or 'patient'}.",
+                        "start": {"dateTime": appointment_start, "timeZone": "UTC"},
+                        "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
+                        "transparency": "opaque",
+                        "extendedProperties": {
+                            "private": {
+                                "patient_name": effective_name,
+                                "phone_e164": phone_e164,
+                                "dob": customer_dob,
+                                "call_sid": call_sid,
+                            }
+                        },
+                    }
+                    ev = service.events().insert(calendarId=doctor_id, body=event_body, sendUpdates="none").execute()
+                    google_event_id = ev.get("id")
+                    session_data[call_sid]["google_event_id"] = google_event_id
+                    debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id}")
+                except Exception as e:
+                    debug_print(f"book_appt_confirm: ❌ Google insert failed → {e}")
+                    session_data[call_sid]["stage"] = "ask_time_date"
+                    resp.append(make_gather("Sorry, I couldn't confirm that slot. Please say a new date and time, for example, September 14th at 10 AM."))
+                    return str(resp)
 
-        # ---- Voice confirmation + SMS, then hang up ----
-        msg = f"Your appointment with {doctor_name} has been booked"
-        if formatted_time: msg += f" on {formatted_time}"
-        msg += ". We look forward to seeing you. Goodbye!"
-        resp.say(gpt_speak(msg), VOICE)
+            # ---- Persist locally (JSON) via confirm_appointment_by_name ----
+            try:
+                local_date_str = dt_local.strftime("%Y-%m-%d")
+                try:
+                    local_time_disp = dt_local.strftime("%-I:%M %p")
+                except Exception:
+                    local_time_disp = dt_local.strftime("%I:%M %p").lstrip("0")
 
-        try:
-            sms = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
-            if formatted_time: sms += f" on {formatted_time}"
-            sms += ". Thank you for choosing Epic Therapist Clinic."
-            _ = client.messages.create(body=sms, from_=TWILIO_PHONE_NUMBER, to=phone_e164)
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
+                persist = confirm_appointment_by_name(
+                    doctor_name=doctor_name,
+                    phone=phone_e164,
+                    utc_start=appointment_start,
+                    utc_end=appointment_end,
+                    calendar_id=doctor_id,
+                    name=effective_name,
+                    dob=customer_dob,
+                    address=customer_address,
+                    event_id=google_event_id,
+                    friendly_local=formatted_time,
+                    local_date=local_date_str,
+                    local_time_display=local_time_disp,
+                )
+                debug_print(
+                    "book_appt_confirm: 🗂️ local persist → "
+                    f"created={persist.get('created')} reason={persist.get('reason')}"
+                )
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ⚠️ local persist failed → {e}")
 
-        resp.hangup()
-        session_data.pop(call_sid, None)
-        return str(resp)
+            # ---- Voice confirmation + SMS, then hang up ----
+            msg = f"Your appointment with {doctor_name} has been booked"
+            if formatted_time: msg += f" on {formatted_time}"
+            msg += ". We look forward to seeing you. Goodbye!"
+            resp.say(gpt_speak(msg), VOICE)
 
+            try:
+                sms = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
+                if formatted_time: sms += f" on {formatted_time}"
+                sms += ". Thank you for choosing Epic Therapist Clinic."
+                _ = client.messages.create(body=sms, from_=TWILIO_PHONE_NUMBER, to=phone_e164)
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
+
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
 
 
 
