@@ -1,4 +1,4 @@
-# update  09/18/25 time_saved 07:58 am
+# update  09/18/25 time_saved 08:20 am
 #  
 # =========================
 # Standard library imports
@@ -2269,6 +2269,10 @@ def customer_search(
     debug_print(f"customer_search: phone_e164={phone_e164} dob_iso={dob_iso or '∅'} key={key_e164} → exists={exists}")
     return exists
 
+def _save_customers(data: Dict[str, Dict[str, Any]]) -> None:
+    """Write the customers map to disk in readable (pretty) form."""
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 
@@ -2937,8 +2941,8 @@ def voice():
         return ("Sorry, I didn’t hear anything. Please say that again.", hints)
 
     # Only run the guard outside of the very first greeting (intro),
-    # and skip stages that handle silence internally (collect_cc).
-    if stage not in ("intro", "collect_cc"):
+    # and skip stages that handle silence internally (collect_cc, book_appt_confirm).
+    if stage not in ("intro", "collect_cc", "book_appt_confirm"):
         if not speech_result and not dtmf_digits:
             session_data.setdefault(call_sid, {})
             key = f"silence_{stage}"
@@ -4689,7 +4693,7 @@ def voice():
 
             prompt = {
                 1: "Please enter your card number now, then press pound.",
-                2: "Please enter the expiration as four digits M M Y Y, then press pound.",
+                2: "Please say or enter the expiration as 2 digits for month 2 digits for year then press pound.",
                 3: "Please enter the three or four digit security code, then press pound."
             }.get(cc_step, "Please enter your card details, then press pound.")
 
@@ -5185,10 +5189,14 @@ def voice():
 
             next_stage = "update_customer_cc" if session_data.get(call_sid, {}).get("cc_update", {}).get("active") else "book_appt_confirm"
             session_data[call_sid]["stage"] = next_stage
-            debug_print(f"collect_cc: ➡️ Auto-advancing to {next_stage}")
 
+            # NEW: skip the central silence guard on the very next POST
+            session_data[call_sid]["skip_silence_once"] = True
+
+            debug_print(f"collect_cc: ➡️ Auto-advancing to {next_stage}")
             resp.redirect("/voice")
             return str(resp)
+
 
 
 
