@@ -1,4 +1,4 @@
-# update  09/18/25 time_saved  11:45 am  book is tested
+# update  09/19/25 time_saved  08:15 am  book is tested
 #  
 # =========================
 # Standard library imports
@@ -5335,7 +5335,7 @@ def voice():
         # ------------------------------
         session_data[call_sid]["doctor_id"] = matched_id
         session_data[call_sid]["cancel"]["doctor"] = matched_name or googleid_dr_name_map.get(matched_id, "the doctor")
-        session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"
+        session_data[call_sid]["stage"] = "cancel_appt_get_phone_number"
 
         resp.append(make_gather(
             "Thanks. What phone number did you use when booking the appointment?"
@@ -5347,14 +5347,14 @@ def voice():
 
 
 
-    elif stage == "cancel_appt_by_phone_number":
+    elif stage == "cancel_appt_get_phone_number":
         # ----------------------------------------------------------------------
-        # 📞 Collect the phone number used when booking, then move to date+time.
+        # 📞 Collect the phone number used when booking, then move to DOB check.
         #  - Silent-mode aware (re-prompts up to 3x if nothing is heard)
         #  - Accepts DTMF or speech
         #  - Normalizes to E.164 ONLY (US/Egypt supported via normalize_phone_e164)
         #  - Stores under session_data[call_sid]["cancel"]["phone_e164"]
-        #  - Next stage: cancel_appt_get_date_time
+        #  - Next stage: cancel_appt_get_dob
         # ----------------------------------------------------------------------
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("cancel", {})
@@ -5367,7 +5367,7 @@ def voice():
         speech_text = (speech_result or "").strip()
 
         debug_print(
-            f"cancel_appt_by_phone_number: 🗣️ speech='{speech_text}' "
+            f"cancel_appt_get_phone_number: 🗣️ speech='{speech_text}' "
             f"🔢 DTMF='{dtmf_digits}'"
         )
 
@@ -5375,7 +5375,7 @@ def voice():
         if not (speech_text or dtmf_digits):
             tries = session_data[call_sid].get("silence_cancel_phone", 0) + 1
             session_data[call_sid]["silence_cancel_phone"] = tries
-            debug_print(f"cancel_appt_by_phone_number: 🤐 silence count={tries}")
+            debug_print(f"cancel_appt_get_phone_number: 🤐 silence count={tries}")
 
             if tries >= 3:
                 resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
@@ -5387,7 +5387,7 @@ def voice():
                 "I didn’t hear your phone number. Please say or type your phone number including area code, "
                 "then press pound."
             )
-            session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"
+            session_data[call_sid]["stage"] = "cancel_appt_get_phone_number"
             resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine double triple"))
             resp.redirect("/voice")
             return str(resp)
@@ -5443,7 +5443,7 @@ def voice():
                     phone_e164 = "+" + body_digits
 
             if not phone_e164:
-                debug_print(f"cancel_appt_by_phone_number: normalizing via {default_country} from='{raw_for_e164}'")
+                debug_print(f"cancel_appt_get_phone_number: normalizing via {default_country} from='{raw_for_e164}'")
                 phone_e164 = normalize_phone_e164(raw_for_e164, default_country) or ""
 
             if not phone_e164 and raw_digits:
@@ -5453,7 +5453,7 @@ def voice():
             if not phone_e164:
                 # try the other supported country as a last resort (still E.164 only)
                 alt = "EG" if default_country != "EG" else "US"
-                debug_print(f"cancel_appt_by_phone_number: retry via alt country={alt}")
+                debug_print(f"cancel_appt_get_phone_number: retry via alt country={alt}")
                 phone_e164 = normalize_phone_e164(raw_for_e164 or raw_digits, alt) or ""
         except Exception as e:
             debug_print(f"cancel_appt_by_phone_number: ⚠️ normalize_phone_e164 error → {e}")
@@ -5466,7 +5466,7 @@ def voice():
 
         # Validate (E.164 required)
         if not phone_e164:
-            session_data[call_sid]["stage"] = "cancel_appt_by_phone_number"
+            session_data[call_sid]["stage"] = "cancel_appt_get_phone_number"
             prompt = (
                 "I didn’t catch a valid phone number. Please say or type your phone number including area code, "
                 "then press pound."
@@ -5477,14 +5477,15 @@ def voice():
 
         # ✅ Store E.164 only and proceed
         session_data[call_sid]["cancel"]["phone_e164"] = phone_e164
-        session_data[call_sid]["stage"] = "cancel_appt_get_date_time"
+        session_data[call_sid]["stage"] = "cancel_appt_get_dob"
 
         resp.append(make_gather(
-            "Thanks. Now, please tell me the date and time of the appointment you want to cancel. "
-            "For example, say July 3rd at 9 AM."
+            "Thanks. Now, please tell me your date of birth to verify your identity. "
+            "For example, say July third 1990, or type it as 07031990 then press pound."
         ))
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
