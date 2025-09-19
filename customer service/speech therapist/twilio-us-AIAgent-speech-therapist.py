@@ -28,7 +28,7 @@
     #   _re.sub(r'[.,;:]+$', '', s, flags=_re.MULTILINE)  # remove trailing punctuation per line
     #
     # Clarification about $:
-    # - Without MULTILINE, $ matches at the end of the string *or* right before a final '\n'.
+    # - Without MULTILINE, $ matches at the end of the string *or* right before a final '\n'
     #   If you need a true “absolute end” even when there’s a trailing newline, use \Z or \z.
     # ─────────────────────────────────────────────────────────────────────────────
     # ─────────────────────────────────────────────────────────────────────────────
