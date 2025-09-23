@@ -5489,15 +5489,13 @@ def voice():
 
 
 
-
     elif stage == "cancel_appt_get_dob":
         # ----------------------------------------------------------------------
         # 🎂 Collect caller DOB for cancellation lookup/verification.
-        #  - Accepts speech (e.g., “July third nineteen fifty six”) or DTMF MMDDYYYY#
+        #  - Accepts speech (“July third nineteen fifty six”) or DTMF MMDDYYYY#
         #  - Silent-mode aware (re-prompts up to 3x if nothing is heard)
-        #  - Stores ISO under session_data[call_sid]["customer"]["dob"]
-        #    and session_data[call_sid]["cancel"]["dob"]
-        #  - Requires a phone on file first (E.164 ONLY)
+        #  - Stores ISO under ["customer"]["dob"] and ["cancel"]["dob"]
+        #  - Requires phone on file first (E.164 ONLY)
         #  - Next stage: cancel_appt_get_date_time
         # ----------------------------------------------------------------------
         debug_print("cancel_appt_get_dob: 📍 Stage entered")
@@ -5511,7 +5509,7 @@ def voice():
             "or type 2 digits for month 2 digits for day and 4 digits for year, then press pound."
         )
 
-        # Guard: require E.164 phone first (set by cancel_appt_by_phone_number / collect_phone)
+        # Guard: require phone on file
         cust_phone_e164 = (
             session_data[call_sid].get("cancel", {}).get("phone_e164")
             or session_data[call_sid]["customer"].get("phone_e164")
@@ -5538,7 +5536,7 @@ def voice():
         speech_text = (speech_result or "").strip()
         debug_print(f"cancel_appt_get_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
 
-        # 🔇 Silent-mode: nothing heard at all
+        # Silent-mode
         if not dtmf_digits and not speech_text:
             tries = session_data[call_sid].get("silence_cancel_dob", 0) + 1
             session_data[call_sid]["silence_cancel_dob"] = tries
@@ -5558,14 +5556,47 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # If we DID hear something, clear the silence counter
+        # reset silence counter
         session_data[call_sid].pop("silence_cancel_dob", None)
 
-        # Parse DOB
-        dt = parse_dob_input(speech_text, dtmf_digits)  # should return datetime or None
+        # ------------------------------------------------------------------
+        # Inline helper: parse DOB from speech or DTMF
+        # ------------------------------------------------------------------
+        def _parse_dob_input(speech_text, dtmf_digits):
+            from datetime import datetime
+            from dateutil import parser as dtparser
+
+            # DTMF format: MMDDYYYY
+            if dtmf_digits:
+                raw = dtmf_digits.replace("#", "").strip()
+                if len(raw) == 8 and raw.isdigit():
+                    mm, dd, yyyy = raw[0:2], raw[2:4], raw[4:]
+                    try:
+                        return datetime(int(yyyy), int(mm), int(dd))
+                    except Exception:
+                        return None
+
+            # Speech format
+            if speech_text:
+                raw = speech_text.lower()
+                raw = raw.replace("the", " ")
+                raw = raw.replace(",", " ")
+                raw = raw.replace(".", " ")
+                raw = raw.replace("  ", " ").strip()
+                try:
+                    return dtparser.parse(raw, fuzzy=True, default=datetime(1900, 1, 1))
+                except Exception:
+                    return None
+
+            return None
+
+        # ------------------------------------------------------------------
+        # Parse input
+        # ------------------------------------------------------------------
+        dt = _parse_dob_input(speech_text, dtmf_digits)
         if not dt:
-            session_data[call_sid]["retry_cancel_dob"] = session_data[call_sid].get("retry_cancel_dob", 0) + 1
-            r = session_data[call_sid]["retry_cancel_dob"]
+            r = session_data[call_sid].get("retry_cancel_dob", 0) + 1
+            session_data[call_sid]["retry_cancel_dob"] = r
             debug_print(f"cancel_appt_get_dob: ❌ Parse failed. Retry={r}")
 
             if r >= 3:
@@ -5581,45 +5612,34 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # Validate DOB in a sane range (1900..today)
-        try:
-            _Date = globals().get("_date")
-            if _Date is None:
-                from datetime import date as _Date  # local fallback
-            today = _Date.today()
-            min_date = _Date(1900, 1, 1)
-            dob_date = dt.date()
-            if not (min_date <= dob_date <= today):
-                session_data[call_sid]["retry_cancel_dob"] = session_data[call_sid].get("retry_cancel_dob", 0) + 1
-                r = session_data[call_sid]["retry_cancel_dob"]
-                debug_print(f"cancel_appt_get_dob: ⚠️ DOB out of range → {dob_date.isoformat()} Retry={r}")
+        # ------------------------------------------------------------------
+        # Validate DOB range
+        # ------------------------------------------------------------------
+        from datetime import date as _Date
+        today = _Date.today()
+        min_date = _Date(1900, 1, 1)
+        dob_date = dt.date()
+        if not (min_date <= dob_date <= today):
+            r = session_data[call_sid].get("retry_cancel_dob", 0) + 1
+            session_data[call_sid]["retry_cancel_dob"] = r
+            debug_print(f"cancel_appt_get_dob: ⚠️ Out of range → {dob_date.isoformat()} Retry={r}")
 
-                if r >= 3:
-                    resp.say(gpt_speak("Sorry, that birth date still doesn’t look valid. Please call again later."), VOICE)
-                    resp.hangup()
-                    session_data.pop(call_sid, None)
-                    return str(resp)
-
-                try:
-                    gather = make_gather_dob(
-                        "That doesn't sound like a valid birth date. Please say it again, "
-                        "or type two digits for month, two for day, and four for year, then press pound. "
-                        "For example, 07031956#."
-                    )
-                except Exception:
-                    gather = make_gather(DOB_PROMPT, hints="zero one two three four five six seven eight nine")
-                resp.append(gather)
+            if r >= 3:
+                resp.say(gpt_speak("Sorry, that birth date still doesn’t look valid. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
                 return str(resp)
-        except Exception as e:
-            debug_print(f"cancel_appt_get_dob: ⚠️ Validation error → {e}")
-            try:
-                gather = make_gather_dob(DOB_PROMPT)
-            except Exception:
-                gather = make_gather(DOB_PROMPT, hints="zero one two three four five six seven eight nine")
-            resp.append(gather)
+
+            resp.append(make_gather(
+                "That doesn't sound like a valid birth date. Please say it again, "
+                "or type two digits for month, two for day, and four for year, then press pound. "
+                "For example, 07031956#."
+            ))
             return str(resp)
 
-        # ✅ Store and move on
+        # ------------------------------------------------------------------
+        # ✅ Store and continue
+        # ------------------------------------------------------------------
         iso_dob = dt.strftime("%Y-%m-%d")
         session_data[call_sid]["customer"]["dob"] = iso_dob
         session_data[call_sid]["cancel"]["dob"]   = iso_dob
@@ -5632,6 +5652,7 @@ def voice():
             "For example, say July 3rd at 9 AM."
         ))
         return str(resp)
+
 
 
 
@@ -5651,7 +5672,8 @@ def voice():
         # Fixes:
         #   - Silent-mode: retry up to 3x before fallback.
         #   - Parse errors: retry up to 3x before fallback.
-        #   - If only day OR only time is heard → reprompt (don’t reuse old).
+        #   - Reset retries on success.
+        #   - Accept formats: "July 3rd at 9 a.m." OR "July 3rd 9 a.m."
         #   - Every path returns str(resp).
         # ----------------------------------------------------------------------
         debug_print("cancel_appt_get_time_date: 📍 Stage entered")
@@ -5706,16 +5728,27 @@ def voice():
 
             resp.append(make_gather(
                 "Please say the date and time of the appointment you want to cancel. "
-                "For example, 'August 15th at 5 AM'."
+                "For example, 'August 15th at 5 AM' or 'August 15th 5 AM'."
             ))
             return str(resp)
 
-        # reset silence counter
+        # reset silence counter on valid utterance
         session_data[call_sid].pop("silence_cancel_dt", None)
 
         # --- Parse date & time ------------------------------------------------
         try:
             day_part, time_part = _extract_day_time(utter)
+
+            # ✅ Fix: allow "July 3rd 9 a.m." (missing 'at')
+            if (not time_part) and day_part and any(tok in utter.lower() for tok in ["am", "pm", ":"]):
+                import re
+                m = re.search(r"(\d{1,2}(:\d{2})?\s*(am|pm))", utter.lower())
+                if m:
+                    time_part = m.group(1)
+                    # remove the time piece from utter to get the date
+                    day_part = utter.replace(m.group(1), "").replace("at", "").strip()
+                    debug_print(f"cancel_appt_get_time_date: 🛠 patched parse → Day='{day_part}', Time='{time_part}'")
+
         except Exception as e:
             debug_print(f"cancel_appt_get_time_date: ❌ extract error → {e}")
             day_part, time_part = "", ""
@@ -5735,13 +5768,15 @@ def voice():
                 return str(resp)
 
             resp.append(make_gather(
-                "I didn’t catch the full date and time. Please say it again, for example 'July 3rd at 9 AM'."
+                "I didn’t catch the full date and time. Please say it again, for example 'July 3rd at 9 AM' or 'July 3rd 9 AM'."
             ))
             return str(resp)
 
         # --- Build UTC window -------------------------------------------------
         try:
-            session_data[call_sid].pop("retry_cancel_dt", None)  # reset on success
+            # ✅ Reset retries on success
+            session_data[call_sid].pop("retry_cancel_dt", None)
+
             appointment_start, appointment_end = _build_slot(day_part, time_part)
             cancel_ctx["utc_start"] = appointment_start
             cancel_ctx["utc_end"]   = appointment_end
@@ -5755,7 +5790,7 @@ def voice():
             resp.append(make_gather("That didn’t look like a valid date and time. I’ll list your upcoming appointments."))
             return str(resp)
 
-        # --- Availability check -----------------------------------------------
+        # --- Availability check (cancel logic = invert free/busy) -------------
         try:
             slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
             debug_print(f"cancel_appt_get_time_date: 🔎 is_time_slot_available → {slot_free}")
@@ -5829,8 +5864,8 @@ def voice():
                 resp.append(make_gather("I couldn’t find the event details. I’ll list your upcoming appointments instead."))
                 return str(resp)
 
-            cancel_ctx["calendar_id"]    = calendar_id
-            cancel_ctx["matching_event"] = {
+            cancel_ctx["calendar_id"]     = calendar_id
+            cancel_ctx["matching_event"]  = {
                 "id": chosen.get("id"),
                 "summary": chosen.get("summary"),
                 "start": chosen.get("start"),
@@ -5842,12 +5877,22 @@ def voice():
 
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
 
+            # --- Smarter friendly confirmation --------------------------------
             if cancel_ctx.get("day") and cancel_ctx.get("time"):
                 friendly = f"{cancel_ctx['day']} at {cancel_ctx['time']}"
+            elif cancel_ctx.get("day"):
+                friendly = cancel_ctx["day"]
+            elif cancel_ctx.get("time"):
+                friendly = cancel_ctx["time"]
             else:
-                friendly = "the scheduled time"
+                friendly = None
 
-            resp.append(make_gather(f"I found your appointment on {friendly}. Shall I cancel it now?"))
+            if friendly:
+                prompt = f"I found your appointment on {friendly}. Shall I cancel it now?"
+            else:
+                prompt = "I found that appointment. Would you like me to cancel it now?"
+
+            resp.append(make_gather(prompt))
             return str(resp)
 
         except Exception as e:
@@ -5856,6 +5901,7 @@ def voice():
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             resp.append(make_gather("I couldn’t look up the event details. I’ll list your upcoming appointments instead."))
             return str(resp)
+
 
 
 
