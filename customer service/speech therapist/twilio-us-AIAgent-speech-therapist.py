@@ -5440,14 +5440,16 @@ def voice():
 
 
 
-    elif stage == "cancel_appt_get_time_date":
+   elif stage == "cancel_appt_get_time_date":
         # ----------------------------------------------------------------------
         # 🗓️ Stage: cancel_appt_get_time_date
         #
         # Goal:
-        #   - Collect date+time of the appointment to cancel.
-        #   - Handle silence, junk input, and partial input gracefully.
-        #   - Always return str(resp) to avoid Flask NoneType errors.
+        #   - Parse caller's spoken date+time for cancellation.
+        #   - Accepts natural formats like "July 3rd at 9 AM" or "July 3rd 9 a.m."
+        #   - If invalid → retry up to 3x, then fallback to iterate.
+        #   - If valid → locate matching event → go to confirm.
+        #   - Every path ends with return str(resp).
         # ----------------------------------------------------------------------
         debug_print("cancel_appt_get_time_date: 📍 Stage entered")
 
@@ -5455,7 +5457,7 @@ def voice():
         session_data[call_sid].setdefault("cancel", {})
         cancel_ctx = session_data[call_sid]["cancel"]
 
-        # --- Require doctor/calendar -----------------------------------------
+        # --- Require doctor ----------------------------------------------------
         calendar_id = cancel_ctx.get("calendar_id") or session_data[call_sid].get("doctor_id")
         if not calendar_id:
             debug_print("cancel_appt_get_time_date: ❌ no calendar_id → back to cancel_appointment")
@@ -5463,7 +5465,7 @@ def voice():
             resp.append(make_gather("Which doctor's appointment would you like to cancel?"))
             return str(resp)
 
-        # --- Require phone (E.164) -------------------------------------------
+        # --- Require phone -----------------------------------------------------
         phone_e164 = (
             cancel_ctx.get("phone_e164")
             or session_data[call_sid].get("phone_e164")
@@ -5475,86 +5477,92 @@ def voice():
             session_data[call_sid]["return_stage"] = "cancel_appt_get_time_date"
             session_data[call_sid]["stage"] = "collect_phone"
             resp.append(make_gather(
-                "To locate your appointment, please provide your phone number including area code. "
-                "You can say it, or type the digits and press pound.",
+                "To locate your appointment, please provide your phone number including area code.",
                 hints="zero one two three four five six seven eight nine"
             ))
             return str(resp)
 
         cancel_ctx["phone_e164"] = phone_e164
 
-        # --- Handle speech input / silence -----------------------------------
+        # --- Input -------------------------------------------------------------
         utter = (speech_result or "").strip()
         debug_print(f"cancel_appt_get_time_date: 🗣️ Raw speech → '{utter}'")
 
+        # --- Silence -----------------------------------------------------------
         if not utter:
             tries = session_data[call_sid].get("silence_cancel_dt", 0) + 1
             session_data[call_sid]["silence_cancel_dt"] = tries
             debug_print(f"cancel_appt_get_time_date: 🤐 silence; tries={tries}")
 
             if tries >= 3:
-                debug_print("cancel_appt_get_time_date: ⬇️ fallback → iterate after repeated silence")
+                debug_print("cancel_appt_get_time_date: ⬇️ too many silences → iterate")
                 cancel_ctx["iter_index"] = 0
                 session_data[call_sid]["stage"] = "cancel_appt_iterate"
                 resp.append(make_gather("Okay, I’ll list your upcoming appointments."))
                 return str(resp)
 
-            resp.append(make_gather(
-                "Please say the date and time of the appointment you want to cancel. "
-                "For example, 'July 3rd at 9 AM'."
-            ))
+            resp.append(make_gather("Please say the date and time of the appointment you want to cancel. For example, 'July 3rd at 9 AM'."))
             return str(resp)
 
-        # ✅ reset silence counter
         session_data[call_sid].pop("silence_cancel_dt", None)
 
-        # --- Clean up junk words Twilio often adds ---------------------------
-        junk_words = ["for example", "my name", "would you like", "please confirm", "thank you"]
-        utter_lower = utter.lower()
-        for junk in junk_words:
-            if junk in utter_lower:
-                debug_print(f"cancel_appt_get_time_date: 🧹 stripping junk word → {junk}")
-                utter_lower = utter_lower.replace(junk, "")
-        utter = utter_lower.strip()
+        # --- Inline helper: parse day + time ----------------------------------
+        def _extract_day_time(text: str):
+            """
+            Parse natural language input like:
+            - 'July 3rd at 9 AM'
+            - 'July 3rd 9 a.m.'
+            - '3 July at 9'
+            Returns (day_str, time_str) or ("","") if fail.
+            """
+            import re
+            import dateutil.parser as dp
 
-        # --- Extract day/time parts ------------------------------------------
-        try:
-            day_part, time_part = _extract_day_time(utter)
-        except Exception as e:
-            debug_print(f"cancel_appt_get_time_date: ❌ extract error → {e}")
-            day_part, time_part = "", ""
+            txt = text.lower().replace(",", " ").replace("  ", " ").strip()
+            # Force "at" if missing before time
+            if re.search(r"\b\d{1,2}(:\d{2})?\s*(am|pm|a\.m\.|p\.m\.)", txt):
+                if " at " not in txt:
+                    txt = re.sub(r"(\d)", r"at \1", txt, count=1)
 
+            try:
+                dt = dp.parse(txt, fuzzy=True)
+                day_str = dt.strftime("%B %-d")   # e.g., July 3
+                time_str = dt.strftime("%-I:%M %p") if dt.minute else dt.strftime("%-I %p")
+                return (day_str, time_str)
+            except Exception as e:
+                debug_print(f"_extract_day_time: ❌ parse fail for '{text}' → {e}")
+                return ("", "")
+
+        # --- Parse utterance --------------------------------------------------
+        day_part, time_part = _extract_day_time(utter)
         debug_print(f"cancel_appt_get_time_date: 📆 Extracted → Day='{day_part}', Time='{time_part}'")
 
-        # --- If missing date or time, retry gracefully -----------------------
         if not day_part or not time_part:
             retries = session_data[call_sid].get("retry_cancel_dt", 0) + 1
             session_data[call_sid]["retry_cancel_dt"] = retries
-            debug_print(f"cancel_appt_get_time_date: ⚠️ missing part(s) → retry {retries}")
+            debug_print(f"cancel_appt_get_time_date: ⚠️ invalid date/time → retry {retries}")
 
             if retries >= 3:
-                debug_print("cancel_appt_get_time_date: ⬇️ fallback → iterate after repeated parse failures")
+                debug_print("cancel_appt_get_time_date: ⬇️ too many retries → iterate")
                 cancel_ctx["iter_index"] = 0
                 session_data[call_sid]["stage"] = "cancel_appt_iterate"
                 resp.append(make_gather("That didn’t sound like a valid date and time. I’ll list your upcoming appointments."))
                 return str(resp)
 
-            # ✅ Ask again specifically
-            resp.append(make_gather(
-                "I didn’t catch the full date and time. Please say it again, "
-                "for example 'July 3rd at 9 AM'."
-            ))
+            resp.append(make_gather("I didn’t catch the full date and time. Please say it again, for example 'July 3rd at 9 AM'."))
             return str(resp)
 
-        # --- Build UTC slot --------------------------------------------------
+        # ✅ reset retries
+        session_data[call_sid].pop("retry_cancel_dt", None)
+
+        # --- Build slot -------------------------------------------------------
         try:
-            session_data[call_sid].pop("retry_cancel_dt", None)
             appointment_start, appointment_end = _build_slot(day_part, time_part)
             cancel_ctx["utc_start"] = appointment_start
             cancel_ctx["utc_end"]   = appointment_end
             cancel_ctx["day"]       = day_part
             cancel_ctx["time"]      = time_part
-            debug_print(f"cancel_appt_get_time_date: ⏰ UTC window → {appointment_start} → {appointment_end}")
+            debug_print(f"cancel_appt_get_time_date: ⏰ slot={appointment_start} → {appointment_end}")
         except Exception as e:
             debug_print(f"cancel_appt_get_time_date: ❌ slot build failed → {e}")
             cancel_ctx["iter_index"] = 0
@@ -5562,28 +5570,11 @@ def voice():
             resp.append(make_gather("That didn’t look like a valid date and time. I’ll list your upcoming appointments."))
             return str(resp)
 
-        # --- Free/busy check -------------------------------------------------
-        try:
-            slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
-            debug_print(f"cancel_appt_get_time_date: 🔎 is_time_slot_available → {slot_free}")
-        except Exception as e:
-            debug_print(f"cancel_appt_get_time_date: ⚠️ availability check error → {e}")
-            slot_free = True
-
-        if slot_free:
-            debug_print("cancel_appt_get_time_date: 🚫 Slot FREE → no appt at that time → iterate")
-            cancel_ctx["iter_index"] = 0
-            session_data[call_sid]["stage"] = "cancel_appt_iterate"
-            resp.append(make_gather("I didn’t find an appointment at that time. I’ll list your upcoming appointments."))
-            return str(resp)
-
-        # --- Fetch overlapping event(s) from GCal ----------------------------
+        # --- Fetch overlapping events ----------------------------------------
         try:
             service = build("calendar", "v3", credentials=creds)
-            sdt = isoparse(appointment_start)
-            edt = isoparse(appointment_end)
-            tmin = (sdt - timedelta(seconds=60)).isoformat()
-            tmax = (edt + timedelta(seconds=60)).isoformat()
+            sdt, edt = isoparse(appointment_start), isoparse(appointment_end)
+            tmin, tmax = (sdt - timedelta(seconds=60)).isoformat(), (edt + timedelta(seconds=60)).isoformat()
 
             items = service.events().list(
                 calendarId=calendar_id,
@@ -5592,12 +5583,12 @@ def voice():
                 orderBy="startTime", maxResults=250,
             ).execute().get("items", [])
 
-            debug_print(f"cancel_appt_get_time_date: 📄 events().list returned {len(items)} items")
+            debug_print(f"cancel_appt_get_time_date: 📄 events().list → {len(items)} found")
 
             def _overlaps(ev, s, e):
                 try:
                     es = isoparse(ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date"))
-                    ee = isoparse(ev.get("end",   {}).get("dateTime") or ev.get("end",   {}).get("date"))
+                    ee = isoparse(ev.get("end", {}).get("dateTime") or ev.get("end", {}).get("date"))
                     return s < ee and e > es
                 except Exception:
                     return False
@@ -5608,32 +5599,15 @@ def voice():
                 and ev.get("status") != "cancelled"
                 and ev.get("transparency") != "transparent"
             ]
-            debug_print(f"cancel_appt_get_time_date: 🔎 overlapping events → {len(candidates)}")
 
-            chosen = None
-            for ev in candidates:
-                priv = (ev.get("extendedProperties", {}) or {}).get("private", {}) or {}
-                ev_e164 = (priv.get("patient_phone_e164") or priv.get("phone_e164") or priv.get("phone") or "").strip()
-                if ev_e164 == phone_e164:
-                    chosen = ev; break
-
-            if not chosen and candidates:
-                e164_digits = "".join(ch for ch in phone_e164 if ch.isdigit())
-                for ev in candidates:
-                    desc_digits = "".join(ch for ch in (ev.get("description") or "") if ch.isdigit())
-                    if e164_digits and e164_digits in desc_digits:
-                        chosen = ev; break
-
-            if not chosen and candidates:
-                chosen = candidates[0]
-
-            if not chosen:
-                debug_print("cancel_appt_get_time_date: ⚠️ busy per FreeBusy but no overlapping event → iterate")
+            if not candidates:
+                debug_print("cancel_appt_get_time_date: 🚫 no overlapping events → iterate")
                 cancel_ctx["iter_index"] = 0
                 session_data[call_sid]["stage"] = "cancel_appt_iterate"
-                resp.append(make_gather("I couldn’t find the event details. I’ll list your upcoming appointments instead."))
+                resp.append(make_gather("I didn’t find an appointment at that time. I’ll list your upcoming appointments."))
                 return str(resp)
 
+            chosen = candidates[0]
             cancel_ctx["calendar_id"]    = calendar_id
             cancel_ctx["matching_event"] = {
                 "id": chosen.get("id"),
@@ -5643,34 +5617,21 @@ def voice():
                 "htmlLink": chosen.get("htmlLink"),
                 "matched_phone_e164": phone_e164,
             }
+
             debug_print(f"cancel_appt_get_time_date: ✅ matched event id={chosen.get('id')}")
 
+            # Jump directly to confirm
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
-
-            # --- Friendly prompt ----------------------------------------------
-            if cancel_ctx.get("day") and cancel_ctx.get("time"):
-                friendly = f"{cancel_ctx['day']} at {cancel_ctx['time']}"
-            elif cancel_ctx.get("day"):
-                friendly = cancel_ctx["day"]
-            elif cancel_ctx.get("time"):
-                friendly = cancel_ctx["time"]
-            else:
-                friendly = None
-
-            if friendly:
-                prompt = f"I found your appointment on {friendly}. Shall I cancel it now?"
-            else:
-                prompt = "I found that appointment. Would you like me to cancel it now?"
-
-            resp.append(make_gather(prompt))
+            resp.append(make_gather(f"I found your appointment on {day_part} at {time_part}. Shall I cancel it now?"))
             return str(resp)
 
         except Exception as e:
-            debug_print(f"cancel_appt_get_time_date: ❌ error fetching events → {e}")
+            debug_print(f"cancel_appt_get_time_date: ❌ events().list error → {e}")
             cancel_ctx["iter_index"] = 0
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             resp.append(make_gather("I couldn’t look up the event details. I’ll list your upcoming appointments instead."))
             return str(resp)
+
 
 
 
