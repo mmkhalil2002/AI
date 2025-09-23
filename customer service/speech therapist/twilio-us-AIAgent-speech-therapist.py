@@ -1,4 +1,4 @@
-# update  09/23/25 time_saved  12:08 am  book is tested
+# update  09/23/25 time_saved  01:08 am  book is tested
 #  
 # =========================
 # Standard library imports
@@ -1116,226 +1116,7 @@ def extract_phone_number(speech_text: str) -> str:
 
 
 
-def cancel_event_by_phone(
-    calendar_id: str,
-    phone: str,
-    spoken_day: Optional[str] = None,
-    spoken_time: Optional[str] = None,
-    creds=None,
-    return_details: bool = False
-):
-    """
-    Cancel a Google Calendar event based on phone number and optional day/time.
 
-    Returns:
-        - Matching event object if return_details is True
-        - True if deletion was successful
-        - False / None if not found
-    """
-
-    clean_phone = _re.sub(r"[^\d]", "", phone)
-    print(f"🔍 Searching for normalized phone: {clean_phone}")
-
-    parsed_datetime = None
-    if spoken_day and spoken_time:
-        try:
-            """
-              spoken_day = "July 29"
-              spoken_time = "8:30 AM"
-              start_iso, _ = build_timeslot_range("July 29", "8:30 AM")
-              print(start_iso)
-              output 
-                2025-07-29T13:30:00+00:00
-
-            """
-            start_iso, _ = build_timeslot_range(spoken_day, spoken_time)
-            """
-            start_iso = "2025-07-29T13:30:00Z"
-            Z will be repaced 
-            2025-07-29 13:30:00+00:00
-            <class 'datetime.datetime'>
-
-            """
-            parsed_datetime = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
-            print(f"🧠 Parsed target datetime (UTC): {parsed_datetime.isoformat()}")
-        except Exception as e:
-            print(f"⚠️ Failed to parse spoken datetime → {spoken_day}, {spoken_time}: {e}")
-
-    """
-
-     Parameter	                            Purpose
-     --------------------------------------------------------------------------------------------------------------------
-    calendarId=calendar_id	Specifies the calendar you want to query. This ID is typically a Google email or a group calendar ID.
-    timeMin=now	            Filters events to only include those starting after the current time.
-    maxResults=50	        Limits the number of events returned to a maximum of 50.
-    singleEvents=True	    Expands recurring events into individual occurrences. So if a meeting repeats every Monday, each one appears separately.
-    orderBy="startTime"	    Sorts the results chronologically by their start time.
-
-    Finally, .execute() sends the API request and returns the response as a dictionary containing events.
-
-    Example Result (events_result):
-    
-     {
-        "items": [
-                     {
-                         "summary": "Appointment for Ali",
-                         "start": { "dateTime": "2025-08-01T09:00:00-05:00" },
-                         "description": "Name: Ali\nPhone: 4694633276\nAddress: 123 Main St"
-                    },
-                    {
-                       "summary": "Appointment for Sarah",
-                       "start": { "dateTime": "2025-08-02T14:30:00-05:00" },
-                       "description": "Name: Sarah\nPhone: 4699991234\nAddress: ..."
-                    }
-                 ]
-    c}
-
-       """
-    
-    service = build("calendar", "v3", credentials=creds)
-    now = datetime.utcnow().isoformat() + 'Z'
-    events_result = service.events().list(
-        calendarId=calendar_id,
-        timeMin=now,
-        maxResults=50,
-        singleEvents=True,
-        orderBy="startTime"
-    ).execute()
-
-    """
-    events_result["items"]
-    [
-     {
-        "kind": "calendar#event",
-        "id": "evt-abc123",
-        "status": "confirmed",
-        "summary": "Appointment for Muhammad Khalil",
-        "description": "Name: Muhammad Khalil\nPhone: 4694633276\nAddress: 118 Briar Oak, Murphy, TX 75094",
-        "start": {
-                     "dateTime": "2025-07-29T08:30:00-05:00",
-                    "timeZone": "America/Chicago"
-                },
-        "end": {
-                    "dateTime": "2025-07-29T09:00:00-05:00",
-                    "timeZone": "America/Chicago"
-               },
-        "created": "2025-07-20T14:00:00Z",
-        "updated": "2025-07-20T14:01:00Z",
-        "organizer": {
-                         "email": "dr.john@example.com"
-                    },
-         "htmlLink": "https://www.google.com/calendar/event?eid=evt-abc123"
-     },
-     {
-         "kind": "calendar#event",
-         "id": "evt-def456",
-         "status": "confirmed",
-         "summary": "Appointment for Ali Abdel",
-         "description": "Phone: 4694633276\nAddress: 118 Brier Oak, Murphy, TX 75094",
-        "start": {
-                     "dateTime": "2025-08-01T13:00:00-05:00",
-                     "timeZone": "America/Chicago"
-                },
-        "end": {
-                     "dateTime": "2025-08-01T13:30:00-05:00",
-                     "timeZone": "America/Chicago"
-                },
-        "created": "2025-07-21T11:22:00Z",
-        "updated": "2025-07-21T11:22:30Z",
-        "organizer": {
-                         "email": "dr.john@example.com"
-                     },
-         "htmlLink": "https://www.google.com/calendar/event?eid=evt-def456"
-     }
-    ]
-     if summanry is    Appointment for Muhammad Khalil 469-463-3276"
-     then  summary_digits → "4694633276"
-
-     if description "Name: Muhammad Khalil\nPhone: 469 463 3276\nAddress: 118 Briar Oak, Murphy, TX 75094"
-     then description_digits → "469463327611875094"
-    
-    """
-
-    events = events_result.get("items", [])
-    print(f"📅 Retrieved {len(events)} upcoming events to check")
-
-    for event in events:
-        summary = event.get("summary", "").lower()
-        description = event.get("description", "").lower()
-
-        summary_digits = _re.sub(r"[^\d]", "", summary)
-        description_digits = _re.sub(r"[^\d]", "", description)
-
-        print("🔎 Checking event:")
-        print(f"     summary: {summary}")
-        print(f"     description: {description}")
-        print(f"     normalized summary digits: {summary_digits}")
-        print(f"     normalized description digits: {description_digits}")
-
-        if clean_phone in summary_digits or clean_phone in description_digits:
-            print("✅ Phone number matched.")
-            """
-            event_start (dateTime) -> "2025-07-29T08:30:00-05:00"
-
-                2025-07-29: the date
-                T08:30:00: the time (08:30 AM)
-                -05:00: the timezone offset from UTC (Central Daylight Time in this case)
-            """
-            event_start = event.get("start", {}).get("dateTime")
-            if not event_start:
-                print("⚠️ Skipping all-day or malformed event.")
-                continue
-
-            try:
-                event_dt = datetime.fromisoformat(event_start.replace("Z", "+00:00"))
-
-                if parsed_datetime:
-                    """
-                    from datetime import datetime
-
-                    # 📅 Event datetime from Google Calendar (in UTC)
-                    event_dt = datetime.fromisoformat("2025-07-29T13:30:00+00:00")
-
-                    # 📞 Parsed user input (converted to UTC)
-                    parsed_datetime = datetime.fromisoformat("2025-07-29T13:30:00+00:00")
-
-                    # 🔁 Compute time difference in seconds
-                    delta = abs((event_dt - parsed_datetime).total_seconds())
-
-                    print("Time difference in seconds:", delta)
-
-                    """
-                    delta = abs((event_dt - parsed_datetime).total_seconds())
-                    print(f"🕐 Comparing event start {event_dt} to target {parsed_datetime}, Δ={delta}s")
-
-                    if delta <= 10:
-                        print("🗑️ Deleting matching event...")
-                        """
-                        calendar_id = "doctor123@clinic-calendar.com"
-                        event = {
-                                     "id": "ab12cd34ef56gh78ij90kl",
-                                     "summary": "Appointment for Mohamed Khalil",
-                                     "start": {"dateTime": "2025-07-29T13:30:00+00:00"},
-                                     "description": "Name: Mohamed Khalil\nPhone: 4694633276\nAddress: 118 Briar Oak, Murphy, TX"
-                                }
-                         event["id"] ->  "ab12cd34ef56gh78ij90kl"
-                         calendar_id -?  input to this function
-                         delete based on event_id, and claender_id    
-
-                        """
-                        service.events().delete(calendarId=calendar_id, eventId=event["id"]).execute()
-                        return event if return_details else True
-                    else:
-                        print("❌ Date/time mismatch despite phone match.")
-                else:
-                    print("⚠️ No valid spoken datetime to match against.")
-
-            except Exception as e:
-                print(f"⚠️ Failed to parse event datetime: {e}")
-                continue
-
-    print("🚫 No matching appointment found.")
-    return None if return_details else False
 
 
 
@@ -5659,7 +5440,6 @@ def voice():
 
 
 
-   
     elif stage == "cancel_appt_get_time_date":
         # ----------------------------------------------------------------------
         # ❌ Stage: cancel_appt_get_time_date
@@ -5673,24 +5453,17 @@ def voice():
         #   - Silent-mode: retry up to 3x before fallback.
         #   - Parse errors: retry up to 3x before fallback.
         #   - Reset retries on success.
-        #   - Accept formats: "July 3rd at 9 a.m." OR "July 3rd 9 a.m."
-        #   - Every path returns str(resp).
+        #   - Accept multiple formats (e.g., "July 3rd 9 AM", "July 3rd at 9:00 a.m.").
+        #   - Every path appends a response and returns str(resp).
         # ----------------------------------------------------------------------
         debug_print("cancel_appt_get_time_date: 📍 Stage entered")
 
+        # --- Ensure session context --------------------------------------------
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("cancel", {})
         cancel_ctx = session_data[call_sid]["cancel"]
 
-        # --- Require selected doctor (calendar_id) -----------------------------
-        calendar_id = cancel_ctx.get("calendar_id") or session_data[call_sid].get("doctor_id")
-        if not calendar_id:
-            debug_print("cancel_appt_get_time_date: ❌ no calendar_id → back to cancel_appointment")
-            session_data[call_sid]["stage"] = "cancel_appointment"
-            resp.append(make_gather("Which doctor's appointment would you like to cancel?"))
-            return str(resp)
-
-        # --- Require phone (E.164 ONLY) ---------------------------------------
+        # --- Require phone (E.164 ONLY) ----------------------------------------
         phone_e164 = (
             cancel_ctx.get("phone_e164")
             or session_data[call_sid].get("phone_e164")
@@ -5710,7 +5483,7 @@ def voice():
 
         cancel_ctx["phone_e164"] = phone_e164
 
-        # --- Handle input / silence -------------------------------------------
+        # --- Handle input / silence --------------------------------------------
         utter = (speech_result or "").strip()
         debug_print(f"cancel_appt_get_time_date: 🗣️ Raw speech → '{utter}'")
 
@@ -5728,31 +5501,37 @@ def voice():
 
             resp.append(make_gather(
                 "Please say the date and time of the appointment you want to cancel. "
-                "For example, 'August 15th at 5 AM' or 'August 15th 5 AM'."
+                "For example, 'July 3rd at 9 AM'."
             ))
             return str(resp)
 
-        # reset silence counter on valid utterance
+        # Reset silence counter
         session_data[call_sid].pop("silence_cancel_dt", None)
 
-        # --- Parse date & time ------------------------------------------------
-        try:
-            day_part, time_part = _extract_day_time(utter)
+        # --- Inline helpers ----------------------------------------------------
+        def _extract_day_time(text):
+            """Try to split date and time from spoken input using dateutil."""
+            from dateutil import parser as dtparser
+            try:
+                dt = dtparser.parse(text, fuzzy=True)
+                return dt.strftime("%A, %B %-d"), dt.strftime("%-I:%M %p")
+            except Exception:
+                return "", ""
 
-            # ✅ Fix: allow "July 3rd 9 a.m." (missing 'at')
-            if (not time_part) and day_part and any(tok in utter.lower() for tok in ["am", "pm", ":"]):
-                import re
-                m = re.search(r"(\d{1,2}(:\d{2})?\s*(am|pm))", utter.lower())
-                if m:
-                    time_part = m.group(1)
-                    # remove the time piece from utter to get the date
-                    day_part = utter.replace(m.group(1), "").replace("at", "").strip()
-                    debug_print(f"cancel_appt_get_time_date: 🛠 patched parse → Day='{day_part}', Time='{time_part}'")
+        def _build_slot(day_part, time_part, tz="America/Chicago"):
+            """Build UTC slot [start, end) from parsed day and time."""
+            from dateutil import parser as dtparser
+            import pytz
+            from datetime import timedelta
+            local_tz = pytz.timezone(tz)
+            dt_str = f"{day_part} {time_part}"
+            dt_local = dtparser.parse(dt_str, fuzzy=True).replace(tzinfo=local_tz)
+            start = dt_local.astimezone(pytz.utc)
+            end = start + timedelta(minutes=30)
+            return start.isoformat(), end.isoformat()
 
-        except Exception as e:
-            debug_print(f"cancel_appt_get_time_date: ❌ extract error → {e}")
-            day_part, time_part = "", ""
-
+        # --- Parse date & time -------------------------------------------------
+        day_part, time_part = _extract_day_time(utter)
         debug_print(f"cancel_appt_get_time_date: 📆 Extracted → Day='{day_part}', Time='{time_part}'")
 
         if not day_part or not time_part:
@@ -5768,141 +5547,35 @@ def voice():
                 return str(resp)
 
             resp.append(make_gather(
-                "I didn’t catch the full date and time. Please say it again, for example 'July 3rd at 9 AM' or 'July 3rd 9 AM'."
+                "I didn’t catch the full date and time. Please say it again, for example 'July 3rd at 9 AM'."
             ))
             return str(resp)
 
-        # --- Build UTC window -------------------------------------------------
-        try:
-            # ✅ Reset retries on success
-            session_data[call_sid].pop("retry_cancel_dt", None)
+        session_data[call_sid].pop("retry_cancel_dt", None)
 
+        # --- Build UTC window --------------------------------------------------
+        try:
             appointment_start, appointment_end = _build_slot(day_part, time_part)
-            cancel_ctx["utc_start"] = appointment_start
-            cancel_ctx["utc_end"]   = appointment_end
-            cancel_ctx["day"]       = day_part
-            cancel_ctx["time"]      = time_part
+            cancel_ctx.update({
+                "utc_start": appointment_start,
+                "utc_end": appointment_end,
+                "day": day_part,
+                "time": time_part
+            })
             debug_print(f"cancel_appt_get_time_date: ⏰ UTC window → {appointment_start} → {appointment_end}")
         except Exception as e:
-            debug_print(f"cancel_appt_get_time_date: ❌ slot build failed → {e} → iterate flow")
+            debug_print(f"cancel_appt_get_time_date: ❌ slot build failed → {e}")
             cancel_ctx["iter_index"] = 0
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             resp.append(make_gather("That didn’t look like a valid date and time. I’ll list your upcoming appointments."))
             return str(resp)
 
-        # --- Availability check (cancel logic = invert free/busy) -------------
-        try:
-            slot_free = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
-            debug_print(f"cancel_appt_get_time_date: 🔎 is_time_slot_available → {slot_free}")
-        except Exception as e:
-            debug_print(f"cancel_appt_get_time_date: ⚠️ availability check error → {e}")
-            slot_free = True
-
-        if slot_free:
-            debug_print("cancel_appt_get_time_date: 🚫 Slot FREE → no appt at that time → iterate")
-            cancel_ctx["iter_index"] = 0
-            session_data[call_sid]["stage"] = "cancel_appt_iterate"
-            resp.append(make_gather("I didn’t find an appointment at that time. I’ll list your upcoming appointments."))
-            return str(resp)
-
-        # --- Fetch overlapping event(s) --------------------------------------
-        try:
-            service = build("calendar", "v3", credentials=creds)
-            sdt = isoparse(appointment_start)
-            edt = isoparse(appointment_end)
-            tmin = (sdt - timedelta(seconds=60)).isoformat()
-            tmax = (edt + timedelta(seconds=60)).isoformat()
-
-            items = service.events().list(
-                calendarId=calendar_id,
-                timeMin=tmin, timeMax=tmax,
-                singleEvents=True, showDeleted=False,
-                orderBy="startTime", maxResults=250,
-            ).execute().get("items", [])
-
-            debug_print(f"cancel_appt_get_time_date: 📄 events().list returned {len(items)} items")
-
-            def _overlaps(ev, s, e):
-                try:
-                    es = isoparse(ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date"))
-                    ee = isoparse(ev.get("end",   {}).get("dateTime") or ev.get("end",   {}).get("date"))
-                    return s < ee and e > es
-                except Exception:
-                    return False
-
-            candidates = [
-                ev for ev in items
-                if _overlaps(ev, sdt, edt)
-                and ev.get("status") != "cancelled"
-                and ev.get("transparency") != "transparent"
-            ]
-            debug_print(f"cancel_appt_get_time_date: 🔎 overlapping events → {len(candidates)}")
-
-            chosen = None
-            for ev in candidates:
-                priv = (ev.get("extendedProperties", {}) or {}).get("private", {}) or {}
-                ev_e164 = (priv.get("patient_phone_e164") or priv.get("phone_e164") or priv.get("phone") or "").strip()
-                if ev_e164 == phone_e164:
-                    chosen = ev
-                    break
-
-            if not chosen and candidates:
-                e164_digits = "".join(ch for ch in phone_e164 if ch.isdigit())
-                for ev in candidates:
-                    desc_digits = "".join(ch for ch in (ev.get("description") or "") if ch.isdigit())
-                    if e164_digits and e164_digits in desc_digits:
-                        chosen = ev
-                        break
-
-            if not chosen and candidates:
-                chosen = candidates[0]
-
-            if not chosen:
-                debug_print("cancel_appt_get_time_date: ⚠️ busy per FreeBusy but no overlapping event → iterate")
-                cancel_ctx["iter_index"] = 0
-                session_data[call_sid]["stage"] = "cancel_appt_iterate"
-                resp.append(make_gather("I couldn’t find the event details. I’ll list your upcoming appointments instead."))
-                return str(resp)
-
-            cancel_ctx["calendar_id"]     = calendar_id
-            cancel_ctx["matching_event"]  = {
-                "id": chosen.get("id"),
-                "summary": chosen.get("summary"),
-                "start": chosen.get("start"),
-                "end": chosen.get("end"),
-                "htmlLink": chosen.get("htmlLink"),
-                "matched_phone_e164": phone_e164,
-            }
-            debug_print(f"cancel_appt_get_time_date: ✅ matched event id={chosen.get('id')}")
-
-            session_data[call_sid]["stage"] = "cancel_appt_confirm"
-
-            # --- Smarter friendly confirmation --------------------------------
-            if cancel_ctx.get("day") and cancel_ctx.get("time"):
-                friendly = f"{cancel_ctx['day']} at {cancel_ctx['time']}"
-            elif cancel_ctx.get("day"):
-                friendly = cancel_ctx["day"]
-            elif cancel_ctx.get("time"):
-                friendly = cancel_ctx["time"]
-            else:
-                friendly = None
-
-            if friendly:
-                prompt = f"I found your appointment on {friendly}. Shall I cancel it now?"
-            else:
-                prompt = "I found that appointment. Would you like me to cancel it now?"
-
-            resp.append(make_gather(prompt))
-            return str(resp)
-
-        except Exception as e:
-            debug_print(f"cancel_appt_get_time_date: ❌ error fetching events → {e}")
-            cancel_ctx["iter_index"] = 0
-            session_data[call_sid]["stage"] = "cancel_appt_iterate"
-            resp.append(make_gather("I couldn’t look up the event details. I’ll list your upcoming appointments instead."))
-            return str(resp)
-
-
+        # --- Move to confirmation stage ----------------------------------------
+        session_data[call_sid]["stage"] = "cancel_appt_confirm"
+        friendly = f"{day_part} at {time_part}" if (day_part and time_part) else day_part or time_part or "that time"
+        prompt = f"I found your appointment on {friendly}. Shall I cancel it now?"
+        resp.append(make_gather(prompt))
+        return str(resp)
 
 
 
