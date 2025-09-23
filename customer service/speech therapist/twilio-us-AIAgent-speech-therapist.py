@@ -5496,6 +5496,7 @@ def voice():
         #  - Accepts speech (e.g., “July third nineteen fifty six”) or DTMF MMDDYYYY#
         #  - Silent-mode aware (re-prompts up to 3x if nothing is heard)
         #  - Stores ISO under session_data[call_sid]["customer"]["dob"]
+        #    and session_data[call_sid]["cancel"]["dob"]
         #  - Requires a phone on file first (E.164 ONLY)
         #  - Next stage: cancel_appt_get_date_time
         # ----------------------------------------------------------------------
@@ -5503,6 +5504,12 @@ def voice():
 
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
+        session_data[call_sid].setdefault("cancel", {})
+
+        DOB_PROMPT = (
+            "Please say your birth date, for example July third nineteen fifty six, "
+            "or type 2 digits for month 2 digits for day and 4 digits for year, then press pound."
+        )
 
         # Guard: require E.164 phone first (set by cancel_appt_by_phone_number / collect_phone)
         cust_phone_e164 = (
@@ -5521,7 +5528,6 @@ def voice():
                 "You can say it, or type the digits and press pound.",
                 hints="zero one two three four five six seven eight nine"
             ))
-            resp.redirect("/voice")
             return str(resp)
 
         # Pull inputs
@@ -5544,17 +5550,12 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            prompt_text = (
-                "Please say your birth date, for example July third nineteen fifty six, "
-                "or type 2 digits for month 2 digits for day and 4 digits for year, then press pound."
-            )
             session_data[call_sid]["stage"] = "cancel_appt_get_dob"
             try:
-                gather = make_gather_dob(prompt_text)
+                gather = make_gather_dob(DOB_PROMPT)
             except Exception:
-                gather = make_gather(prompt_text, hints="zero one two three four five six seven eight nine")
+                gather = make_gather(DOB_PROMPT, hints="zero one two three four five six seven eight nine")
             resp.append(gather)
-            resp.redirect("/voice")
             return str(resp)
 
         # If we DID hear something, clear the silence counter
@@ -5573,16 +5574,11 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            prompt_text = (
-                "Please say your birth date, for example July third nineteen fifty six, "
-                "or type 2 digits for month 2 digits for day and 4 digits for year, then press pound."
-            )
             try:
-                gather = make_gather_dob(prompt_text)
+                gather = make_gather_dob(DOB_PROMPT)
             except Exception:
-                gather = make_gather(prompt_text, hints="zero one two three four five six seven eight nine")
+                gather = make_gather(DOB_PROMPT, hints="zero one two three four five six seven eight nine")
             resp.append(gather)
-            resp.redirect("/voice")
             return str(resp)
 
         # Validate DOB in a sane range (1900..today)
@@ -5604,38 +5600,29 @@ def voice():
                     session_data.pop(call_sid, None)
                     return str(resp)
 
-                prompt_text = (
-                    "That doesn't sound like a valid birth date. Please say it again, "
-                    "or type two digits for month, two for day, and four for year, then press pound. "
-                    "For example, 07031956#."
-                )
                 try:
-                    gather = make_gather_dob(prompt_text)
+                    gather = make_gather_dob(
+                        "That doesn't sound like a valid birth date. Please say it again, "
+                        "or type two digits for month, two for day, and four for year, then press pound. "
+                        "For example, 07031956#."
+                    )
                 except Exception:
-                    gather = make_gather(prompt_text, hints="zero one two three four five six seven eight nine")
+                    gather = make_gather(DOB_PROMPT, hints="zero one two three four five six seven eight nine")
                 resp.append(gather)
-                resp.redirect("/voice")
                 return str(resp)
         except Exception as e:
             debug_print(f"cancel_appt_get_dob: ⚠️ Validation error → {e}")
             try:
-                gather = make_gather_dob(
-                    "Please repeat your birth date, for example July third nineteen fifty six, "
-                    "or type 2 digits for month 2 digits for day and 4 digits for year, then press pound."
-                )
+                gather = make_gather_dob(DOB_PROMPT)
             except Exception:
-                gather = make_gather(
-                    "Please repeat your birth date, for example July third nineteen fifty six, "
-                    "or type 2 digits for month 2 digits for day 4 digits for year, then press pound.",
-                    hints="zero one two three four five six seven eight nine"
-                )
+                gather = make_gather(DOB_PROMPT, hints="zero one two three four five six seven eight nine")
             resp.append(gather)
-            resp.redirect("/voice")
             return str(resp)
 
         # ✅ Store and move on
         iso_dob = dt.strftime("%Y-%m-%d")
         session_data[call_sid]["customer"]["dob"] = iso_dob
+        session_data[call_sid]["cancel"]["dob"]   = iso_dob
         session_data[call_sid].pop("retry_cancel_dob", None)
         debug_print(f"cancel_appt_get_dob: ✅ Stored DOB → {iso_dob}")
 
@@ -5644,8 +5631,8 @@ def voice():
             "Thanks. Now, please tell me the date and time of the appointment you want to cancel. "
             "For example, say July 3rd at 9 AM."
         ))
-        resp.redirect("/voice")
         return str(resp)
+
 
 
 
