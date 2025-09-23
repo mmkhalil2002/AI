@@ -1,4 +1,4 @@
-# update  09/23/25 time_saved  10:59 am  book is tested
+# update  09/23/25 time_saved  11:08 am  book is tested
 #  
 # =========================
 # Standard library imports
@@ -5671,7 +5671,7 @@ def voice():
         #   - Every path returns str(resp).
         # ----------------------------------------------------------------------
         debug_print("cancel_appt_get_time_date: 📍 Stage entered")
-        import re as _re  # local import to avoid NameError in nested helpers
+        #import re as _re  # local import to avoid NameError in nested helpers
 
         # Ensure buckets
         session_data.setdefault(call_sid, {})
