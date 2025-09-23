@@ -1,4 +1,4 @@
-# update  09/23/25 time_saved  11:08 am  book is tested
+# update  09/23/25 time_saved  12:08 am  book is tested
 #  
 # =========================
 # Standard library imports
@@ -5731,12 +5731,21 @@ def voice():
                 debug_print("cancel_appt_get_time_date: ⬇️ fallback → iterate after repeated parse failures")
                 cancel_ctx["iter_index"] = 0
                 session_data[call_sid]["stage"] = "cancel_appt_iterate"
-                resp.append(make_gather("That didn’t sound like a valid date and time. I’ll list your upcoming appointments."))
+                resp.append(make_gather(
+                    "That didn’t sound like a valid date and time. I’ll list your upcoming appointments."
+                ))
                 return str(resp)
 
-            resp.append(make_gather(
-                "I didn’t catch the full date and time. Please say it again, for example 'July 3rd at 9 AM'."
-            ))
+            # 🔧 Smarter prompts
+            if not time_part and day_part:
+                prompt = "I didn’t hear the time. Please include it, for example 'July 3rd at 9 AM'."
+            elif not day_part and time_part:
+                prompt = "I didn’t hear the date. Please include it, for example 'July 3rd at 9 AM'."
+            else:
+                prompt = "Please say the full date and time of the appointment you want to cancel, for example 'July 3rd at 9 AM'."
+
+            session_data[call_sid]["stage"] = "cancel_appt_get_time_date"
+            resp.append(make_gather(prompt))
             return str(resp)
 
         # --- Build UTC window -------------------------------------------------
@@ -5868,9 +5877,6 @@ def voice():
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             resp.append(make_gather("I couldn’t look up the event details. I’ll list your upcoming appointments instead."))
             return str(resp)
-
-
-
 
 
 
