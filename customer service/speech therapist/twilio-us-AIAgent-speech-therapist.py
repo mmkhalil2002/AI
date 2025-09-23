@@ -5638,7 +5638,6 @@ def voice():
 
 
 
-
     elif stage == "cancel_appt_get_time_date":
         # ----------------------------------------------------------------------
         # ❌ Stage: cancel_appt_get_time_date
@@ -5711,6 +5710,7 @@ def voice():
             ))
             return str(resp)
 
+        # reset silence counter on valid utterance
         session_data[call_sid].pop("silence_cancel_dt", None)
 
         # --- Parse date & time ------------------------------------------------
@@ -5746,9 +5746,9 @@ def voice():
 
             appointment_start, appointment_end = _build_slot(day_part, time_part)
             cancel_ctx["utc_start"] = appointment_start
-            cancel_ctx["utc_end"] = appointment_end
-            cancel_ctx["day"]  = day_part
-            cancel_ctx["time"] = time_part
+            cancel_ctx["utc_end"]   = appointment_end
+            cancel_ctx["day"]       = day_part
+            cancel_ctx["time"]      = time_part
             debug_print(f"cancel_appt_get_time_date: ⏰ UTC window → {appointment_start} → {appointment_end}")
         except Exception as e:
             debug_print(f"cancel_appt_get_time_date: ❌ slot build failed → {e} → iterate flow")
@@ -5797,7 +5797,12 @@ def voice():
                 except Exception:
                     return False
 
-            candidates = [ev for ev in items if _overlaps(ev, sdt, edt) and ev.get("status") != "cancelled" and ev.get("transparency") != "transparent"]
+            candidates = [
+                ev for ev in items
+                if _overlaps(ev, sdt, edt)
+                and ev.get("status") != "cancelled"
+                and ev.get("transparency") != "transparent"
+            ]
             debug_print(f"cancel_appt_get_time_date: 🔎 overlapping events → {len(candidates)}")
 
             chosen = None
@@ -5805,14 +5810,16 @@ def voice():
                 priv = (ev.get("extendedProperties", {}) or {}).get("private", {}) or {}
                 ev_e164 = (priv.get("patient_phone_e164") or priv.get("phone_e164") or priv.get("phone") or "").strip()
                 if ev_e164 == phone_e164:
-                    chosen = ev; break
+                    chosen = ev
+                    break
 
             if not chosen and candidates:
                 e164_digits = "".join(ch for ch in phone_e164 if ch.isdigit())
                 for ev in candidates:
                     desc_digits = "".join(ch for ch in (ev.get("description") or "") if ch.isdigit())
                     if e164_digits and e164_digits in desc_digits:
-                        chosen = ev; break
+                        chosen = ev
+                        break
 
             if not chosen and candidates:
                 chosen = candidates[0]
@@ -5824,8 +5831,8 @@ def voice():
                 resp.append(make_gather("I couldn’t find the event details. I’ll list your upcoming appointments instead."))
                 return str(resp)
 
-            cancel_ctx["calendar_id"] = calendar_id
-            cancel_ctx["matching_event"] = {
+            cancel_ctx["calendar_id"]     = calendar_id
+            cancel_ctx["matching_event"]  = {
                 "id": chosen.get("id"),
                 "summary": chosen.get("summary"),
                 "start": chosen.get("start"),
@@ -5874,7 +5881,6 @@ def voice():
 
 
 
-
     elif stage == "cancel_appt_iterate":
         # ----------------------------------------------------------------------
         # 🗂️ Stage: cancel_appt_iterate
@@ -5882,7 +5888,7 @@ def voice():
         #   - Present one candidate at a time and ask to confirm cancellation.
         #   - Builds candidates if not present, from local JSON.
         #   - Handles yes/no/back/repeat navigation.
-        #   - On "yes" → jump to cancel_appt_confirm.
+        #   - On "yes" → jump directly to cancel_appt_confirm (no double confirm).
         # ----------------------------------------------------------------------
 
         # ✅ Reset retry/silence counters when entering iterate mode
@@ -5935,9 +5941,9 @@ def voice():
 
         # ---------- Build candidates on first entry ----------
         if not cancel_ctx.get("candidates"):
-            ...
-            # (same logic as you already have for building and sorting candidates)
-            ...
+            # (reuse your existing build + sort logic here)
+            # ...
+            pass
 
         # ---------- Interpret user input ----------
         try:
@@ -5966,28 +5972,31 @@ def voice():
 
         cand = cands[idx] if cands else None
 
-        # --- YES branch ---
+        # --- YES branch (jump straight to confirm) ---
         if _is(YES) and cand:
             debug_print(f"cancel_appt_iterate: ✅ user confirmed candidate #{idx+1}/{total}")
             cancel_ctx["matching_event"] = cand
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
-            resp.append(make_gather(
-                f"Okay. I’ll cancel your appointment with {cand['doctor_name']} on {cand['friendly']}. "
-                "Please confirm, shall I go ahead?"
-            ))
-            return str(resp)
+            return voice()   # ⬅️ directly invoke next stage
 
         # --- NO branch ---
         if _is(NO):
-            ...
-            # (same logic as before, but keep return str(resp))
-            ...
+            debug_print(f"cancel_appt_iterate: ↪️ user skipped candidate #{idx+1}/{total}")
+            idx += 1
+            if idx >= total:
+                resp.say(gpt_speak("That's all I found under your details. I couldn't find a matching appointment to cancel."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+            cancel_ctx["iter_index"] = idx
+            cand = cands[idx]
 
         # --- BACK branch ---
         if _is(BAK) and total > 0:
-            ...
-            # (same logic)
-            ...
+            idx = max(0, idx - 1)
+            cancel_ctx["iter_index"] = idx
+            cand = cands[idx]
+            debug_print(f"cancel_appt_iterate: ⬅️ moved back to candidate #{idx+1}/{total}")
 
         # --- Prompt candidate (first time, repeat, or fallback) ---
         if not cand:
@@ -6011,8 +6020,7 @@ def voice():
 
 
 
-
-# ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
         # 📌 Stage: cancel_appt_confirm
         #
         # What this does now (updated):
