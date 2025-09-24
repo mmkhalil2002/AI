@@ -5467,13 +5467,10 @@ def voice():
         # 🗂️ Stage: cancel_appt_iterate
         #
         # Purpose:
-        #   - Load doctor’s JSON file from DB_FOLDER (local database).
-        #   - Filter appointments by phone + DOB (must both match).
-        #   - If matches → go one by one asking caller yes/no.
-        #   - If no matches → say "There are no upcoming events to cancel. Goodbye."
-        #
-        # Notes:
-        #   - Now looks inside DB_FOLDER explicitly.
+        #   - Load doctor’s JSON file from DB_FOLDER.
+        #   - Match appointments by phone + dob.
+        #   - If matches → announce list (first time), then cycle one-by-one.
+        #   - If no matches → apologize and hang up.
         # ----------------------------------------------------------------------
 
         debug_print("cancel_appt_iterate: 📍 Stage entered")
@@ -5485,12 +5482,11 @@ def voice():
 
         debug_print(f"cancel_appt_iterate: inputs → doctor='{doctor}', phone='{phone_e164}', dob='{dob_in}'")
 
-        # Build candidates once
+        # Build candidate list on first entry
         if not cancel_ctx.get("candidates"):
             candidates = []
             if doctor:
-                # ✅ Look inside DB_FOLDER
-                fname = (DB_FOLDER.rstrip("/") + "/" + doctor.lower().replace(" ", "_") + ".json")
+                fname = DB_FOLDER.rstrip("/") + "/" + doctor.lower().replace(" ", "_") + ".json"
                 try:
                     with open(fname, "r") as f:
                         appts = json.load(f)
@@ -5501,8 +5497,8 @@ def voice():
 
                 phone_digits = "".join([c for c in phone_e164 if c.isdigit()])
                 dob_norm = dob_in.strip()
-                matched_count = 0
 
+                matched_count = 0
                 for ap in appts:
                     ap_phone = "".join([c for c in str(ap.get("phone", "")) if c.isdigit()])
                     ap_dob   = str(ap.get("dob", "")).strip()
@@ -5525,11 +5521,11 @@ def voice():
 
             cancel_ctx["candidates"] = candidates
             cancel_ctx["iter_index"] = 0
+            cancel_ctx["announced"]  = False   # track if we already did first summary
 
         cands = cancel_ctx.get("candidates", [])
         idx   = int(cancel_ctx.get("iter_index", 0))
 
-        # No matches at all → hang up
         if not cands:
             debug_print("cancel_appt_iterate: 🚫 no appointments found → ending")
             resp.say(gpt_speak("There are no upcoming events to cancel. Goodbye."), VOICE)
@@ -5537,20 +5533,22 @@ def voice():
             session_data.pop(call_sid, None)
             return str(resp)
 
+        # First time: announce how many found
+        if not cancel_ctx.get("announced"):
+            cancel_ctx["announced"] = True
+            resp.say(gpt_speak(f"I found {len(cands)} upcoming appointment{'s' if len(cands)>1 else ''} under your details."), VOICE)
+
         cand = cands[idx]
-
-        # Always present current candidate immediately
         say_line = (
-            f"I found an appointment with {cand['doctor_name']} on {cand['friendly']}. "
+            f"Appointment with {cand['doctor_name']} on {cand['friendly']}. "
             "Do you want to cancel this one? Say yes or no. "
-            "You can also press 1 for yes, or 2 for no."
+            "Press 1 for yes, or 2 for no."
         )
-        debug_print(f"cancel_appt_iterate: 🗣️ prompting candidate #{idx+1}/{len(cands)}")
+        debug_print(f"cancel_appt_iterate: 🗣️ presenting candidate #{idx+1}/{len(cands)}")
 
-        gather = make_gather(say_line, hints="yes no one two back repeat previous")
+        gather = make_gather(say_line, hints="yes no one two")
         resp.append(gather)
         return str(resp)
-
 
 
 
