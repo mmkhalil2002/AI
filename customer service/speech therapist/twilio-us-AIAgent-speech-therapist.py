@@ -5463,15 +5463,15 @@ def voice():
 
 
     elif stage == "cancel_appt_iterate":
-        # ----------------------------------------------------------------------
-        # 🗂️ Stage: cancel_appt_iterate
-        #
-        # Purpose:
-        #   - Load doctor’s JSON file from DB_FOLDER.
-        #   - Match appointments by phone + dob.
-        #   - If matches → announce list (first time), then cycle one-by-one.
-        #   - If no matches → apologize and hang up.
-        # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 🗂️ Stage: cancel_appt_iterate
+    #
+    # Purpose:
+    #   - Load doctor’s JSON from DB_FOLDER
+    #   - Filter by phone + dob
+    #   - Announce how many matches were found
+    #   - Walk through one by one, asking yes/no
+    # ----------------------------------------------------------------------
 
         debug_print("cancel_appt_iterate: 📍 Stage entered")
 
@@ -5498,7 +5498,6 @@ def voice():
                 phone_digits = "".join([c for c in phone_e164 if c.isdigit()])
                 dob_norm = dob_in.strip()
 
-                matched_count = 0
                 for ap in appts:
                     ap_phone = "".join([c for c in str(ap.get("phone", "")) if c.isdigit()])
                     ap_dob   = str(ap.get("dob", "")).strip()
@@ -5506,7 +5505,6 @@ def voice():
                     debug_print(f"cancel_appt_iterate: 🔍 compare → input phone={phone_digits}, appt phone={ap_phone}; input dob={dob_norm}, appt dob={ap_dob}")
 
                     if ap_phone == phone_digits and (not dob_norm or ap_dob == dob_norm):
-                        matched_count += 1
                         candidates.append({
                             "doctor_name": doctor,
                             "start_utc":   ap.get("utc_start") or ap.get("time"),
@@ -5517,15 +5515,16 @@ def voice():
                             "event_id":    ap.get("event_id")
                         })
 
-                debug_print(f"cancel_appt_iterate: ✅ matched {matched_count}/{len(appts)} appointments")
+                debug_print(f"cancel_appt_iterate: ✅ matched {len(candidates)}/{len(appts)} appointments")
 
             cancel_ctx["candidates"] = candidates
             cancel_ctx["iter_index"] = 0
-            cancel_ctx["announced"]  = False   # track if we already did first summary
+            cancel_ctx["announced"]  = False
 
         cands = cancel_ctx.get("candidates", [])
         idx   = int(cancel_ctx.get("iter_index", 0))
 
+        # No candidates at all
         if not cands:
             debug_print("cancel_appt_iterate: 🚫 no appointments found → ending")
             resp.say(gpt_speak("There are no upcoming events to cancel. Goodbye."), VOICE)
@@ -5533,10 +5532,10 @@ def voice():
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # First time: announce how many found
+        # First entry: announce count
         if not cancel_ctx.get("announced"):
             cancel_ctx["announced"] = True
-            resp.say(gpt_speak(f"I found {len(cands)} upcoming appointment{'s' if len(cands)>1 else ''} under your details."), VOICE)
+            resp.say(gpt_speak(f"I found {len(cands)} upcoming appointment{'s' if len(cands)>1 else ''}."), VOICE)
 
         cand = cands[idx]
         say_line = (
