@@ -1322,88 +1322,6 @@ def cancel_appointment_by_name(
 
 
 
-def get_doctor_appts_for(doctor_name: str, phone_e164: str, dob_iso: str = None) -> list:
-    """
-    🔍 Load all appointments for a given doctor from local JSON storage.
-
-    Args:
-        doctor_name (str): Friendly doctor name (used to find JSON file).
-        phone_e164  (str): Caller phone number in normalized E.164 format.
-        dob_iso     (str): Optional ISO DOB string "YYYY-MM-DD" for extra filtering.
-
-    Returns:
-        list of dict: Each dict is one appointment record with fields like:
-                      { "start": "...", "end": "...", "phone": "...", "dob": "..." }
-
-    Guarantees:
-        - Never crashes → always returns a list (may be empty).
-        - Searches candidate paths robustly across ./data, ./, and working dir.
-    """
-
-    import os, json
-
-    debug_print(f"get_doctor_appts_for: 📍 doctor='{doctor_name}', phone='{phone_e164}', dob='{dob_iso or '∅'}'")
-
-    results = []
-
-    # ------------------------------------------------------------------
-    # Step 1: Build safe candidate file paths
-    # We normalize to avoid "SyntaxError: backslash in f-string"
-    # ------------------------------------------------------------------
-    safe_name = doctor_name.lower().replace(" ", "_")
-    names = [f"{safe_name}.json", f"{safe_name}_appts.json"]
-
-    dirs = [
-        os.getcwd(),
-        os.path.join(os.getcwd(), "data"),
-        "/home/ubuntu/speech_AI_agent/data",   # adjust if you store doctor JSONs elsewhere
-    ]
-
-    try_paths = []
-    for d in dirs:
-        for n in names:
-            clean_d = d.rstrip("/").rstrip("\\")   # ✅ remove trailing / or \ safely
-            try_paths.append(f"{clean_d}/{n}")
-
-    debug_print(f"get_doctor_appts_for: 🔎 trying {len(try_paths)} path(s)")
-
-    # ------------------------------------------------------------------
-    # Step 2: Load JSON from the first file that exists
-    # ------------------------------------------------------------------
-    appts = []
-    for path in try_paths:
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    appts = json.load(f)
-                debug_print(f"get_doctor_appts_for: ✅ loaded {len(appts)} appointments from {path}")
-                break
-            except Exception as e:
-                debug_print(f"get_doctor_appts_for: ⚠️ failed to load {path} → {e}")
-                continue
-
-    if not appts:
-        debug_print("get_doctor_appts_for: 🚫 no appointments file found or all loads failed")
-        return []
-
-    # ------------------------------------------------------------------
-    # Step 3: Filter by phone and DOB
-    # ------------------------------------------------------------------
-    for ap in appts:
-        try:
-            phone_match = (ap.get("phone") == phone_e164) or \
-                          (ap.get("phone_e164") == phone_e164)
-            dob_match   = (not dob_iso) or (ap.get("dob") == dob_iso)
-
-            if phone_match and dob_match:
-                results.append(ap)
-        except Exception as e:
-            debug_print(f"get_doctor_appts_for: ⚠️ skipping bad record → {e}")
-
-    debug_print(f"get_doctor_appts_for: 🎯 matched {len(results)} record(s) for caller")
-
-    return results
-
 
 
 
@@ -5609,97 +5527,130 @@ def voice():
 
 
 
-
     elif stage == "cancel_appt_iterate":
-        # ----------------------------------------------------------------------
-        # 🗂️ Stage: cancel_appt_iterate
-        #
-        # Purpose:
-        #   - List the caller’s matching appointments (local JSON, not GCal).
-        #   - Present one candidate at a time (say YES/NO).
-        #   - If no appointments exist → apologize and hang up.
-        #
-        # Inputs (from earlier stages):
-        #   session_data[call_sid]["cancel"] may include:
-        #       phone_e164, dob, doctor, candidates, iter_index
-        #
-        # Guarantees:
-        #   - No crashes: all branches return str(resp).
-        #   - If no candidates found → hang up politely.
-        # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 🗂️ Stage: cancel_appt_iterate
+    #
+    # Purpose:
+    #   - List this caller’s appointments pulled from local doctor JSON files.
+    #   - No external helper (like get_doctor_appts_for) – everything is inline.
+    #   - Search matches on normalized phone and optional DOB.
+    #   - Navigation:
+    #       • "yes"/"1" → choose this candidate and jump to confirm
+    #       • "no"/"2"  → next candidate
+    #       • "back"/"3" → previous candidate
+    #       • "repeat"   → repeat candidate
+    #   - If no matches → say "no upcoming events" and hang up.
+    # ----------------------------------------------------------------------
 
         debug_print("cancel_appt_iterate: 📍 Stage entered")
 
-        # ✅ Reset upstream counters
+        # Reset retries from earlier stages
         session_data[call_sid].pop("retry_cancel_dt", None)
         session_data[call_sid].pop("silence_cancel_dt", None)
 
         cancel_ctx = session_data[call_sid].setdefault("cancel", {})
-        phone_e164 = (cancel_ctx.get("phone_e164")
-                    or session_data[call_sid].get("phone_e164")
-                    or session_data[call_sid].get("customer", {}).get("phone_e164")
-                    or "").strip()
-        dob_in  = (cancel_ctx.get("dob") or session_data[call_sid].get("customer", {}).get("dob") or "").strip()
-        doctor  = (cancel_ctx.get("doctor") or "").strip()
+        phone_e164 = (
+            cancel_ctx.get("phone_e164")
+            or session_data[call_sid].get("phone_e164")
+            or session_data[call_sid].get("customer", {}).get("phone_e164")
+            or ""
+        ).strip()
+        dob_in = (
+            cancel_ctx.get("dob")
+            or session_data[call_sid].get("customer", {}).get("dob")
+            or ""
+        ).strip()
+        doctor = (cancel_ctx.get("doctor") or "").strip()
 
-        # Guard: require phone
         if not phone_e164:
-            debug_print("cancel_appt_iterate: ❌ missing phone → back to collect_phone")
+            debug_print("cancel_appt_iterate: ❌ phone missing → collect_phone")
             session_data[call_sid]["stage"] = "collect_phone"
             gather = make_gather(
-                "To locate your appointment, please say or type your phone number including area code, then press pound.",
+                "To find your appointment, please provide your phone number including area code.",
                 hints="zero one two three four five six seven eight nine"
             )
             resp.append(gather)
             return str(resp)
 
-        # Build candidates if not already present
+        # Build candidates only on first entry
         if not cancel_ctx.get("candidates"):
-            debug_print(f"cancel_appt_iterate: 🔎 building candidates (phone={phone_e164}, dob={dob_in}, doctor={doctor or 'ALL'})")
+            debug_print(f"cancel_appt_iterate: 🔎 building candidates phone={phone_e164}, dob={dob_in or '∅'}, doctor={doctor or 'ALL'}")
             candidates = []
 
-            try:
-                if doctor:
-                    appts = get_doctor_appts_for(doctor, phone_e164, dob_in or None)
-                    for ap in appts:
-                        candidates.append({
-                            "doctor_name": doctor,
-                            "start_utc": ap.get("start") or ap.get("time") or "",
-                            "end_utc": ap.get("end") or "",
-                            "friendly": ap.get("friendly") or (ap.get("start") or "the scheduled time"),
-                            "phone_e164": phone_e164,
-                            "dob": dob_in,
-                        })
-                else:
+            # Normalize input phone to digits only
+            phone_digits = "".join(ch for ch in phone_e164 if ch.isdigit())
+
+            # Load one doctor file or all
+            doctor_names = [doctor] if doctor else []
+            if not doctor_names:
+                try:
                     doctor_map = globals().get("googleid_dr_name_map") or {}
-                    for dr_name in doctor_map.values():
-                        appts = get_doctor_appts_for(dr_name, phone_e164, dob_in or None)
-                        for ap in appts:
-                            candidates.append({
-                                "doctor_name": dr_name,
-                                "start_utc": ap.get("start") or ap.get("time") or "",
-                                "end_utc": ap.get("end") or "",
-                                "friendly": ap.get("friendly") or (ap.get("start") or "the scheduled time"),
-                                "phone_e164": phone_e164,
-                                "dob": dob_in,
-                            })
-            except Exception as e:
-                debug_print(f"cancel_appt_iterate: ⚠️ error building candidates → {e}")
-                candidates = []
+                    doctor_names = sorted(set(doctor_map.values())) if doctor_map else []
+                except Exception:
+                    doctor_names = []
+
+            for dr_name in doctor_names:
+                file_path = f"{dr_name.lower().replace(' ', '_')}.json"
+                try:
+                    with open(file_path, "r") as f:
+                        appts = json.load(f)
+                except Exception as e:
+                    debug_print(f"cancel_appt_iterate: ⚠️ failed to load {file_path} → {e}")
+                    continue
+
+                for ap in appts:
+                    appt_phone_digits = "".join(ch for ch in str(ap.get("phone", "")) if ch.isdigit())
+                    if appt_phone_digits != phone_digits:
+                        continue
+                    if dob_in and str(ap.get("dob")) != dob_in:
+                        continue
+
+                    start_utc = (ap.get("utc_start") or ap.get("time") or "").strip()
+                    end_utc   = (ap.get("utc_end") or "").strip()
+                    friendly  = start_utc
+                    try:
+                        if "dtparser" in globals():
+                            local_dt = globals()["dtparser"].isoparse(start_utc).astimezone(pytz.timezone("America/Chicago"))
+                            friendly = local_dt.strftime("%A, %B %-d at %-I:%M %p")
+                    except Exception:
+                        pass
+
+                    candidates.append({
+                        "doctor_name": dr_name,
+                        "start_utc":   start_utc,
+                        "end_utc":     end_utc,
+                        "friendly":    friendly,
+                        "phone_e164":  phone_e164,
+                        "dob":         dob_in
+                    })
+
+            # If no matches, bail out
+            if not candidates:
+                debug_print("cancel_appt_iterate: 🚫 no candidates found")
+                resp.say(gpt_speak("There are no upcoming events, goodbye."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
 
             cancel_ctx["candidates"] = candidates
             cancel_ctx["iter_index"] = 0
             debug_print(f"cancel_appt_iterate: ✅ built {len(candidates)} candidate(s)")
 
-            # If no appointments → end call
-            if not candidates:
-                debug_print("cancel_appt_iterate: 🚫 no appointments → end call")
-                resp.say(gpt_speak("I couldn’t find any appointments under your details. Goodbye."), VOICE)
-                session_data.pop(call_sid, None)
-                resp.hangup()
-                return str(resp)
+        # Parse user input
+        try:
+            dtmf = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf = ""
+        utter = (speech_result or "").strip().lower()
 
-        # Otherwise present the first candidate (or continue iteration)
+        debug_print(f"cancel_appt_iterate: 🎚️ user input dtmf='{dtmf}' speech='{utter}'")
+
+        YES = {"yes", "yeah", "yep", "confirm", "1"}
+        NO  = {"no", "nope", "next", "2"}
+        BACK = {"back", "previous", "3"}
+        REP  = {"repeat", "again"}
+
         idx   = int(cancel_ctx.get("iter_index", 0))
         cands = cancel_ctx.get("candidates", [])
         total = len(cands)
@@ -5708,26 +5659,58 @@ def voice():
             idx = 0
             cancel_ctx["iter_index"] = 0
 
-        cand = cands[idx]
+        cand = cands[idx] if cands else None
 
-        debug_print(f"cancel_appt_iterate: 🎙️ presenting candidate #{idx+1}/{total} → {cand['doctor_name']} on {cand['friendly']}")
+        # --- YES ---
+        if (utter in YES) or (dtmf == "1"):
+            debug_print(f"cancel_appt_iterate: ✅ user chose candidate {idx+1}/{total}")
+            cancel_ctx["matching_event"] = cand
+            session_data[call_sid]["stage"] = "cancel_appt_confirm"
+            resp.redirect("/voice")
+            return str(resp)
+
+        # --- NO ---
+        if (utter in NO) or (dtmf == "2"):
+            idx += 1
+            if idx >= total:
+                debug_print("cancel_appt_iterate: 🚫 no more candidates")
+                resp.say(gpt_speak("That’s all I found under your details. Goodbye."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+            cancel_ctx["iter_index"] = idx
+            cand = cands[idx]
+
+        # --- BACK ---
+        if (utter in BACK) or (dtmf == "3"):
+            idx = max(0, idx - 1)
+            cancel_ctx["iter_index"] = idx
+            cand = cands[idx]
+            debug_print(f"cancel_appt_iterate: ⬅️ moved back to candidate {idx+1}/{total}")
+
+        # --- REPEAT ---
+        if (utter in REP):
+            debug_print(f"cancel_appt_iterate: 🔁 repeating candidate {idx+1}/{total}")
+
+        # Default: present current candidate
+        if not cand:
+            debug_print("cancel_appt_iterate: ❓ no candidate; ending")
+            resp.say(gpt_speak("I’m sorry, I couldn’t find any appointment to review."), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
 
         say_line = (
             f"I found an appointment with {cand['doctor_name']} on {cand['friendly']}. "
             "Do you want to cancel this one? Say yes or no. You can also press 1 for yes, or 2 for no."
         )
-        gather = make_gather(
-            say_line,
-            hints="yes no one two back repeat previous",
-            input="speech dtmf",
-            timeout=20,
-            speech_timeout="8",
-            finish_on_key="#",
-            action="/voice",
-            barge_in=True,
-        )
+        debug_print(f"cancel_appt_iterate: 🗣️ presenting candidate {idx+1}/{total}")
+
+        gather = make_gather(say_line, hints="yes no one two back repeat", input="speech dtmf")
         resp.append(gather)
         return str(resp)
+
+
 
 
 
