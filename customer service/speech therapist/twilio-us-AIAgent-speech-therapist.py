@@ -1322,224 +1322,87 @@ def cancel_appointment_by_name(
 
 
 
-def get_doctor_appts_for(doctor_name, phone_e164, dob_iso=None):
+def get_doctor_appts_for(doctor_name: str, phone_e164: str, dob_iso: str = None) -> list:
     """
-    Read local JSON for a given doctor and return this caller's matching appointments.
+    🔍 Load all appointments for a given doctor from local JSON storage.
 
-    Inputs:
-      - doctor_name: Friendly name ("Alfred Hitchcock")
-      - phone_e164:  E.164 string ("+14694633276"); matching is done by digits
-      - dob_iso:     Optional "YYYY-MM-DD" to further filter matches
+    Args:
+        doctor_name (str): Friendly doctor name (used to find JSON file).
+        phone_e164  (str): Caller phone number in normalized E.164 format.
+        dob_iso     (str): Optional ISO DOB string "YYYY-MM-DD" for extra filtering.
 
-    Output:
-      - List of raw appointment dicts (from file), normalized to include:
-          { "start": <utc_iso>, "end": <utc_iso or "">, ...original fields... }
-        This list is consumed by cancel_appt_iterate → _appt_to_candidate(...).
+    Returns:
+        list of dict: Each dict is one appointment record with fields like:
+                      { "start": "...", "end": "...", "phone": "...", "dob": "..." }
 
-    Notes:
-      - NO imports here. We rely on globals() for json/os/dateutil if present.
-      - File location is discovered heuristically:
-          * If you provide a helper: get_doctor_json_path(doctor_name) → path, it will be used.
-          * Otherwise it tries these directories if defined in globals:
-              APPT_DATA_DIR, APPOINTMENTS_DIR, DOCTOR_JSON_DIR
-            and common fallbacks: "./appointments", "./data", "./doctors", "."
-      - File naming: "<slugified_name>.json", "<slugified_name>.appointments.json",
-                     "appointments_<slug>.json"
-      - Matching strategy:
-          * Phone: compare digits of E.164 against digits in record["phone_e164"] or
-                   record["phone"] or any string-looking field inside the record.
-          * DOB:   if dob_iso provided, require exact match against "dob" (after strip/lower).
+    Guarantees:
+        - Never crashes → always returns a list (may be empty).
+        - Searches candidate paths robustly across ./data, ./, and working dir.
     """
-    dbg = globals().get("debug_print") or (lambda *a, **k: None)
-    json_mod = globals().get("json")
-    os_mod   = globals().get("os")
 
-    if not doctor_name:
-        dbg("get_doctor_appts_for: ❌ doctor_name is empty")
-        return []
-    if not phone_e164:
-        dbg("get_doctor_appts_for: ❌ phone_e164 is empty")
-        return []
+    import os, json
 
-    def _slug(s):
-        s = (s or "").strip().lower()
-        out = []
-        for ch in s:
-            if ch.isalnum():
-                out.append(ch)
-            elif ch in (" ", "-", "_"):
-                out.append("_")
-        slug = "".join(out).strip("_")
-        while "__" in slug:
-            slug = slug.replace("__", "_")
-        return slug or "doctor"
+    debug_print(f"get_doctor_appts_for: 📍 doctor='{doctor_name}', phone='{phone_e164}', dob='{dob_iso or '∅'}'")
 
-    def _digits(s):
-        return "".join(ch for ch in (s or "") if ch.isdigit())
+    results = []
 
-    want_digits = _digits(phone_e164)
-    want_dob = (dob_iso or "").strip().lower()
+    # ------------------------------------------------------------------
+    # Step 1: Build safe candidate file paths
+    # We normalize to avoid "SyntaxError: backslash in f-string"
+    # ------------------------------------------------------------------
+    safe_name = doctor_name.lower().replace(" ", "_")
+    names = [f"{safe_name}.json", f"{safe_name}_appts.json"]
 
-    # If app exposes a path helper, use it.
-    path_helper = globals().get("get_doctor_json_path")
-    if path_helper:
-        try:
-            p = path_helper(doctor_name)
-            appts = []
-            _read_into = []
-            if p:
-                _read_into = [p]
-            files_read, loaded = _try_load_files(_read_into, json_mod, os_mod, dbg)
-            if loaded:
-                return _filter_and_normalize(loaded, want_digits, want_dob, dbg)
-        except Exception as e:
-            dbg(f"get_doctor_appts_for: ⚠️ get_doctor_json_path error → {e}")
-
-    # Build candidate file paths using common directories and names.
-    slug = _slug(doctor_name)
-
-    # Directories from globals (if present), plus sensible defaults
-    dirs = []
-    for key in ("APPT_DATA_DIR", "APPOINTMENTS_DIR", "DOCTOR_JSON_DIR"):
-        val = globals().get(key)
-        if isinstance(val, str) and val.strip():
-            dirs.append(val.strip())
-    dirs += ["./appointments", "./data", "./doctors", "."]
-
-    # Filenames to try in each dir
-    names = [
-        f"{slug}.json",
-        f"{slug}.appointments.json",
-        f"appointments_{slug}.json",
+    dirs = [
+        os.getcwd(),
+        os.path.join(os.getcwd(), "data"),
+        "/home/ubuntu/speech_AI_agent/data",   # adjust if you store doctor JSONs elsewhere
     ]
 
-    # Helper: load files (defined inline, no imports)
-    def _file_exists(path):
-        if os_mod:
-            try:
-                return os_mod.path.exists(path)
-            except Exception:
-                return False
-        # If os is not available, we’ll just try to open and see if it works.
-        try:
-            with open(path, "rb"):
-                return True
-        except Exception:
-            return False
-
-    def _load_json(path):
-        if not json_mod:
-            dbg("get_doctor_appts_for: ❌ json module not available in globals")
-            return None
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json_mod.load(f)
-        except Exception as e:
-            dbg(f"get_doctor_appts_for: ⚠️ failed reading '{path}' → {e}")
-            return None
-
-    def _try_load_files(paths, json_mod_, os_mod_, dbg_):
-        loaded = None
-        files_read = []
-        for p in paths:
-            if not p:
-                continue
-            if _file_exists(p):
-                data = _load_json(p)
-                if data is not None:
-                    files_read.append(p)
-                    loaded = data
-                    break
-        if files_read:
-            dbg_(f"get_doctor_appts_for: 📄 loaded file → {files_read[0]}")
-        else:
-            dbg_("get_doctor_appts_for: 🚫 no file found in tried paths")
-        return files_read, loaded
-
-    # Build the list of candidate file paths (in priority order)
     try_paths = []
     for d in dirs:
         for n in names:
-            try_paths.append(f"{d.rstrip('/').rstrip('\\')}/{n}")
+            clean_d = d.rstrip("/").rstrip("\\")   # ✅ remove trailing / or \ safely
+            try_paths.append(f"{clean_d}/{n}")
 
-    files_read, data = _try_load_files(try_paths, json_mod, os_mod, dbg)
-    if data is None:
-        return []
+    debug_print(f"get_doctor_appts_for: 🔎 trying {len(try_paths)} path(s)")
 
-    # Normalize file into a list of appointment dicts
-    def _as_list(d):
-        if isinstance(d, list):
-            return d
-        if isinstance(d, dict):
-            # Common containers
-            for key in ("appointments", "bookings", "events", "items", "data"):
-                v = d.get(key)
-                if isinstance(v, list):
-                    return v
-            # Single appointment object?
-            return [d]
-        return []
-
-    raw_list = _as_list(data)
-    dbg(f"get_doctor_appts_for: ℹ️ raw items read → {len(raw_list)}")
-
-    # Filter by phone & dob; normalize keys
-    matched = []
-    for rec in raw_list:
-        if not isinstance(rec, dict):
-            continue
-
-        # Extract possible time keys from your local persist format
-        start_iso = (rec.get("utc_start") or rec.get("start") or rec.get("time") or "").strip()
-        end_iso   = (rec.get("utc_end")   or rec.get("end")   or "").strip()
-
-        # Extract phones/dob from common fields
-        rec_phone = (rec.get("phone_e164") or rec.get("phone") or rec.get("patient_phone") or "").strip()
-        rec_dob   = (rec.get("dob") or "").strip().lower()
-
-        # If phone not in a direct field, try deep search across string fields (best-effort)
-        if not rec_phone:
-            # Concatenate all string values and pull any digits we see
+    # ------------------------------------------------------------------
+    # Step 2: Load JSON from the first file that exists
+    # ------------------------------------------------------------------
+    appts = []
+    for path in try_paths:
+        if os.path.exists(path):
             try:
-                concat = " ".join(str(v) for v in rec.values() if isinstance(v, (str, int, float)))
-            except Exception:
-                concat = ""
-            rec_phone = concat
+                with open(path, "r", encoding="utf-8") as f:
+                    appts = json.load(f)
+                debug_print(f"get_doctor_appts_for: ✅ loaded {len(appts)} appointments from {path}")
+                break
+            except Exception as e:
+                debug_print(f"get_doctor_appts_for: ⚠️ failed to load {path} → {e}")
+                continue
 
-        # Phone match: compare digits
-        rec_digits = _digits(rec_phone)
-        if not rec_digits or not want_digits:
-            phone_ok = False
-        else:
-            phone_ok = (rec_digits == want_digits) or (want_digits in rec_digits) or (rec_digits in want_digits)
+    if not appts:
+        debug_print("get_doctor_appts_for: 🚫 no appointments file found or all loads failed")
+        return []
 
-        # DOB match (if provided)
-        dob_ok = True
-        if want_dob:
-            dob_ok = (rec_dob == want_dob)
+    # ------------------------------------------------------------------
+    # Step 3: Filter by phone and DOB
+    # ------------------------------------------------------------------
+    for ap in appts:
+        try:
+            phone_match = (ap.get("phone") == phone_e164) or \
+                          (ap.get("phone_e164") == phone_e164)
+            dob_match   = (not dob_iso) or (ap.get("dob") == dob_iso)
 
-        if phone_ok and dob_ok:
-            norm = dict(rec)  # keep original fields
-            # Ensure 'start'/'end' are present for the iterate adapter
-            norm["start"] = start_iso
-            norm["end"]   = end_iso
-            matched.append(norm)
+            if phone_match and dob_match:
+                results.append(ap)
+        except Exception as e:
+            debug_print(f"get_doctor_appts_for: ⚠️ skipping bad record → {e}")
 
-    dbg(f"get_doctor_appts_for: ✅ matched items → {len(matched)} (after phone/DOB filter)")
+    debug_print(f"get_doctor_appts_for: 🎯 matched {len(results)} record(s) for caller")
 
-    # Optional: de-dup by (start, phone digits)
-    seen = set()
-    unique = []
-    for m in matched:
-        key = (m.get("start", ""), _digits(m.get("phone_e164") or m.get("phone") or ""))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(m)
-
-    dbg(f"get_doctor_appts_for: ✂️ unique items → {len(unique)}")
-    return unique
-
+    return results
 
 
 
