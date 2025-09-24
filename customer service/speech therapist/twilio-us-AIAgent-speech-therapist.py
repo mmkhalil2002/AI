@@ -5473,15 +5473,6 @@ def voice():
         #   - Walk through one by one, asking yes/no
         # ----------------------------------------------------------------------
 
-        elif stage == "cancel_appt_iterate":
-        # ----------------------------------------------------------------------
-        # 🗂️ Stage: cancel_appt_iterate
-        #
-        # Purpose:
-        #   - Show upcoming appointments for this doctor/phone/dob
-        #   - Walk through 1 by 1 (YES = cancel, NO = next, end if none left)
-        # ----------------------------------------------------------------------
-
         debug_print("cancel_appt_iterate: 📍 Stage entered")
 
         cancel_ctx = session_data[call_sid].setdefault("cancel", {})
