@@ -5528,20 +5528,20 @@ def voice():
 
 
     elif stage == "cancel_appt_iterate":
-    # ----------------------------------------------------------------------
-    # 🗂️ Stage: cancel_appt_iterate
-    #
-    # Purpose:
-    #   - List this caller’s appointments pulled from local doctor JSON files.
-    #   - No external helper (like get_doctor_appts_for) – everything is inline.
-    #   - Search matches on normalized phone and optional DOB.
-    #   - Navigation:
-    #       • "yes"/"1" → choose this candidate and jump to confirm
-    #       • "no"/"2"  → next candidate
-    #       • "back"/"3" → previous candidate
-    #       • "repeat"   → repeat candidate
-    #   - If no matches → say "no upcoming events" and hang up.
-    # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # 🗂️ Stage: cancel_appt_iterate
+        #
+        # Purpose:
+        #   - List this caller’s appointments pulled from local doctor JSON files.
+        #   - No external helper (like get_doctor_appts_for) – everything is inline.
+        #   - Search matches on normalized phone and optional DOB.
+        #   - Navigation:
+        #       • "yes"/"1" → choose this candidate and jump to confirm
+        #       • "no"/"2"  → next candidate
+        #       • "back"/"3" → previous candidate
+        #       • "repeat"   → repeat candidate
+        #   - If no matches → say "no upcoming events" and hang up.
+        # ----------------------------------------------------------------------
 
         debug_print("cancel_appt_iterate: 📍 Stage entered")
 
