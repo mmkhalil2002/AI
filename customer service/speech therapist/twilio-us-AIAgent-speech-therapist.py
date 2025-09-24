@@ -5464,118 +5464,195 @@ def voice():
 
 
     elif stage == "cancel_appt_iterate":
-    # ----------------------------------------------------------------------
-    # 🗂️ Stage: cancel_appt_iterate
-    #
-    # Purpose:
-    #   - List caller’s appointments from local JSON (doctor files).
-    #   - Match by phone (digits-only) and DOB (if provided).
-    #   - Walk through candidates interactively (yes/no/back/repeat).
-    #   - If no matches, say goodbye and hang up.
-    # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # 🗂️ Stage: cancel_appt_iterate
+        #
+        # Purpose
+        #   - List this caller’s matching appointments from the local JSON store.
+        #   - Matches are based on phone number (normalized) and optionally DOB.
+        #   - Presents candidates one at a time for caller to confirm cancellation.
+        #
+        # Caller Options:
+        #   • "yes"/"1" → select current candidate and go to cancel_appt_confirm
+        #   • "no"/"2"  → skip to next candidate (end if none left)
+        #   • "back"/"3"→ move to previous candidate
+        #   • "repeat"  → repeat current candidate
+        #
+        # Guarantees
+        #   - Always returns str(resp) (never None).
+        #   - Debug prints show all matching/mismatching logic.
+        # ----------------------------------------------------------------------
 
         debug_print("cancel_appt_iterate: 📍 Stage entered")
 
-        # Reset upstream counters
-        session_data[call_sid].pop("retry_cancel_dt", None)
-        session_data[call_sid].pop("silence_cancel_dt", None)
-
         cancel_ctx = session_data[call_sid].setdefault("cancel", {})
-        phone_e164 = (
-            cancel_ctx.get("phone_e164")
-            or session_data[call_sid].get("phone_e164")
-            or session_data[call_sid].get("customer", {}).get("phone_e164")
-            or ""
-        ).strip()
-        dob_in = (
-            cancel_ctx.get("dob")
-            or session_data[call_sid].get("customer", {}).get("dob")
-            or ""
-        ).strip()
-        doctor = (cancel_ctx.get("doctor") or "").strip()
+        phone_e164 = (cancel_ctx.get("phone_e164")
+                    or session_data[call_sid].get("phone_e164")
+                    or session_data[call_sid].get("customer", {}).get("phone_e164")
+                    or "").strip()
+        dob_in  = (cancel_ctx.get("dob") or session_data[call_sid].get("customer", {}).get("dob") or "").strip()
+        doctor  = (cancel_ctx.get("doctor") or "").strip()
 
+        # Normalize caller’s phone and DOB for matching
+        norm_phone = phone_e164.lstrip("+")
+        norm_dob   = dob_in.strip()
+
+        debug_print(f"cancel_appt_iterate: 📞 caller phone='{phone_e164}' (norm='{norm_phone}'), DOB='{norm_dob}'")
+
+        # If no phone, bounce back
         if not phone_e164:
-            debug_print("cancel_appt_iterate: ❌ no phone → collect_phone")
+            debug_print("cancel_appt_iterate: ❌ missing phone → collect_phone")
             session_data[call_sid]["stage"] = "collect_phone"
-            resp.append(make_gather(
-                "To locate your appointment, please provide your phone number including area code.",
+            gather = make_gather(
+                "To locate your appointment, please say or type your phone number including area code, then press pound.",
                 hints="zero one two three four five six seven eight nine"
-            ))
+            )
+            resp.append(gather)
             return str(resp)
 
-        # Normalize phone to digits only
-        phone_digits = "".join(ch for ch in phone_e164 if ch.isdigit())
-        debug_print(f"cancel_appt_iterate: 🔎 normalized caller phone → {phone_digits}")
-
-        # Build candidates only once
+        # ---------- Build candidates first time only ----------
         if not cancel_ctx.get("candidates"):
-            debug_print(f"cancel_appt_iterate: building candidates (doctor={doctor or 'ALL'}, dob={dob_in or '∅'})")
+            debug_print("cancel_appt_iterate: 🔎 building candidate list...")
+
             candidates = []
+            doctor_list = [doctor] if doctor else list((globals().get("googleid_dr_name_map") or {}).values())
 
-            # Doctors to search
-            doctor_names = [doctor] if doctor else []
-            if not doctor_names:
+            for dr_name in doctor_list:
                 try:
-                    doctor_map = globals().get("googleid_dr_name_map") or {}
-                    doctor_names = sorted(set(doctor_map.values())) if doctor_map else []
-                except Exception:
-                    doctor_names = []
-
-            for dr_name in doctor_names:
-                file_path = f"{dr_name.lower().replace(' ', '_')}.json"
-                try:
-                    with open(file_path, "r") as f:
-                        appts = json.load(f)
-                    debug_print(f"cancel_appt_iterate: loaded {len(appts)} appointments from {file_path}")
+                    appts = get_doctor_appts_for(dr_name, phone_e164, dob_in or None)
                 except Exception as e:
-                    debug_print(f"cancel_appt_iterate: ⚠️ could not load {file_path} → {e}")
-                    continue
+                    appts = []
+                    debug_print(f"cancel_appt_iterate: ⚠️ error reading appts for '{dr_name}' → {e}")
 
                 for ap in appts:
-                    appt_phone_digits = "".join(ch for ch in str(ap.get("phone", "")) if ch.isdigit())
-                    appt_dob = str(ap.get("dob", "")).strip()
+                    json_phone = (ap.get("phone") or "").strip()
+                    json_dob   = (ap.get("dob") or "").strip()
+                    json_start = (ap.get("utc_start") or ap.get("time") or "").strip()
 
-                    debug_print(f"cancel_appt_iterate: checking appt={ap.get('utc_start')} "
-                                f"phone_record={appt_phone_digits} dob_record={appt_dob}")
+                    # Normalize JSON values
+                    json_phone_norm = json_phone.lstrip("+")
+                    json_dob_norm   = json_dob.strip()
 
-                    # Phone match
-                    if appt_phone_digits != phone_digits:
-                        debug_print("cancel_appt_iterate: ❌ phone mismatch → skip")
-                        continue
+                    # Print debug comparison
+                    debug_print(
+                        f"cancel_appt_iterate: 🔍 check doctor='{dr_name}' "
+                        f"JSON_phone='{json_phone}' norm='{json_phone_norm}' "
+                        f"JSON_dob='{json_dob_norm}' "
+                        f"vs caller phone='{norm_phone}' dob='{norm_dob}'"
+                    )
 
-                    # DOB match (only if caller gave one)
-                    if dob_in and appt_dob != dob_in:
-                        debug_print("cancel_appt_iterate: ❌ dob mismatch → skip")
-                        continue
+                    # Match if phone matches (exact or normalized) AND DOB matches (if provided)
+                    if (json_phone == phone_e164 or json_phone_norm == norm_phone) and (not norm_dob or json_dob_norm == norm_dob):
+                        friendly = ap.get("friendly_local") or json_start
+                        debug_print(f"cancel_appt_iterate: ✅ MATCH doctor='{dr_name}' start='{json_start}'")
+                        candidates.append({
+                            "doctor_name": dr_name,
+                            "start_utc":   json_start,
+                            "end_utc":     (ap.get("utc_end") or "").strip(),
+                            "friendly":    friendly,
+                            "phone_e164":  phone_e164,
+                            "dob":         norm_dob,
+                        })
+                    else:
+                        debug_print(f"cancel_appt_iterate: ❌ no match for this record")
 
-                    start_utc = (ap.get("utc_start") or ap.get("time") or "").strip()
-                    end_utc   = (ap.get("utc_end") or "").strip()
-                    friendly  = ap.get("friendly_local") or start_utc
-
-                    debug_print(f"cancel_appt_iterate: ✅ candidate accepted {dr_name} @ {friendly}")
-
-                    candidates.append({
-                        "doctor_name": dr_name,
-                        "start_utc":   start_utc,
-                        "end_utc":     end_utc,
-                        "friendly":    friendly,
-                        "phone_e164":  phone_e164,
-                        "dob":         dob_in
-                    })
+            cancel_ctx["candidates"] = candidates
+            cancel_ctx["iter_index"] = 0
+            debug_print(f"cancel_appt_iterate: 📊 built {len(candidates)} candidate(s)")
 
             if not candidates:
-                debug_print("cancel_appt_iterate: 🚫 no appointments matched caller details")
-                resp.say(gpt_speak("There are no upcoming events, goodbye."), VOICE)
+                resp.say(gpt_speak("There are no upcoming events under your details. Goodbye."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            cancel_ctx["candidates"] = candidates
+        # ---------- Handle user input ----------
+        try:
+            dtmf  = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf = ""
+        utter = (speech_result or "").strip().lower()
+        debug_print(f"cancel_appt_iterate: 🎚️ user input → dtmf='{dtmf}' speech='{utter}'")
+
+        YES = {"yes", "yeah", "yep", "correct", "confirm", "one", "1"}
+        NO  = {"no", "nope", "next", "two", "2"}
+        REP = {"repeat", "say again", "again"}
+        BAK = {"back", "previous", "go back", "3"}
+
+        def _is(intent_set):
+            return (utter in intent_set) or (dtmf in {s for s in intent_set if s.isdigit()})
+
+        idx    = int(cancel_ctx.get("iter_index", 0))
+        cands  = cancel_ctx.get("candidates", [])
+        total  = len(cands)
+
+        if idx >= total:
+            debug_print("cancel_appt_iterate: ⚠️ index out of range → reset to 0")
+            idx = 0
             cancel_ctx["iter_index"] = 0
-            debug_print(f"cancel_appt_iterate: ✅ built {len(candidates)} candidates")
 
-        # (rest of iterate flow remains the same: yes/no/back/repeat handling + presenting candidates)
+        cand = cands[idx] if cands else None
 
+        # --- YES ---
+        if _is(YES) and cand:
+            debug_print(f"cancel_appt_iterate: ✅ user selected candidate #{idx+1}/{total} "
+                        f"doctor='{cand['doctor_name']}' start='{cand['start_utc']}'")
+            cancel_ctx["matching_event"] = cand
+            session_data[call_sid]["stage"] = "cancel_appt_confirm"
+            resp.redirect("/voice")
+            return str(resp)
+
+        # --- NO ---
+        if _is(NO):
+            debug_print(f"cancel_appt_iterate: ↪️ user skipped candidate #{idx+1}/{total}")
+            idx += 1
+            if idx >= total:
+                debug_print("cancel_appt_iterate: 🚫 no more candidates")
+                resp.say(gpt_speak("That’s all I found under your details. Goodbye."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+            cancel_ctx["iter_index"] = idx
+            cand = cands[idx]
+
+        # --- BACK ---
+        if _is(BAK) and total > 0:
+            idx = max(0, idx - 1)
+            cancel_ctx["iter_index"] = idx
+            cand = cands[idx]
+            debug_print(f"cancel_appt_iterate: ⬅️ moved back to candidate #{idx+1}/{total}")
+
+        # --- REPEAT ---
+        if _is(REP):
+            debug_print(f"cancel_appt_iterate: 🔁 repeating candidate #{idx+1}/{total}")
+
+        if not cand:
+            debug_print("cancel_appt_iterate: ❓ no candidate available at all, ending.")
+            resp.say(gpt_speak("I’m sorry, I couldn’t find any appointment to review. Goodbye."), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
+
+        # --- Present candidate ---
+        say_line = (
+            f"I found an appointment with {cand['doctor_name']} on {cand['friendly']}. "
+            "Do you want to cancel this one? Say yes or no. You can also press 1 for yes, or 2 for no."
+        )
+        debug_print(f"cancel_appt_iterate: 🗣️ presenting candidate #{idx+1}/{total} "
+                    f"doctor='{cand['doctor_name']}' start='{cand['start_utc']}'")
+
+        gather = make_gather(
+            say_line,
+            hints="yes no one two back repeat previous",
+            input="speech dtmf",
+            timeout=20,
+            speech_timeout="8",
+            finish_on_key="#",
+            action="/voice",
+            barge_in=True,
+        )
+        resp.append(gather)
+        return str(resp)
 
 
 
