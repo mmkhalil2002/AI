@@ -5342,254 +5342,272 @@ def voice():
 
 
 
-    elif stage == "cancel_appt_get_time_date":
-        # ----------------------------------------------------------------------
-        # 🗓️ Stage: cancel_appt_get_time_date
-        #
-        # Purpose:
-        #   - Capture the appointment date + time the caller wants to cancel.
-        #   - Parse natural speech like "July 3rd at 9 AM".
-        #   - If valid and matching → confirm cancellation.
-        #   - If valid but no matching event → branch to cancel_appt_iterate.
-        #   - If invalid/incomplete → reprompt or branch to iterate after retries.
-        #
-        # Guarantees:
-        #   - Always returns str(resp).
-        #   - Debug prints at each decision point.
-        # ----------------------------------------------------------------------
+        elif stage == "cancel_appt_get_time_date":
+            # ----------------------------------------------------------------------
+            # 🗓️ Stage: cancel_appt_get_time_date
+            #
+            # Purpose:
+            #   - Capture the appointment date + time the caller wants to cancel.
+            #   - Parse natural speech like "July 3rd at 9 AM".
+            #   - If valid and matching → confirm cancellation.
+            #   - If valid but no matching event → branch to cancel_appt_iterate.
+            #   - If invalid/incomplete → reprompt or branch to iterate after retries.
+            #
+            # Guarantees:
+            #   - Always returns str(resp).
+            #   - Debug prints at each decision point.
+            # ----------------------------------------------------------------------
 
-        debug_print("cancel_appt_get_time_date: 📍 Stage entered")
+            debug_print("cancel_appt_get_time_date: 📍 Stage entered")
 
-        cancel_ctx = session_data[call_sid].setdefault("cancel", {})
-        raw = (speech_result or "").strip()
-        debug_print(f"cancel_appt_get_time_date: 🗣️ Raw speech → '{raw}'")
+            cancel_ctx = session_data[call_sid].setdefault("cancel", {})
+            raw = (speech_result or "").strip()
+            debug_print(f"cancel_appt_get_time_date: 🗣️ Raw speech → '{raw}'")
 
-        # DTMF not used here
-        _ = (request.values.get("Digits") or "").strip()
+            # DTMF not used here
+            _ = (request.values.get("Digits") or "").strip()
 
-        # Reset previous errors if we got a new attempt
-        if raw:
-            cancel_ctx.pop("retry_cancel_dt", None)
-            cancel_ctx.pop("silence_cancel_dt", None)
+            # Reset previous errors if caller spoke something new
+            if raw:
+                cancel_ctx.pop("retry_cancel_dt", None)
+                cancel_ctx.pop("silence_cancel_dt", None)
 
-        # ------------------------------------------------------
-        # Tiny inline extract function (safe, no imports here)
-        # ------------------------------------------------------
-        def _extract_day_time(text: str):
-            """
-            Very simple day+time extraction using split markers.
-            Returns (date_str, time_str) or (None, None).
-            """
+            # ------------------------------------------------------
+            # Tiny inline extract function (safe, no imports here)
+            # ------------------------------------------------------
+            def _extract_day_time(text: str):
+                """
+                Very simple day+time extraction using 'at' as separator.
+                Returns (date_str, time_str) or (None, None).
+                """
+                try:
+                    parts = text.lower().replace(",", "").split("at")
+                    if len(parts) == 2:
+                        return parts[0].strip(), parts[1].strip()
+                    return None, None
+                except Exception as e:
+                    debug_print(f"cancel_appt_get_time_date: ⚠️ extract error → {e}")
+                    return None, None
+
+            # Try extraction
+            day_part, time_part = _extract_day_time(raw)
+            if not (day_part and time_part):
+                # Failed parse → count retries
+                tries = cancel_ctx.get("retry_cancel_dt", 0) + 1
+                cancel_ctx["retry_cancel_dt"] = tries
+                debug_print(f"cancel_appt_get_time_date: ❌ extract failed → tries={tries}")
+
+                if tries >= 3:
+                    # Too many failures → fallback to iterate
+                    debug_print("cancel_appt_get_time_date: ❌ too many parse failures → iterate")
+                    session_data[call_sid]["stage"] = "cancel_appt_iterate"
+
+                    # Reset iterate context so silence is skipped on first entry
+                    cancel_ctx["candidates"] = []
+                    cancel_ctx["iter_index"] = 0
+                    cancel_ctx["announced"] = False
+                    session_data[call_sid]["skip_silence_retry"] = True
+
+                    resp.say(gpt_speak("That didn’t sound like a valid date and time. I’ll list your upcoming appointments."), VOICE)
+                    resp.redirect("/voice")
+                    return str(resp)
+
+                # Reprompt again for date+time
+                gather = make_gather(
+                    "I didn’t catch the full date and time. Please say it again, for example July 3rd at 9 AM.",
+                    input="speech",
+                    timeout=20,
+                    speech_timeout="8",
+                    finish_on_key="#",
+                    action="/voice",
+                )
+                resp.append(gather)
+                return str(resp)
+
+            debug_print(f"cancel_appt_get_time_date: 📆 Extracted → Day='{day_part}', Time='{time_part}'")
+
+            # ------------------------------------------------------
+            # Build a fake UTC slot (placeholder since no parser here)
+            # ------------------------------------------------------
             try:
-                parts = text.lower().replace(",", "").split("at")
-                if len(parts) == 2:
-                    return parts[0].strip(), parts[1].strip()
-                return None, None
+                # Normally convert to UTC using dateutil/pytz.
+                slot_start = f"{day_part} {time_part}"
+                slot_end   = f"{day_part} {time_part} +30min"
+                debug_print(f"cancel_appt_get_time_date: ⏰ UTC slot → {slot_start} → {slot_end}")
             except Exception as e:
-                debug_print(f"cancel_appt_get_time_date: ⚠️ extract error → {e}")
-                return None, None
-
-        day_part, time_part = _extract_day_time(raw)
-        if not (day_part and time_part):
-            # Failed parse → count retries
-            tries = cancel_ctx.get("retry_cancel_dt", 0) + 1
-            cancel_ctx["retry_cancel_dt"] = tries
-            debug_print(f"cancel_appt_get_time_date: ❌ extract failed → tries={tries}")
-
-            if tries >= 3:
-                # Too many failures → fallback to iterate
-                debug_print("cancel_appt_get_time_date: ❌ too many parse failures → iterate")
+                debug_print(f"cancel_appt_get_time_date: ⚠️ slot build failed → {e}")
                 session_data[call_sid]["stage"] = "cancel_appt_iterate"
-                resp.say(gpt_speak("That didn’t sound like a valid date and time. I’ll list your upcoming appointments."), VOICE)
+
+                # Reset iterate context
+                cancel_ctx["candidates"] = []
+                cancel_ctx["iter_index"] = 0
+                cancel_ctx["announced"] = False
+                session_data[call_sid]["skip_silence_retry"] = True
+
+                resp.say(gpt_speak("That didn’t look like a valid date and time. I’ll list your upcoming appointments."), VOICE)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # Reprompt
-            gather = make_gather(
-                "I didn’t catch the full date and time. Please say it again, for example July 3rd at 9 AM.",
-                input="speech",
-                timeout=20,
-                speech_timeout="8",
-                finish_on_key="#",
-                action="/voice",
-            )
-            resp.append(gather)
-            return str(resp)
+            # ------------------------------------------------------
+            # Check Google Calendar for event match (placeholder)
+            # ------------------------------------------------------
+            events = []  # TODO: replace with real events().list()
+            debug_print(f"cancel_appt_get_time_date: 📄 events().list returned {len(events)} item(s)")
 
-        debug_print(f"cancel_appt_get_time_date: 📆 Extracted → Day='{day_part}', Time='{time_part}'")
+            if not events:
+                debug_print("cancel_appt_get_time_date: 🚫 no matching event → iterate")
+                session_data[call_sid]["stage"] = "cancel_appt_iterate"
 
-        # ------------------------------------------------------
-        # Build a fake UTC slot (placeholder since no parser here)
-        # ------------------------------------------------------
-        try:
-            # Here you’d normally convert to UTC using dateutil/pytz.
-            # For now we just echo back.
-            slot_start = f"{day_part} {time_part}"
-            slot_end = f"{day_part} {time_part} +30min"
-            debug_print(f"cancel_appt_get_time_date: ⏰ UTC slot → {slot_start} → {slot_end}")
-        except Exception as e:
-            debug_print(f"cancel_appt_get_time_date: ⚠️ slot build failed → {e}")
-            session_data[call_sid]["stage"] = "cancel_appt_iterate"
-            resp.say(gpt_speak("That didn’t look like a valid date and time. I’ll list your upcoming appointments."), VOICE)
+                # Reset iterate context
+                cancel_ctx["candidates"] = []
+                cancel_ctx["iter_index"] = 0
+                cancel_ctx["announced"] = False
+                session_data[call_sid]["skip_silence_retry"] = True
+
+                resp.say(gpt_speak("I couldn’t find an event at that time. I’ll list your upcoming appointments."), VOICE)
+                resp.redirect("/voice")
+                return str(resp)
+
+            # ------------------------------------------------------
+            # If we found events, move to confirm
+            # ------------------------------------------------------
+            cancel_ctx["matching_event"] = events[0]
+            session_data[call_sid]["stage"] = "cancel_appt_confirm"
             resp.redirect("/voice")
             return str(resp)
-
-        # ------------------------------------------------------
-        # Check Google Calendar for event match (mocked)
-        # ------------------------------------------------------
-        events = []  # <--- replace with real Google events().list(...)
-        debug_print(f"cancel_appt_get_time_date: 📄 events().list returned {len(events)} item(s)")
-
-        if not events:
-            debug_print("cancel_appt_get_time_date: 🚫 no matching event → iterate")
-            session_data[call_sid]["stage"] = "cancel_appt_iterate"
-            resp.say(gpt_speak("I couldn’t find an event at that time. I’ll list your upcoming appointments."), VOICE)
-            resp.redirect("/voice")
-            return str(resp)
-
-        # ------------------------------------------------------
-        # If we found events, move to confirm
-        # ------------------------------------------------------
-        cancel_ctx["matching_event"] = events[0]
-        session_data[call_sid]["stage"] = "cancel_appt_confirm"
-        resp.redirect("/voice")
-        return str(resp)
-
-
-
-
 
 
     elif stage == "cancel_appt_iterate":
-            # ----------------------------------------------------------------------
-            # 🗂️ Stage: cancel_appt_iterate
-            #
-            # Purpose:
-            #   - Load doctor’s JSON from DB_FOLDER
-            #   - Filter appointments by phone + DOB
-            #   - Announce how many matches exist
-            #   - Walk through one-by-one with YES/NO
-            #
-            # Special:
-            #   - First entry announces list without expecting input (silence skipped)
-            #   - Next turns enable silence detection for YES/NO responses
-            # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # 🗂️ Stage: cancel_appt_iterate
+        #
+        # Purpose:
+        #   - Load doctor’s JSON from DB_FOLDER.
+        #   - Filter appointments by phone + DOB.
+        #   - Announce how many matches exist.
+        #   - Walk through one-by-one with YES/NO.
+        #
+        # Special:
+        #   - First entry announces list without expecting input (silence skipped).
+        #   - Next turns re-enable silence detection for YES/NO responses.
+        # ----------------------------------------------------------------------
 
-            debug_print("cancel_appt_iterate: 📍 Stage entered")
+        debug_print("cancel_appt_iterate: 📍 Stage entered")
 
-            cancel_ctx = session_data[call_sid].setdefault("cancel", {})
-            phone_e164 = (cancel_ctx.get("phone_e164") or "").strip()
-            dob_in     = (cancel_ctx.get("dob") or "").strip()
-            doctor     = (cancel_ctx.get("doctor") or "").strip()
+        cancel_ctx = session_data[call_sid].setdefault("cancel", {})
+        phone_e164 = (cancel_ctx.get("phone_e164") or "").strip()
+        dob_in     = (cancel_ctx.get("dob") or "").strip()
+        doctor     = (cancel_ctx.get("doctor") or "").strip()
 
-            debug_print(f"cancel_appt_iterate: inputs → doctor='{doctor}', phone='{phone_e164}', dob='{dob_in}'")
+        debug_print(f"cancel_appt_iterate: inputs → doctor='{doctor}', phone='{phone_e164}', dob='{dob_in}'")
 
-            # Build candidates on first entry
-            if not cancel_ctx.get("candidates"):
-                candidates = []
-                if doctor:
-                    fname = DB_FOLDER.rstrip("/") + "/" + doctor.lower().replace(" ", "_") + ".json"
-                    try:
-                        with open(fname, "r") as f:
-                            appts = json.load(f)
-                        debug_print(f"cancel_appt_iterate: loaded {len(appts)} appointments from {fname}")
-                    except Exception as e:
-                        debug_print(f"cancel_appt_iterate: ⚠️ cannot open {fname} → {e}")
-                        appts = []
+        # Build candidates on first entry
+        if not cancel_ctx.get("candidates"):
+            candidates = []
+            if doctor:
+                fname = DB_FOLDER.rstrip("/") + "/" + doctor.lower().replace(" ", "_") + ".json"
+                try:
+                    with open(fname, "r") as f:
+                        appts = json.load(f)
+                    debug_print(f"cancel_appt_iterate: loaded {len(appts)} appointments from {fname}")
+                except Exception as e:
+                    debug_print(f"cancel_appt_iterate: ⚠️ cannot open {fname} → {e}")
+                    appts = []
 
-                    phone_digits = "".join([c for c in phone_e164 if c.isdigit()])
-                    dob_norm     = dob_in.strip()
+                phone_digits = "".join([c for c in phone_e164 if c.isdigit()])
+                dob_norm     = dob_in.strip()
 
-                    for ap in appts:
-                        ap_phone = "".join([c for c in str(ap.get("phone", "")) if c.isdigit()])
-                        ap_dob   = str(ap.get("dob", "")).strip()
+                for ap in appts:
+                    ap_phone = "".join([c for c in str(ap.get("phone", "")) if c.isdigit()])
+                    ap_dob   = str(ap.get("dob", "")).strip()
 
-                        debug_print(f"cancel_appt_iterate: 🔍 compare → input phone={phone_digits}, appt phone={ap_phone}; "
-                                    f"input dob={dob_norm}, appt dob={ap_dob}")
+                    debug_print(f"cancel_appt_iterate: 🔍 compare → input phone={phone_digits}, appt phone={ap_phone}; "
+                                f"input dob={dob_norm}, appt dob={ap_dob}")
 
-                        if ap_phone == phone_digits and (not dob_norm or ap_dob == dob_norm):
-                            candidates.append({
-                                "doctor_name": doctor,
-                                "start_utc":   ap.get("utc_start") or ap.get("time"),
-                                "end_utc":     ap.get("utc_end") or "",
-                                "phone_e164":  phone_e164,
-                                "dob":         dob_norm,
-                                "friendly":    ap.get("friendly_local") or ap.get("time"),
-                                "event_id":    ap.get("event_id")
-                            })
+                    if ap_phone == phone_digits and (not dob_norm or ap_dob == dob_norm):
+                        candidates.append({
+                            "doctor_name": doctor,
+                            "start_utc":   ap.get("utc_start") or ap.get("time"),
+                            "end_utc":     ap.get("utc_end") or "",
+                            "phone_e164":  phone_e164,
+                            "dob":         dob_norm,
+                            "friendly":    ap.get("friendly_local") or ap.get("time"),
+                            "event_id":    ap.get("event_id")
+                        })
 
-                    debug_print(f"cancel_appt_iterate: ✅ matched {len(candidates)}/{len(appts)} appointments")
+                debug_print(f"cancel_appt_iterate: ✅ matched {len(candidates)}/{len(appts)} appointments")
 
-                cancel_ctx["candidates"]    = candidates
-                cancel_ctx["iter_index"]    = 0
-                cancel_ctx["awaiting_input"] = False   # First run = announce only
+            cancel_ctx["candidates"]     = candidates
+            cancel_ctx["iter_index"]     = 0
+            cancel_ctx["awaiting_input"] = False   # First run = announce only
 
-            cands = cancel_ctx.get("candidates", [])
-            idx   = int(cancel_ctx.get("iter_index", 0))
+        cands = cancel_ctx.get("candidates", [])
+        idx   = int(cancel_ctx.get("iter_index", 0))
 
-            # No candidates
-            if not cands:
-                debug_print("cancel_appt_iterate: 🚫 no appointments found → ending")
-                resp.say(gpt_speak("There are no upcoming events to cancel. Goodbye."), VOICE)
+        # No candidates
+        if not cands:
+            debug_print("cancel_appt_iterate: 🚫 no appointments found → ending")
+            resp.say(gpt_speak("There are no upcoming events to cancel. Goodbye."), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
+
+        cand = cands[idx]
+        awaiting = cancel_ctx.get("awaiting_input", False)
+
+        # ------------------ First pass → announce only ------------------
+        if not awaiting:
+            cancel_ctx["awaiting_input"] = True   # next turn → expect input
+            session_data[call_sid]["skip_silence_retry"] = True  # disable silence
+            resp.say(gpt_speak(f"I found {len(cands)} upcoming appointment{'s' if len(cands) > 1 else ''}."), VOICE)
+            resp.say(gpt_speak(f"First: appointment with {cand['doctor_name']} on {cand['friendly']}."), VOICE)
+            resp.say(gpt_speak("Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."), VOICE)
+            return str(resp)
+
+        # ------------------ Process user input ------------------
+        session_data[call_sid].pop("skip_silence_retry", None)  # ✅ re-enable silence
+
+        try:
+            dtmf  = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf = ""
+        utter = (speech_result or "").strip().lower()
+
+        debug_print(f"cancel_appt_iterate: 🎚️ user input → dtmf='{dtmf}' speech='{utter}'")
+
+        YES = {"yes", "yeah", "yep", "correct", "confirm", "1"}
+        NO  = {"no", "nope", "next", "2"}
+
+        # YES → confirm
+        if utter in YES or dtmf in {"1"}:
+            debug_print(f"cancel_appt_iterate: ✅ user chose YES for candidate #{idx+1}")
+            cancel_ctx["matching_event"] = cand
+            session_data[call_sid]["stage"] = "cancel_appt_confirm"
+            resp.redirect("/voice")
+            return str(resp)
+
+        # NO → next candidate
+        if utter in NO or dtmf in {"2"}:
+            idx += 1
+            if idx >= len(cands):
+                debug_print("cancel_appt_iterate: 🚫 no more candidates → ending")
+                resp.say(gpt_speak("That’s all the appointments I found. Goodbye."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
-
+            cancel_ctx["iter_index"] = idx
             cand = cands[idx]
-            awaiting = cancel_ctx.get("awaiting_input", False)
-
-            # ------------------ First pass → announce only ------------------
-            if not awaiting:
-                cancel_ctx["awaiting_input"] = True   # next turn → expect input
-                session_data[call_sid]["skip_silence_retry"] = True  # disable silence
-                resp.say(gpt_speak(f"I found {len(cands)} upcoming appointment{'s' if len(cands) > 1 else ''}."), VOICE)
-                resp.say(gpt_speak(f"First: appointment with {cand['doctor_name']} on {cand['friendly']}."), VOICE)
-                resp.say(gpt_speak("Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."), VOICE)
-                return str(resp)
-
-            # ------------------ Process user input ------------------
-            session_data[call_sid].pop("skip_silence_retry", None)  # ✅ re-enable silence
-
-            try:
-                dtmf  = (request.values.get("Digits") or "").strip()
-            except Exception:
-                dtmf = ""
-            utter = (speech_result or "").strip().lower()
-
-            debug_print(f"cancel_appt_iterate: 🎚️ user input → dtmf='{dtmf}' speech='{utter}'")
-
-            YES = {"yes", "yeah", "yep", "correct", "confirm", "1"}
-            NO  = {"no", "nope", "next", "2"}
-
-            # YES → confirm
-            if utter in YES or dtmf in {"1"}:
-                debug_print(f"cancel_appt_iterate: ✅ user chose YES for candidate #{idx+1}")
-                cancel_ctx["matching_event"] = cand
-                session_data[call_sid]["stage"] = "cancel_appt_confirm"
-                resp.redirect("/voice")
-                return str(resp)
-
-            # NO → next candidate
-            if utter in NO or dtmf in {"2"}:
-                idx += 1
-                if idx >= len(cands):
-                    debug_print("cancel_appt_iterate: 🚫 no more candidates → ending")
-                    resp.say(gpt_speak("That’s all the appointments I found. Goodbye."), VOICE)
-                    resp.hangup()
-                    session_data.pop(call_sid, None)
-                    return str(resp)
-                cancel_ctx["iter_index"] = idx
-                cand = cands[idx]
-                debug_print(f"cancel_appt_iterate: ↪️ moving to candidate #{idx+1}/{len(cands)}")
-                resp.say(gpt_speak(f"Appointment with {cand['doctor_name']} on {cand['friendly']}. "
-                                "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."), VOICE)
-                return str(resp)
-
-            # Anything else → repeat candidate
-            debug_print(f"cancel_appt_iterate: 🤔 unclear input, repeating candidate #{idx+1}")
-            resp.say(gpt_speak(f"Appointment with {cand['doctor_name']} on {cand['friendly']}. "
-                            "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."), VOICE)
+            debug_print(f"cancel_appt_iterate: ↪️ moving to candidate #{idx+1}/{len(cands)}")
+            resp.say(gpt_speak(f"Next: appointment with {cand['doctor_name']} on {cand['friendly']}. "
+                               "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."), VOICE)
             return str(resp)
+
+        # Anything else → repeat candidate
+        debug_print(f"cancel_appt_iterate: 🤔 unclear input, repeating candidate #{idx+1}")
+        resp.say(gpt_speak(f"Appointment with {cand['doctor_name']} on {cand['friendly']}. "
+                           "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."), VOICE)
+        return str(resp)
+
 
 
 
