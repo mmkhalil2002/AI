@@ -5388,123 +5388,134 @@ def voice():
 
 
     elif stage == "cancel_appt_iterate":
-        # ----------------------------------------------------------------------
-        # 🗂️ Stage: cancel_appt_iterate
-        #
-        # Purpose:
-        #   - Show upcoming appointments for this doctor/phone/dob
-        #   - Walk through 1 by 1 (YES = cancel, NO = next, end if none left)
-        # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 🗂️ Stage: cancel_appt_iterate
+    #
+    # Purpose:
+    #   - Load this caller’s appointments for the specific doctor from JSON.
+    #   - Match strictly by phone number and (if provided) DOB.
+    #   - Build candidates list of only matches (not all appts).
+    #   - Present one candidate at a time → yes/no input.
+    #
+    # Behavior:
+    #   - "yes"/"1" → select and jump to cancel_appt_confirm.
+    #   - "no"/"2" → move to next candidate (or end if none left).
+    #   - If no candidates → say no events and hang up.
+    # ----------------------------------------------------------------------
 
         debug_print("cancel_appt_iterate: 📍 Stage entered")
 
         cancel_ctx = session_data[call_sid].setdefault("cancel", {})
-        phone_e164 = (cancel_ctx.get("phone_e164") or "").strip()
-        dob_in     = (cancel_ctx.get("dob") or "").strip()
-        doctor     = (cancel_ctx.get("doctor") or "").strip()
+        doctor = (cancel_ctx.get("doctor") or "").strip()
+        phone_e164 = (cancel_ctx.get("phone_e164") or "").replace("+", "").lstrip("0")
+        dob = (cancel_ctx.get("dob") or "").strip()
 
-        debug_print(f"cancel_appt_iterate: inputs → doctor='{doctor}', phone='{phone_e164}', dob='{dob_in}'")
+        debug_print(f"cancel_appt_iterate: inputs → doctor='{doctor}', phone='{phone_e164}', dob='{dob}'")
 
-        # Load candidate list once
-        if not cancel_ctx.get("candidates"):
+        candidates = cancel_ctx.get("candidates")
+
+        # ---------- Build candidates on first entry ----------
+        if not candidates:
+            path = f"{DB_FOLDER}/{doctor.lower().replace(' ', '_')}.json"
+            try:
+                with open(path, "r") as f:
+                    appts = json.load(f)
+            except Exception as e:
+                debug_print(f"cancel_appt_iterate: ⚠️ could not load {path} → {e}")
+                appts = []
+
             candidates = []
-            if doctor:
-                fname = DB_FOLDER.rstrip("/") + "/" + doctor.lower().replace(" ", "_") + ".json"
-                try:
-                    with open(fname, "r") as f:
-                        appts = json.load(f)
-                    debug_print(f"cancel_appt_iterate: loaded {len(appts)} appointments from {fname}")
-                except Exception as e:
-                    debug_print(f"cancel_appt_iterate: ⚠️ cannot open {fname} → {e}")
-                    appts = []
+            for appt in appts:
+                appt_phone = (appt.get("phone") or "").replace("+", "").lstrip("0")
+                appt_dob = (appt.get("dob") or "").strip()
 
-                phone_digits = "".join([c for c in phone_e164 if c.isdigit()])
-                dob_norm = dob_in.strip()
+                debug_print(
+                    f"cancel_appt_iterate: 🔍 compare → input phone={phone_e164}, "
+                    f"appt phone={appt_phone}; input dob={dob}, appt dob={appt_dob}"
+                )
 
-                for ap in appts:
-                    ap_phone = "".join([c for c in str(ap.get("phone", "")) if c.isdigit()])
-                    ap_dob   = str(ap.get("dob", "")).strip()
-
-                    debug_print(f"cancel_appt_iterate: 🔍 compare → input phone={phone_digits}, appt phone={ap_phone}; input dob={dob_norm}, appt dob={ap_dob}")
-
-                    if ap_phone == phone_digits and (not dob_norm or ap_dob == dob_norm):
-                        candidates.append({
-                            "doctor_name": doctor,
-                            "start_utc":   ap.get("utc_start") or ap.get("time"),
-                            "end_utc":     ap.get("utc_end") or "",
-                            "phone_e164":  phone_e164,
-                            "dob":         dob_norm,
-                            "friendly":    ap.get("friendly_local") or ap.get("time"),
-                            "event_id":    ap.get("event_id")
-                        })
-
-                debug_print(f"cancel_appt_iterate: ✅ matched {len(candidates)}/{len(appts)} appointments")
+                if appt_phone == phone_e164 and (not dob or appt_dob == dob):
+                    candidates.append({
+                        "doctor_name": doctor,
+                        "start_utc": appt.get("utc_start"),
+                        "end_utc": appt.get("utc_end"),
+                        "friendly": appt.get("friendly_local"),
+                        "phone_e164": appt_phone,
+                        "dob": appt_dob,
+                    })
 
             cancel_ctx["candidates"] = candidates
             cancel_ctx["iter_index"] = 0
-            cancel_ctx["announced"]  = False
+            debug_print(f"cancel_appt_iterate: ✅ built {len(candidates)} candidate(s)")
 
-        cands = cancel_ctx.get("candidates", [])
-        idx   = int(cancel_ctx.get("iter_index", 0))
+            if not candidates:
+                resp.say("There are no upcoming events to cancel. Goodbye.", VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
 
-        # No candidates
-        if not cands:
-            debug_print("cancel_appt_iterate: 🚫 no appointments found → ending")
-            resp.say(gpt_speak("There are no upcoming events to cancel. Goodbye."), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            return str(resp)
+            # Announce total once at the beginning
+            resp.say(f"I found {len(candidates)} upcoming appointments.", VOICE)
 
-        cand = cands[idx]
-
-        # First entry → just announce, no gather yet
-        if not cancel_ctx.get("announced"):
-            cancel_ctx["announced"] = True
-            resp.say(gpt_speak(f"I found {len(cands)} upcoming appointment{'s' if len(cands)>1 else ''}."), VOICE)
-            resp.say(gpt_speak(f"First: appointment with {cand['doctor_name']} on {cand['friendly']}. "
-                            "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."), VOICE)
-            return str(resp)
-
-        # From here → process user input
+        # ---------- Handle user input ----------
         try:
-            dtmf  = (request.values.get("Digits") or "").strip()
+            dtmf = (request.values.get("Digits") or "").strip()
         except Exception:
             dtmf = ""
         utter = (speech_result or "").strip().lower()
 
-        debug_print(f"cancel_appt_iterate: 🎚️ user input → dtmf='{dtmf}' speech='{utter}'")
-
         YES = {"yes", "yeah", "yep", "correct", "confirm", "1"}
-        NO  = {"no", "nope", "next", "2"}
+        NO = {"no", "nope", "next", "2"}
 
-        # YES → move to confirm stage
+        idx = int(cancel_ctx.get("iter_index", 0))
+        total = len(cancel_ctx["candidates"])
+
+        # Guard out of range
+        if idx >= total:
+            resp.say("That was the last appointment. Goodbye.", VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
+
+        cand = cancel_ctx["candidates"][idx]
+
+        # --- YES (confirm cancel) ---
         if utter in YES or dtmf in {"1"}:
-            debug_print(f"cancel_appt_iterate: ✅ user chose YES for candidate #{idx+1}")
+            debug_print(f"cancel_appt_iterate: ✅ user confirmed candidate #{idx+1}/{total}")
             cancel_ctx["matching_event"] = cand
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
             resp.redirect("/voice")
             return str(resp)
 
-        # NO → move to next candidate
+        # --- NO (move to next) ---
         if utter in NO or dtmf in {"2"}:
+            debug_print(f"cancel_appt_iterate: ↪️ user skipped candidate #{idx+1}/{total}")
             idx += 1
-            if idx >= len(cands):
-                debug_print("cancel_appt_iterate: 🚫 no more candidates → ending")
-                resp.say(gpt_speak("That’s all the appointments I found. Goodbye."), VOICE)
+            if idx >= total:
+                resp.say("That was the last appointment. Goodbye.", VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
             cancel_ctx["iter_index"] = idx
-            cand = cands[idx]
-            debug_print(f"cancel_appt_iterate: ↪️ moving to candidate #{idx+1}/{len(cands)}")
-            resp.say(gpt_speak(f"Appointment with {cand['doctor_name']} on {cand['friendly']}. "
-                            "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."), VOICE)
-            return str(resp)
+            cand = cancel_ctx["candidates"][idx]
 
-        # Anything else → repeat same candidate
-        debug_print(f"cancel_appt_iterate: 🤔 unclear input, repeating candidate #{idx+1}")
-        resp.say(gpt_speak(f"Appointment with {cand['doctor_name']} on {cand['friendly']}. "
-                        "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."), VOICE)
+        # --- Present candidate ---
+        debug_print(f"cancel_appt_iterate: 🗣️ presenting candidate #{idx+1}/{total}")
+        say_line = (
+            f"Appointment with {cand['doctor_name']} on {cand['friendly']}. "
+            "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."
+        )
+        gather = make_gather(
+            say_line,
+            hints="yes no one two",
+            input="speech dtmf",
+            timeout=20,
+            speech_timeout="8",
+            finish_on_key="#",
+            action="/voice",
+            barge_in=True,
+        )
+        resp.append(gather)
         return str(resp)
 
 
