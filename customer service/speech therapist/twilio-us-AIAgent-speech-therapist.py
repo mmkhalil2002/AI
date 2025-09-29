@@ -5341,140 +5341,99 @@ def voice():
 
 
 
-
     elif stage == "cancel_appt_get_time_date":
-            # ----------------------------------------------------------------------
-            # 🗓️ Stage: cancel_appt_get_time_date
-            #
-            # Purpose:
-            #   - Capture the appointment date + time the caller wants to cancel.
-            #   - Parse natural speech like "July 3rd at 9 AM".
-            #   - If valid and matching → confirm cancellation.
-            #   - If valid but no matching event → branch to cancel_appt_iterate.
-            #   - If invalid/incomplete → reprompt or branch to iterate after retries.
-            #
-            # Guarantees:
-            #   - Always returns str(resp).
-            #   - Debug prints at each decision point.
-            # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # 🗓️ Stage: cancel_appt_get_time_date
+        #
+        # Purpose:
+        #   - Capture appointment date/time.
+        #   - If valid + found → confirm cancel.
+        #   - If valid but not in list → tell user, then branch to iterate.
+        #   - If invalid input → retry up to 3, then branch to iterate.
+        # ----------------------------------------------------------------------
 
-            debug_print("cancel_appt_get_time_date: 📍 Stage entered")
+        debug_print("cancel_appt_get_time_date: 📍 Stage entered")
 
-            cancel_ctx = session_data[call_sid].setdefault("cancel", {})
-            raw = (speech_result or "").strip()
-            debug_print(f"cancel_appt_get_time_date: 🗣️ Raw speech → '{raw}'")
+        cancel_ctx = session_data[call_sid].setdefault("cancel", {})
+        raw = (speech_result or "").strip()
+        debug_print(f"cancel_appt_get_time_date: 🗣️ Raw speech → '{raw}'")
 
-            # DTMF not used here
-            _ = (request.values.get("Digits") or "").strip()
-
-            # Reset previous errors if caller spoke something new
-            if raw:
-                cancel_ctx.pop("retry_cancel_dt", None)
-                cancel_ctx.pop("silence_cancel_dt", None)
-
-            # ------------------------------------------------------
-            # Tiny inline extract function (safe, no imports here)
-            # ------------------------------------------------------
-            def _extract_day_time(text: str):
-                """
-                Very simple day+time extraction using 'at' as separator.
-                Returns (date_str, time_str) or (None, None).
-                """
-                try:
-                    parts = text.lower().replace(",", "").split("at")
-                    if len(parts) == 2:
-                        return parts[0].strip(), parts[1].strip()
-                    return None, None
-                except Exception as e:
-                    debug_print(f"cancel_appt_get_time_date: ⚠️ extract error → {e}")
-                    return None, None
-
-            # Try extraction
-            day_part, time_part = _extract_day_time(raw)
-            if not (day_part and time_part):
-                # Failed parse → count retries
-                tries = cancel_ctx.get("retry_cancel_dt", 0) + 1
-                cancel_ctx["retry_cancel_dt"] = tries
-                debug_print(f"cancel_appt_get_time_date: ❌ extract failed → tries={tries}")
-
-                if tries >= 3:
-                    # Too many failures → fallback to iterate
-                    debug_print("cancel_appt_get_time_date: ❌ too many parse failures → iterate")
-                    session_data[call_sid]["stage"] = "cancel_appt_iterate"
-
-                    # Reset iterate context so silence is skipped on first entry
-                    cancel_ctx["candidates"] = []
-                    cancel_ctx["iter_index"] = 0
-                    cancel_ctx["announced"] = False
-                    session_data[call_sid]["skip_silence_retry"] = True
-
-                    resp.say(gpt_speak("That didn’t sound like a valid date and time. I’ll list your upcoming appointments."), VOICE)
-                    resp.redirect("/voice")
-                    return str(resp)
-
-                # Reprompt again for date+time
-                gather = make_gather(
-                    "I didn’t catch the full date and time. Please say it again, for example July 3rd at 9 AM.",
-                    input="speech",
-                    timeout=20,
-                    speech_timeout="8",
-                    finish_on_key="#",
-                    action="/voice",
-                )
-                resp.append(gather)
-                return str(resp)
-
-            debug_print(f"cancel_appt_get_time_date: 📆 Extracted → Day='{day_part}', Time='{time_part}'")
-
-            # ------------------------------------------------------
-            # Build a fake UTC slot (placeholder since no parser here)
-            # ------------------------------------------------------
+        # ------------------------------------------------------
+        # Inline extractor
+        # ------------------------------------------------------
+        def _extract_day_time(text: str):
             try:
-                # Normally convert to UTC using dateutil/pytz.
-                slot_start = f"{day_part} {time_part}"
-                slot_end   = f"{day_part} {time_part} +30min"
-                debug_print(f"cancel_appt_get_time_date: ⏰ UTC slot → {slot_start} → {slot_end}")
+                parts = text.lower().replace(",", "").split("at")
+                if len(parts) == 2:
+                    return parts[0].strip(), parts[1].strip()
+                return None, None
             except Exception as e:
-                debug_print(f"cancel_appt_get_time_date: ⚠️ slot build failed → {e}")
+                debug_print(f"cancel_appt_get_time_date: ⚠️ extract error → {e}")
+                return None, None
+
+        day_part, time_part = _extract_day_time(raw)
+
+        if not (day_part and time_part):
+            tries = cancel_ctx.get("retry_cancel_dt", 0) + 1
+            cancel_ctx["retry_cancel_dt"] = tries
+            debug_print(f"cancel_appt_get_time_date: ❌ extract failed → tries={tries}")
+
+            if tries >= 3:
+                debug_print("cancel_appt_get_time_date: ❌ too many parse failures → fallback to iterate")
                 session_data[call_sid]["stage"] = "cancel_appt_iterate"
-
-                # Reset iterate context
-                cancel_ctx["candidates"] = []
-                cancel_ctx["iter_index"] = 0
-                cancel_ctx["announced"] = False
-                session_data[call_sid]["skip_silence_retry"] = True
-
-                resp.say(gpt_speak("That didn’t look like a valid date and time. I’ll list your upcoming appointments."), VOICE)
+                # Force iterate to start fresh (announce-only)
+                cancel_ctx.pop("candidates", None)
+                cancel_ctx["awaiting_input"] = False
+                resp.say(gpt_speak("That didn’t sound like a valid date and time. I’ll list your upcoming appointments."), VOICE)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # ------------------------------------------------------
-            # Check Google Calendar for event match (placeholder)
-            # ------------------------------------------------------
-            events = []  # TODO: replace with real events().list()
-            debug_print(f"cancel_appt_get_time_date: 📄 events().list returned {len(events)} item(s)")
+            # Reprompt
+            gather = make_gather(
+                "I didn’t catch the full date and time. Please say it again, for example July 3rd at 9 AM.",
+                input="speech",
+                timeout=20,
+                speech_timeout="8",
+                finish_on_key="#",
+                action="/voice",
+            )
+            resp.append(gather)
+            return str(resp)
 
-            if not events:
-                debug_print("cancel_appt_get_time_date: 🚫 no matching event → iterate")
-                session_data[call_sid]["stage"] = "cancel_appt_iterate"
+        debug_print(f"cancel_appt_get_time_date: 📆 Extracted → Day='{day_part}', Time='{time_part}'")
 
-                # Reset iterate context
-                cancel_ctx["candidates"] = []
-                cancel_ctx["iter_index"] = 0
-                cancel_ctx["announced"] = False
-                session_data[call_sid]["skip_silence_retry"] = True
+        # ------------------------------------------------------
+        # Normally here you’d look up Google Calendar or JSON
+        # For now → simulate a miss
+        # ------------------------------------------------------
+        events = []  # ← replace with actual lookup
+        debug_print(f"cancel_appt_get_time_date: 📄 events().list returned {len(events)} item(s)")
 
-                resp.say(gpt_speak("I couldn’t find an event at that time. I’ll list your upcoming appointments."), VOICE)
-                resp.redirect("/voice")
-                return str(resp)
-
-            # ------------------------------------------------------
-            # If we found events, move to confirm
-            # ------------------------------------------------------
-            cancel_ctx["matching_event"] = events[0]
-            session_data[call_sid]["stage"] = "cancel_appt_confirm"
+        if not events:
+            debug_print("cancel_appt_get_time_date: 🚫 no matching event → switch to iterate")
+            session_data[call_sid]["stage"] = "cancel_appt_iterate"
+            # Force iterate to reset → first run (announce, no input expected)
+            cancel_ctx.pop("candidates", None)
+            cancel_ctx["awaiting_input"] = False
+            resp.say(gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."), VOICE)
             resp.redirect("/voice")
             return str(resp)
+
+        # ------------------------------------------------------
+        # Found a matching event → go confirm
+        # ------------------------------------------------------
+        cancel_ctx["matching_event"] = events[0]
+        session_data[call_sid]["stage"] = "cancel_appt_confirm"
+        resp.redirect("/voice")
+        return str(resp)
+
+
+
+
+
+
+
+
 
 
     elif stage == "cancel_appt_iterate":
