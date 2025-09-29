@@ -5387,124 +5387,58 @@ def voice():
 
 
 
-    elif stage == "cancel_appt_iterate":
-        debug_print("cancel_appt_iterate: 📍 Stage entered")
+    def cancel_appt_iterate(call_sid, resp, appointment):
+        # ----------------------------------------------------------------------
+        # Stage: cancel_appt_iterate
+        #  - Self-contained: includes normalization logic inside
+        #  - Handles DTMF or speech input
+        #  - Filters "yes." → "yes"
+        #  - Maps synonyms: yeah, yep, ok → yes; nope, nah → no
+        # ----------------------------------------------------------------------
 
-        cancel_ctx = session_data[call_sid].setdefault("cancel", {})
-        phone_e164 = (cancel_ctx.get("phone_e164") or "").strip()
-        dob_in     = (cancel_ctx.get("dob") or "").strip()
-        doctor     = (cancel_ctx.get("doctor") or "").strip()
+        # Pull raw inputs
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
+        speech_text = (request.values.get("SpeechResult") or "").strip()
 
-        # Load candidates if not yet built
-        if not cancel_ctx.get("candidates"):
-            candidates = []
-            if doctor:
-                fname = DB_FOLDER.rstrip("/") + "/" + doctor.lower().replace(" ", "_") + ".json"
-                try:
-                    with open(fname, "r") as f:
-                        appts = json.load(f)
-                    debug_print(f"cancel_appt_iterate: loaded {len(appts)} appointments from {fname}")
-                except Exception as e:
-                    appts = []
-                    debug_print(f"cancel_appt_iterate: ⚠️ cannot open {fname} → {e}")
+        debug_print(f"cancel_appt_iterate: 🎚️ user input → dtmf='{dtmf_digits}' speech='{speech_text}'")
 
-                phone_digits = "".join(c for c in phone_e164 if c.isdigit())
-                dob_norm     = dob_in.strip()
-                for ap in appts:
-                    ap_phone = "".join(c for c in str(ap.get("phone", "")) if c.isdigit())
-                    ap_dob   = str(ap.get("dob", "")).strip()
-                    if ap_phone == phone_digits and (not dob_norm or ap_dob == dob_norm):
-                        candidates.append({
-                            "doctor_name": doctor,
-                            "start_utc": ap.get("utc_start") or ap.get("time"),
-                            "friendly": ap.get("friendly_local") or ap.get("time"),
-                            "event_id": ap.get("event_id")
-                        })
+        # Normalize inputs
+        normalized = None
+        st = speech_text.lower().strip().rstrip(".!?")
 
-                debug_print(f"cancel_appt_iterate: ✅ matched {len(candidates)}/{len(appts)} appointments")
+        if dtmf_digits == "1":
+            normalized = "yes"
+        elif dtmf_digits == "2":
+            normalized = "no"
+        elif st in {"yes", "yeah", "yep", "sure", "ok", "okay", "affirmative"}:
+            normalized = "yes"
+        elif st in {"no", "nope", "nah", "negative"}:
+            normalized = "no"
 
-            cancel_ctx["candidates"] = candidates
-            cancel_ctx["iter_index"] = 0
-            cancel_ctx["awaiting_input"] = False  # first run → announce only
+        # Handle results
+        if normalized == "yes":
+            debug_print("cancel_appt_iterate: ✅ User confirmed YES")
+            # Move to confirm stage
+            return cancel_appt_confirm(call_sid, appointment, resp)
 
-        cands = cancel_ctx.get("candidates", [])
-        idx   = int(cancel_ctx.get("iter_index", 0))
+        elif normalized == "no":
+            debug_print("cancel_appt_iterate: ❌ User declined (NO)")
+            resp.say("Okay, I will not cancel this appointment.")
+            return resp
 
-        if not cands:
-            resp.say(gpt_speak("There are no upcoming events to cancel. Goodbye."), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            return str(resp)
-
-        cand = cands[idx]
-        awaiting = cancel_ctx.get("awaiting_input", False)
-
-        # ----------------- First entry: announce only -----------------
-        if not awaiting:
-            cancel_ctx["awaiting_input"] = True
-            session_data[call_sid]["skip_silence_retry"] = False  # ✅ re-enable after first turn
-            resp.say(gpt_speak(f"I found {len(cands)} upcoming appointment{'s' if len(cands)>1 else ''}."), VOICE)
-            resp.say(gpt_speak(f"First: appointment with {cand['doctor_name']} on {cand['friendly']}."), VOICE)
-            gather = make_gather(
-                "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no.",
-                input="speech dtmf",
-                timeout=8,
-                speech_timeout="auto",
-                finish_on_key="#",
-                action="/voice"
+        else:
+            # Reprompt if unclear
+            debug_print("cancel_appt_iterate: 🤔 Could not interpret response")
+            resp.say(
+                f"Sorry, I didn’t understand. Appointment with {appointment['doctor']} "
+                f"on {appointment['date']} at {appointment['time']}. "
+                "Do you want to cancel this one? Say yes or no. "
+                "Press 1 for yes, or 2 for no."
             )
-            resp.append(gather)
-            return str(resp)
-
-        # ----------------- Handle input after announcement -----------------
-        dtmf  = (request.values.get("Digits") or "").strip()
-        utter = (speech_result or "").strip().lower()
-        debug_print(f"cancel_appt_iterate: 🎚️ user input → dtmf='{dtmf}' speech='{utter}'")
-
-        YES = {"yes", "yep", "yeah", "confirm", "1"}
-        NO  = {"no", "nope", "next", "2"}
-
-        if utter in YES or dtmf == "1":
-            cancel_ctx["matching_event"] = cand
-            session_data[call_sid]["stage"] = "cancel_appt_confirm"
-            resp.redirect("/voice")
-            return str(resp)
-
-        if utter in NO or dtmf == "2":
-            idx += 1
-            if idx >= len(cands):
-                resp.say(gpt_speak("That’s all the appointments I found. Goodbye."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-            cancel_ctx["iter_index"] = idx
-            cand = cands[idx]
-            gather = make_gather(
-                f"Appointment with {cand['doctor_name']} on {cand['friendly']}. "
-                "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no.",
-                input="speech dtmf",
-                timeout=8,
-                speech_timeout="auto",
-                finish_on_key="#",
-                action="/voice"
-            )
-            resp.append(gather)
-            return str(resp)
-
-        # Repeat same candidate
-        gather = make_gather(
-            f"Sorry, I didn’t understand. Appointment with {cand['doctor_name']} on {cand['friendly']}. "
-            "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no.",
-            input="speech dtmf",
-            timeout=8,
-            speech_timeout="auto",
-            finish_on_key="#",
-            action="/voice"
-        )
-        resp.append(gather)
-        return str(resp)
-
-
+            return resp
 
 
 
