@@ -5403,6 +5403,21 @@ def voice():
     #   - If no candidates → say no events and hang up.
     # ----------------------------------------------------------------------
 
+    elif stage == "cancel_appt_iterate":
+        # ----------------------------------------------------------------------
+        # 🗂️ Stage: cancel_appt_iterate
+        #
+        # Purpose:
+        #   - Load caller’s appointments for the specific doctor (JSON file).
+        #   - Filter by phone + DOB to build candidate list.
+        #   - Present candidates one by one, ask if cancel.
+        #
+        # Behavior:
+        #   - "yes"/"1" → store candidate and jump to cancel_appt_confirm.
+        #   - "no"/"2" → move to next candidate, or end if none left.
+        #   - If no candidates exist → announce and hang up.
+        # ----------------------------------------------------------------------
+
         debug_print("cancel_appt_iterate: 📍 Stage entered")
 
         cancel_ctx = session_data[call_sid].setdefault("cancel", {})
@@ -5464,8 +5479,8 @@ def voice():
             dtmf = ""
         utter = (speech_result or "").strip().lower()
 
-        YES = {"yes", "yeah", "yep", "correct", "confirm", "1"}
-        NO = {"no", "nope", "next", "2"}
+        YES = {"yes", "yeah", "yep", "correct", "confirm"}
+        NO = {"no", "nope", "next"}
 
         idx = int(cancel_ctx.get("iter_index", 0))
         total = len(cancel_ctx["candidates"])
@@ -5480,15 +5495,15 @@ def voice():
         cand = cancel_ctx["candidates"][idx]
 
         # --- YES (confirm cancel) ---
-        if utter in YES or dtmf in {"1"}:
+        if utter in YES or dtmf == "1":
             debug_print(f"cancel_appt_iterate: ✅ user confirmed candidate #{idx+1}/{total}")
             cancel_ctx["matching_event"] = cand
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
-            resp.redirect("/voice")
-            return str(resp)
+            # 🚀 FIX: immediately redirect, don’t re-present candidate
+            return redirect_twiml(resp, "/voice")
 
         # --- NO (move to next) ---
-        if utter in NO or dtmf in {"2"}:
+        if utter in NO or dtmf == "2":
             debug_print(f"cancel_appt_iterate: ↪️ user skipped candidate #{idx+1}/{total}")
             idx += 1
             if idx >= total:
@@ -5517,6 +5532,7 @@ def voice():
         )
         resp.append(gather)
         return str(resp)
+
 
 
 
