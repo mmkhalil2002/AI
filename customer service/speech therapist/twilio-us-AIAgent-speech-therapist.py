@@ -5465,7 +5465,6 @@ def voice():
         utter = (speech_result or "").strip().lower()
 
         # Normalize utter → remove punctuation, spaces
-        import re as _re
         utter = _re.sub(r"[^a-z0-9]+", "", utter)
 
         debug_print(f"cancel_appt_iterate: normalized utter='{utter}', dtmf='{dtmf}'")
