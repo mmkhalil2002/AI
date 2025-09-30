@@ -5496,7 +5496,7 @@ def voice():
 
         # --- YES (confirm cancel) ---
         if utter in YES or dtmf == "1":
-            debug_print(f"cancel_appt_iterate: ✅ user confirmed candidate #{idx+1}/{total}")
+            debug_print(f"cancel_appt_iterate: ✅ YES  user confirmed candidate #{idx+1}/{total}")
             cancel_ctx["matching_event"] = cand
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
             # 🚀 FIX: immediately redirect, don’t re-present candidate
@@ -5504,7 +5504,7 @@ def voice():
 
         # --- NO (move to next) ---
         if utter in NO or dtmf == "2":
-            debug_print(f"cancel_appt_iterate: ↪️ user skipped candidate #{idx+1}/{total}")
+            debug_print(f"cancel_appt_iterate: ↪️ NO user skipped candidate #{idx+1}/{total}")
             idx += 1
             if idx >= total:
                 resp.say("That was the last appointment. Goodbye.", VOICE)
