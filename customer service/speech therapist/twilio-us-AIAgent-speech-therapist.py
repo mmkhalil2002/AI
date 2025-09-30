@@ -5500,7 +5500,7 @@ def voice():
             cancel_ctx["matching_event"] = cand
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
             # 🚀 FIX: immediately redirect, don’t re-present candidate
-            return redirect_twiml(resp, "/voice")
+            return resp.redirect("/voice")
 
         # --- NO (move to next) ---
         if utter in NO or dtmf == "2":
