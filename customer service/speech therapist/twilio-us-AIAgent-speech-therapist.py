@@ -5389,6 +5389,20 @@ def voice():
 
 
     elif stage == "cancel_appt_iterate":
+        # ----------------------------------------------------------------------
+        # 🗂️ Stage: cancel_appt_iterate
+        #
+        # Purpose:
+        #   - Load caller’s appointments for the specific doctor (JSON file).
+        #   - Filter by phone + DOB to build candidate list.
+        #   - Present candidates one by one, ask if cancel.
+        #
+        # Behavior:
+        #   - "yes"/"1" → store candidate and jump to cancel_appt_confirm.
+        #   - "no"/"2" → move to next candidate, or end if none left.
+        #   - Silence / unclear → just re-present candidate (no nag message).
+        # ----------------------------------------------------------------------
+
         debug_print("cancel_appt_iterate: 📍 Stage entered")
 
         cancel_ctx = session_data[call_sid].setdefault("cancel", {})
@@ -5396,9 +5410,11 @@ def voice():
         phone_e164 = (cancel_ctx.get("phone_e164") or "").replace("+", "").lstrip("0")
         dob = (cancel_ctx.get("dob") or "").strip()
 
+        debug_print(f"cancel_appt_iterate: inputs → doctor='{doctor}', phone='{phone_e164}', dob='{dob}'")
+
         candidates = cancel_ctx.get("candidates")
 
-        # ---------- Build candidates ----------
+        # ---------- Build candidates on first entry ----------
         if not candidates:
             path = f"{DB_FOLDER}/{doctor.lower().replace(' ', '_')}.json"
             try:
@@ -5412,6 +5428,12 @@ def voice():
             for appt in appts:
                 appt_phone = (appt.get("phone") or "").replace("+", "").lstrip("0")
                 appt_dob = (appt.get("dob") or "").strip()
+
+                debug_print(
+                    f"cancel_appt_iterate: 🔍 compare → input phone={phone_e164}, "
+                    f"appt phone={appt_phone}; input dob={dob}, appt dob={appt_dob}"
+                )
+
                 if appt_phone == phone_e164 and (not dob or appt_dob == dob):
                     candidates.append({
                         "doctor_name": doctor,
@@ -5424,6 +5446,7 @@ def voice():
 
             cancel_ctx["candidates"] = candidates
             cancel_ctx["iter_index"] = 0
+            debug_print(f"cancel_appt_iterate: ✅ built {len(candidates)} candidate(s)")
 
             if not candidates:
                 resp.say("There are no upcoming events to cancel. Goodbye.", VOICE)
@@ -5431,27 +5454,29 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
+            # Announce total once at the beginning
             resp.say(f"I found {len(candidates)} upcoming appointments.", VOICE)
 
-        # ---------- Handle input ----------
+        # ---------- Handle user input ----------
         try:
             dtmf = (request.values.get("Digits") or "").strip()
         except Exception:
             dtmf = ""
-        raw_speech = (speech_result or "").strip()
+        utter = (speech_result or "").strip().lower()
 
-        # Normalize speech
-        import re
-        utter = raw_speech.lower()
-        utter = re.sub(r"[^\w\s]", "", utter)
-        utter = re.sub(r"\s+", " ", utter).strip()
+        # Normalize utter → remove punctuation, spaces
+        import re as _re
+        utter = _re.sub(r"[^a-z0-9]+", "", utter)
 
-        YES = {"yes", "yeah", "yep", "ok", "okay", "sure", "confirm", "affirmative"}
-        NO = {"no", "nope", "nah", "negative", "next", "not really"}
+        debug_print(f"cancel_appt_iterate: normalized utter='{utter}', dtmf='{dtmf}'")
+
+        YES = {"yes", "yeah", "yep", "correct", "confirm"}
+        NO  = {"no", "nope", "next"}
 
         idx = int(cancel_ctx.get("iter_index", 0))
         total = len(cancel_ctx["candidates"])
 
+        # Guard out of range
         if idx >= total:
             resp.say("That was the last appointment. Goodbye.", VOICE)
             resp.hangup()
@@ -5460,7 +5485,7 @@ def voice():
 
         cand = cancel_ctx["candidates"][idx]
 
-        # --- YES ---
+        # --- YES (confirm cancel) ---
         if utter in YES or dtmf == "1":
             debug_print(f"cancel_appt_iterate: ✅ YES user confirmed candidate #{idx+1}/{total}")
             cancel_ctx["matching_event"] = cand
@@ -5468,8 +5493,9 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # --- NO ---
+        # --- NO (move to next) ---
         if utter in NO or dtmf == "2":
+            debug_print(f"cancel_appt_iterate: ↪️ NO user skipped candidate #{idx+1}/{total}")
             idx += 1
             if idx >= total:
                 resp.say("That was the last appointment. Goodbye.", VOICE)
@@ -5479,7 +5505,8 @@ def voice():
             cancel_ctx["iter_index"] = idx
             cand = cancel_ctx["candidates"][idx]
 
-        # --- Present candidate ---
+        # --- SILENCE or unclear input → just present current candidate again ---
+        debug_print(f"cancel_appt_iterate: 🗣️ presenting candidate #{idx+1}/{total}")
         say_line = (
             f"Appointment with {cand['doctor_name']} on {cand['friendly']}. "
             "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."
