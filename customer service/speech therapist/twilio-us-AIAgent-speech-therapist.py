@@ -1183,7 +1183,7 @@ def load_doctor_appointments():
 
 #  remove phone10 
 
-def cancel_appointment_by_name(
+def cancel_appointment_for_dr_name(
     doctor_name: str,
     phone: str,
     dob: str,
@@ -2328,7 +2328,7 @@ def update_cc_info(
 # ------------------------
 # ➕ Add appointment
 # ------------------------
-def confirm_appointment_by_name(
+def confirm_appointment_for_dr_name(
     doctor_name: str,
     phone: str,
     utc_start: str,
@@ -4762,7 +4762,7 @@ def voice():
             except Exception:
                 local_time_disp = dt_local.strftime("%I:%M %p").lstrip("0")
 
-            persist = confirm_appointment_by_name(
+            persist = confirm_appointment_for_dr_name(
                 doctor_name=doctor_name,
                 phone=phone_e164,
                 utc_start=appointment_start,
@@ -5526,7 +5526,7 @@ def voice():
         local_ok = False
         if doctor and phone_e164 and dob and utc_start:
             try:
-                local_ok = cancel_appointment_by_name(
+                local_ok = cancel_appointment_for_dr_name(
                     doctor_name=doctor,
                     phone=phone_e164,
                     dob=dob,
@@ -5544,9 +5544,9 @@ def voice():
         calendar_id = cancel_ctx.get("calendar_id")
         if calendar_id and utc_start and phone_e164:
             try:
-                import dateutil.parser as dtparser
-                from datetime import timedelta, timezone
-                from googleapiclient.discovery import build
+                #import dateutil.parser as dtparser
+                #from datetime import timedelta, timezone
+                #from googleapiclient.discovery import build
 
                 start_dt  = dtparser.isoparse(utc_start)
                 win_start = (start_dt - timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
