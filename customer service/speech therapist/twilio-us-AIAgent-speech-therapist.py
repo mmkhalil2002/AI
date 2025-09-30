@@ -5462,10 +5462,18 @@ def voice():
             dtmf = (request.values.get("Digits") or "").strip()
         except Exception:
             dtmf = ""
-        utter = (speech_result or "").strip().lower()
+        raw_speech = (speech_result or "").strip()
 
-        YES = {"yes", "yeah", "yep", "correct", "confirm"}
-        NO = {"no", "nope", "next"}
+        # Normalize speech: lowercase, strip punctuation/spaces
+        import re
+        utter = raw_speech.lower()
+        utter = re.sub(r"[^\w\s]", "", utter)     # remove punctuation
+        utter = re.sub(r"\s+", " ", utter).strip()  # collapse spaces
+
+        debug_print(f"cancel_appt_iterate: normalized utter='{utter}', dtmf='{dtmf}'")
+
+        YES = {"yes", "yeah", "yep", "correct", "confirm", "ok", "okay", "sure", "affirmative"}
+        NO = {"no", "nope", "nah", "negative", "next", "not really"}
 
         idx = int(cancel_ctx.get("iter_index", 0))
         total = len(cancel_ctx["candidates"])
@@ -5481,10 +5489,9 @@ def voice():
 
         # --- YES (confirm cancel) ---
         if utter in YES or dtmf == "1":
-            debug_print(f"cancel_appt_iterate: ✅ YES  user confirmed candidate #{idx+1}/{total}")
+            debug_print(f"cancel_appt_iterate: ✅ YES user confirmed candidate #{idx+1}/{total}")
             cancel_ctx["matching_event"] = cand
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
-            # 🚀 FIX: immediately redirect, don’t re-present candidate
             return resp.redirect("/voice")
 
         # --- NO (move to next) ---
