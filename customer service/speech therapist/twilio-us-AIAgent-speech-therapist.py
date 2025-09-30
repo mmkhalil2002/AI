@@ -2719,9 +2719,23 @@ def voice():
         # Fallback generic
         return ("Sorry, I didn’t hear anything. Please say that again.", hints)
 
+
+    # ----------------------------------------------------------------------
+    # Silence handling guard
+    # ----------------------------------------------------------------------
     # Only run the guard outside of the very first greeting (intro),
-    # and skip stages that handle silence internally (collect_cc, book_appt_confirm).
-    if stage not in ("intro", "collect_cc", "book_appt_confirm"):
+    # and skip stages that handle silence internally.
+    skip_silence = (
+        "intro",
+        "collect_cc",
+        "book_appt_confirm",
+        # 🚫 NEW: skip cancel flow stages too
+        "cancel_appt_iterate",
+        "cancel_appt_get_time_date",
+        "cancel_appt_confirm",
+    )
+
+    if stage not in skip_silence:
         if not speech_result and not dtmf_digits:
             session_data.setdefault(call_sid, {})
             key = f"silence_{stage}"
@@ -2737,18 +2751,21 @@ def voice():
 
             prompt, hints = _silence_prompt_for_stage(stage)
             try:
-                # ✨ num_digits=1 so the menu can accept a single DTMF digit as well
                 gather = make_gather(prompt, hints=hints, num_digits=1) if hints else make_gather(prompt, num_digits=1)
             except Exception:
-                # Very defensive fallback
                 gather = make_gather("Sorry, I didn’t hear anything. Please try again.", num_digits=1)
             resp.append(gather)
-            # Redirect so Twilio posts again after Gather
             try:
                 resp.redirect(url_for("voice"))
             except Exception:
                 resp.redirect("/voice")
             return str(resp)
+
+
+
+
+
+
 
     """
     # What happens in this stage:
