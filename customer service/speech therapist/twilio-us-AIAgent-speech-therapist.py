@@ -5550,7 +5550,7 @@ def voice():
    
   
     elif stage == "cancel_appt_confirm":
-        debug_print("📍 Stage: cancel_appt_confirm")
+        debug_print("📍 Stage: cancel_appt_confirm (auto-execute, no confirmation prompt)")
 
         cancel_ctx  = session_data[call_sid].setdefault("cancel", {})
         cand        = cancel_ctx.get("matching_event") or {}
@@ -5583,71 +5583,45 @@ def voice():
 
         friendly = _friendly_from_iso(utc_start)
 
-        # --- Ask for confirmation if not already confirmed ---
-        user_said = (speech_result or "").strip().lower()
-        dtmf      = (request.values.get("Digits") or "").strip()
+        # --- Execute cancellation directly ---
+        local_ok = False
+        if doctor and phone_e164 and dob and utc_start:
+            try:
+                local_ok = cancel_appointment_by_name(
+                    doctor_name=doctor, phone=phone_e164, dob=dob, utc_start=utc_start
+                )
+            except Exception as e:
+                debug_print(f"cancel_appt_confirm: local cancel failed → {e}")
 
-        if not cancel_ctx.get("confirm_attempted"):
-            cancel_ctx["confirm_attempted"] = True
-            prompt = f"I found your appointment with {doctor} on {friendly}. Do you want me to cancel it?"
-            gather = make_gather(prompt, hints="yes no one two")
-            resp.append(gather)
-            return str(resp)
+        gcal_ok = False
+        calendar_id = cancel_ctx.get("calendar_id")
+        if calendar_id and utc_start and phone_e164:
+            try:
+                start_dt  = dtparser.isoparse(utc_start)
+                win_start = (start_dt - timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
+                win_end   = (start_dt + timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
 
-        # --- Handle yes/no after prompt ---
-        if user_said in {"yes", "yeah", "yep"} or dtmf == "1":
-            debug_print("cancel_appt_confirm: ✅ user confirmed cancellation")
+                matched = get_upcoming_events(calendar_id, phone_e164, win_start, win_end, creds, debug=True)
+                ev = matched[0] if isinstance(matched, list) and matched else (matched if isinstance(matched, dict) else None)
+                if ev and ev.get("id"):
+                    service = build("calendar", "v3", credentials=creds)
+                    service.events().delete(calendarId=calendar_id, eventId=ev["id"]).execute()
+                    gcal_ok = True
+                    debug_print(f"cancel_appt_confirm: 🗑️ GCal event deleted id={ev['id']}")
+            except Exception as e:
+                debug_print(f"cancel_appt_confirm: GCal delete failed → {e}")
 
-            # Try local JSON cancel
-            local_ok = False
-            if doctor and phone_e164 and dob and utc_start:
-                try:
-                    local_ok = cancel_appointment_by_name(
-                        doctor_name=doctor, phone=phone_e164, dob=dob, utc_start=utc_start
-                    )
-                except Exception as e:
-                    debug_print(f"cancel_appt_confirm: local cancel failed → {e}")
-
-            # Try Google Calendar cancel
-            gcal_ok = False
-            calendar_id = cancel_ctx.get("calendar_id")
-            if calendar_id and utc_start and phone_e164:
-                try:
-                    start_dt  = dtparser.isoparse(utc_start)
-                    win_start = (start_dt - timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
-                    win_end   = (start_dt + timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
-
-                    matched = get_upcoming_events(calendar_id, phone_e164, win_start, win_end, creds, debug=True)
-                    ev = matched[0] if isinstance(matched, list) and matched else (matched if isinstance(matched, dict) else None)
-                    if ev and ev.get("id"):
-                        service = build("calendar", "v3", credentials=creds)
-                        service.events().delete(calendarId=calendar_id, eventId=ev["id"]).execute()
-                        gcal_ok = True
-                        debug_print(f"cancel_appt_confirm: 🗑️ GCal event deleted id={ev['id']}")
-                except Exception as e:
-                    debug_print(f"cancel_appt_confirm: GCal delete failed → {e}")
-
-            if local_ok or gcal_ok:
-                resp.say(gpt_speak(f"Your appointment with {doctor} on {friendly} has been cancelled. Thank you!"), VOICE)
-            else:
-                resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time to cancel."), VOICE)
-
-            session_data.pop(call_sid, None)
-            resp.hangup()
-            return str(resp)
-
-        elif user_said in {"no", "nope"} or dtmf == "2":
-            debug_print("cancel_appt_confirm: ❌ user declined cancellation")
-            resp.say(gpt_speak("Okay, I won’t cancel that appointment."), VOICE)
-            session_data.pop(call_sid, None)
-            resp.hangup()
-            return str(resp)
-
+        # --- Respond to caller ---
+        if local_ok or gcal_ok:
+            resp.say(gpt_speak(f"Your appointment with {doctor} on {friendly} has been cancelled. Thank you!"), VOICE)
         else:
-            debug_print("cancel_appt_confirm: 🤔 unclear input, re-prompting")
-            gather = make_gather(f"I found your appointment with {doctor} on {friendly}. Do you want me to cancel it?", hints="yes no one two")
-            resp.append(gather)
-            return str(resp)
+            resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time to cancel."), VOICE)
+
+        # Cleanup + hang up
+        session_data.pop(call_sid, None)
+        resp.hangup()
+        return str(resp)
+
 
 
 
