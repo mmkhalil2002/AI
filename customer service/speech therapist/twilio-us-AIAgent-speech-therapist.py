@@ -5591,7 +5591,6 @@ def voice():
         # ----------------------------------------------------------------------
 
    
-  
     elif stage == "cancel_appt_confirm":
         debug_print("📍 Stage: cancel_appt_confirm (auto-execute, no confirmation prompt)")
 
@@ -5604,42 +5603,71 @@ def voice():
         phone_raw   = (cand.get("phone_e164") or cancel_ctx.get("phone_e164") or "").strip()
         dob         = cand.get("dob") or cancel_ctx.get("dob") or session_data[call_sid].get("customer", {}).get("dob") or ""
 
-        # Normalize phone → E.164
-        default_country = (session_data[call_sid].get("phone_country") or COUNTRY or "US").upper()
-        phone_e164 = ""
-        if phone_raw.startswith("+"):
-            phone_e164 = "+" + phone_raw[1:].replace(" ", "")
-        else:
-            try:
-                phone_e164 = normalize_phone_e164(phone_raw, default_country) or ""
-            except Exception:
-                phone_e164 = ""
+        # ------------------------------------------------------------------
+        # Helper: normalize phone to E.164
+        # ------------------------------------------------------------------
+        def _normalize_phone(phone_str: str, country: str = "US") -> str:
+            """Convert raw digits into E.164 format if possible."""
+            import re as _re
+            phone_digits = _re.sub(r"\D", "", phone_str)  # keep only numbers
+            if not phone_digits:
+                return ""
+            if phone_digits.startswith("1") and len(phone_digits) == 11:
+                return "+" + phone_digits  # US/Canada style
+            if len(phone_digits) == 10 and country.upper() == "US":
+                return "+1" + phone_digits
+            return "+" + phone_digits  # fallback
 
-        # Helper to render friendly date
+        default_country = (session_data[call_sid].get("phone_country") or COUNTRY or "US").upper()
+        phone_e164 = _normalize_phone(phone_raw, default_country)
+
+        # ------------------------------------------------------------------
+        # Helper: convert UTC ISO → friendly spoken date
+        # ------------------------------------------------------------------
         def _friendly_from_iso(utc_iso: str, tz_name: str = "America/Chicago") -> str:
+            """Convert an ISO UTC timestamp into natural language."""
             try:
+                import dateutil.parser as dtparser
+                import pytz
+                from datetime import datetime as dt
+
                 dt_utc = dtparser.isoparse(utc_iso)
                 local = dt_utc.astimezone(pytz.timezone(tz_name))
+                # Example: "Thursday, September 18 at 2:00 PM"
                 return local.strftime("%A, %B %-d at %-I:%M %p")
             except Exception:
                 return utc_iso or "the scheduled time"
 
         friendly = _friendly_from_iso(utc_start)
 
-        # --- Execute cancellation directly ---
+        # ------------------------------------------------------------------
+        # Cancel appointment in local JSON
+        # ------------------------------------------------------------------
         local_ok = False
         if doctor and phone_e164 and dob and utc_start:
             try:
                 local_ok = cancel_appointment_by_name(
-                    doctor_name=doctor, phone=phone_e164, dob=dob, utc_start=utc_start
+                    doctor_name=doctor,
+                    phone=phone_e164,
+                    dob=dob,
+                    utc_start=utc_start
                 )
+                if local_ok:
+                    debug_print(f"cancel_appt_confirm: 🗑️ Local file cancel succeeded for {doctor}")
             except Exception as e:
                 debug_print(f"cancel_appt_confirm: local cancel failed → {e}")
 
+        # ------------------------------------------------------------------
+        # Cancel appointment in Google Calendar
+        # ------------------------------------------------------------------
         gcal_ok = False
         calendar_id = cancel_ctx.get("calendar_id")
         if calendar_id and utc_start and phone_e164:
             try:
+                import dateutil.parser as dtparser
+                from datetime import timedelta, timezone
+                from googleapiclient.discovery import build
+
                 start_dt  = dtparser.isoparse(utc_start)
                 win_start = (start_dt - timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
                 win_end   = (start_dt + timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
@@ -5654,13 +5682,21 @@ def voice():
             except Exception as e:
                 debug_print(f"cancel_appt_confirm: GCal delete failed → {e}")
 
-        # --- Respond to caller ---
+        # ------------------------------------------------------------------
+        # Respond to caller
+        # ------------------------------------------------------------------
         if local_ok or gcal_ok:
-            resp.say(gpt_speak(f"Your appointment with {doctor} on {friendly} has been cancelled. Thank you!"), VOICE)
+            resp.say(
+                gpt_speak(f"Your appointment with {doctor} on {friendly} has been cancelled. Thank you!"),
+                VOICE
+            )
         else:
-            resp.say(gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time to cancel."), VOICE)
+            resp.say(
+                gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time to cancel."),
+                VOICE
+            )
 
-        # Cleanup + hang up
+        # Cleanup + hangup
         session_data.pop(call_sid, None)
         resp.hangup()
         return str(resp)
