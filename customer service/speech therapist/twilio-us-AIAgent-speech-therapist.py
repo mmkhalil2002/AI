@@ -1,4 +1,4 @@
-# update  09/29/25 time_saved   cancel is tested
+# update  09/30/25 time_saved   cancel is tested
 #  
 # =========================
 # Standard library imports
@@ -5387,21 +5387,6 @@ def voice():
 
 
 
-    elif stage == "cancel_appt_iterate":
-    # ----------------------------------------------------------------------
-    # 🗂️ Stage: cancel_appt_iterate
-    #
-    # Purpose:
-    #   - Load this caller’s appointments for the specific doctor from JSON.
-    #   - Match strictly by phone number and (if provided) DOB.
-    #   - Build candidates list of only matches (not all appts).
-    #   - Present one candidate at a time → yes/no input.
-    #
-    # Behavior:
-    #   - "yes"/"1" → select and jump to cancel_appt_confirm.
-    #   - "no"/"2" → move to next candidate (or end if none left).
-    #   - If no candidates → say no events and hang up.
-    # ----------------------------------------------------------------------
 
     elif stage == "cancel_appt_iterate":
         # ----------------------------------------------------------------------
