@@ -5445,7 +5445,7 @@ def voice():
         # ------------------------------------------------------------------
         # 🔍 NEW: Always check slot availability after cancellation
         # ------------------------------------------------------------------
-        if calendar_id and utc_start and utc_end:
+        #if calendar_id and utc_start and utc_end:
             try:
                 available = is_time_slot_available(calendar_id, utc_start, utc_end, creds)
                 if available:
