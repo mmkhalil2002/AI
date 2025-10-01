@@ -1,4 +1,4 @@
-# update  10/01/25 time_saved   cancel is tested
+# update  09/30/25 time_saved   cancel is tested
 #  
 # =========================
 # Standard library imports
@@ -3085,101 +3085,97 @@ def voice():
         sd["stage"] = "intent"
         resp.append(make_gather("Would you like to book an appointment, cancel one, reschedule, or leave a message?"))
         return str(resp)
+    
+
 
 
 
     elif stage == "booking":
         # ----------------------------------------------------------------------
         # 📍 Booking flow: the caller has just been asked to name a doctor.
-        # Our task here is to identify which doctor they said and, if successful,
-        # proceed to ask what time they’d like to book.
+        # Accepts either speech or single-digit DTMF input (from doctor_dtmf_map).
         # ----------------------------------------------------------------------
 
         if "retry_booking" not in session_data[call_sid]:
             session_data[call_sid]["retry_booking"] = 0
 
-        # ✅ Safe punctuation constant (avoid using `string` directly)
-        """
-        try:
-            from string import punctuation as _PUNCT
-        except Exception:
-        """
+        # Safe punctuation constant (no string import)
         _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
 
-        # 📻 Clean and normalize speech input
+        # Pull DTMF and speech
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
         spoken_text = (speech_result or "").lower().strip()
-        # ⛑️ Use _PUNCT so we never reference `string` locally
         spoken_clean = spoken_text.translate(str.maketrans('', '', _PUNCT)).strip()
-        print(f"📻 booking :speech_result: {spoken_clean}")
 
-        # 🚫 Block common junk phrases often returned by Twilio hallucination
-        junk_inputs = {
-            "hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test",
-            "1", "yes", "no", "i know", "huh", "what", "okay", "ok", "bye", "goodbye", ""
-        }
-
-        if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
-            print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
-            doctor_list_str = ", ".join(googleid_dr_name_map.values())
-            gather = make_gather("Please say the name of the doctor you'd like to book with.", hints=doctor_list_str)
-            resp.append(gather)
-            return str(resp)
+        print(f"📻 booking :speech_result: {spoken_clean} DTMF='{dtmf_digits}'")
 
         matched_id = None
 
         # ------------------------------------------------------------------
-        # 🔍 1. Partial token-based name match
+        # 🔢 Path 1: Direct keypad digit lookup
         # ------------------------------------------------------------------
-        partial_matches = []
-        spoken_tokens = set(spoken_clean.split())
-
-        for doc_id, friendly in googleid_dr_name_map.items():
-            friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
-            friendly_tokens = set(friendly_clean.split())
-
-            if (
-                spoken_clean in friendly_clean
-                or friendly_clean in spoken_clean
-                or spoken_tokens & friendly_tokens  # Token overlap
-            ):
-                partial_matches.append((doc_id, friendly))
-
-        if len(partial_matches) == 1:
-            matched_id = partial_matches[0][0]
-            print(f"✅ Partial match with: {partial_matches[0][1]}")
-        elif len(partial_matches) > 1:
-            print(f"🔍 Multiple potential matches found: {[name for _, name in partial_matches]}")
-            matched_id = partial_matches[0][0]  # or ask user to clarify
+        if dtmf_digits and "doctor_dtmf_map" in session_data[call_sid]:
+            doctor_map = session_data[call_sid]["doctor_dtmf_map"]
+            chosen_name = doctor_map.get(dtmf_digits)
+            if chosen_name:
+                # Find doctor_id by name match
+                for doc_id, friendly in googleid_dr_name_map.items():
+                    if friendly.lower() == chosen_name.lower():
+                        matched_id = doc_id
+                        print(f"✅ DTMF matched doctor: {friendly}")
+                        break
 
         # ------------------------------------------------------------------
-        # 🤖 2. GPT fallback (only if 2+ words)
-        # ------------------------------------------------------------------
-        if matched_id is None and len(spoken_clean.split()) >= 2:
-            try:
-                extracted = extract_doctor_name(spoken_text)
-                if extracted:
-                    extracted_clean = extracted.lower().translate(str.maketrans('', '', _PUNCT)).strip()
-                    for doc_id, friendly in googleid_dr_name_map.items():
-                        friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
-                        if extracted_clean in friendly_clean or friendly_clean in extracted_clean:
-                            matched_id = doc_id
-                            debug_print(f"✅ Matched via GPT fallback: {friendly}")
-                            break
-            except Exception as e:
-                debug_print(f"⚠️ GPT fallback failed: {e}")
-
-        # ------------------------------------------------------------------
-        # ❌ 3. Still no match → Retry logic
+        # 🎙️ Path 2: Speech-based name lookup
         # ------------------------------------------------------------------
         if matched_id is None:
-            debug_print(f"❌ No doctor match for: '{spoken_clean}'")
+            # Skip obvious junk inputs
+            junk_inputs = {
+                "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
+                "yo", "test", "1", "yes", "no", "i know", "huh", "what", "okay", "ok",
+                "bye", "goodbye", ""
+            }
+            if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
+                print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
+                doctor_list_str = ", ".join(googleid_dr_name_map.values())
+                gather = make_gather("Please say the name of the doctor you'd like to book with.", 
+                                    hints=doctor_list_str, num_digits=1)
+                resp.append(gather)
+                return str(resp)
+
+            # 🔍 Partial token-based match
+            partial_matches = []
+            spoken_tokens = set(spoken_clean.split())
+            for doc_id, friendly in googleid_dr_name_map.items():
+                friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
+                friendly_tokens = set(friendly_clean.split())
+                if (spoken_clean in friendly_clean or
+                    friendly_clean in spoken_clean or
+                    spoken_tokens & friendly_tokens):
+                    partial_matches.append((doc_id, friendly))
+
+            if len(partial_matches) == 1:
+                matched_id = partial_matches[0][0]
+                print(f"✅ Partial match with: {partial_matches[0][1]}")
+            elif len(partial_matches) > 1:
+                print(f"🔍 Multiple matches: {[name for _, name in partial_matches]}")
+                matched_id = partial_matches[0][0]
+
+        # ------------------------------------------------------------------
+        # ❌ Retry if no match
+        # ------------------------------------------------------------------
+        if matched_id is None:
+            debug_print(f"❌ No doctor match for: '{spoken_clean or dtmf_digits}'")
             session_data[call_sid]["retry_booking"] += 1
             retries = session_data[call_sid]["retry_booking"]
 
             if retries >= 3:
                 resp.say(gpt_speak(
                     "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
-                    "Please call us again when convenient. Goodbye."
+                    "Please call us again later."
                 ), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
@@ -3188,14 +3184,14 @@ def voice():
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
             retry_prompt = (
                 f"I couldn't match that to a doctor. Available doctors are: {doctor_list_str}. "
-                "Please say the doctor name again."
+                "Please say the doctor name or press the number."
             )
-            gather = make_gather(retry_prompt, hints=doctor_list_str)
+            gather = make_gather(retry_prompt, hints=doctor_list_str, num_digits=1)
             resp.append(gather)
             return str(resp)
 
         # ------------------------------------------------------------------
-        # ✅ 4. Success → Go collect phone FIRST
+        # ✅ Success → Store doctor, move to phone collection
         # ------------------------------------------------------------------
         session_data[call_sid]["doctor_id"] = matched_id
         session_data[call_sid]["stage"] = "collect_phone"
@@ -3206,9 +3202,11 @@ def voice():
             "Please say or enter your phone number including area code."
         )
 
-        gather = make_gather(phone_prompt)
+        gather = make_gather(phone_prompt, num_digits=10)
         resp.append(gather)
         return str(resp)
+
+
 
 
     elif stage == "collect_phone":
@@ -3393,6 +3391,7 @@ def voice():
         )
         resp.append(gather)
         return str(resp)
+
 
 
 
@@ -3614,35 +3613,31 @@ def voice():
 
 
 
-# ----------------------------------------------------------------------
-# 📅 Stage: ask_time_date
-# Purpose:
-#   - Parse spoken date/time (e.g., “September 12 at 10 AM”) without external helpers.
-#   - Build a concrete UTC timeslot (start/end) using clinic TZ and duration.
-#   - Check availability via is_time_slot_available(calendar_id, start_iso, end_iso, creds).
-#   - If the slot is busy or has fully passed, suggest the next 3 free slots
-#     AFTER the requested *end* via get_next_available_slots(...).
-#   - If free, persist slot and advance the flow.
-#
-# Notes:
-#   - Uses absolute times only (no ±1s padding in this stage).
-#   - We never assign to `_re`, so it stays global and safe.
-#   - Every code path returns `str(resp)` (Flask requirement).
-# ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 📅 Stage: ask_time_date
+    # Purpose:
+    #   - Parse spoken date/time (e.g., “September 12 at 10 AM”) without external helpers.
+    #   - Build a concrete UTC timeslot (start/end) using clinic TZ and duration.
+    #   - Check availability via is_time_slot_available(calendar_id, start_iso, end_iso, creds).
+    #   - If the slot is busy or has fully passed, suggest the next 3 free slots
+    #     AFTER the requested *end* via get_next_available_slots(...).
+    #   - If free, persist slot and advance the flow.
+    #
+    # Notes:
+    #   - Uses absolute times only (no ±1s padding in this stage).
+    #   - We never assign to `_re`, so it stays global and safe.
+    #   - Every code path returns `str(resp)` (Flask requirement).
+    # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
-        #import re as _re  # keep as requested
 
         # ------------------------------------------------------------------
         # Prompts
         # ------------------------------------------------------------------
-        TIME_PROMPT_SHORT = (
-            "That doesn't sound like a valid date or time. "
-            "Please say it again, for example, 'September 12 at 10 AM'."
-        )
-        PROMPT_NEED_BOTH = "Please say the date and the time, for example, 'September 12 at 10 AM'."
-        PROMPT_NEED_DATE = "I didn't hear the date. Please include it, for example, 'September 12 at 10 AM'."
-        PROMPT_NEED_TIME = "I didn't hear the time. Please include it, for example, 'September 12 at 10 AM'."
+        TIME_PROMPT_SHORT = "That doesn't sound like a valid date or time. Please say it again, for example, 'September 12 at 10 AM'."
+        PROMPT_NEED_BOTH  = "Please say the date and the time, for example, 'September 12 at 10 AM'."
+        PROMPT_NEED_DATE  = "I didn't hear the date. Please include it, for example, 'September 12 at 10 AM'."
+        PROMPT_NEED_TIME  = "I didn't hear the time. Please include it, for example, 'September 12 at 10 AM'."
 
         # ------------------------------------------------------------------
         # Ensure session and doctor (per-doctor calendar)
@@ -3671,13 +3666,12 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
             resp.append(make_gather("Please say the date and time, for example, 'September 12 at 10 AM'."))
-            try: resp.redirect(url_for("voice"))
-            except Exception: resp.redirect("/voice")
+            resp.redirect("/voice")
             return str(resp)
         session_data[call_sid].pop("silence_time", None)
 
         # ------------------------------------------------------------------
-        # Local helpers (close over `_re`)
+        # Inline helpers (no imports)
         # ------------------------------------------------------------------
         def _has_time_token(s: str) -> bool:
             s = (s or "").lower()
@@ -3699,51 +3693,34 @@ def voice():
             weekdays = ("monday","tuesday","wednesday","thursday","friday","saturday","sunday",
                         "mon","tue","tues","wed","thu","thur","thurs","fri","sat","sun")
             if any(w in s for w in weekdays): return True
-            if _re.search(r"\b\d{1,2}\b", s): return True  # day-of-month alone
+            if _re.search(r"\b\d{1,2}\b", s): return True
             return False
 
         def _extract_day_time(s: str) -> tuple:
-            """
-            Normalize and split into (day_str, time_str).
-            Handles cases like: 'September 12 at. 8:30, a.m.' → 'september 12' / '8:30 am'
-            """
             if not s: return ("", "")
-
-            # 1) Normalize AM/PM variants BEFORE stripping punctuation
             s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s, flags=_re.IGNORECASE)
             s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s, flags=_re.IGNORECASE)
-
-            # 2) Smooth 'at' with trailing punctuation/spaces: 'at.' / 'at,' / 'at    ' → ' at '
             s = _re.sub(r"\bat\s*[.,]?\s+", " at ", s, flags=_re.IGNORECASE)
-
-            # 3) Light punctuation cleanup (keep colons inside times)
-            s = _re.sub(r"[!?]+\s*$", "", s)      # trailing !?
-            s = _re.sub(r"[;,]+", " ", s)         # inner ; or , → space
-            s = _re.sub(r"\.\s+(?=\d)", " ", s)   # dot before a number → space (e.g., "at.  8:30")
+            s = _re.sub(r"[!?]+\s*$", "", s)
+            s = _re.sub(r"[;,]+", " ", s)
+            s = _re.sub(r"\.\s+(?=\d)", " ", s)
             s = _re.sub(r"\s+", " ", s).strip()
-
-            # 4) Ordinals → cardinals (11th → 11)
             s = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", s, flags=_re.IGNORECASE)
 
-            # 5) 'noon' / 'midnight'
             s_low = s.lower()
             s_low = s_low.replace(" at noon", " at 12 pm").replace(" noon", " 12 pm")
             s_low = s_low.replace(" at midnight", " at 12 am").replace(" midnight", " 12 am")
 
-            # 6) Prefer explicit " at " split
             if " at " in s_low:
                 day, timep = s_low.split(" at ", 1)
                 return (day.strip().rstrip(","), timep.strip())
 
-            # 7) Otherwise, locate a *real* time token (require am/pm OR a colon)
-            #    This prevents grabbing the date day ("12") as a time.
             m = _re.search(r"\b(\d{1,2}:\d{2}\s*(am|pm)?|\d{1,2}\s*(am|pm))\b", s_low)
             if m:
                 timep = m.group(1)
                 day = s_low[:m.start()].strip().rstrip(",")
                 return (day, timep)
 
-            # 8) Compact "930", "1000"
             m2 = _re.search(r"\b(\d{3,4})\b", s_low)
             if m2:
                 t = m2.group(1)
@@ -3754,34 +3731,24 @@ def voice():
             return ("", "")
 
         def _build_slot(day_str: str, time_str: str) -> tuple:
-            """
-            Build (start_iso_utc, end_iso_utc) using clinic TZ and duration.
-            If year not said, force current year (no auto-roll).
-            """
-            tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
+            tz_name = (globals().get("CLINIC_TZ") or "America/Chicago")
             try:
                 tz_local = _pytz.timezone(tz_name)
             except Exception:
                 tz_local = _pytz.timezone("America/Chicago")
 
-            # duration
-            dur = None
-            for k in ("APPOINTMENT_DURATION_MINUTES", "SESSION_TIME", "SESSIUON_TIME"):
-                v = globals().get(k)
-                if v:
-                    try: dur = int(v); break
-                    except Exception: pass
-            if dur not in (15, 30, 45, 60):
-                dur = 30
+            dur = globals().get("APPOINTMENT_DURATION_MINUTES") or 30
+            try: dur = int(dur)
+            except Exception: dur = 30
+            if dur not in (15,30,45,60): dur = 30
 
             d = (day_str or "").strip()
             t = (time_str or "").strip()
             if not d or not t:
                 raise ValueError("missing date or time")
 
-            t = _re.sub(r"\s*(am|pm)\b", r" \1", t)  # 10am→10 am
+            t = _re.sub(r"\s*(am|pm)\b", r" \1", t)
             t = t.replace(" o'clock", "")
-
             combined = f"{d} at {t}"
 
             today = _date_local.today()
@@ -3793,15 +3760,13 @@ def voice():
             else:
                 parsed = parsed.astimezone(tz_local)
 
-            said_year = bool(_re.search(r"\b\d{4}\b", combined))
-            if not said_year:
+            if not _re.search(r"\b\d{4}\b", combined):
                 parsed = parsed.replace(year=today.year)
 
             start_local = parsed
             end_local   = start_local + timedelta(minutes=dur)
-
             start_utc = start_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
-            end_utc   = end_local  .astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
+            end_utc   = end_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
             return (start_utc, end_utc)
 
         # ------------------------------------------------------------------
@@ -3814,8 +3779,8 @@ def voice():
         need_time = not _has_time_token(time_part)
         if need_date or need_time:
             if need_date and need_time: prompt = PROMPT_NEED_BOTH
-            elif need_date:              prompt = PROMPT_NEED_DATE
-            else:                        prompt = PROMPT_NEED_TIME
+            elif need_date:             prompt = PROMPT_NEED_DATE
+            else:                       prompt = PROMPT_NEED_TIME
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
             if session_data[call_sid]["retry_time"] >= 3:
                 resp.say(gpt_speak("Sorry, I still couldn't understand the date and time. Please try again later."), VOICE)
@@ -3844,13 +3809,13 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # Past-time guard: only if the slot has fully ended
+        # Past-time guard
         # ------------------------------------------------------------------
         try:
             now_utc = datetime.utcnow().replace(tzinfo=_pytz.UTC)
             end_dt  = datetime.fromisoformat(appointment_end.replace("Z", "+00:00")).astimezone(_pytz.UTC)
             if end_dt <= now_utc:
-                debug_print("ask_time_date: 🕒 requested time is in the past → suggest next slots AFTER requested time")
+                debug_print("ask_time_date: 🕒 requested time is in the past → suggest alternatives")
                 try:
                     alts = get_next_available_slots(calendar_id, creds, from_start_iso=appointment_end, limit=3) or []
                 except Exception as e:
@@ -3858,8 +3823,7 @@ def voice():
                     alts = []
                 if alts:
                     options = " or ".join([a.get("friendly","") for a in alts if a.get("friendly")])
-                    prompt = f"That time has already passed. Would you like {options}?" if options \
-                            else "That time has already passed. Please say another date and time."
+                    prompt = f"That time has already passed. Would you like {options}?" if options else "That time has already passed. Please say another date and time."
                 else:
                     prompt = "That time has already passed. Please say another date and time."
                 resp.append(make_gather(prompt))
@@ -3886,27 +3850,21 @@ def voice():
                 alts = []
             if alts:
                 options = " or ".join([a.get("friendly","") for a in alts if a.get("friendly")])
-                prompt = f"That time is not available. Would you like {options}?" if options \
-                        else "That time is not available. Please say another date and time."
+                prompt = f"That time is not available. Would you like {options}?" if options else "That time is not available. Please say another date and time."
             else:
                 prompt = "That time is not available. Please say another date and time."
             resp.append(make_gather(prompt))
             return str(resp)
 
         # ------------------------------------------------------------------
-        # ✅ Slot free → save; then customer lookup (phone+dob, country="US")
+        # ✅ Slot free → save; then customer lookup
         # ------------------------------------------------------------------
-        session_data[call_sid]["appointment_time"] = {
-            "start": appointment_start,
-            "end":   appointment_end
-        }
+        session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
 
-        # Pull phone & DOB from session (prefer nested customer dict if present)
         cust = session_data[call_sid].setdefault("customer", {})
         phone_e164 = cust.get("phone_e164") or session_data[call_sid].get("phone_e164")
         dob        = cust.get("dob")        or session_data[call_sid].get("dob")
 
-        # If either is missing, route to the specific collector stage
         if not phone_e164 or not dob:
             missing = "phone" if not phone_e164 else "dob"
             debug_print(f"ask_time_date: 🧩 missing {missing} → collect it before customer_search")
@@ -3915,14 +3873,11 @@ def voice():
                 prompt = "Please say your 10-digit phone number."
             else:
                 session_data[call_sid]["stage"] = "collect_dob"
-                prompt = ("Please say your date of birth, for example, 'July third 1990'. "
-                        "You can also type two digits for month, two for day, and four for year, then press pound.")
+                prompt = "Please say your date of birth, for example, 'July third 1990'."
             resp.append(make_gather(prompt))
-            try: resp.redirect(url_for("voice"))
-            except Exception: resp.redirect("/voice")
+            resp.redirect("/voice")
             return str(resp)
 
-        # Run customer search (US only as requested)
         try:
             found = customer_search(phone_number=phone_e164, dob=dob, country="US")
             debug_print(f"ask_time_date: 🔎 customer_search(phone={phone_e164}, dob={dob}, country=US) → {found}")
@@ -3930,7 +3885,6 @@ def voice():
             debug_print(f"ask_time_date: ⚠️ customer_search error → {e}")
             found = False
 
-        # Branch by result
         if found:
             debug_print("ask_time_date: 📋 Customer on file — skip name collection")
             session_data[call_sid]["stage"] = "book_appt_confirm"
@@ -3938,14 +3892,8 @@ def voice():
             debug_print("ask_time_date: 🆕 New customer — go to collect_first_name")
             session_data[call_sid]["stage"] = "collect_first_name"
 
-        # IMPORTANT: do NOT append a Gather here — just redirect to the next stage
-        try:
-            resp.redirect(url_for("voice"))
-        except Exception:
-            resp.redirect("/voice")
+        resp.redirect("/voice")
         return str(resp)
-
-
 
 
 
