@@ -5411,132 +5411,126 @@ def voice():
         # ----------------------------------------------------------------------
 
     elif stage == "cancel_appt_confirm":
-            debug_print("📍 Stage: cancel_appt_confirm (auto-execute, no confirmation prompt)")
+        debug_print("📍 Stage: cancel_appt_confirm (auto-execute, slot existence check)")
 
-            cancel_ctx  = session_data[call_sid].setdefault("cancel", {})
-            cand        = cancel_ctx.get("matching_event") or {}
+        cancel_ctx  = session_data[call_sid].setdefault("cancel", {})
+        cand        = cancel_ctx.get("matching_event") or {}
 
-            doctor      = cand.get("doctor_name") or cancel_ctx.get("doctor") or ""
-            utc_start   = cand.get("start_utc")   or cancel_ctx.get("utc_start") or ""
-            utc_end     = cand.get("end_utc")     or cancel_ctx.get("utc_end")   or ""
-            phone_raw   = (cand.get("phone_e164") or cancel_ctx.get("phone_e164") or "").strip()
-            dob         = cand.get("dob") or cancel_ctx.get("dob") or session_data[call_sid].get("customer", {}).get("dob") or ""
+        doctor      = cand.get("doctor_name") or cancel_ctx.get("doctor") or ""
+        utc_start   = cand.get("start_utc")   or cancel_ctx.get("utc_start") or ""
+        utc_end     = cand.get("end_utc")     or cancel_ctx.get("utc_end")   or ""
+        phone_raw   = (cand.get("phone_e164") or cancel_ctx.get("phone_e164") or "").strip()
+        dob         = cand.get("dob") or cancel_ctx.get("dob") or session_data[call_sid].get("customer", {}).get("dob") or ""
+        calendar_id = cancel_ctx.get("calendar_id")
 
-            # ------------------------------------------------------------------
-            # Helper: normalize phone to E.164
-            # ------------------------------------------------------------------
-            def _normalize_phone(phone_str: str, country: str = "US") -> str:
-                import re as _re
-                phone_digits = _re.sub(r"\D", "", phone_str)
-                if not phone_digits:
-                    return ""
-                if phone_digits.startswith("1") and len(phone_digits) == 11:
-                    return "+" + phone_digits
-                if len(phone_digits) == 10 and country.upper() == "US":
-                    return "+1" + phone_digits
-                return "+" + phone_digits
+        # Normalize phone
+        def _normalize_phone(phone_str: str, country: str = "US") -> str:
+            import re as _re
+            phone_digits = _re.sub(r"\D", "", phone_str)
+            if not phone_digits: return ""
+            if phone_digits.startswith("1") and len(phone_digits) == 11: return "+" + phone_digits
+            if len(phone_digits) == 10 and country.upper() == "US": return "+1" + phone_digits
+            return "+" + phone_digits
 
-            default_country = (session_data[call_sid].get("phone_country") or COUNTRY or "US").upper()
-            phone_e164 = _normalize_phone(phone_raw, default_country)
+        default_country = (session_data[call_sid].get("phone_country") or COUNTRY or "US").upper()
+        phone_e164 = _normalize_phone(phone_raw, default_country)
 
-            # ------------------------------------------------------------------
-            # Helper: friendly date string
-            # ------------------------------------------------------------------
-            def _friendly_from_iso(utc_iso: str, tz_name: str = "America/Chicago") -> str:
-                try:
-                    import dateutil.parser as dtparser
-                    import pytz
-                    dt_utc = dtparser.isoparse(utc_iso)
-                    local = dt_utc.astimezone(pytz.timezone(tz_name))
-                    return local.strftime("%A, %B %-d at %-I:%M %p")
-                except Exception:
-                    return utc_iso or "the scheduled time"
+        # Friendly date
+        def _friendly_from_iso(utc_iso: str, tz_name: str = "America/Chicago") -> str:
+            try:
+                import dateutil.parser as dtparser, pytz
+                from datetime import datetime as dt
+                dt_utc = dtparser.isoparse(utc_iso)
+                local = dt_utc.astimezone(pytz.timezone(tz_name))
+                return local.strftime("%A, %B %-d at %-I:%M %p")
+            except Exception:
+                return utc_iso or "the scheduled time"
 
-            friendly = _friendly_from_iso(utc_start)
+        friendly = _friendly_from_iso(utc_start)
 
-            # ------------------------------------------------------------------
-            # ✅ Check slot existence before attempting cancel
-            # ------------------------------------------------------------------
-            calendar_id = cancel_ctx.get("calendar_id")
-            slot_exists_before = False
-            if calendar_id and utc_start and utc_end:
-                try:
-                    slot_exists_before = not is_time_slot_available(calendar_id, utc_start, utc_end, creds)
-                    if slot_exists_before:
-                        debug_print(f"cancel_appt_confirm: ✅ Slot exists BEFORE deletion ({utc_start} → {utc_end})")
-                    else:
-                        debug_print(f"cancel_appt_confirm: ❌ Slot does NOT exist BEFORE deletion ({utc_start} → {utc_end})")
-                except Exception as e:
-                    debug_print(f"cancel_appt_confirm: ⚠️ slot pre-check failed → {e}")
+        # ------------------------------------------------------------------
+        # ✅ Step 1: Check slot availability BEFORE deleting
+        # ------------------------------------------------------------------
+        precheck = False
+        if calendar_id and utc_start and utc_end:
+            try:
+                precheck = is_time_slot_available(calendar_id, utc_start, utc_end, creds)
+                debug_print(f"cancel_appt_confirm: 🔍 Pre-check availability → {precheck}")
+            except Exception as e:
+                debug_print(f"cancel_appt_confirm: ⚠️ pre-check failed → {e}")
 
-            # ------------------------------------------------------------------
-            # Cancel appointment in local JSON
-            # ------------------------------------------------------------------
-            local_ok = False
-            if doctor and phone_e164 and dob and utc_start and slot_exists_before:
-                try:
-                    local_ok = cancel_appointment_for_dr_name(
-                        doctor_name=doctor,
-                        phone=phone_e164,
-                        dob=dob,
-                        utc_start=utc_start
-                    )
-                    if local_ok:
-                        debug_print(f"cancel_appt_confirm: 🗑️ Local file cancel succeeded for {doctor}")
-                except Exception as e:
-                    debug_print(f"cancel_appt_confirm: local cancel failed → {e}")
-
-            # ------------------------------------------------------------------
-            # Cancel appointment in Google Calendar
-            # ------------------------------------------------------------------
-            gcal_ok = False
-            if calendar_id and utc_start and phone_e164 and slot_exists_before:
-                try:
-                    start_dt  = dtparser.isoparse(utc_start)
-                    win_start = (start_dt - timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
-                    win_end   = (start_dt + timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
-
-                    matched = get_upcoming_events(calendar_id, phone_e164, win_start, win_end, creds, debug=True)
-                    ev = matched[0] if isinstance(matched, list) and matched else (matched if isinstance(matched, dict) else None)
-                    if ev and ev.get("id"):
-                        service = build("calendar", "v3", credentials=creds)
-                        service.events().delete(calendarId=calendar_id, eventId=ev["id"]).execute()
-                        gcal_ok = True
-                        debug_print(f"cancel_appt_confirm: 🗑️ GCal event deleted id={ev['id']}")
-                except Exception as e:
-                    debug_print(f"cancel_appt_confirm: GCal delete failed → {e}")
-
-            # ------------------------------------------------------------------
-            # 🔍 Check slot availability AFTER deletion
-            # ------------------------------------------------------------------
-            if calendar_id and utc_start and utc_end:
-                try:
-                    available_after = is_time_slot_available(calendar_id, utc_start, utc_end, creds)
-                    if available_after:
-                        debug_print(f"cancel_appt_confirm: ✅ Slot is FREE after deletion ({utc_start} → {utc_end})")
-                    else:
-                        debug_print(f"cancel_appt_confirm: ❌ Slot is STILL blocked after deletion ({utc_start} → {utc_end})")
-                except Exception as e:
-                    debug_print(f"cancel_appt_confirm: ⚠️ slot post-check failed → {e}")
-
-            # ------------------------------------------------------------------
-            # Respond to caller
-            # ------------------------------------------------------------------
-            if (local_ok or gcal_ok) and slot_exists_before:
-                resp.say(
-                    gpt_speak(f"Your appointment with {doctor} on {friendly} has been cancelled. Thank you!"),
-                    VOICE
-                )
-            else:
-                resp.say(
-                    gpt_speak("I'm sorry, I couldn't find an appointment under that phone number and time to cancel."),
-                    VOICE
-                )
-
-            # Cleanup
+        if not precheck:
+            resp.say(
+                gpt_speak("That appointment slot does not exist or is already free."),
+                VOICE
+            )
             session_data.pop(call_sid, None)
             resp.hangup()
             return str(resp)
+
+        # ------------------------------------------------------------------
+        # ✅ Step 2: Delete from JSON and Google Calendar
+        # ------------------------------------------------------------------
+        local_ok = False
+        if doctor and phone_e164 and dob and utc_start:
+            try:
+                local_ok = cancel_appointment_for_dr_name(
+                    doctor_name=doctor,
+                    phone=phone_e164,
+                    dob=dob,
+                    utc_start=utc_start
+                )
+                if local_ok:
+                    debug_print(f"cancel_appt_confirm: 🗑️ Local JSON cancel succeeded for {doctor}")
+            except Exception as e:
+                debug_print(f"cancel_appt_confirm: local JSON cancel failed → {e}")
+
+        gcal_ok = False
+        if calendar_id:
+            try:
+                service = build("calendar", "v3", credentials=creds)
+                start_dt = dtparser.isoparse(utc_start)
+                win_start = (start_dt - timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
+                win_end   = (start_dt + timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
+
+                matched = get_upcoming_events(calendar_id, phone_e164, win_start, win_end, creds, debug=True)
+                ev = matched[0] if isinstance(matched, list) and matched else (matched if isinstance(matched, dict) else None)
+                if ev and ev.get("id"):
+                    service.events().delete(calendarId=calendar_id, eventId=ev["id"]).execute()
+                    gcal_ok = True
+                    debug_print(f"cancel_appt_confirm: 🗑️ GCal event deleted id={ev['id']}")
+            except Exception as e:
+                debug_print(f"cancel_appt_confirm: GCal delete failed → {e}")
+
+        # ------------------------------------------------------------------
+        # ✅ Step 3: Post-check slot availability AFTER deleting
+        # ------------------------------------------------------------------
+        postcheck = False
+        if calendar_id and utc_start and utc_end:
+            try:
+                postcheck = is_time_slot_available(calendar_id, utc_start, utc_end, creds)
+                debug_print(f"cancel_appt_confirm: 🔍 Post-check availability → {postcheck}")
+            except Exception as e:
+                debug_print(f"cancel_appt_confirm: ⚠️ post-check failed → {e}")
+
+        # ------------------------------------------------------------------
+        # Respond to caller
+        # ------------------------------------------------------------------
+        if local_ok or gcal_ok:
+            resp.say(
+                gpt_speak(f"Your appointment with {doctor} on {friendly} has been cancelled. "
+                        f"The slot is now {'available' if postcheck else 'still not available'}."),
+                VOICE
+            )
+        else:
+            resp.say(
+                gpt_speak("I'm sorry, I couldn't cancel that appointment."),
+                VOICE
+            )
+
+        session_data.pop(call_sid, None)
+        resp.hangup()
+        return str(resp)
 
 
 
