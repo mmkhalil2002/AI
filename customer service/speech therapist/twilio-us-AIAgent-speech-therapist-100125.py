@@ -2943,8 +2943,22 @@ def voice():
                 )
                 return str(resp)
 
+        # ✅ New: graceful exit if caller says "thank you", "goodbye", etc.
+        polite_exits = {
+            "thank you", "thanks", "thank you very much",
+            "bye", "goodbye", "that's all", "that is all",
+            "no thanks", "no thank you", "i'm done", "already booked", "never mind"
+        }
+        if lower in polite_exits:
+            print(f"👋 polite exit detected: '{lower}' → ending call")
+            resp.say(gpt_speak("You're welcome. Thank you for calling. Goodbye."), VOICE)
+            resp.hangup()
+            return str(resp)
+
         # 🚫 Ignore junk greetings
-        junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
+        junk_inputs = {
+            "hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"
+        }
         if not lower or lower in junk_inputs:
             print(f"⛔ Ignored junk input: '{lower}' — re-prompting without response")
             gather = make_gather(
@@ -2962,6 +2976,7 @@ def voice():
 
         # ✅ Voice-based intents remain unchanged
         # (cancel, reschedule, book, voicemail, etc.)
+
 
 
 
