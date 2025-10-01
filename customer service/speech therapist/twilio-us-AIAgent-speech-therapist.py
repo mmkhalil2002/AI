@@ -3090,98 +3090,92 @@ def voice():
 
 
 
-
     elif stage == "booking":
         # ----------------------------------------------------------------------
         # 📍 Booking flow: the caller has just been asked to name a doctor.
-        # Our task here is to identify which doctor they said and, if successful,
-        # proceed to ask what time they’d like to book.
+        # Accepts either speech or single-digit DTMF input (from doctor_dtmf_map).
         # ----------------------------------------------------------------------
 
         if "retry_booking" not in session_data[call_sid]:
             session_data[call_sid]["retry_booking"] = 0
 
-        # ✅ Safe punctuation constant (avoid importing `string`)
+        # Safe punctuation constant (no string import)
         _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
 
-        # 📻 Clean and normalize speech input
+        # Pull DTMF and speech
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
         spoken_text = (speech_result or "").lower().strip()
         spoken_clean = spoken_text.translate(str.maketrans('', '', _PUNCT)).strip()
-        print(f"📻 booking :speech_result: {spoken_clean}")
 
-        # 🚫 Block common junk phrases often returned by Twilio hallucination
-        junk_inputs = {
-            "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
-            "yo", "test", "1", "yes", "no", "i know", "huh", "what", "okay", "ok",
-            "bye", "goodbye", ""
-        }
-
-        if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
-            print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
-            doctor_list_str = ", ".join(googleid_dr_name_map.values())
-            gather = make_gather(
-                "Please say the name of the doctor you'd like to book with.",
-                hints=doctor_list_str,
-                num_digits=1
-            )
-            resp.append(gather)
-            return str(resp)
+        print(f"📻 booking :speech_result: {spoken_clean} DTMF='{dtmf_digits}'")
 
         matched_id = None
 
         # ------------------------------------------------------------------
-        # 🔍 1. Partial token-based name match
+        # 🔢 Path 1: Direct keypad digit lookup
         # ------------------------------------------------------------------
-        partial_matches = []
-        spoken_tokens = set(spoken_clean.split())
-
-        for doc_id, friendly in googleid_dr_name_map.items():
-            friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
-            friendly_tokens = set(friendly_clean.split())
-
-            if (
-                spoken_clean in friendly_clean
-                or friendly_clean in spoken_clean
-                or spoken_tokens & friendly_tokens  # token overlap
-            ):
-                partial_matches.append((doc_id, friendly))
-
-        if len(partial_matches) == 1:
-            matched_id = partial_matches[0][0]
-            print(f"✅ Partial match with: {partial_matches[0][1]}")
-        elif len(partial_matches) > 1:
-            print(f"🔍 Multiple potential matches found: {[name for _, name in partial_matches]}")
-            matched_id = partial_matches[0][0]  # pick the first for now
+        if dtmf_digits and "doctor_dtmf_map" in session_data[call_sid]:
+            doctor_map = session_data[call_sid]["doctor_dtmf_map"]
+            chosen_name = doctor_map.get(dtmf_digits)
+            if chosen_name:
+                # Find doctor_id by name match
+                for doc_id, friendly in googleid_dr_name_map.items():
+                    if friendly.lower() == chosen_name.lower():
+                        matched_id = doc_id
+                        print(f"✅ DTMF matched doctor: {friendly}")
+                        break
 
         # ------------------------------------------------------------------
-        # 🤖 2. GPT fallback (only if 2+ words spoken)
-        # ------------------------------------------------------------------
-        if matched_id is None and len(spoken_clean.split()) >= 2:
-            try:
-                extracted = extract_doctor_name(spoken_text)
-                if extracted:
-                    extracted_clean = extracted.lower().translate(str.maketrans('', '', _PUNCT)).strip()
-                    for doc_id, friendly in googleid_dr_name_map.items():
-                        friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
-                        if extracted_clean in friendly_clean or friendly_clean in extracted_clean:
-                            matched_id = doc_id
-                            debug_print(f"✅ Matched via GPT fallback: {friendly}")
-                            break
-            except Exception as e:
-                debug_print(f"⚠️ GPT fallback failed: {e}")
-
-        # ------------------------------------------------------------------
-        # ❌ 3. Still no match → Retry logic
+        # 🎙️ Path 2: Speech-based name lookup
         # ------------------------------------------------------------------
         if matched_id is None:
-            debug_print(f"❌ No doctor match for: '{spoken_clean}'")
+            # Skip obvious junk inputs
+            junk_inputs = {
+                "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
+                "yo", "test", "1", "yes", "no", "i know", "huh", "what", "okay", "ok",
+                "bye", "goodbye", ""
+            }
+            if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
+                print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
+                doctor_list_str = ", ".join(googleid_dr_name_map.values())
+                gather = make_gather("Please say the name of the doctor you'd like to book with.", 
+                                    hints=doctor_list_str, num_digits=1)
+                resp.append(gather)
+                return str(resp)
+
+            # 🔍 Partial token-based match
+            partial_matches = []
+            spoken_tokens = set(spoken_clean.split())
+            for doc_id, friendly in googleid_dr_name_map.items():
+                friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
+                friendly_tokens = set(friendly_clean.split())
+                if (spoken_clean in friendly_clean or
+                    friendly_clean in spoken_clean or
+                    spoken_tokens & friendly_tokens):
+                    partial_matches.append((doc_id, friendly))
+
+            if len(partial_matches) == 1:
+                matched_id = partial_matches[0][0]
+                print(f"✅ Partial match with: {partial_matches[0][1]}")
+            elif len(partial_matches) > 1:
+                print(f"🔍 Multiple matches: {[name for _, name in partial_matches]}")
+                matched_id = partial_matches[0][0]
+
+        # ------------------------------------------------------------------
+        # ❌ Retry if no match
+        # ------------------------------------------------------------------
+        if matched_id is None:
+            debug_print(f"❌ No doctor match for: '{spoken_clean or dtmf_digits}'")
             session_data[call_sid]["retry_booking"] += 1
             retries = session_data[call_sid]["retry_booking"]
 
             if retries >= 3:
                 resp.say(gpt_speak(
                     "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
-                    "Please call us again when convenient. Goodbye."
+                    "Please call us again later."
                 ), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
@@ -3190,14 +3184,14 @@ def voice():
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
             retry_prompt = (
                 f"I couldn't match that to a doctor. Available doctors are: {doctor_list_str}. "
-                "Please say the doctor name again."
+                "Please say the doctor name or press the number."
             )
             gather = make_gather(retry_prompt, hints=doctor_list_str, num_digits=1)
             resp.append(gather)
             return str(resp)
 
         # ------------------------------------------------------------------
-        # ✅ 4. Success → Go collect phone FIRST
+        # ✅ Success → Store doctor, move to phone collection
         # ------------------------------------------------------------------
         session_data[call_sid]["doctor_id"] = matched_id
         session_data[call_sid]["stage"] = "collect_phone"
@@ -3208,9 +3202,10 @@ def voice():
             "Please say or enter your phone number including area code."
         )
 
-        gather = make_gather(phone_prompt, num_digits=10)  # allow digit entry
+        gather = make_gather(phone_prompt, num_digits=10)
         resp.append(gather)
         return str(resp)
+
 
 
 
