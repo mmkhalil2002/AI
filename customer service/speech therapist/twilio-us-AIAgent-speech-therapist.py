@@ -3209,32 +3209,33 @@ def voice():
 
 
 
-
     elif stage == "collect_phone":
         # ----------------------------------------------------------------------
-        # 📞 Stage: collect_phone  
+        # 📞 Stage: collect_phone
         #
-        # Caller provides local/national phone number (e.g., 4694633276).
-        # We normalize → E.164 (+1XXXXXXXXXX) using known/default country.
+        # Goal:
+        #   - Caller provides local/national phone (speech or DTMF).
+        #   - Normalize into **E.164** format (e.g., +14694633276).
+        #   - Save in session under ["customer"]["phone_e164"].
+        #   - Then move to DOB stage.
         #
-        # Flow:
-        #   - Handle silence (up to 3 retries → hangup).
-        #   - Accept keypad or spoken numbers.
-        #   - Normalize → E.164 format.
-        #   - On success: save to session and advance to collect_dob.
+        # Notes:
+        #   - Handles silence (3 retries max).
+        #   - Handles "double"/"triple" speech forms (e.g., "double 3" → "33").
+        #   - Defaults to country from Twilio's FromCountry or fallback = US.
         # ----------------------------------------------------------------------
+
         debug_print("collect_phone: 📍 Stage entered")
 
-        # Ensure session dicts exist
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
 
-        # Infer country once per call (use Twilio "FromCountry" if available, else fallback)
+        # Infer country once per call (default = US if Twilio doesn’t send FromCountry)
         if "phone_country" not in session_data[call_sid]:
             from_country = (request.values.get("FromCountry") or "").upper()
-            session_data[call_sid]["phone_country"] = from_country or (COUNTRY or "US")
+            session_data[call_sid]["phone_country"] = from_country or "US"
 
-        # Inputs
+        # Pull inputs
         try:
             dtmf_digits = (request.values.get("Digits") or "").strip()
         except Exception:
@@ -3242,13 +3243,11 @@ def voice():
         speech_text = (speech_result or "").strip()
         debug_print(f"collect_phone: 🎙️ speech='{speech_text}', 🔢 DTMF='{dtmf_digits}'")
 
-        # ------------------------------------------------------------------
-        # 🔇 Silence handling
-        # ------------------------------------------------------------------
+        # 🔇 Silence handling (3 tries then hangup)
         if not (speech_text or dtmf_digits):
             tries = session_data[call_sid].get("silence_collect_phone", 0) + 1
             session_data[call_sid]["silence_collect_phone"] = tries
-            debug_print(f"collect_phone: 🤐 silence (tries={tries})")
+            debug_print(f"collect_phone: 🤐 silence, tries={tries}")
 
             if tries >= 3:
                 resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
@@ -3261,37 +3260,72 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # Reset silence counter
+        # Clear silence counter
         session_data[call_sid].pop("silence_collect_phone", None)
 
-        # ------------------------------------------------------------------
-        # Extract raw digits
-        # ------------------------------------------------------------------
+        # --- Helper: convert spoken words → digits (e.g., 'four six nine' → '469') ---
+        def _spoken_to_digits(raw: str) -> str:
+            if not raw:
+                return ""
+            words = (
+                raw.lower()
+                .replace("-", " ")
+                .replace(",", " ")
+                .replace(".", " ")
+                .replace("(", " ")
+                .replace(")", " ")
+                .split()
+            )
+            m = {
+                "zero": "0", "oh": "0", "o": "0",
+                "one": "1", "two": "2", "to": "2", "too": "2",
+                "three": "3", "four": "4", "for": "4",
+                "five": "5", "six": "6", "seven": "7",
+                "eight": "8", "ate": "8", "nine": "9",
+            }
+            out = []
+            i = 0
+            while i < len(words):
+                w = words[i].strip()
+                if w in ("double", "triple") and i + 1 < len(words):
+                    nxt = words[i + 1].strip()
+                    if nxt in m:
+                        out.extend([m[nxt]] * (2 if w == "double" else 3))
+                        i += 2
+                        continue
+                if w in m:
+                    out.append(m[w])
+                else:
+                    out.extend([c for c in w if c.isdigit()])
+                i += 1
+            return "".join(out)
+
+        # Use DTMF if provided, else fall back to speech → digits
         if dtmf_digits:
             raw_digits = _re.sub(r"\D", "", dtmf_digits)
         else:
-            raw_digits = _re.sub(r"\D", "", speech_text)
+            raw_digits = _re.sub(r"\D", "", _spoken_to_digits(speech_text))
 
-        country = session_data[call_sid].get("phone_country", (COUNTRY or "US")).upper()
+        debug_print(f"collect_phone: raw_digits='{raw_digits}'")
+
+        # --- Normalize to E.164 ---
+        country = session_data[call_sid].get("phone_country", "US").upper()
         phone_e164 = ""
 
-        # Minimal US normalization (can be extended for other countries)
-        if country == "US" and len(raw_digits) in (10, 11):
-            if len(raw_digits) == 11 and raw_digits.startswith("1"):
-                raw_digits = raw_digits[1:]
-            if len(raw_digits) == 10:
-                phone_e164 = f"+1{raw_digits}"
+        if country == "US":
+            d = raw_digits
+            if len(d) == 11 and d.startswith("1"):
+                d = d[1:]
+            if len(d) == 10:
+                phone_e164 = f"+1{d}"
 
-        # ------------------------------------------------------------------
-        # Validation
-        # ------------------------------------------------------------------
         if not phone_e164:
             session_data[call_sid]["retry_phone"] = session_data[call_sid].get("retry_phone", 0) + 1
             r = session_data[call_sid]["retry_phone"]
-            debug_print(f"collect_phone: ❌ invalid phone '{raw_digits}' retry={r}")
+            debug_print(f"collect_phone: ❌ invalid digits='{raw_digits}' retry={r}")
 
             if r >= 3:
-                resp.say(gpt_speak("Sorry, I couldn’t capture your phone number. Please call again later."), VOICE)
+                resp.say(gpt_speak("Sorry, I couldn't capture your phone number. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
@@ -3301,9 +3335,7 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ------------------------------------------------------------------
-        # ✅ Success → Save phone
-        # ------------------------------------------------------------------
+        # ✅ Save phone in session
         session_data[call_sid]["customer"]["phone_e164"] = phone_e164
         session_data[call_sid]["customer"]["phone"] = phone_e164
         session_data[call_sid]["phone_e164"] = phone_e164
@@ -3311,15 +3343,21 @@ def voice():
         debug_print(f"collect_phone: ✅ saved phone_e164={phone_e164}")
 
         # ------------------------------------------------------------------
-        # Next step → collect DOB
+        # Next step: ask DOB (speech + DTMF, explicit prompt so caller hears it)
         # ------------------------------------------------------------------
         session_data[call_sid]["stage"] = "collect_dob"
-        gather = make_gather(
+
+        dob_prompt = (
             "Thanks. What’s your date of birth? "
-            "Say it, or enter two digits for month, two for day, and four for year, then press #."
+            "Say it, for example, 'July 3 1956'. "
+            "Or enter two digits for month, two for day, and four for year, then press #."
         )
-        resp.append(gather)
+
+        g = make_gather(dob_prompt, input="speech dtmf", num_digits=8)
+        resp.append(g)
         return str(resp)
+
+
 
 
 
