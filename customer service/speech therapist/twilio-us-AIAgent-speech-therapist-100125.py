@@ -5375,7 +5375,6 @@ def voice():
         # Helper: normalize phone to E.164
         # ------------------------------------------------------------------
         def _normalize_phone(phone_str: str, country: str = "US") -> str:
-            """Convert raw digits into E.164 format if possible."""
             import re as _re
             phone_digits = _re.sub(r"\D", "", phone_str)
             if not phone_digits:
@@ -5440,18 +5439,23 @@ def voice():
                     service.events().delete(calendarId=calendar_id, eventId=ev["id"]).execute()
                     gcal_ok = True
                     debug_print(f"cancel_appt_confirm: 🗑️ GCal event deleted id={ev['id']}")
-
-                    # 🔍 NEW: Check if the slot is now free
-                    try:
-                        available = is_time_slot_available(calendar_id, utc_start, utc_end, creds)
-                        if available:
-                            debug_print(f"cancel_appt_confirm: ✅ Deleted slot is now AVAILABLE ({utc_start} → {utc_end})")
-                        else:
-                            debug_print(f"cancel_appt_confirm: ❌ Deleted slot still NOT available ({utc_start} → {utc_end})")
-                    except Exception as e2:
-                        debug_print(f"cancel_appt_confirm: ⚠️ availability check failed → {e2}")
             except Exception as e:
                 debug_print(f"cancel_appt_confirm: GCal delete failed → {e}")
+
+        # ------------------------------------------------------------------
+        # 🔍 NEW: Always check slot availability after cancellation
+        # ------------------------------------------------------------------
+        if calendar_id and utc_start and utc_end:
+            try:
+                available = is_time_slot_available(calendar_id, utc_start, utc_end, creds)
+                if available:
+                    debug_print(f"cancel_appt_confirm: ✅ Deleted slot is now AVAILABLE ({utc_start} → {utc_end})")
+                else:
+                    debug_print(f"cancel_appt_confirm: ❌ Deleted slot still NOT available ({utc_start} → {utc_end})")
+            except Exception as e2:
+                debug_print(f"cancel_appt_confirm: ⚠️ availability check failed → {e2}")
+        else:
+            debug_print("cancel_appt_confirm: ℹ️ Skipped availability check (missing calendar_id or utc_end)")
 
         # ------------------------------------------------------------------
         # Respond to caller
@@ -5471,6 +5475,7 @@ def voice():
         session_data.pop(call_sid, None)
         resp.hangup()
         return str(resp)
+
 
 
 
