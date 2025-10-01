@@ -3240,7 +3240,6 @@ def voice():
         # ----------------------------------------------------------------------
         debug_print("collect_phone: 📍 Stage entered")
 
-       
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
 
@@ -3271,7 +3270,13 @@ def voice():
 
             # Short, clear prompt; avoid over-explaining
             prompt = "Say or type your 10-digit phone number, then press #."
-            gather = make_gather(prompt, hints="zero one two three four five six seven eight nine double triple")
+            gather = make_gather(
+                prompt,
+                hints="zero one two three four five six seven eight nine double triple",
+                input="speech dtmf",
+                num_digits=10,
+                finish_on_key="#"    # ✅ allow '#' to end input
+            )
             resp.append(gather)
             return str(resp)
 
@@ -3362,7 +3367,13 @@ def voice():
 
             # Short, consistent re-prompt
             prompt = "Say or type your 10-digit phone number, then press #."
-            gather = make_gather(prompt, hints="zero one two three four five six seven eight nine double triple")
+            gather = make_gather(
+                prompt,
+                hints="zero one two three four five six seven eight nine double triple",
+                input="speech dtmf",
+                num_digits=10,
+                finish_on_key="#"   # ✅ retry also supports '#'
+            )
             resp.append(gather)
             return str(resp)
 
@@ -3394,10 +3405,13 @@ def voice():
         # Default: ask DOB (short, clear)
         session_data[call_sid]["stage"] = "collect_dob"
         gather = make_gather(
-            "Thanks. What’s your date of birth? You can say it, or enter 2 digits for mounth 2 digits for day and 4 digits for year then press #."
+            "Thanks. What’s your date of birth? You can say it, or enter 2 digits for month, 2 digits for day, and 4 digits for year, then press #.",
+            input="speech dtmf",
+            finish_on_key="#"   # ✅ DOB prompt also terminates with '#'
         )
         resp.append(gather)
         return str(resp)
+
 
 
 
