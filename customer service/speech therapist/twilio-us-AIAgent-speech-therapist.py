@@ -3091,7 +3091,6 @@ def voice():
 
 
 
-
     elif stage == "booking":
         # ----------------------------------------------------------------------
         # 📍 Booking flow: the caller has just been asked to name a doctor.
@@ -3120,7 +3119,11 @@ def voice():
         if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
             print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
-            gather = make_gather("Please say the name of the doctor you'd like to book with.", hints=doctor_list_str, num_digits=1)
+            gather = make_gather(
+                "Please say the name of the doctor you'd like to book with.",
+                hints=doctor_list_str,
+                num_digits=1
+            )
             resp.append(gather)
             return str(resp)
 
@@ -3208,21 +3211,6 @@ def voice():
         gather = make_gather(phone_prompt, num_digits=10)  # allow digit entry
         resp.append(gather)
         return str(resp)
-
-    # ----------------------------------------------------------------------
-    # 🛟 Safety net: If we ever drop out of this stage without returning,
-    # fall back to a generic doctor selection prompt.
-    # ----------------------------------------------------------------------
-    doctor_list_str = ", ".join(googleid_dr_name_map.values())
-    gather = make_gather(
-        f"Please say the name of the doctor you'd like to book with. Available doctors are: {doctor_list_str}.",
-        hints=doctor_list_str,
-        num_digits=1
-    )
-    resp.append(gather)
-    return str(resp)
-
-
 
 
 
