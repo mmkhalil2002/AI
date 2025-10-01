@@ -479,11 +479,8 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
     Return True if [start, end) is free on Google Calendar.
     Boundary rule: touching at start/end is OK (no +/- 1s padding).
     """
-    #from googleapiclient.discovery import build
-    #from dateutil.parser import isoparse
-    #import pytz as _pytz
+    print(f"[is_time_slot_available] 📅 Checking availability for {start_iso} → {end_iso} on calendar {calendar_id}")
 
-    # Parse to aware datetimes (UTC)
     def _as_utc_dt(s: str):
         s2 = s.replace("Z", "+00:00")
         dt = isoparse(s2)
@@ -493,11 +490,12 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
     end_dt   = _as_utc_dt(end_iso).astimezone(_pytz.UTC)
 
     if end_dt <= start_dt:
-        return False  # invalid window
+        print("[is_time_slot_available] ❌ Invalid time window: end <= start")
+        return False
 
     service = build("calendar", "v3", credentials=creds)
 
-    # ---- FreeBusy (no padding)
+    # ---- FreeBusy Check
     fb = service.freebusy().query(body={
         "timeMin": start_dt.isoformat().replace("+00:00", "Z"),
         "timeMax": end_dt.isoformat().replace("+00:00", "Z"),
@@ -505,19 +503,19 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
     }).execute()
 
     busy_blocks = fb.get("calendars", {}).get(calendar_id, {}).get("busy", [])
+    print(f"[is_time_slot_available] 🔍 FreeBusy returned {len(busy_blocks)} busy block(s)")
 
-    # Overlap check for half-open intervals
     def _overlaps(a_start, a_end, b_start, b_end):
-        # True only if there is real overlap inside (touching edges is free)
         return (a_start < b_end) and (b_start < a_end)
 
     for b in busy_blocks:
         bs = _as_utc_dt(b["start"])
         be = _as_utc_dt(b["end"])
         if _overlaps(start_dt, end_dt, bs, be):
+            print(f"[is_time_slot_available] ❌ Overlap found with busy block: {bs} → {be}")
             return False
 
-    # ---- Events list (no padding)
+    # ---- Event List Check
     ev = service.events().list(
         calendarId=calendar_id,
         timeMin=start_dt.isoformat().replace("+00:00", "Z"),
@@ -528,25 +526,24 @@ def is_time_slot_available(calendar_id: str, start_iso: str, end_iso: str, creds
     ).execute()
 
     items = ev.get("items", [])
-    if items:
-        # Double-check overlap (some recurring instances can edge-touch)
-        for it in items:
-            # Get event start/end in UTC
-            def _evt_to_dt(evt_key):
-                val = it.get("start", {}).get(evt_key) or it.get("end", {}).get(evt_key)
-                return _as_utc_dt(val) if val else None
+    print(f"[is_time_slot_available] 🔍 Events API returned {len(items)} item(s)")
 
+    if items:
+        for it in items:
             estart_raw = it.get("start", {}).get("dateTime") or it.get("start", {}).get("date")
             eend_raw   = it.get("end",   {}).get("dateTime") or it.get("end",   {}).get("date")
             if not (estart_raw and eend_raw):
-                # All-day or malformed — conservatively block if there’s any real overlap
+                print("[is_time_slot_available] ⚠️ Event missing start/end → conservatively blocking slot")
                 return False
             estart = _as_utc_dt(estart_raw)
             eend   = _as_utc_dt(eend_raw)
             if _overlaps(start_dt, end_dt, estart, eend):
+                print(f"[is_time_slot_available] ❌ Overlap with event: {estart} → {eend}")
                 return False
 
+    print("[is_time_slot_available] ✅ Slot is AVAILABLE")
     return True
+
 
 
 
@@ -5513,14 +5510,14 @@ def voice():
         def _normalize_phone(phone_str: str, country: str = "US") -> str:
             """Convert raw digits into E.164 format if possible."""
             import re as _re
-            phone_digits = _re.sub(r"\D", "", phone_str)  # keep only numbers
+            phone_digits = _re.sub(r"\D", "", phone_str)
             if not phone_digits:
                 return ""
             if phone_digits.startswith("1") and len(phone_digits) == 11:
-                return "+" + phone_digits  # US/Canada style
+                return "+" + phone_digits
             if len(phone_digits) == 10 and country.upper() == "US":
                 return "+1" + phone_digits
-            return "+" + phone_digits  # fallback
+            return "+" + phone_digits
 
         default_country = (session_data[call_sid].get("phone_country") or COUNTRY or "US").upper()
         phone_e164 = _normalize_phone(phone_raw, default_country)
@@ -5529,15 +5526,12 @@ def voice():
         # Helper: convert UTC ISO → friendly spoken date
         # ------------------------------------------------------------------
         def _friendly_from_iso(utc_iso: str, tz_name: str = "America/Chicago") -> str:
-            """Convert an ISO UTC timestamp into natural language."""
             try:
                 import dateutil.parser as dtparser
                 import pytz
                 from datetime import datetime as dt
-
                 dt_utc = dtparser.isoparse(utc_iso)
                 local = dt_utc.astimezone(pytz.timezone(tz_name))
-                # Example: "Thursday, September 18 at 2:00 PM"
                 return local.strftime("%A, %B %-d at %-I:%M %p")
             except Exception:
                 return utc_iso or "the scheduled time"
@@ -5568,10 +5562,6 @@ def voice():
         calendar_id = cancel_ctx.get("calendar_id")
         if calendar_id and utc_start and phone_e164:
             try:
-                #import dateutil.parser as dtparser
-                #from datetime import timedelta, timezone
-                #from googleapiclient.discovery import build
-
                 start_dt  = dtparser.isoparse(utc_start)
                 win_start = (start_dt - timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
                 win_end   = (start_dt + timedelta(minutes=30)).astimezone(timezone.utc).isoformat()
@@ -5583,6 +5573,16 @@ def voice():
                     service.events().delete(calendarId=calendar_id, eventId=ev["id"]).execute()
                     gcal_ok = True
                     debug_print(f"cancel_appt_confirm: 🗑️ GCal event deleted id={ev['id']}")
+
+                    # 🔍 NEW: Check if the slot is now free
+                    try:
+                        available = is_time_slot_available(calendar_id, utc_start, utc_end, creds)
+                        if available:
+                            debug_print(f"cancel_appt_confirm: ✅ Deleted slot is now AVAILABLE ({utc_start} → {utc_end})")
+                        else:
+                            debug_print(f"cancel_appt_confirm: ❌ Deleted slot still NOT available ({utc_start} → {utc_end})")
+                    except Exception as e2:
+                        debug_print(f"cancel_appt_confirm: ⚠️ availability check failed → {e2}")
             except Exception as e:
                 debug_print(f"cancel_appt_confirm: GCal delete failed → {e}")
 
@@ -5604,6 +5604,7 @@ def voice():
         session_data.pop(call_sid, None)
         resp.hangup()
         return str(resp)
+
 
 
 
