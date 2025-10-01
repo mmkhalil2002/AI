@@ -3330,12 +3330,34 @@ def voice():
 
         # Prefer DTMF for the actual value we normalize; speech is kept for logging visibility
         if dtmf_digits:
-            # Remove anything that isn't 0-9
             raw_digits = _re.sub(r"\D", "", dtmf_digits)
         else:
             raw_digits = _re.sub(r"\D", "", _spoken_to_digits(speech_text))
 
         debug_print(f"collect_phone: raw_digits='{raw_digits}'")
+
+        # 🛑 Special case: user pressed only "#" without digits → treat as silence
+        if not raw_digits:
+            tries = session_data[call_sid].get("silence_collect_phone", 0) + 1
+            session_data[call_sid]["silence_collect_phone"] = tries
+            debug_print(f"collect_phone: 🤐 empty input after '#' (tries={tries})")
+
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            prompt = "Say or type your 10-digit phone number, then press #."
+            gather = make_gather(
+                prompt,
+                hints="zero one two three four five six seven eight nine double triple",
+                input="speech dtmf",
+                num_digits=10,
+                finish_on_key="#"    # ✅ allow '#' to end input
+            )
+            resp.append(gather)
+            return str(resp)
 
         # Build E.164 **without** asking caller for country code: we use server-side country.
         country = session_data[call_sid].get("phone_country", (COUNTRY or "US")).upper()
@@ -3811,12 +3833,30 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # Build UTC slot
+        # Build UTC slot + working day enforcement
         # ------------------------------------------------------------------
         try:
             appointment_start, appointment_end = _build_slot(day_part, time_part)
             session_data[call_sid]["retry_time"] = 0
             debug_print(f"ask_time_date: ⏰ Built slot → Start: {appointment_start}, End: {appointment_end}")
+
+            # 🛑 Enforce working days from env (default Monday–Friday)
+            from datetime import datetime
+            import os
+            WORKING_DAYS = [int(x) for x in os.getenv("WORKING_DAYS", "0,1,2,3,4").split(",") if x.strip().isdigit()]
+
+            slot_start_dt = datetime.fromisoformat(appointment_start.replace("Z", "+00:00")).astimezone(_pytz.UTC)
+            weekday = slot_start_dt.weekday()
+            if weekday not in WORKING_DAYS:
+                weekday_str = slot_start_dt.strftime("%A")
+                debug_print(f"ask_time_date: ❌ {weekday_str} (weekday={weekday}) is not in WORKING_DAYS={WORKING_DAYS}")
+                prompt = gpt_speak(
+                    f"Sorry, {weekday_str} is not a working day at our clinic. "
+                    f"Please pick another day between Monday and Friday."
+                )
+                resp.append(make_gather(prompt, hints=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]))
+                return str(resp)
+
         except Exception as e:
             debug_print(f"ask_time_date: ❌ build slot failed → {e}")
             session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
@@ -3922,31 +3962,86 @@ def voice():
 
 
 
-    # ===== collect_first_name (stage) =====
-    elif stage == "collect_first_name":
-        # ----------------------------------------------------------------------
-        # 🎯 Goal:
-        #   - Capture FIRST name via speech.
-        #   - Handle silence separately (up to 3 silent retries).
-        #   - Clean & lightly validate (letters/'/- only).
-        #   - Store into session_data[call_sid]["customer"]["first_name"].
-        #   - Advance → collect_last_name.
-        # ----------------------------------------------------------------------
-        session_data.setdefault(call_sid, {}).setdefault("customer", {})
-        raw = (speech_result or "").strip()
-        debug_print(f"collect_first_name: raw='{raw}'")
 
-        # 🔇 Silent mode: nothing heard → re-ask (no hangup until 3 tries)
-        if not raw:
-            tries = session_data[call_sid].get("silence_first_name", 0) + 1
-            session_data[call_sid]["silence_first_name"] = tries
-            debug_print(f"collect_first_name: 🤐 silence; tries={tries}")
-            if tries >= 3:
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
+        # ===== collect_first_name (stage) =====
+        elif stage == "collect_first_name":
+            # ----------------------------------------------------------------------
+            # 🎯 Goal:
+            #   - Capture FIRST name via speech.
+            #   - Handle silence separately (up to 3 silent retries).
+            #   - Clean & lightly validate (letters/'/- only).
+            #   - Store into session_data[call_sid]["customer"]["first_name"].
+            #   - Advance → collect_last_name.
+            # ----------------------------------------------------------------------
+            session_data.setdefault(call_sid, {}).setdefault("customer", {})
+            raw = (speech_result or "").strip()
+            debug_print(f"collect_first_name: raw='{raw}'")
+
+            # 🔇 Silent mode: nothing heard → re-ask (no hangup until 3 tries)
+            if not raw:
+                tries = session_data[call_sid].get("silence_first_name", 0) + 1
+                session_data[call_sid]["silence_first_name"] = tries
+                debug_print(f"collect_first_name: 🤐 silence; tries={tries}")
+                if tries >= 3:
+                    resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    return str(resp)
+                gather = make_gather("I didn’t hear your first name. Please say just your first name.")
+                resp.append(gather)
+                try:
+                    #from flask import url_for
+                    resp.redirect(url_for("voice"))
+                except Exception:
+                    resp.redirect("/voice")
                 return str(resp)
-            gather = make_gather("I didn’t hear your first name. Please say just your first name.")
+
+            # We heard something → clear silence counter
+            session_data[call_sid].pop("silence_first_name", None)
+
+            # 🧽 Clean & normalize (remove punctuation, compress spaces; ignore fillers)
+            #import string  # ensure available; you already import at top, but safe to re-import
+            cleaned = raw.translate(str.maketrans('', '', string.punctuation)).strip()
+            cleaned = _re.sub(r"\s+", " ", cleaned)
+
+            # Heuristics: drop leading fillers like "my name is", "this is", "i am", "i'm", "it's"
+            # Keep it simple: if a filler exists, take tokens AFTER it.
+            lower = cleaned.lower()
+            filler_pat = _re.compile(r"\b(?:my name is|this is|i am|i'm|it is|it's)\b\s*", _re.IGNORECASE)
+            cleaned = filler_pat.sub("", cleaned).strip()
+
+            # Take the first token as FIRST name (avoid multiple words here)
+            tokens = cleaned.split()
+            first_name = tokens[0] if tokens else ""
+
+            # ✅ Validate: letters, apostrophes or hyphens, 1–40 chars, no digits
+            if not first_name or not _re.fullmatch(r"[A-Za-z][A-Za-z'\-]{0,39}", first_name):
+                # Soft reprompt (up to 3 attempts)
+                r = session_data[call_sid].get("retry_first_name", 0) + 1
+                session_data[call_sid]["retry_first_name"] = r
+                debug_print(f"collect_first_name: ❌ invalid first name '{first_name}' retry={r}")
+                if r >= 3:
+                    resp.say(gpt_speak("Sorry, I couldn’t capture your first name. Please call again later."), VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    return str(resp)
+                gather = make_gather("I didn't catch that clearly. Please say just your first name.")
+                resp.append(gather)
+                try:
+                    #from flask import url_for
+                    resp.redirect(url_for("voice"))
+                except Exception:
+                    resp.redirect("/voice")
+                return str(resp)
+
+            # Store & advance
+            session_data[call_sid]["customer"]["first_name"] = first_name
+            session_data[call_sid]["stage"] = "collect_last_name"
+            # Reset name retry counter on success
+            session_data[call_sid].pop("retry_first_name", None)
+            debug_print(f"collect_first_name: ✅ saved first_name='{first_name}' → next=collect_last_name")
+
+            gather = make_gather("Thank you. Now, what is your last name?")
             resp.append(gather)
             try:
                 #from flask import url_for
@@ -3954,60 +4049,6 @@ def voice():
             except Exception:
                 resp.redirect("/voice")
             return str(resp)
-
-        # We heard something → clear silence counter
-        session_data[call_sid].pop("silence_first_name", None)
-
-        # 🧽 Clean & normalize (remove punctuation, compress spaces; ignore fillers)
-        #import string  # ensure available; you already import at top, but safe to re-import
-        cleaned = raw.translate(str.maketrans('', '', string.punctuation)).strip()
-        cleaned = _re.sub(r"\s+", " ", cleaned)
-
-        # Heuristics: drop leading fillers like "my name is", "this is", "i am", "i'm", "it's"
-        # Keep it simple: if a filler exists, take tokens AFTER it.
-        lower = cleaned.lower()
-        filler_pat = _re.compile(r"\b(?:my name is|this is|i am|i'm|it is|it's)\b\s*", _re.IGNORECASE)
-        cleaned = filler_pat.sub("", cleaned).strip()
-
-        # Take the first token as FIRST name (avoid multiple words here)
-        tokens = cleaned.split()
-        first_name = tokens[0] if tokens else ""
-
-        # ✅ Validate: letters, apostrophes or hyphens, 1–40 chars, no digits
-        if not first_name or not _re.fullmatch(r"[A-Za-z][A-Za-z'\-]{0,39}", first_name):
-            # Soft reprompt (up to 3 attempts)
-            r = session_data[call_sid].get("retry_first_name", 0) + 1
-            session_data[call_sid]["retry_first_name"] = r
-            debug_print(f"collect_first_name: ❌ invalid first name '{first_name}' retry={r}")
-            if r >= 3:
-                resp.say(gpt_speak("Sorry, I couldn’t capture your first name. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-            gather = make_gather("I didn't catch that clearly. Please say just your first name.")
-            resp.append(gather)
-            try:
-                #from flask import url_for
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
-            return str(resp)
-
-        # Store & advance
-        session_data[call_sid]["customer"]["first_name"] = first_name
-        session_data[call_sid]["stage"] = "collect_last_name"
-        # Reset name retry counter on success
-        session_data[call_sid].pop("retry_first_name", None)
-        debug_print(f"collect_first_name: ✅ saved first_name='{first_name}' → next=collect_last_name")
-
-        gather = make_gather("Thank you. Now, what is your last name?")
-        resp.append(gather)
-        try:
-            #from flask import url_for
-            resp.redirect(url_for("voice"))
-        except Exception:
-            resp.redirect("/voice")
-        return str(resp)
     
 
 
