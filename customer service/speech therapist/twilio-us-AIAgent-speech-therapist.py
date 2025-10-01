@@ -3210,6 +3210,119 @@ def voice():
 
 
 
+    elif stage == "collect_phone":
+        # ----------------------------------------------------------------------
+        # 📞 Stage: collect_phone  
+        #
+        # Caller provides local/national phone number (e.g., 4694633276).
+        # We normalize → E.164 (+1XXXXXXXXXX) using known/default country.
+        #
+        # Flow:
+        #   - Handle silence (up to 3 retries → hangup).
+        #   - Accept keypad or spoken numbers.
+        #   - Normalize → E.164 format.
+        #   - On success: save to session and advance to collect_dob.
+        # ----------------------------------------------------------------------
+        debug_print("collect_phone: 📍 Stage entered")
+
+        # Ensure session dicts exist
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid].setdefault("customer", {})
+
+        # Infer country once per call (use Twilio "FromCountry" if available, else fallback)
+        if "phone_country" not in session_data[call_sid]:
+            from_country = (request.values.get("FromCountry") or "").upper()
+            session_data[call_sid]["phone_country"] = from_country or (COUNTRY or "US")
+
+        # Inputs
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
+        speech_text = (speech_result or "").strip()
+        debug_print(f"collect_phone: 🎙️ speech='{speech_text}', 🔢 DTMF='{dtmf_digits}'")
+
+        # ------------------------------------------------------------------
+        # 🔇 Silence handling
+        # ------------------------------------------------------------------
+        if not (speech_text or dtmf_digits):
+            tries = session_data[call_sid].get("silence_collect_phone", 0) + 1
+            session_data[call_sid]["silence_collect_phone"] = tries
+            debug_print(f"collect_phone: 🤐 silence (tries={tries})")
+
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            prompt = "Say or type your 10-digit phone number, then press #."
+            gather = make_gather(prompt, hints="zero one two three four five six seven eight nine double triple", num_digits=10)
+            resp.append(gather)
+            return str(resp)
+
+        # Reset silence counter
+        session_data[call_sid].pop("silence_collect_phone", None)
+
+        # ------------------------------------------------------------------
+        # Extract raw digits
+        # ------------------------------------------------------------------
+        if dtmf_digits:
+            raw_digits = _re.sub(r"\D", "", dtmf_digits)
+        else:
+            raw_digits = _re.sub(r"\D", "", speech_text)
+
+        country = session_data[call_sid].get("phone_country", (COUNTRY or "US")).upper()
+        phone_e164 = ""
+
+        # Minimal US normalization (can be extended for other countries)
+        if country == "US" and len(raw_digits) in (10, 11):
+            if len(raw_digits) == 11 and raw_digits.startswith("1"):
+                raw_digits = raw_digits[1:]
+            if len(raw_digits) == 10:
+                phone_e164 = f"+1{raw_digits}"
+
+        # ------------------------------------------------------------------
+        # Validation
+        # ------------------------------------------------------------------
+        if not phone_e164:
+            session_data[call_sid]["retry_phone"] = session_data[call_sid].get("retry_phone", 0) + 1
+            r = session_data[call_sid]["retry_phone"]
+            debug_print(f"collect_phone: ❌ invalid phone '{raw_digits}' retry={r}")
+
+            if r >= 3:
+                resp.say(gpt_speak("Sorry, I couldn’t capture your phone number. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            prompt = "Say or type your 10-digit phone number, then press #."
+            gather = make_gather(prompt, hints="zero one two three four five six seven eight nine double triple", num_digits=10)
+            resp.append(gather)
+            return str(resp)
+
+        # ------------------------------------------------------------------
+        # ✅ Success → Save phone
+        # ------------------------------------------------------------------
+        session_data[call_sid]["customer"]["phone_e164"] = phone_e164
+        session_data[call_sid]["customer"]["phone"] = phone_e164
+        session_data[call_sid]["phone_e164"] = phone_e164
+        session_data[call_sid]["retry_phone"] = 0
+        debug_print(f"collect_phone: ✅ saved phone_e164={phone_e164}")
+
+        # ------------------------------------------------------------------
+        # Next step → collect DOB
+        # ------------------------------------------------------------------
+        session_data[call_sid]["stage"] = "collect_dob"
+        gather = make_gather(
+            "Thanks. What’s your date of birth? "
+            "Say it, or enter two digits for month, two for day, and four for year, then press #."
+        )
+        resp.append(gather)
+        return str(resp)
+
+
+
 
     # ----------------------------------------------------------------------
     # 🎂 Stage: collect_dob
