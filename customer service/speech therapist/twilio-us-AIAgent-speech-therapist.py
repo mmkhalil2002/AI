@@ -5410,27 +5410,14 @@ def voice():
         #   • Calendar deletion is best-effort; local JSON removal is primary.
         # ----------------------------------------------------------------------
 
+    
+
     elif stage == "cancel_appt_confirm":
-<<<<<<< HEAD
-=======
-        # ----------------------------------------------------------------------
-        # ❌ cancel_appt_confirm (simple logic per request)
-        #
-        # If is_time_slot_available(...) == True:
-        #   1) Print/log detailed "time slot is available"
-        #   2) Remove event(s) from Google Calendar for that window
-        #   3) Remove matching appointment from doctor JSON
-        #   4) Re-check availability and report outcome
-        # Else:
-        #   - Print/log "selected time slice is not available"
-        # ----------------------------------------------------------------------
->>>>>>> a842a72a3a84fdbc2d17417ca3f3d3964cc06014
         debug_print("cancel_appt_confirm: 📍 Stage entered")
 
-        session_data.setdefault(call_sid, {})
-        cancel_ctx = session_data[call_sid].setdefault("cancel", {})
+        cancel_ctx  = session_data[call_sid].setdefault("cancel", {})
+        cand        = cancel_ctx.get("matching_event") or {}
 
-<<<<<<< HEAD
         doctor      = cand.get("doctor_name") or cancel_ctx.get("doctor") or ""
         calendar_id = cand.get("calendar_id") or cancel_ctx.get("calendar_id") or ""
         utc_start   = cand.get("start_utc")   or cancel_ctx.get("utc_start") or ""
@@ -5495,94 +5482,10 @@ def voice():
 
         # ------------------------------------------------------------------
         # Step 2: Cancel in local JSON
-=======
-        calendar_id   = cancel_ctx.get("calendar_id") or session_data[call_sid].get("doctor_id")
-        utc_start_iso = (cancel_ctx.get("utc_start") or "").strip()
-        utc_end_iso   = (cancel_ctx.get("utc_end")   or "").strip()
-
-        if not (calendar_id and utc_start_iso and utc_end_iso):
-            debug_print("cancel_appt_confirm: ❌ missing calendar_id/utc_start/utc_end")
-            resp.say(gpt_speak("Sorry, I couldn’t verify that appointment time."), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            return str(resp)
-
-        # Friendly local time (best-effort)
-        tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
-        try:
-            tz = _pytz.timezone(tz_name)
-        except Exception:
-            tz = _pytz.timezone("America/Chicago")
-        try:
-            _dt_local = datetime.fromisoformat(utc_start_iso.replace("Z", "+00:00")).astimezone(tz)
-            try:
-                friendly_local = _dt_local.strftime("%A, %B %-d at %-I:%M %p")  # Unix-like
-            except Exception:
-                friendly_local = _dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
-        except Exception:
-            friendly_local = ""
-
-        # -- Availability gate exactly as requested
-        try:
-            available = is_time_slot_available(calendar_id, utc_start_iso, utc_end_iso, creds)
-            debug_print(f"cancel_appt_confirm: is_time_slot_available({calendar_id}, {utc_start_iso} → {utc_end_iso}) → {available}")
-        except Exception as e:
-            debug_print(f"cancel_appt_confirm: availability error → {e}")
-            available = False
-
-        if not available:
-            # Requested "else" branch: print that the selected time slice is not available
-            debug_print("cancel_appt_confirm: ❌ selected time slice is NOT available")
-            if friendly_local:
-                resp.say(gpt_speak(f"The selected time, {friendly_local}, is not available."), VOICE)
-            else:
-                resp.say(gpt_speak("The selected time slice is not available."), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            return str(resp)
-
         # ------------------------------------------------------------------
-        # Slot IS available → proceed with deletions
->>>>>>> a842a72a3a84fdbc2d17417ca3f3d3964cc06014
-        # ------------------------------------------------------------------
-        debug_print(
-            "cancel_appt_confirm: ✅ time slot is AVAILABLE — proceeding with deletions\n"
-            f"  calendar_id={calendar_id}\n  start={utc_start_iso}\n  end={utc_end_iso}\n  local='{friendly_local}'"
-        )
-
-        # 1) Delete Google events in the exact window
-        deleted_google = 0
-        try:
-            service = build("calendar", "v3", credentials=creds)
-            items = service.events().list(
-                calendarId=calendar_id,
-                timeMin=utc_start_iso,
-                timeMax=utc_end_iso,
-                singleEvents=True,
-                showDeleted=False,
-                orderBy="startTime",
-                maxResults=50,
-            ).execute().get("items", [])
-
-            for ev in items:
-                ev_id = ev.get("id")
-                if not ev_id:
-                    continue
-                try:
-                    service.events().delete(calendarId=calendar_id, eventId=ev_id, sendUpdates="none").execute()
-                    deleted_google += 1
-                except Exception as de:
-                    debug_print(f"cancel_appt_confirm: Google delete failed for id={ev_id} → {de}")
-
-            debug_print(f"cancel_appt_confirm: 🗑️ Google deletions attempted={len(items)} success={deleted_google}")
-        except Exception as e:
-            debug_print(f"cancel_appt_confirm: Google list/delete error → {e}")
-
-        # 2) Remove matching record from doctor's JSON (match by normalized utc_start + calendar_id)
-        def _norm_utc(s: str) -> str:
-            if not s: return ""
+        local_ok = False
+        if doctor and phone_e164 and dob and utc_start:
             try:
-<<<<<<< HEAD
                 local_ok = cancel_appointment_for_dr_name(
                     doctor_name=doctor,
                     phone=phone_e164,
@@ -5640,66 +5543,8 @@ def voice():
 
         # Cleanup + hangup
         session_data.pop(call_sid, None)
-=======
-                dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=_pytz.UTC)
-                else:
-                    dt = dt.astimezone(_pytz.UTC)
-                return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
-            except Exception:
-                return ""
-
-        deleted_local = 0
-        try:
-            doctor_name = googleid_dr_name_map.get(calendar_id, "the doctor")
-            path = get_doctor_filename(doctor_name)
-            if os.path.exists(path):
-                with open(path, "r") as f:
-                    data = json.load(f)
-                if not isinstance(data, list):
-                    data = []
-
-                target_start = _norm_utc(utc_start_iso)
-                before_len = len(data)
-                data = [
-                    r for r in data
-                    if not (_norm_utc(r.get("utc_start") or r.get("time") or "") == target_start
-                            and (r.get("calendar_id") or "") == calendar_id)
-                ]
-                deleted_local = before_len - len(data)
-                if deleted_local > 0:
-                    with open(path, "w") as f:
-                        json.dump(data, f, indent=2)
-            debug_print(f"cancel_appt_confirm: 🗑️ local JSON deletions={deleted_local}")
-        except Exception as e:
-            debug_print(f"cancel_appt_confirm: local JSON delete error → {e}")
-
-        # 3) Confirm deletion by re-running availability
-        try:
-            available_after = is_time_slot_available(calendar_id, utc_start_iso, utc_end_iso, creds)
-            debug_print(f"cancel_appt_confirm: 🔄 post-delete availability → {available_after}")
-        except Exception as e:
-            debug_print(f"cancel_appt_confirm: post-delete availability error → {e}")
-            available_after = True  # best-effort optimistic
-
-        # Voice to caller
-        if friendly_local:
-            resp.say(gpt_speak(f"Processed. The time {friendly_local} was available and has been handled."), VOICE)
-            if available_after:
-                resp.say(gpt_speak("The slot now shows as available."), VOICE)
-            else:
-                resp.say(gpt_speak("The slot still appears unavailable."), VOICE)
-        else:
-            resp.say(gpt_speak("Processed. The selected time slice was available and has been handled."), VOICE)
-            resp.say(gpt_speak("I have verified its availability again." if available_after else "It still appears unavailable."), VOICE)
-
->>>>>>> a842a72a3a84fdbc2d17417ca3f3d3964cc06014
         resp.hangup()
-        session_data.pop(call_sid, None)
         return str(resp)
-
-
 
 
    
