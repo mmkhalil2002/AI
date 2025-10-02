@@ -1,4 +1,4 @@
-# update  10/02/25 time_saved  07:33 pm cancel is tested
+# update  10/02/25 time_saved  cancel is tested
 #  
 # =========================
 # Standard library imports
@@ -5280,9 +5280,16 @@ def voice():
                 )
 
                 if appt_phone == phone_e164 and (not dob or appt_dob == dob):
+                    # 🔍 Proper calendar_id lookup from friendly name
+                    calendar_id = None
+                    for cid, friendly in googleid_dr_name_map.items():
+                        if friendly.lower() == doctor.lower():
+                            calendar_id = cid
+                            break
+
                     candidates.append({
                         "doctor_name": doctor,
-                        "calendar_id": googleid_dr_name_map.get(doctor),  # ✅ include calendar ID
+                        "calendar_id": calendar_id,   # ✅ fixed
                         "start_utc": appt.get("utc_start"),
                         "end_utc": appt.get("utc_end"),
                         "friendly": appt.get("friendly_local"),
@@ -5368,6 +5375,7 @@ def voice():
         )
         resp.append(gather)
         return str(resp)
+
 
 
 
