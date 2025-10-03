@@ -3501,7 +3501,7 @@ def voice():
         session_data[call_sid].pop("silence_time", None)
 
         # ------------------------------------------------------------------
-        # Inline helpers (embedded inside stage)
+        # Helpers
         # ------------------------------------------------------------------
         def _has_time_token(s: str) -> bool:
             s = (s or "").lower()
@@ -3523,10 +3523,11 @@ def voice():
             weekdays = ("monday","tuesday","wednesday","thursday","friday","saturday","sunday",
                         "mon","tue","tues","wed","thu","thur","thurs","fri","sat","sun")
             if any(w in s for w in weekdays): return True
-            if _re.search(r"\b\d{1,2}\b", s): return True
+            if _re.search(r"\b\d{1,2}(st|nd|rd|th)?\b", s): return True
             return False
 
         def _extract_day_time(s: str) -> tuple:
+            """Extract day and time parts from speech string."""
             if not s: return ("", "")
             s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s, flags=_re.IGNORECASE)
             s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s, flags=_re.IGNORECASE)
@@ -3536,6 +3537,10 @@ def voice():
             s = _re.sub(r"\.\s+(?=\d)", " ", s)
             s = _re.sub(r"\s+", " ", s).strip()
             s = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", s, flags=_re.IGNORECASE)
+
+            # 🚫 Reject ambiguous "to" ranges like "10 to 12"
+            if _re.search(r"\b\d+\s+to\s+\d+\b", s.lower()):
+                return ("", "")
 
             s_low = s.lower()
             s_low = s_low.replace(" at noon", " at 12 pm").replace(" noon", " 12 pm")
@@ -3554,7 +3559,7 @@ def voice():
             m2 = _re.search(r"\b(\d{3,4})\b", s_low)
             if m2:
                 t = m2.group(1)
-                timep = (f"{int(t[0]):d}:{t[1:]}" if len(t) == 3 else f"{int(t[:-2]):d}:{t[-2:]}")  # e.g. 930 → 9:30
+                timep = (f"{int(t[0]):d}:{t[1:]}" if len(t) == 3 else f"{int(t[:-2]):d}:{t[-2:]}") 
                 day = s_low[:m2.start()].strip().rstrip(",")
                 return (day, timep)
 
@@ -3572,15 +3577,10 @@ def voice():
             except Exception: dur = 30
             if dur not in (15,30,45,60): dur = 30
 
-            d = (day_str or "").strip()
-            t = (time_str or "").strip()
-            if not d or not t:
+            if not day_str or not time_str:
                 raise ValueError("missing date or time")
 
-            t = _re.sub(r"\s*(am|pm)\b", r" \1", t)
-            t = t.replace(" o'clock", "")
-            combined = f"{d} at {t}"
-
+            combined = f"{day_str} at {time_str}"
             today = _date_local.today()
             default_base = datetime(today.year, today.month, today.day, 9, 0, 0)
             parsed = _dtparse(combined, default=default_base, dayfirst=False, fuzzy=True)
@@ -3724,6 +3724,7 @@ def voice():
 
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
