@@ -1,4 +1,4 @@
-# update  10/02/25 time_saved  cancel is tested
+# update  10/03/25 time_saved  book cancel is tested
 #  
 # =========================
 # Standard library imports
@@ -3501,6 +3501,105 @@ def voice():
         session_data[call_sid].pop("silence_time", None)
 
         # ------------------------------------------------------------------
+        # Inline helpers (embedded inside stage)
+        # ------------------------------------------------------------------
+        def _has_time_token(s: str) -> bool:
+            s = (s or "").lower()
+            return (
+                ("am" in s) or ("pm" in s) or (":" in s)
+                or ("o'clock" in s) or ("oclock" in s)
+                or (_re.search(r"\b\d{1,2}\s*(am|pm)\b", s) is not None)
+                or (_re.search(r"\b\d{3,4}\b", s) is not None)   # 930, 1030
+                or ("noon" in s) or ("midnight" in s)
+            )
+
+        def _has_date_token(s: str) -> bool:
+            s = (s or "").lower()
+            months = ("january","february","march","april","may","june","july",
+                    "august","september","october","november","december",
+                    "jan","feb","mar","apr","may","jun","jul","aug","sep","sept","oct","nov","dec")
+            if any(m in s for m in months): return True
+            if "/" in s or "-" in s: return True
+            weekdays = ("monday","tuesday","wednesday","thursday","friday","saturday","sunday",
+                        "mon","tue","tues","wed","thu","thur","thurs","fri","sat","sun")
+            if any(w in s for w in weekdays): return True
+            if _re.search(r"\b\d{1,2}\b", s): return True
+            return False
+
+        def _extract_day_time(s: str) -> tuple:
+            if not s: return ("", "")
+            s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s, flags=_re.IGNORECASE)
+            s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s, flags=_re.IGNORECASE)
+            s = _re.sub(r"\bat\s*[.,]?\s+", " at ", s, flags=_re.IGNORECASE)
+            s = _re.sub(r"[!?]+\s*$", "", s)
+            s = _re.sub(r"[;,]+", " ", s)
+            s = _re.sub(r"\.\s+(?=\d)", " ", s)
+            s = _re.sub(r"\s+", " ", s).strip()
+            s = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", s, flags=_re.IGNORECASE)
+
+            s_low = s.lower()
+            s_low = s_low.replace(" at noon", " at 12 pm").replace(" noon", " 12 pm")
+            s_low = s_low.replace(" at midnight", " at 12 am").replace(" midnight", " 12 am")
+
+            if " at " in s_low:
+                day, timep = s_low.split(" at ", 1)
+                return (day.strip().rstrip(","), timep.strip())
+
+            m = _re.search(r"\b(\d{1,2}:\d{2}\s*(am|pm)?|\d{1,2}\s*(am|pm))\b", s_low)
+            if m:
+                timep = m.group(1)
+                day = s_low[:m.start()].strip().rstrip(",")
+                return (day, timep)
+
+            m2 = _re.search(r"\b(\d{3,4})\b", s_low)
+            if m2:
+                t = m2.group(1)
+                timep = (f"{int(t[0]):d}:{t[1:]}" if len(t) == 3 else f"{int(t[:-2]):d}:{t[-2:]}")  # e.g. 930 → 9:30
+                day = s_low[:m2.start()].strip().rstrip(",")
+                return (day, timep)
+
+            return ("", "")
+
+        def _build_slot(day_str: str, time_str: str) -> tuple:
+            tz_name = (globals().get("CLINIC_TZ") or "America/Chicago")
+            try:
+                tz_local = _pytz.timezone(tz_name)
+            except Exception:
+                tz_local = _pytz.timezone("America/Chicago")
+
+            dur = globals().get("APPOINTMENT_DURATION_MINUTES") or 30
+            try: dur = int(dur)
+            except Exception: dur = 30
+            if dur not in (15,30,45,60): dur = 30
+
+            d = (day_str or "").strip()
+            t = (time_str or "").strip()
+            if not d or not t:
+                raise ValueError("missing date or time")
+
+            t = _re.sub(r"\s*(am|pm)\b", r" \1", t)
+            t = t.replace(" o'clock", "")
+            combined = f"{d} at {t}"
+
+            today = _date_local.today()
+            default_base = datetime(today.year, today.month, today.day, 9, 0, 0)
+            parsed = _dtparse(combined, default=default_base, dayfirst=False, fuzzy=True)
+
+            if parsed.tzinfo is None:
+                parsed = tz_local.localize(parsed)
+            else:
+                parsed = parsed.astimezone(tz_local)
+
+            if not _re.search(r"\b\d{4}\b", combined):
+                parsed = parsed.replace(year=today.year)
+
+            start_local = parsed
+            end_local   = start_local + timedelta(minutes=dur)
+            start_utc = start_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
+            end_utc   = end_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
+            return (start_utc, end_utc)
+
+        # ------------------------------------------------------------------
         # Extract (day, time)
         # ------------------------------------------------------------------
         day_part, time_part = _extract_day_time(raw)
@@ -3563,7 +3662,7 @@ def voice():
             debug_print(f"ask_time_date: ⚠️ past-time guard error → {e}")
 
         # ------------------------------------------------------------------
-        # Availability check (via is_time_slot_available ✅)
+        # Availability check
         # ------------------------------------------------------------------
         debug_print(f"ask_time_date: 👨‍⚕️ Checking calendar → {calendar_id}")
         try:
@@ -3625,8 +3724,6 @@ def voice():
 
         resp.redirect("/voice")
         return str(resp)
-
-
 
 
 
