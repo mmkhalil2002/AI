@@ -4638,23 +4638,23 @@ def voice():
         #  - Includes "silent mode" handling (no speech heard) with its own counter.
         #  - Uses only built-ins already in scope; no local imports.
         #  - Uses make_gather(prompt, hints=...) only (no next_stage arg).
-        #  - ✨ Updated to also support DTMF digit selection for doctors.
+        #  - ✨ Supports DTMF digit selection for doctors.
         # ----------------------------------------------------------------------
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("cancel", {})
 
-        # Safe punctuation set even if 'string' isn't globally imported elsewhere
+        # 🧩 Preserve reschedule flag if coming from "change appointment"
+        reschedule_flag = session_data[call_sid].get("reschedule_after_cancel", False)
+
         try:
-            _PUNCT = string.punctuation  # string should be imported at top of file
+            _PUNCT = string.punctuation
         except Exception:
             _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
 
         def _clean(s: str) -> str:
-            """lowercase + strip punctuation + squeeze spaces"""
             s = (s or "").lower().translate(str.maketrans("", "", _PUNCT)).strip()
-            return " ".join(s.split())  # squeeze internal whitespace
+            return " ".join(s.split())
 
-        # Pull speech
         selected_text = (speech_result or "").strip()
 
         # Build doctor keypad map for this session
@@ -4662,9 +4662,7 @@ def voice():
         doctor_dtmf_map = {str(i + 1): doc for i, doc in enumerate(doctor_names)}
         session_data[call_sid]["doctor_dtmf_map"] = doctor_dtmf_map
 
-        # ------------------------------
-        # 🔇 Silent-mode handling first
-        # ------------------------------
+        # ------------------------------ Silent-mode handling ------------------------------
         if not selected_text and not dtmf_digits:
             tries = session_data[call_sid].get("silence_cancel_doc", 0) + 1
             session_data[call_sid]["silence_cancel_doc"] = tries
@@ -4676,26 +4674,22 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Build friendly doctor list with press options
             options = ". ".join([f"{doc} (press {k})" for k, doc in doctor_dtmf_map.items()])
             retry_prompt = (
                 f"I didn't hear the doctor's name. Available doctors are: {options}. "
-                "Please say the name of the doctor or press the number."
+                "Please say the name or press the number."
             )
             session_data[call_sid]["stage"] = "cancel_appointment"
             resp.append(make_gather(retry_prompt, hints=", ".join(doctor_names), num_digits=1))
             return str(resp)
 
-        # If DTMF digit was pressed → direct map
+        # ------------------------------ DTMF / voice matching ------------------------------
         if dtmf_digits and dtmf_digits in doctor_dtmf_map:
             matched_name = doctor_dtmf_map[dtmf_digits]
             matched_id = next(k for k, v in googleid_dr_name_map.items() if v == matched_name)
             debug_print(f"cancel_appointment: ✅ DTMF match → {matched_name} ({matched_id})")
         else:
-            # If we heard *something*, clear the silence counter
             session_data[call_sid].pop("silence_cancel_doc", None)
-
-            # Normalize and block common junk inputs
             selected_clean = _clean(selected_text)
             debug_print(f"cancel_appointment: 🗣️ Received doctor name → '{selected_clean}'")
 
@@ -4713,9 +4707,6 @@ def voice():
                 resp.append(make_gather(retry_prompt, hints=", ".join(doctor_names), num_digits=1))
                 return str(resp)
 
-            # ------------------------------
-            # 1) Partial substring / token match
-            # ------------------------------
             matched_id = None
             matched_name = None
             partial_matches = []
@@ -4727,7 +4718,7 @@ def voice():
                 if (
                     selected_clean in friendly_clean
                     or friendly_clean in selected_clean
-                    or (spoken_tokens & friendly_tokens)  # token overlap
+                    or (spoken_tokens & friendly_tokens)
                 ):
                     partial_matches.append((doc_id, friendly_name))
 
@@ -4735,7 +4726,6 @@ def voice():
                 matched_id, matched_name = partial_matches[0]
                 debug_print(f"cancel_appointment: ✅ Partial match → {matched_name} ({matched_id})")
             elif len(partial_matches) > 1:
-                # Pick the one with max token overlap
                 best = None
                 best_overlap = -1
                 for doc_id, friendly_name in partial_matches:
@@ -4747,9 +4737,7 @@ def voice():
                     matched_id, matched_name = best
                     debug_print(f"cancel_appointment: ✅ Multiple matches; chose best overlap → {matched_name} ({matched_id})")
 
-            # ------------------------------
-            # 2) GPT fallback (if not matched yet)
-            # ------------------------------
+            # GPT fallback
             if not matched_id:
                 try:
                     extracted_name = extract_doctor_name(selected_text)
@@ -4765,9 +4753,7 @@ def voice():
                 except Exception as e:
                     debug_print(f"cancel_appointment: ⚠️ GPT fallback error → {e}")
 
-        # ------------------------------
-        # 3) Still no match → retry with cap
-        # ------------------------------
+        # ------------------------------ Retry if no match ------------------------------
         if not matched_id:
             retries = session_data[call_sid].get("retry_booking", 0)
             session_data[call_sid]["retry_booking"] = retries + 1
@@ -4790,17 +4776,20 @@ def voice():
             resp.append(make_gather(retry_prompt, hints=", ".join(doctor_names), num_digits=1))
             return str(resp)
 
-        # ------------------------------
-        # 4) Proceed with matched doctor → next stage: phone number
-        # ------------------------------
+        # ------------------------------ Proceed to phone collection ------------------------------
         session_data[call_sid]["doctor_id"] = matched_id
         session_data[call_sid]["cancel"]["doctor"] = matched_name or googleid_dr_name_map.get(matched_id, "the doctor")
         session_data[call_sid]["stage"] = "cancel_appt_get_phone_number"
+
+        # ✅ Preserve reschedule flag if this came from change flow
+        if reschedule_flag:
+            session_data[call_sid]["reschedule_after_cancel"] = True
 
         resp.append(make_gather(
             "Thanks. What phone number did you use when booking the appointment?"
         ))
         return str(resp)
+
 
 
 
@@ -5419,19 +5408,18 @@ def voice():
         session_data.pop(call_sid, None)
         return str(resp)
 
-# ----------------------------------------------------------------------
-# 🛡️ Safety fallback: if no response returned earlier
-# ----------------------------------------------------------------------
-try:
-    debug_print("voice: ⚠️ No valid stage matched — returning polite fallback.")
-except Exception:
-    pass
+    # ----------------------------------------------------------------------
+    # 🛡️ Safety fallback: if no response returned earlier
+    # ----------------------------------------------------------------------
+    try:
+        debug_print("voice: ⚠️ No valid stage matched — returning polite fallback.")
+    except Exception:
+        pass
 
-resp = VoiceResponse()
-resp.say(gpt_speak("Thank you. Goodbye."), VOICE)
-resp.hangup()
-return str(resp)
-
+    resp = VoiceResponse()
+    resp.say(gpt_speak("Thank you. Goodbye."), VOICE)
+    resp.hangup()
+    return str(resp)
 
 
 
