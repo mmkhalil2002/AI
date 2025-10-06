@@ -3499,10 +3499,17 @@ def voice():
         # ------------------------------------------------------------------
         # Prompts
         # ------------------------------------------------------------------
-        TIME_PROMPT_SHORT = "That doesn't sound like a valid date or time. Please say it again, for example, 'September 12 at 10 AM'."
-        PROMPT_NEED_BOTH  = "Please say the date and the time, for example, 'September 12 at 10 AM'."
-        PROMPT_NEED_DATE  = "I didn't hear the date. Please include it, for example, 'September 12 at 10 AM'."
-        PROMPT_NEED_TIME  = "I didn't hear the time. Please include it, for example, 'September 12 at 10 AM'."
+        TIME_PROMPT_SHORT = (
+            "That doesn't sound like a valid date or time. "
+            "Please say it again, for example, 'October 8 at 9:30 AM'."
+        )
+        PROMPT_NEED_BOTH  = "Please say the date and the time, for example, 'October 8 at 9:30 AM'."
+        PROMPT_NEED_DATE  = "I didn't hear the date. Please include it, for example, 'October 8 at 9:30 AM'."
+        PROMPT_NEED_TIME  = "I didn't hear the time. Please include it, for example, 'October 8 at 9:30 AM'."
+        PROMPT_NEED_VALID_DAY = (
+            "That day isn’t available for appointments. "
+            "Please choose a weekday between Monday and Saturday, for example, 'October 7 at 10 AM'."
+        )
 
         # ------------------------------------------------------------------
         # Ensure session and doctor (per-doctor calendar)
@@ -3530,7 +3537,7 @@ def voice():
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
-            resp.append(make_gather("Please say the date and time, for example, 'September 12 at 10 AM'."))
+            resp.append(make_gather("Please say the date and time, for example, 'October 8 at 9:30 AM'."))
             resp.redirect("/voice")
             return str(resp)
         session_data[call_sid].pop("silence_time", None)
@@ -3544,81 +3551,74 @@ def voice():
                 ("am" in s) or ("pm" in s) or (":" in s)
                 or ("o'clock" in s) or ("oclock" in s)
                 or (_re.search(r"\b\d{1,2}\s*(am|pm)\b", s) is not None)
-                or (_re.search(r"\b\d{3,4}\b", s) is not None)   # 930, 1030
+                or (_re.search(r"\b\d{3,4}\b", s) is not None)
                 or ("noon" in s) or ("midnight" in s)
             )
 
         def _has_date_token(s: str) -> bool:
             s = (s or "").lower()
-            months = ("january","february","march","april","may","june","july",
-                    "august","september","october","november","december",
-                    "jan","feb","mar","apr","may","jun","jul","aug","sep","sept","oct","nov","dec")
+            months = (
+                "january","february","march","april","may","june","july",
+                "august","september","october","november","december",
+                "jan","feb","mar","apr","may","jun","jul","aug","sep","sept","oct","nov","dec"
+            )
             if any(m in s for m in months): return True
             if "/" in s or "-" in s: return True
-            weekdays = ("monday","tuesday","wednesday","thursday","friday","saturday","sunday",
-                        "mon","tue","tues","wed","thu","thur","thurs","fri","sat","sun")
+            weekdays = (
+                "monday","tuesday","wednesday","thursday","friday","saturday","sunday",
+                "mon","tue","tues","wed","thu","thur","thurs","fri","sat","sun"
+            )
             if any(w in s for w in weekdays): return True
             if _re.search(r"\b\d{1,2}(st|nd|rd|th)?\b", s): return True
             return False
 
+        # ------------------------------------------------------------------
+        # Inline helpers
+        # ------------------------------------------------------------------
         def _extract_day_time(s: str) -> tuple:
-            """Extract day and time parts from speech string."""
-            if not s: return ("", "")
-            s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s, flags=_re.IGNORECASE)
-            s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s, flags=_re.IGNORECASE)
-            s = _re.sub(r"\bat\s*[.,]?\s+", " at ", s, flags=_re.IGNORECASE)
-            s = _re.sub(r"[!?]+\s*$", "", s)
-            s = _re.sub(r"[;,]+", " ", s)
-            s = _re.sub(r"\.\s+(?=\d)", " ", s)
-            s = _re.sub(r"\s+", " ", s).strip()
-            s = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", s, flags=_re.IGNORECASE)
-
-            # 🚫 Reject ambiguous "to" ranges like "10 to 12"
-            if _re.search(r"\b\d+\s+to\s+\d+\b", s.lower()):
+            if not s:
                 return ("", "")
+            s = s.lower()
+            s = s.replace("number", "").replace("num", "").replace("no.", "")
+            s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s)
+            s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s)
+            s = _re.sub(r"\bat\s*[.,]?\s+", " at ", s)
+            s = _re.sub(r"[!?;]+", "", s)
+            s = _re.sub(r"\s+", " ", s).strip()
 
-            s_low = s.lower()
-            s_low = s_low.replace(" at noon", " at 12 pm").replace(" noon", " 12 pm")
-            s_low = s_low.replace(" at midnight", " at 12 am").replace(" midnight", " 12 am")
+            s = s.replace(" at noon", " at 12 pm").replace(" noon", " 12 pm")
+            s = s.replace(" at midnight", " at 12 am").replace(" midnight", " 12 am")
 
-            if " at " in s_low:
-                day, timep = s_low.split(" at ", 1)
+            if " at " in s:
+                day, timep = s.split(" at ", 1)
                 return (day.strip().rstrip(","), timep.strip())
 
-            m = _re.search(r"\b(\d{1,2}:\d{2}\s*(am|pm)?|\d{1,2}\s*(am|pm))\b", s_low)
+            m = _re.search(r"\b(\d{1,2}:\d{2}\s*(am|pm)?|\d{1,2}\s*(am|pm))\b", s)
             if m:
                 timep = m.group(1)
-                day = s_low[:m.start()].strip().rstrip(",")
+                day = s[:m.start()].strip().rstrip(",")
                 return (day, timep)
-
-            m2 = _re.search(r"\b(\d{3,4})\b", s_low)
-            if m2:
-                t = m2.group(1)
-                timep = (f"{int(t[0]):d}:{t[1:]}" if len(t) == 3 else f"{int(t[:-2]):d}:{t[-2:]}") 
-                day = s_low[:m2.start()].strip().rstrip(",")
-                return (day, timep)
-
             return ("", "")
 
         def _build_slot(day_str: str, time_str: str) -> tuple:
             tz_name = (globals().get("CLINIC_TZ") or "America/Chicago")
-            try:
-                tz_local = _pytz.timezone(tz_name)
-            except Exception:
-                tz_local = _pytz.timezone("America/Chicago")
+            tz_local = _pytz.timezone(tz_name)
 
-            dur = globals().get("APPOINTMENT_DURATION_MINUTES") or 30
-            try: dur = int(dur)
-            except Exception: dur = 30
-            if dur not in (15,30,45,60): dur = 30
+            dur = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
+            d = (day_str or "").strip()
+            t = (time_str or "").strip()
 
-            if not day_str or not time_str:
-                raise ValueError("missing date or time")
+            # ✅ missing month check
+            has_month = any(m in d.lower() for m in [
+                "jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"
+            ])
+            if not has_month:
+                raise ValueError("missing_month")
 
-            combined = f"{day_str} at {time_str}"
+            combined = f"{d} at {t}"
             today = _date_local.today()
             default_base = datetime(today.year, today.month, today.day, 9, 0, 0)
-            parsed = _dtparse(combined, default=default_base, dayfirst=False, fuzzy=True)
+            parsed = _dtparse(combined, default=default_base, fuzzy=True)
 
             if parsed.tzinfo is None:
                 parsed = tz_local.localize(parsed)
@@ -3628,10 +3628,15 @@ def voice():
             if not _re.search(r"\b\d{4}\b", combined):
                 parsed = parsed.replace(year=today.year)
 
+            # ✅ enforce working days (Mon–Sat only)
+            working_days = globals().get("WORKING_DAYS", (0, 1, 2, 3, 4, 5))
+            if parsed.weekday() not in working_days:
+                raise ValueError("invalid_weekday")
+
             start_local = parsed
-            end_local   = start_local + timedelta(minutes=dur)
+            end_local = start_local + timedelta(minutes=dur)
             start_utc = start_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
-            end_utc   = end_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
+            end_utc = end_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
             return (start_utc, end_utc)
 
         # ------------------------------------------------------------------
@@ -3656,21 +3661,25 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # Build UTC slot
+        # Build UTC slot with validation
         # ------------------------------------------------------------------
         try:
             appointment_start, appointment_end = _build_slot(day_part, time_part)
             session_data[call_sid]["retry_time"] = 0
             debug_print(f"ask_time_date: ⏰ Built slot → Start: {appointment_start}, End: {appointment_end}")
+        except ValueError as e:
+            err = str(e)
+            debug_print(f"ask_time_date: ❌ build slot validation failed → {err}")
+            if "invalid_weekday" in err:
+                resp.append(make_gather(PROMPT_NEED_VALID_DAY))
+            else:
+                resp.append(make_gather(TIME_PROMPT_SHORT))
+            resp.redirect("/voice")
+            return str(resp)
         except Exception as e:
-            debug_print(f"ask_time_date: ❌ build slot failed → {e}")
-            session_data[call_sid]["retry_time"] = session_data[call_sid].get("retry_time", 0) + 1
-            if session_data[call_sid]["retry_time"] >= 3:
-                resp.say(gpt_speak("Sorry, I couldn’t understand the time you mentioned. Please try again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
+            debug_print(f"ask_time_date: ⚠️ build slot error → {e}")
             resp.append(make_gather(TIME_PROMPT_SHORT))
+            resp.redirect("/voice")
             return str(resp)
 
         # ------------------------------------------------------------------
@@ -3759,7 +3768,6 @@ def voice():
 
         resp.redirect("/voice")
         return str(resp)
-
 
 
 
