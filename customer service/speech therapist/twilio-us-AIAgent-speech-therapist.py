@@ -1,4 +1,4 @@
-# update  10/03/25 time_saved  book cancel is tested and PERFECT
+# update  10/06/25 time_saved  reshedule is under test
 #  
 # =========================
 # Standard library imports
@@ -123,6 +123,7 @@ from twilio.rest import Client
 from dateutil.parser import parse as _dtparse
 from string import punctuation as _PUNCT
 from datetime import datetime as _Datetime, timezone as _Tz
+from functools import wraps
 
 from openai import OpenAI, APIConnectionError, AuthenticationError, RateLimitError, OpenAIError
 
@@ -2454,8 +2455,42 @@ def normalize(text):
     Lowercase, remove punctuation, and trim extra spaces from text.
     """
     return _re.sub(r"[^a-zA-Z\s]", "", text).lower().strip()
+
+
+#from functools import wraps
+#from twilio.twiml.voice_response import VoiceResponse
+
+def safe_twiml_route(func):
+    """Decorator to ensure Twilio route always returns a valid VoiceResponse."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            result = func(*args, **kwargs)
+            if result:
+                return result
+        except Exception as e:
+            try:
+                debug_print(f"safe_twiml_route: ⚠️ Exception in route → {e}")
+            except Exception:
+                pass
+
+        # ----------------------------------------------------------------------
+        # 🛡️ Global Safety Fallback (applies automatically to all wrapped routes)
+        # ----------------------------------------------------------------------
+        try:
+            debug_print("safe_twiml_route: ⚠️ No valid response — returning polite fallback.")
+        except Exception:
+            pass
+
+        resp = VoiceResponse()
+        resp.say(gpt_speak("Thank you. Goodbye."), VOICE)
+        resp.hangup()
+        return str(resp)
+    return wrapper
+
 @app.route("/voice", methods=["POST"])
 @app.route("/voice/", methods=["POST"])  # Accepts trailing slash
+@safe_twiml_route
 def voice():
     # Create a new TwiML VoiceResponse object to build the voice reply to the caller
     resp = VoiceResponse()
@@ -2723,11 +2758,11 @@ def voice():
                 # ✅ Reschedule (cancel then rebook)
                 print("🔁 DTMF=3 → reschedule (cancel then rebook)")
                 session_data[call_sid] = {
-                    "stage": "cancel_appointment",
-                    "cancel": {},
-                    "retry_booking": 0,
-                    "reschedule_after_cancel": True
-                }
+                     "stage": "cancel_appointment",
+                     "cancel": {},
+                     "retry_booking": 0,
+                       "reschedule_after_cancel": True
+                   }
 
                 doctor_names = list(googleid_dr_name_map.values())
                 dtmf_map = {str(i): name for i, name in enumerate(doctor_names, start=1)}
@@ -4591,30 +4626,6 @@ def voice():
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     elif stage == "cancel_appointment":
         # ----------------------------------------------------------------------
         # 🔄 Stage: Cancel Appointment — after the caller says the doctor’s name
@@ -5057,7 +5068,6 @@ def voice():
 
 
 
-
     elif stage == "cancel_appt_iterate":
         # ----------------------------------------------------------------------
         # 🗂️ Stage: cancel_appt_iterate
@@ -5071,7 +5081,7 @@ def voice():
         # Behavior:
         #   - "yes"/"1" → store candidate and jump to cancel_appt_confirm.
         #   - "no"/"2" → move to next candidate, or end if none left.
-        #   - Silence / unclear → just re-present candidate (no nag message).
+        #   - Silence / unclear → just re-present candidate.
         # ----------------------------------------------------------------------
 
         debug_print("cancel_appt_iterate: 📍 Stage entered")
@@ -5113,7 +5123,7 @@ def voice():
                             calendar_id = cid
                             break
 
-                    # ✅ Use is_time_slot_available to confirm slot exists in Google
+                    # ✅ Confirm slot exists (i.e., currently busy)
                     slot_exists = False
                     if calendar_id and appt.get("utc_start") and appt.get("utc_end"):
                         try:
@@ -5142,13 +5152,25 @@ def voice():
             cancel_ctx["iter_index"] = 0
             debug_print(f"cancel_appt_iterate: ✅ built {len(candidates)} candidate(s)")
 
+            # ✅ No appointments found → handle reschedule flow if active
             if not candidates:
-                resp.say("There are no upcoming events to cancel. Goodbye.", VOICE)
+                if session_data.get(call_sid, {}).get("reschedule_after_cancel"):
+                    debug_print("cancel_appt_iterate: 🔁 reschedule flow active but no appointments → proceed to booking")
+                    session_data[call_sid]["stage"] = "ask_time_date"
+                    session_data[call_sid]["reschedule_after_cancel"] = False
+                    resp.append(make_gather(
+                        "I couldn’t find any appointments to cancel. Let’s make a new one. "
+                        "Please say the date and time, for example, 'October 12th at 9 a.m.'"
+                    ))
+                    resp.redirect("/voice")
+                    return str(resp)
+
+                resp.say(gpt_speak("There are no upcoming appointments to cancel."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Announce total once at the beginning
+            # Announce total once
             resp.say(f"I found {len(candidates)} upcoming appointments.", VOICE)
 
         # ---------- Handle user input ----------
@@ -5157,13 +5179,11 @@ def voice():
         except Exception:
             dtmf = ""
         utter = (speech_result or "").strip().lower()
-
-        # Normalize utter → remove punctuation, spaces
         utter = _re.sub(r"[^a-z0-9]+", "", utter)
 
         debug_print(f"cancel_appt_iterate: normalized utter='{utter}', dtmf='{dtmf}'")
 
-        YES = {"yes", "yeah", "yep", "correct", "confirm"}
+        YES = {"yes", "yeah", "yep", "confirm", "correct"}
         NO  = {"no", "nope", "next"}
 
         idx = int(cancel_ctx.get("iter_index", 0))
@@ -5171,6 +5191,17 @@ def voice():
 
         # Guard out of range
         if idx >= total:
+            # ✅ If reschedule flow active, jump to booking instead of hangup
+            if session_data.get(call_sid, {}).get("reschedule_after_cancel"):
+                debug_print("cancel_appt_iterate: reached end of list during reschedule → go to booking")
+                session_data[call_sid]["stage"] = "ask_time_date"
+                session_data[call_sid]["reschedule_after_cancel"] = False
+                resp.append(make_gather(
+                    "I couldn’t find another appointment to cancel. Please say the new date and time you’d like."
+                ))
+                resp.redirect("/voice")
+                return str(resp)
+
             resp.say("That was the last appointment. Goodbye.", VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
@@ -5191,6 +5222,17 @@ def voice():
             debug_print(f"cancel_appt_iterate: ↪️ NO user skipped candidate #{idx+1}/{total}")
             idx += 1
             if idx >= total:
+                # ✅ At end of list → go to booking if reschedule flow is active
+                if session_data.get(call_sid, {}).get("reschedule_after_cancel"):
+                    debug_print("cancel_appt_iterate: end of list in reschedule mode → go to booking")
+                    session_data[call_sid]["stage"] = "ask_time_date"
+                    session_data[call_sid]["reschedule_after_cancel"] = False
+                    resp.append(make_gather(
+                        "I couldn’t find another appointment to cancel. Please say the new date and time you’d like."
+                    ))
+                    resp.redirect("/voice")
+                    return str(resp)
+
                 resp.say("That was the last appointment. Goodbye.", VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
@@ -5198,7 +5240,7 @@ def voice():
             cancel_ctx["iter_index"] = idx
             cand = cancel_ctx["candidates"][idx]
 
-        # --- SILENCE or unclear input → just present current candidate again ---
+        # --- Present current candidate again ---
         debug_print(f"cancel_appt_iterate: 🗣️ presenting candidate #{idx+1}/{total}")
         say_line = (
             f"Appointment with {cand['doctor_name']} on {cand['friendly']}. "
@@ -5266,30 +5308,56 @@ def voice():
     elif stage == "cancel_appt_confirm":
         debug_print("cancel_appt_confirm: 📍 Stage entered")
 
+        # ----------------------------------------------------------------------
+        # 🧩 Retrieve candidate appointment info
+        # ----------------------------------------------------------------------
         cand = session_data[call_sid].get("cancel", {}).get("matching_event")
         if not cand:
-            resp.say("Sorry, I couldn’t find that appointment to cancel.", VOICE)
+            debug_print("cancel_appt_confirm: ⚠️ No candidate found in session.")
+            resp.say(gpt_speak("Sorry, I couldn’t find that appointment to cancel."), VOICE)
+
+            # If we're in a reschedule flow → go to booking
+            if session_data.get(call_sid, {}).get("reschedule_after_cancel"):
+                debug_print("cancel_appt_confirm: 🔁 reschedule_after_cancel=True → proceeding to booking flow")
+                session_data[call_sid]["stage"] = "ask_time_date"
+                session_data[call_sid]["reschedule_after_cancel"] = False
+                resp.append(make_gather(
+                    "Please say the new date and time for your appointment, for example, 'October 12th at 9 a.m.'"
+                ))
+                resp.redirect("/voice")
+                return str(resp)
+
             resp.hangup()
+            session_data.pop(call_sid, None)
             return str(resp)
 
+        # ----------------------------------------------------------------------
+        # Extract parameters
+        # ----------------------------------------------------------------------
         calendar_id = cand.get("calendar_id")
         start_utc   = cand.get("start_utc")
         end_utc     = cand.get("end_utc")
+        doctor_name = cand.get("doctor_name")
 
         debug_print(f"cancel_appt_confirm: 🔎 Checking slot {start_utc} → {end_utc} on {calendar_id}")
 
+        # ----------------------------------------------------------------------
+        # Check slot availability (aligned with is_time_slot_available)
+        # ----------------------------------------------------------------------
         try:
             slot_free = is_time_slot_available(calendar_id, start_utc, end_utc, creds)
         except Exception as e:
             debug_print(f"cancel_appt_confirm: ⚠️ availability check failed → {e}")
             slot_free = True  # assume free to avoid accidental deletion
 
+        # ----------------------------------------------------------------------
+        # Case 1️⃣: Slot is occupied → proceed with deletion
+        # ----------------------------------------------------------------------
         if not slot_free:
-            # ❌ means slot is busy → cancel
             debug_print("cancel_appt_confirm: ✅ Slot occupied → proceeding with deletion")
 
             try:
-                # Delete from Google
+                # ---- Delete from Google Calendar ----
                 service = build("calendar", "v3", credentials=creds)
                 events = service.events().list(
                     calendarId=calendar_id,
@@ -5304,8 +5372,8 @@ def voice():
                     except Exception as e2:
                         debug_print(f"cancel_appt_confirm: ⚠️ failed to delete event {ev.get('id')} → {e2}")
 
-                # Delete from doctor JSON
-                path = f"{DB_FOLDER}/{cand['doctor_name'].lower().replace(' ', '_')}.json"
+                # ---- Delete from local doctor JSON ----
+                path = f"{DB_FOLDER}/{doctor_name.lower().replace(' ', '_')}.json"
                 try:
                     with open(path, "r") as f:
                         appts = json.load(f)
@@ -5318,18 +5386,52 @@ def voice():
                 except Exception as e:
                     debug_print(f"cancel_appt_confirm: ⚠️ failed JSON cleanup → {e}")
 
-                resp.say(f"Your appointment on {cand.get('friendly')} has been cancelled.", VOICE)
+                resp.say(gpt_speak(f"Your appointment with {doctor_name} on {cand.get('friendly')} has been cancelled."), VOICE)
 
             except Exception as e:
                 debug_print(f"cancel_appt_confirm: ❌ error deleting → {e}")
-                resp.say("Sorry, I couldn’t cancel the appointment due to a system error.", VOICE)
+                resp.say(gpt_speak("Sorry, I couldn’t cancel the appointment due to a system error."), VOICE)
+
+        # ----------------------------------------------------------------------
+        # Case 2️⃣: Slot already free → nothing to cancel
+        # ----------------------------------------------------------------------
         else:
             debug_print("cancel_appt_confirm: ❌ Slot is free → nothing to cancel")
-            resp.say("Sorry, I couldn’t find that appointment to cancel.", VOICE)
+            resp.say(gpt_speak("Sorry, I couldn’t find that appointment to cancel."), VOICE)
 
+        # ----------------------------------------------------------------------
+        # 🔁 If we came from a change/reschedule request → go to booking flow
+        # ----------------------------------------------------------------------
+        if session_data.get(call_sid, {}).get("reschedule_after_cancel"):
+            debug_print("cancel_appt_confirm: 🔄 Detected reschedule flow → go to ask_time_date")
+            session_data[call_sid]["stage"] = "ask_time_date"
+            session_data[call_sid]["reschedule_after_cancel"] = False
+            resp.append(make_gather(
+                "Your previous appointment has been handled. Please say the new date and time, for example, 'October 12th at 9 a.m.'"
+            ))
+            resp.redirect("/voice")
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # ✅ Normal flow (no reschedule)
+        # ----------------------------------------------------------------------
         resp.hangup()
         session_data.pop(call_sid, None)
         return str(resp)
+
+# ----------------------------------------------------------------------
+# 🛡️ Safety fallback: if no response returned earlier
+# ----------------------------------------------------------------------
+try:
+    debug_print("voice: ⚠️ No valid stage matched — returning polite fallback.")
+except Exception:
+    pass
+
+resp = VoiceResponse()
+resp.say(gpt_speak("Thank you. Goodbye."), VOICE)
+resp.hangup()
+return str(resp)
+
 
 
 
