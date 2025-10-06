@@ -3470,15 +3470,13 @@ def voice():
             "Please say it again, for example, 'October 8 at 9:30 AM'."
         )
         PROMPT_NEED_BOTH = "Please say the date and the time, for example, 'October 8 at 9:30 AM'."
-        PROMPT_NEED_DATE = "I didn't hear the date. Please include it, for example, 'October 8 at 9:30 AM'."
-        PROMPT_NEED_TIME = "I didn't hear the time. Please include it, for example, 'October 8 at 9:30 AM'."
-        PROMPT_NEED_VALID_DAY = (
-            "That day isn’t available for appointments. "
-            "Please choose a weekday between Monday and Saturday, for example, 'October 7 at 10 AM'."
+
+        PROMPT_PAST_TIME = (
+            "That time has already passed. Please choose a future date and time, for example, 'October 9 at 10 AM'."
         )
 
         # ------------------------------------------------------------------
-        # Ensure session and doctor (per-doctor calendar)
+        # Ensure doctor/calendar
         # ------------------------------------------------------------------
         session_data.setdefault(call_sid, {})
         doctor_id = session_data.get(call_sid, {}).get("doctor_id")
@@ -3503,45 +3501,17 @@ def voice():
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
-            resp.append(make_gather("Please say the date and time, for example, 'October 8 at 9:30 AM'."))
+            resp.append(make_gather("Please say the date and time, for example, 'October 8 at 9:30 AM'.")) 
             resp.redirect("/voice")
             return str(resp)
         session_data[call_sid].pop("silence_time", None)
 
         # ------------------------------------------------------------------
-        # Inline helpers (unchanged)
+        # Inline helpers (simplified)
         # ------------------------------------------------------------------
-        def _has_time_token(s: str) -> bool:
-            s = (s or "").lower()
-            return (
-                ("am" in s) or ("pm" in s) or (":" in s)
-                or ("o'clock" in s) or ("oclock" in s)
-                or (_re.search(r"\b\d{1,2}\s*(am|pm)\b", s) is not None)
-                or (_re.search(r"\b\d{3,4}\b", s) is not None)
-                or ("noon" in s) or ("midnight" in s)
-            )
-
-        def _has_date_token(s: str) -> bool:
-            s = (s or "").lower()
-            months = (
-                "january","february","march","april","may","june","july",
-                "august","september","october","november","december",
-                "jan","feb","mar","apr","may","jun","jul","aug","sep","sept","oct","nov","dec"
-            )
-            if any(m in s for m in months): return True
-            if "/" in s or "-" in s: return True
-            weekdays = (
-                "monday","tuesday","wednesday","thursday","friday","saturday","sunday",
-                "mon","tue","tues","wed","thu","thur","thurs","fri","sat","sun"
-            )
-            if any(w in s for w in weekdays): return True
-            if _re.search(r"\b\d{1,2}(st|nd|rd|th)?\b", s): return True
-            return False
-
         def _extract_day_time(s: str) -> tuple:
-            if not s:
-                return ("", "")
-            s = s.lower().replace("number", "").replace("num", "").replace("no.", "")
+            s = s.lower()
+            s = s.replace("number", "").replace("num", "").replace("no.", "")
             s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s)
             s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s)
             s = _re.sub(r"\bat\s*[.,]?\s+", " at ", s)
@@ -3551,76 +3521,69 @@ def voice():
             if " at " in s:
                 day, timep = s.split(" at ", 1)
                 return (day.strip().rstrip(","), timep.strip())
-            m = _re.search(r"\b(\d{1,2}:\d{2}\s*(am|pm)?|\d{1,2}\s*(am|pm))\b", s)
+            m = _re.search(r"\b(\d{1,2}(:\d{2})?\s*(am|pm))\b", s)
             if m:
                 timep = m.group(1)
                 day = s[:m.start()].strip().rstrip(",")
                 return (day, timep)
             return ("", "")
 
-        def _build_slot(day_str: str, time_str: str) -> tuple:
-            tz_name = (globals().get("CLINIC_TZ") or "America/Chicago")
-            tz_local = _pytz.timezone(tz_name)
-            dur = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
-            d, t = day_str.strip(), time_str.strip()
-
-            has_month = any(m in d.lower() for m in [
-                "jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"
-            ])
-            if not has_month:
-                raise ValueError("missing_month")
-
-            combined = f"{d} at {t}"
-            today = _date_local.today()
-            default_base = datetime(today.year, today.month, today.day, 9, 0, 0)
-            parsed = _dtparse(combined, default=default_base, fuzzy=True)
-            if parsed.tzinfo is None:
-                parsed = tz_local.localize(parsed)
-            else:
-                parsed = parsed.astimezone(tz_local)
-
-            if not _re.search(r"\b\d{4}\b", combined):
-                parsed = parsed.replace(year=today.year)
-
-            working_days = globals().get("WORKING_DAYS", (0, 1, 2, 3, 4, 5))
-            if parsed.weekday() not in working_days:
-                raise ValueError("invalid_weekday")
-
-            start_local = parsed
-            end_local = start_local + timedelta(minutes=dur)
-            return (
-                start_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z"),
-                end_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
-            )
-
         # ------------------------------------------------------------------
-        # Extract and validate
+        # Extract parts
         # ------------------------------------------------------------------
         day_part, time_part = _extract_day_time(raw)
-        debug_print(f"ask_time_date: 📆 Extracted → Day: {day_part or '(none)'}, Time: {time_part or '(none)'}")
+        debug_print(f"ask_time_date: 📆 Extracted → Day='{day_part}', Time='{time_part}'")
 
-        if not _has_date_token(day_part) or not _has_time_token(time_part):
+        if not day_part or not time_part:
             resp.append(make_gather(PROMPT_NEED_BOTH))
             return str(resp)
 
         # ------------------------------------------------------------------
-        # Build slot and validate weekday
+        # Build slot (date+time → UTC)
         # ------------------------------------------------------------------
         try:
-            appointment_start, appointment_end = _build_slot(day_part, time_part)
-            debug_print(f"ask_time_date: ⏰ Built slot → Start: {appointment_start}, End: {appointment_end}")
-        except ValueError as e:
-            err = str(e)
-            debug_print(f"ask_time_date: ❌ build slot failed → {err}")
-            if "invalid_weekday" in err:
-                resp.append(make_gather(PROMPT_NEED_VALID_DAY))
-            else:
-                resp.append(make_gather(TIME_PROMPT_SHORT))
+            tz_name = globals().get("CLINIC_TZ", "America/Chicago")
+            tz_local = _pytz.timezone(tz_name)
+            dur = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
+
+            combined = f"{day_part} at {time_part}"
+            today = _date_local.today()
+            default_base = datetime(today.year, today.month, today.day, 9, 0, 0)
+            parsed = _dtparse(combined, default=default_base, fuzzy=True)
+            parsed = tz_local.localize(parsed) if parsed.tzinfo is None else parsed.astimezone(tz_local)
+
+            # Auto-fill missing year as current
+            if not _re.search(r"\b\d{4}\b", combined):
+                parsed = parsed.replace(year=today.year)
+
+            start_local = parsed
+            end_local = start_local + timedelta(minutes=dur)
+            appointment_start = start_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
+            appointment_end = end_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
+
+            debug_print(f"ask_time_date: ⏰ Built slot → Start={appointment_start}, End={appointment_end}")
+
+        except Exception as e:
+            debug_print(f"ask_time_date: ❌ date/time parse failed → {e}")
+            resp.append(make_gather(TIME_PROMPT_SHORT))
             resp.redirect("/voice")
             return str(resp)
 
         # ------------------------------------------------------------------
-        # Availability and time checks
+        # Reject past times
+        # ------------------------------------------------------------------
+        now_utc = datetime.utcnow().replace(tzinfo=_pytz.UTC)
+        end_dt = datetime.fromisoformat(appointment_end.replace("Z", "+00:00")).astimezone(_pytz.UTC)
+        if end_dt <= now_utc:
+            debug_print("ask_time_date: 🕒 requested time is in the past → suggest alternatives")
+            alts = get_next_available_slots(calendar_id, creds, from_start_iso=appointment_end, limit=3) or []
+            options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
+            prompt = f"That time has already passed. Would you like {options}?" if options else PROMPT_PAST_TIME
+            resp.append(make_gather(prompt))
+            return str(resp)
+
+        # ------------------------------------------------------------------
+        # Check slot availability (delegates validation to get_next_available_slots)
         # ------------------------------------------------------------------
         try:
             slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
@@ -3637,27 +3600,28 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # ✅ Slot free — proceed to booking (reuse info if reschedule)
+        # ✅ Slot free — proceed
         # ------------------------------------------------------------------
         session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
-        reschedule_flag = session_data.get(call_sid, {}).get("reschedule_after_cancel", False)
 
-        # Reuse phone/DOB if available from cancel flow
-        if reschedule_flag:
+        # 🔁 Reuse phone/DOB if rescheduling
+        if session_data[call_sid].get("reschedule_after_cancel"):
             cancel_info = session_data[call_sid].get("cancel", {})
             cust = session_data[call_sid].setdefault("customer", {})
             if cancel_info.get("phone_e164"):
                 cust["phone_e164"] = cancel_info["phone_e164"]
             if cancel_info.get("dob"):
                 cust["dob"] = cancel_info["dob"]
+            session_data[call_sid]["reschedule_after_cancel"] = False
             debug_print("ask_time_date: 🔁 Reused phone/DOB from cancel flow for reschedule.")
-            session_data[call_sid]["reschedule_after_cancel"] = False  # clear flag
 
+        # ------------------------------------------------------------------
+        # Check for existing customer info
+        # ------------------------------------------------------------------
         cust = session_data[call_sid].setdefault("customer", {})
         phone_e164 = cust.get("phone_e164") or session_data[call_sid].get("phone_e164")
         dob = cust.get("dob") or session_data[call_sid].get("dob")
 
-        # If info still missing, collect
         if not phone_e164 or not dob:
             session_data[call_sid]["stage"] = "collect_phone" if not phone_e164 else "collect_dob"
             prompt = "Please say your 10-digit phone number." if not phone_e164 else "Please say your date of birth, for example, 'July third 1990'."
@@ -3665,7 +3629,6 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # Customer lookup
         try:
             found = customer_search(phone_number=phone_e164, dob=dob, country="US")
             debug_print(f"ask_time_date: 🔎 customer_search(phone={phone_e164}, dob={dob}) → {found}")
@@ -3673,12 +3636,10 @@ def voice():
             debug_print(f"ask_time_date: ⚠️ customer_search error → {e}")
             found = False
 
-        # Determine next stage
         session_data[call_sid]["stage"] = "book_appt_confirm" if found else "collect_first_name"
         debug_print(f"ask_time_date: 🎯 Next stage → {session_data[call_sid]['stage']}")
         resp.redirect("/voice")
         return str(resp)
-
 
 
 
