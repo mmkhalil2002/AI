@@ -3073,7 +3073,6 @@ def voice():
 
 
 
-
     elif stage == "collect_phone":
         # ----------------------------------------------------------------------
         # 📞 Stage: collect_phone  (Local input → E.164; NO country-code prompt)
@@ -3102,33 +3101,48 @@ def voice():
         speech_text = (speech_result or "").strip()
         debug_print(f"collect_phone: speech='{speech_text}' DTMF='{dtmf_digits}'")
 
-        # 🔇 Silence handling
+        # ----------------------------------------------------------------------
+        # 🔇 Silence handling — improved re-prompt
+        # ----------------------------------------------------------------------
         if not (speech_text or dtmf_digits):
             tries = session_data[call_sid].get("silence_collect_phone", 0) + 1
             session_data[call_sid]["silence_collect_phone"] = tries
             debug_print(f"collect_phone: 🤐 no input heard (tries={tries})")
 
-            if tries >= 3:
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+            if tries < 3:
+                # 🗣️ Re-prompt politely
+                prompt = (
+                    "I didn’t hear your phone number. "
+                    "Please say or type your 10-digit phone number, then press pound."
+                )
+                gather = make_gather(prompt, hints="zero one two three four five six seven eight nine double triple")
+                resp.append(gather)
+                resp.redirect("/voice")
+                return str(resp)
+            else:
+                # 😔 After 3 tries, end gracefully
+                resp.say(gpt_speak("I'm sorry, I still didn't get your phone number. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            prompt = "Say or type your 10-digit phone number, then press #."
-            gather = make_gather(prompt, hints="zero one two three four five six seven eight nine double triple")
-            resp.append(gather)
-            return str(resp)
-
+        # If input received → clear silence counter
         session_data[call_sid].pop("silence_collect_phone", None)
 
-        # --- helper: speech→digits
+        # ----------------------------------------------------------------------
+        # 🧠 Speech → digits helper
+        # ----------------------------------------------------------------------
         def _spoken_to_digits(raw: str) -> str:
             if not raw:
                 return ""
             words = (
                 raw.lower()
-                .replace("-", " ").replace(",", " ").replace(".", " ")
-                .replace("(", " ").replace(")", " ").split()
+                .replace("-", " ")
+                .replace(",", " ")
+                .replace(".", " ")
+                .replace("(", " ")
+                .replace(")", " ")
+                .split()
             )
             m = {
                 "zero": "0", "oh": "0", "o": "0",
@@ -3154,7 +3168,9 @@ def voice():
                 i += 1
             return "".join(out)
 
-        # Normalize to E.164
+        # ----------------------------------------------------------------------
+        # 🔢 Normalize digits to E.164
+        # ----------------------------------------------------------------------
         if dtmf_digits:
             raw_digits = _re.sub(r"\D", "", dtmf_digits)
         else:
@@ -3174,32 +3190,42 @@ def voice():
                 if len(d) == 10:
                     phone_e164 = f"+1{d}"
 
-        # Validate
+        # ----------------------------------------------------------------------
+        # ❌ Invalid number → re-prompt (3 tries)
+        # ----------------------------------------------------------------------
         if not phone_e164:
             r = session_data[call_sid].get("retry_phone", 0) + 1
             session_data[call_sid]["retry_phone"] = r
-            debug_print(f"collect_phone: ❌ invalid local phone for {country} (digits='{raw_digits}') retry={r}")
+            debug_print(f"collect_phone: ❌ invalid digits='{raw_digits}' retry={r}")
 
-            if r >= 3:
-                resp.say(gpt_speak("Sorry, I couldn't capture your phone number. Please call again later."), VOICE)
+            if r < 3:
+                prompt = (
+                    "That doesn’t sound like a complete phone number. "
+                    "Please say or type your 10-digit phone number including area code, then press pound."
+                )
+                gather = make_gather(prompt, hints="zero one two three four five six seven eight nine double triple")
+                resp.append(gather)
+                resp.redirect("/voice")
+                return str(resp)
+            else:
+                resp.say(gpt_speak("I'm sorry, I couldn’t capture your phone number. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            prompt = "Say or type your 10-digit phone number, then press #."
-            gather = make_gather(prompt, hints="zero one two three four five six seven eight nine double triple")
-            resp.append(gather)
-            return str(resp)
-
-        # ✅ Save and mirror
+        # ----------------------------------------------------------------------
+        # ✅ Valid → Save + Mirror
+        # ----------------------------------------------------------------------
         session_data[call_sid]["customer"]["phone_e164"] = phone_e164
         session_data[call_sid]["customer"]["phone"] = phone_e164
-        session_data[call_sid]["cancel"]["phone_e164"] = phone_e164   # ✅ mirror for cancel/reschedule
+        session_data[call_sid]["cancel"]["phone_e164"] = phone_e164  # ✅ mirror for cancel/reschedule
         session_data[call_sid]["phone_e164"] = phone_e164
         session_data[call_sid]["retry_phone"] = 0
         debug_print(f"collect_phone: ✅ saved phone_e164={phone_e164} (mirrored into cancel context)")
 
-        # Return to prior stage if specified
+        # ----------------------------------------------------------------------
+        # ↩️ Return to prior stage if specified
+        # ----------------------------------------------------------------------
         return_stage = session_data[call_sid].pop("return_stage", None)
         if return_stage:
             session_data[call_sid]["stage"] = return_stage
@@ -3207,7 +3233,9 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # 🔁 If rescheduling after cancel → go straight to ask_time_date
+        # ----------------------------------------------------------------------
+        # 🔁 Reschedule → jump directly to ask_time_date
+        # ----------------------------------------------------------------------
         if session_data.get(call_sid, {}).get("reschedule_after_cancel"):
             debug_print("collect_phone: 🔁 reschedule_after_cancel=True → jump to ask_time_date")
             session_data[call_sid]["stage"] = "ask_time_date"
@@ -3218,10 +3246,13 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
+        # ----------------------------------------------------------------------
         # 🗓️ Normal flow → ask DOB next
+        # ----------------------------------------------------------------------
         session_data[call_sid]["stage"] = "collect_dob"
         gather = make_gather(
-            "Thanks. What’s your date of birth? You can say it, or enter two digits for month, two for day, and four for year, then press #."
+            "Thanks. What’s your date of birth? You can say it, or enter two digits for month, "
+            "two for day, and four for year, then press pound."
         )
         resp.append(gather)
         return str(resp)
@@ -3250,7 +3281,9 @@ def voice():
     elif stage == "collect_dob":
         debug_print("collect_dob: 📍 Stage entered")
 
-        # Short, clear prompts (no “MMDDYYYY” wording anywhere)
+        # ------------------------------------------------------------------
+        # 🗓️ Prompts
+        # ------------------------------------------------------------------
         PROMPT_DOB_SHORT = (
             "Say your birth date, for example, 'July 3 1956'. "
             "Or enter two digits for month, two for day, and four for year, then press #. Example: 07 03 1956#."
@@ -3263,12 +3296,16 @@ def voice():
             "Please enter two digits for month, two for day, and four for year, then press #. Example: 07 03 1956#."
         )
 
-        # Ensure session buckets exist
+        # ------------------------------------------------------------------
+        # Ensure session context
+        # ------------------------------------------------------------------
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
         session_data[call_sid].setdefault("cancel", {})  # ✅ ensure cancel context exists
 
-        # Pull inputs
+        # ------------------------------------------------------------------
+        # Pull input
+        # ------------------------------------------------------------------
         try:
             dtmf_digits = (request.values.get("Digits") or "").strip()
         except Exception:
@@ -3276,41 +3313,47 @@ def voice():
         speech_text = (speech_result or "").strip()
         debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
 
-        # -----------------------------
-        # 🔇 Silence handling (cap=3)
-        # -----------------------------
+        # ------------------------------------------------------------------
+        # 🔇 Silence handling — improved
+        # ------------------------------------------------------------------
         if not dtmf_digits and not speech_text:
             tries = session_data[call_sid].get("silence_dob", 0) + 1
             session_data[call_sid]["silence_dob"] = tries
             debug_print(f"collect_dob: 🤐 no input; silence retries={tries}")
 
-            if tries >= 3:
-                resp.say(gpt_speak("Sorry, I couldn’t get your birth date. Please call again later."), VOICE)
+            if tries < 3:
+                # 🗣️ Friendly re-prompt
+                g = make_gather(
+                    "I didn’t hear your date of birth. "
+                    "Please say it again, for example, 'July 3 1956'. "
+                    "Or you can enter it using your keypad: month, day, and year, then press pound.",
+                    input="speech dtmf",
+                )
+                resp.append(g)
+                try:
+                    resp.redirect(url_for("voice"))
+                except Exception:
+                    resp.redirect("/voice")
+                return str(resp)
+            else:
+                # 😔 Give up after 3 silent tries
+                resp.say(gpt_speak("Sorry, I couldn’t get your date of birth. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-prompt (speech+DTMF)
-            g = make_gather(PROMPT_DOB_SHORT, input="speech dtmf")
-            resp.append(g)
-            try:
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
-            return str(resp)
-
-        # We heard something → clear silence counter
+        # Clear silence counter if input received
         session_data[call_sid].pop("silence_dob", None)
 
-        # -----------------------------------------------------
-        # 1) KEYPAD path (preferred if provided)
-        # -----------------------------------------------------
+        # ------------------------------------------------------------------
+        # 1️⃣ KEYPAD path (preferred if provided)
+        # ------------------------------------------------------------------
         dob_date = None
         if dtmf_digits:
             d = _re.sub(r"\D", "", dtmf_digits)
             if len(d) == 8:
                 try:
-                    mm = int(d[0:2]); dd = int(d[2:4]); yyyy = int(d[4:8])
+                    mm, dd, yyyy = int(d[0:2]), int(d[2:4]), int(d[4:8])
                     dob_date = date(yyyy, mm, dd)
                 except Exception:
                     dob_date = None
@@ -3321,7 +3364,6 @@ def voice():
                 r = session_data[call_sid].get("retry_dob", 0) + 1
                 session_data[call_sid]["retry_dob"] = r
                 debug_print(f"collect_dob: ❌ invalid keypad DOB '{dtmf_digits}' retry={r}")
-
                 g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
                                 input=("dtmf" if r >= 3 else "speech dtmf"))
                 resp.append(g)
@@ -3331,9 +3373,9 @@ def voice():
                     resp.redirect("/voice")
                 return str(resp)
 
-        # -----------------------------------------------------
-        # 2) SPEECH path (when no valid keypad DOB)
-        # -----------------------------------------------------
+        # ------------------------------------------------------------------
+        # 2️⃣ SPEECH path (when no valid keypad DOB)
+        # ------------------------------------------------------------------
         if dob_date is None:
             t = speech_text
             t = _re.sub(r"[.,;:]+$", "", t)
@@ -3346,7 +3388,6 @@ def voice():
                 r = session_data[call_sid].get("retry_dob", 0) + 1
                 session_data[call_sid]["retry_dob"] = r
                 debug_print(f"collect_dob: ❌ only year heard; retry_dob={r}")
-
                 g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
                                 input=("dtmf" if r >= 3 else "speech dtmf"))
                 resp.append(g)
@@ -3361,7 +3402,6 @@ def voice():
                 r = session_data[call_sid].get("retry_dob", 0) + 1
                 session_data[call_sid]["retry_dob"] = r
                 debug_print(f"collect_dob: ❌ year missing in speech; retry_dob={r}")
-
                 g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
                                 input=("dtmf" if r >= 3 else "speech dtmf"))
                 resp.append(g)
@@ -3380,7 +3420,6 @@ def voice():
                 r = session_data[call_sid].get("retry_dob", 0) + 1
                 session_data[call_sid]["retry_dob"] = r
                 debug_print(f"collect_dob: ❌ speech parse failed; retry_dob={r} reason={e}")
-
                 g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
                                 input=("dtmf" if r >= 3 else "speech dtmf"))
                 resp.append(g)
@@ -3390,9 +3429,9 @@ def voice():
                     resp.redirect("/voice")
                 return str(resp)
 
-        # -----------------------------------------------------
-        # 3) Validate DOB is reasonable (1900..today)
-        # -----------------------------------------------------
+        # ------------------------------------------------------------------
+        # 3️⃣ Validate DOB range (1900..today)
+        # ------------------------------------------------------------------
         try:
             today = _date_local.today()
             min_date = date(1900, 1, 1)
@@ -3402,7 +3441,6 @@ def voice():
             r = session_data[call_sid].get("retry_dob", 0) + 1
             session_data[call_sid]["retry_dob"] = r
             debug_print(f"collect_dob: ⚠️ Validation error → {e} (retry={r})")
-
             g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
                             input=("dtmf" if r >= 3 else "speech dtmf"))
             resp.append(g)
@@ -3412,24 +3450,23 @@ def voice():
                 resp.redirect("/voice")
             return str(resp)
 
-        # -----------------------------------------------------
-        # 4) Success → store YYYY-MM-DD and advance
-        # -----------------------------------------------------
+        # ------------------------------------------------------------------
+        # 4️⃣ Success → Store and advance
+        # ------------------------------------------------------------------
         iso_dob = dob_date.strftime("%Y-%m-%d")
         session_data[call_sid]["customer"]["dob"] = iso_dob
+        session_data[call_sid]["cancel"]["dob"] = iso_dob  # mirror
         session_data[call_sid].pop("retry_dob", None)
-
-        # ✅ Mirror DOB into cancel context for reuse during reschedule
-        session_data[call_sid]["cancel"]["dob"] = iso_dob
         debug_print(f"collect_dob: ✅ Stored DOB → {iso_dob} (mirrored into cancel context)")
 
-        # ✅ If this is part of a cancel/reschedule flow, skip ahead directly
+        # ------------------------------------------------------------------
+        # 🔁 Reschedule or normal flow
+        # ------------------------------------------------------------------
         if session_data.get(call_sid, {}).get("reschedule_after_cancel"):
             debug_print("collect_dob: 🔁 reschedule_after_cancel=True → jump to ask_time_date")
             session_data[call_sid]["stage"] = "ask_time_date"
             g = make_gather("Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 AM'.")
         else:
-            # Normal flow → ask for booking time
             session_data[call_sid]["stage"] = "ask_time_date"
             g = make_gather("Thanks. Please say the appointment date and time, for example, 'September 12 at 10 AM'.")
 
@@ -3439,6 +3476,7 @@ def voice():
         except Exception:
             resp.redirect("/voice")
         return str(resp)
+
 
 
 
@@ -3463,9 +3501,12 @@ def voice():
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
 
         # ------------------------------------------------------------------
-        # Prompts
+        # 📋 Prompts
         # ------------------------------------------------------------------
-        PROMPT_NEED_BOTH = "Please say or enter the date and time, for example, 'October 8 at 9:30 AM' or type 10080930 then press #."
+        PROMPT_NEED_BOTH = (
+            "Please say or enter the date and time, for example, 'October 8 at 9:30 AM', "
+            "or type month, day, hour, and minute then press pound — for example 10080930#."
+        )
         PROMPT_PAST_TIME = "That date and time have already passed. Please choose a future appointment time."
         PROMPT_NEED_VALID_DAY = (
             "That day isn’t available for appointments. "
@@ -3486,43 +3527,52 @@ def voice():
         calendar_id = doctor_id
 
         # ------------------------------------------------------------------
-        # Handle silence
+        # 🔇 Handle silence
         # ------------------------------------------------------------------
         raw_speech = (speech_result or "").strip()
         raw_dtmf = (request.values.get("Digits") or "").strip()
+
         if not (raw_speech or raw_dtmf):
             tries = session_data[call_sid].get("silence_time", 0) + 1
             session_data[call_sid]["silence_time"] = tries
             debug_print(f"ask_time_date: 🤐 silence (tries={tries})")
-            if tries >= 3:
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+
+            if tries < 3:
+                # Friendly retry (no hangup yet)
+                prompt = (
+                    "I didn’t hear the appointment date and time. "
+                    "Please say it again, for example, 'October 8 at 9:30 AM'. "
+                    "Or type month, day, hour, and minute then press pound."
+                )
+                resp.append(make_gather(prompt, input="speech dtmf"))
+                resp.redirect("/voice")
+                return str(resp)
+            else:
+                # 3rd silent attempt → hang up
+                resp.say(gpt_speak("I'm sorry, I still didn't get your appointment time. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
-            resp.append(make_gather(PROMPT_NEED_BOTH, input="speech dtmf"))
-            return str(resp)
+
         session_data[call_sid].pop("silence_time", None)
 
         # ------------------------------------------------------------------
-        # 🧩 Inline helpers
+        # 🧩 Helpers
         # ------------------------------------------------------------------
         def _extract_day_time(s: str) -> tuple:
-            """Extracts 'October 8 at 9 AM' → ('October 8', '9 AM')"""
+            """Extract 'October 8 at 9 AM' → ('October 8', '9 AM')"""
             if not s:
                 return ("", "")
-            s = s.lower().replace("number", "").replace("num", "").replace("no.", "")
+            s = s.lower()
             s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s)
             s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s)
             s = _re.sub(r"\bat\s*[.,]?\s+", " at ", s)
             s = _re.sub(r"[!?;]+", "", s)
             s = _re.sub(r"\s+", " ", s).strip()
             s = s.replace(" at noon", " at 12 pm").replace(" at midnight", " at 12 am")
-
-            # Common STT misreads: "10 to 12" → "october 12"
             MONTH_FIXES = {r"\b10\s*to\s*12\b": "october 12", r"\b9\s*to\s*12\b": "september 12"}
             for pat, repl in MONTH_FIXES.items():
                 s = _re.sub(pat, repl, s)
-
             if " at " in s:
                 day, timep = s.split(" at ", 1)
                 return (day.strip().rstrip(","), timep.strip())
@@ -3534,7 +3584,7 @@ def voice():
             return ("", "")
 
         def _build_slot(day_str: str, time_str: str) -> tuple:
-            """Convert 'October 8' + '9 AM' → (start_utc, end_utc)"""
+            """Convert parsed day/time → UTC start & end ISO strings"""
             tz_name = globals().get("CLINIC_TZ", "America/Chicago")
             tz_local = _pytz.timezone(tz_name)
             dur = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
@@ -3544,21 +3594,18 @@ def voice():
             default_base = datetime(today.year, today.month, today.day, 9, 0, 0)
             parsed = _dtparse(combined, default=default_base, fuzzy=True)
 
-            # if no AM/PM and hour == 12 → default to PM
+            # Default noon → PM if no AM/PM mentioned
             if not _re.search(r"(am|pm)", combined, _re.IGNORECASE) and parsed.hour == 12:
                 parsed = parsed.replace(hour=12)
 
-            # if no tzinfo, localize
             if parsed.tzinfo is None:
                 parsed = tz_local.localize(parsed)
             else:
                 parsed = parsed.astimezone(tz_local)
 
-            # fill year if missing
             if not _re.search(r"\b\d{4}\b", combined):
                 parsed = parsed.replace(year=today.year)
 
-            # reject Sundays or non-working days
             working_days = globals().get("WORKING_DAYS", (0, 1, 2, 3, 4, 5))
             if parsed.weekday() not in working_days:
                 raise ValueError("invalid_weekday")
@@ -3567,62 +3614,58 @@ def voice():
             end_local = start_local + timedelta(minutes=dur)
             return (
                 start_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z"),
-                end_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
+                end_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z"),
             )
 
         # ------------------------------------------------------------------
-        # 🧠 Parse either DTMF or speech
+        # 🧠 Parse input (speech or DTMF)
         # ------------------------------------------------------------------
-        if raw_dtmf:
-            digits = _re.sub(r"\D", "", raw_dtmf)
-            debug_print(f"ask_time_date: 📟 DTMF entered → {digits}")
-            try:
+        appointment_start, appointment_end = None, None
+        try:
+            if raw_dtmf:
+                digits = _re.sub(r"\D", "", raw_dtmf)
+                debug_print(f"ask_time_date: 📟 DTMF entered → {digits}")
                 today = _date_local.today()
                 if len(digits) >= 8:  # MMDDHHMM
                     mm, dd, hh, mn = int(digits[0:2]), int(digits[2:4]), int(digits[4:6]), int(digits[6:8])
                     day_str = f"{today.year}-{mm:02d}-{dd:02d}"
                     time_str = f"{hh}:{mn:02d}"
-                elif len(digits) == 4:  # HHMM only → assume today
+                elif len(digits) == 4:  # HHMM only
                     day_str = today.strftime("%Y-%m-%d")
                     hh, mn = int(digits[0:2]), int(digits[2:4])
                     time_str = f"{hh}:{mn:02d}"
                 else:
                     raise ValueError("invalid_dtmf_format")
 
-                # assume PM if hour == 12 and no AM/PM info
-                if hh == 12:
+                if hh == 12:  # default PM if ambiguous
                     time_str = f"{hh}:{mn:02d} PM"
 
                 appointment_start, appointment_end = _build_slot(day_str, time_str)
-                debug_print(f"ask_time_date: ⏰ Built slot from DTMF → Start={appointment_start}, End={appointment_end}")
-            except Exception as e:
-                debug_print(f"ask_time_date: ❌ DTMF parse failed → {e}")
-                resp.append(make_gather(PROMPT_NEED_BOTH, input="speech dtmf"))
-                return str(resp)
-        else:
-            day_part, time_part = _extract_day_time(raw_speech)
-            if not day_part or not time_part:
-                resp.append(make_gather(PROMPT_NEED_BOTH))
-                return str(resp)
-            try:
-                appointment_start, appointment_end = _build_slot(day_part, time_part)
-                debug_print(f"ask_time_date: ⏰ Built slot from speech → Start={appointment_start}, End={appointment_end}")
-            except ValueError as e:
-                err = str(e)
-                if "invalid_weekday" in err:
-                    resp.append(make_gather(PROMPT_NEED_VALID_DAY))
-                else:
+            else:
+                day_part, time_part = _extract_day_time(raw_speech)
+                if not day_part or not time_part:
                     resp.append(make_gather(PROMPT_NEED_BOTH))
-                resp.redirect("/voice")
-                return str(resp)
+                    return str(resp)
+                appointment_start, appointment_end = _build_slot(day_part, time_part)
+
+            debug_print(f"ask_time_date: ⏰ Built slot → Start={appointment_start}, End={appointment_end}")
+        except ValueError as e:
+            err = str(e)
+            debug_print(f"ask_time_date: ❌ parse/build error → {err}")
+            if "invalid_weekday" in err:
+                resp.append(make_gather(PROMPT_NEED_VALID_DAY))
+            else:
+                resp.append(make_gather(PROMPT_NEED_BOTH))
+            resp.redirect("/voice")
+            return str(resp)
 
         # ------------------------------------------------------------------
-        # 🕒 Check if in the past
+        # ⏳ Reject past dates — offer alternatives
         # ------------------------------------------------------------------
         now_utc = datetime.utcnow().replace(tzinfo=_pytz.UTC)
         start_dt = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
         if start_dt <= now_utc:
-            debug_print("ask_time_date: 🕒 requested time is in the past → suggest alternatives")
+            debug_print("ask_time_date: 🕒 requested time is in the past → suggesting alternatives")
             alts = get_next_available_slots(calendar_id, creds, from_start_iso=appointment_end, limit=3) or []
             options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
             prompt = f"That time has already passed. Would you like {options}?" if options else PROMPT_PAST_TIME
@@ -3630,7 +3673,7 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # Check availability (delegates deep validation to get_next_available_slots)
+        # 🔍 Check availability
         # ------------------------------------------------------------------
         try:
             slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
@@ -3647,7 +3690,7 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # ✅ Slot available — proceed to booking
+        # ✅ Slot available — continue booking
         # ------------------------------------------------------------------
         session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
         reschedule_flag = session_data.get(call_sid, {}).get("reschedule_after_cancel", False)
@@ -3665,7 +3708,6 @@ def voice():
         phone_e164 = cust.get("phone_e164") or session_data[call_sid].get("phone_e164")
         dob = cust.get("dob") or session_data[call_sid].get("dob")
 
-        # Missing info collection
         if not phone_e164 or not dob:
             session_data[call_sid]["stage"] = "collect_phone" if not phone_e164 else "collect_dob"
             prompt = "Please say your 10-digit phone number." if not phone_e164 else "Please say your date of birth, for example, 'July third 1990'."
@@ -3673,7 +3715,6 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # Customer lookup
         try:
             found = customer_search(phone_number=phone_e164, dob=dob, country="US")
             debug_print(f"ask_time_date: 🔎 customer_search(phone={phone_e164}, dob={dob}) → {found}")
@@ -3685,6 +3726,7 @@ def voice():
         debug_print(f"ask_time_date: 🎯 Next stage → {session_data[call_sid]['stage']}")
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
