@@ -1,4 +1,4 @@
-# update  10/06/25 time_saved  reshedule is under test
+# update  10/07/25 time_saved  collect_dob under test
 #  
 # =========================
 # Standard library imports
@@ -3314,7 +3314,7 @@ def voice():
         debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
 
         # ------------------------------------------------------------------
-        # 🔇 Silence handling — improved
+        # 🔇 Silence handling
         # ------------------------------------------------------------------
         if not dtmf_digits and not speech_text:
             tries = session_data[call_sid].get("silence_dob", 0) + 1
@@ -3322,31 +3322,24 @@ def voice():
             debug_print(f"collect_dob: 🤐 no input; silence retries={tries}")
 
             if tries < 3:
-                # 🗣️ Friendly re-prompt
                 g = make_gather(
-                    "I didn’t hear your date of birth. "
-                    "Please say it again, for example, 'July 3 1956'. "
+                    "I didn’t hear your date of birth. Please say it again, for example, 'July 3 1956'. "
                     "Or you can enter it using your keypad: month, day, and year, then press pound.",
                     input="speech dtmf",
                 )
                 resp.append(g)
-                try:
-                    resp.redirect(url_for("voice"))
-                except Exception:
-                    resp.redirect("/voice")
+                resp.redirect("/voice")
                 return str(resp)
             else:
-                # 😔 Give up after 3 silent tries
                 resp.say(gpt_speak("Sorry, I couldn’t get your date of birth. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-        # Clear silence counter if input received
         session_data[call_sid].pop("silence_dob", None)
 
         # ------------------------------------------------------------------
-        # 1️⃣ KEYPAD path (preferred if provided)
+        # 1️⃣ Parse DOB from keypad or speech
         # ------------------------------------------------------------------
         dob_date = None
         if dtmf_digits:
@@ -3357,80 +3350,26 @@ def voice():
                     dob_date = date(yyyy, mm, dd)
                 except Exception:
                     dob_date = None
-            else:
-                dob_date = None
 
-            if dob_date is None:
-                r = session_data[call_sid].get("retry_dob", 0) + 1
-                session_data[call_sid]["retry_dob"] = r
-                debug_print(f"collect_dob: ❌ invalid keypad DOB '{dtmf_digits}' retry={r}")
-                g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
-                                input=("dtmf" if r >= 3 else "speech dtmf"))
-                resp.append(g)
-                try:
-                    resp.redirect(url_for("voice"))
-                except Exception:
-                    resp.redirect("/voice")
-                return str(resp)
-
-        # ------------------------------------------------------------------
-        # 2️⃣ SPEECH path (when no valid keypad DOB)
-        # ------------------------------------------------------------------
-        if dob_date is None:
-            t = speech_text
-            t = _re.sub(r"[.,;:]+$", "", t)
-            t = _re.sub(r"[,\.;:]", " ", t)
-            t = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=_re.IGNORECASE)
-            t = _re.sub(r"\s+", " ", t).strip()
-
-            only_digits = _re.sub(r"\D", "", t) or ""
-            if _re.fullmatch(r"\d{4}", only_digits):
-                r = session_data[call_sid].get("retry_dob", 0) + 1
-                session_data[call_sid]["retry_dob"] = r
-                debug_print(f"collect_dob: ❌ only year heard; retry_dob={r}")
-                g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
-                                input=("dtmf" if r >= 3 else "speech dtmf"))
-                resp.append(g)
-                try:
-                    resp.redirect(url_for("voice"))
-                except Exception:
-                    resp.redirect("/voice")
-                return str(resp)
-
-            said_year = bool(_re.search(r"\b\d{4}\b", t))
-            if not said_year:
-                r = session_data[call_sid].get("retry_dob", 0) + 1
-                session_data[call_sid]["retry_dob"] = r
-                debug_print(f"collect_dob: ❌ year missing in speech; retry_dob={r}")
-                g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
-                                input=("dtmf" if r >= 3 else "speech dtmf"))
-                resp.append(g)
-                try:
-                    resp.redirect(url_for("voice"))
-                except Exception:
-                    resp.redirect("/voice")
-                return str(resp)
-
+        if not dob_date and speech_text:
             try:
+                t = _re.sub(r"[.,;:]+$", "", speech_text)
+                t = _re.sub(r"[,\.;:]", " ", t)
+                t = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=_re.IGNORECASE)
+                t = _re.sub(r"\s+", " ", t).strip()
                 today = _date_local.today()
                 default_base = datetime(today.year, today.month, today.day, 9, 0, 0)
                 parsed = _dtparse(t, default=default_base, dayfirst=False, fuzzy=True)
                 dob_date = date(parsed.year, parsed.month, parsed.day)
             except Exception as e:
-                r = session_data[call_sid].get("retry_dob", 0) + 1
-                session_data[call_sid]["retry_dob"] = r
-                debug_print(f"collect_dob: ❌ speech parse failed; retry_dob={r} reason={e}")
-                g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
-                                input=("dtmf" if r >= 3 else "speech dtmf"))
+                debug_print(f"collect_dob: ❌ speech parse failed; reason={e}")
+                g = make_gather(PROMPT_REPEAT_FULL, input="speech dtmf")
                 resp.append(g)
-                try:
-                    resp.redirect(url_for("voice"))
-                except Exception:
-                    resp.redirect("/voice")
+                resp.redirect("/voice")
                 return str(resp)
 
         # ------------------------------------------------------------------
-        # 3️⃣ Validate DOB range (1900..today)
+        # 2️⃣ Validate DOB range (1900..today)
         # ------------------------------------------------------------------
         try:
             today = _date_local.today()
@@ -3438,20 +3377,14 @@ def voice():
             if not (min_date <= dob_date <= today):
                 raise ValueError(f"out of range: {dob_date.isoformat()}")
         except Exception as e:
-            r = session_data[call_sid].get("retry_dob", 0) + 1
-            session_data[call_sid]["retry_dob"] = r
-            debug_print(f"collect_dob: ⚠️ Validation error → {e} (retry={r})")
-            g = make_gather(PROMPT_FINAL_DTMF if r >= 3 else PROMPT_REPEAT_FULL,
-                            input=("dtmf" if r >= 3 else "speech dtmf"))
+            debug_print(f"collect_dob: ⚠️ Validation error → {e}")
+            g = make_gather(PROMPT_FINAL_DTMF, input="dtmf")
             resp.append(g)
-            try:
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
+            resp.redirect("/voice")
             return str(resp)
 
         # ------------------------------------------------------------------
-        # 4️⃣ Success → Store and advance
+        # 3️⃣ Store DOB and mirror
         # ------------------------------------------------------------------
         iso_dob = dob_date.strftime("%Y-%m-%d")
         session_data[call_sid]["customer"]["dob"] = iso_dob
@@ -3460,22 +3393,90 @@ def voice():
         debug_print(f"collect_dob: ✅ Stored DOB → {iso_dob} (mirrored into cancel context)")
 
         # ------------------------------------------------------------------
-        # 🔁 Reschedule or normal flow
+        # 4️⃣ Customer lookup after DOB
         # ------------------------------------------------------------------
-        if session_data.get(call_sid, {}).get("reschedule_after_cancel"):
-            debug_print("collect_dob: 🔁 reschedule_after_cancel=True → jump to ask_time_date")
-            session_data[call_sid]["stage"] = "ask_time_date"
-            g = make_gather("Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 AM'.")
-        else:
-            session_data[call_sid]["stage"] = "ask_time_date"
-            g = make_gather("Thanks. Please say the appointment date and time, for example, 'September 12 at 10 AM'.")
+        phone_e164 = session_data[call_sid]["customer"].get("phone_e164") or session_data[call_sid].get("phone_e164")
+        found = False
+        if phone_e164 and iso_dob:
+            try:
+                found = customer_search(phone_number=phone_e164, dob=iso_dob, country="US")
+                debug_print(f"collect_dob: 🔎 customer_search(phone={phone_e164}, dob={iso_dob}) → {found}")
+            except Exception as e:
+                debug_print(f"collect_dob: ⚠️ customer_search error → {e}")
 
-        resp.append(g)
-        try:
-            resp.redirect(url_for("voice"))
-        except Exception:
+        if not found:
+            # Ask if they are a new or existing customer
+            session_data[call_sid]["stage"] = "verify_customer_type"
+            g = make_gather(
+                "We couldn’t find a record with that phone number and date of birth. "
+                "If you are a new customer, press 1. If you are an existing customer, press 2.",
+                input="dtmf",
+            )
+            resp.append(g)
             resp.redirect("/voice")
+            return str(resp)
+
+        # ------------------------------------------------------------------
+        # 5️⃣ Continue (found = True)
+        # ------------------------------------------------------------------
+        session_data[call_sid]["stage"] = "ask_time_date"
+        g = make_gather(
+            "Thanks. Please say the appointment date and time, for example, 'October 12 at 9 AM'."
+        )
+        resp.append(g)
+        resp.redirect("/voice")
         return str(resp)
+
+    # ----------------------------------------------------------------------
+    # 🧩 NEW: Verify customer type (after DOB mismatch)
+    # ----------------------------------------------------------------------
+    elif stage == "verify_customer_type":
+        debug_print("verify_customer_type: 📍 Stage entered")
+        dtmf_digits = (request.values.get("Digits") or "").strip()
+
+        if not dtmf_digits:
+            g = make_gather(
+                "Please press 1 if you are a new customer or 2 if you are an existing customer.",
+                input="dtmf",
+            )
+            resp.append(g)
+            resp.redirect("/voice")
+            return str(resp)
+
+        if dtmf_digits == "1":
+            # New customer pressed 1 → but record not found → polite hang-up
+            resp.say(
+                gpt_speak(
+                    "I'm sorry, we don’t have any record with this phone number and date of birth. "
+                    "Please contact the clinic to register first."
+                ),
+                VOICE,
+            )
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
+
+        elif dtmf_digits == "2":
+            # Existing customer → proceed anyway (manual or missed match)
+            debug_print("verify_customer_type: pressed 2 → continuing to ask_time_date")
+            session_data[call_sid]["stage"] = "ask_time_date"
+            g = make_gather(
+                "Okay, please say the appointment date and time, for example, 'October 8 at 9:30 AM'.",
+                input="speech dtmf",
+            )
+            resp.append(g)
+            resp.redirect("/voice")
+            return str(resp)
+
+        else:
+            g = make_gather(
+                "Invalid choice. Press 1 if you are a new customer, or 2 if you are an existing customer.",
+                input="dtmf",
+            )
+            resp.append(g)
+            resp.redirect("/voice")
+            return str(resp)
+
 
 
 
