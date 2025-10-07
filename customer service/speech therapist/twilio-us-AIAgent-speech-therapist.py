@@ -142,6 +142,19 @@ from flask import Flask, request, url_for
 # requirements.txt
 # ----------------------------------------------------
 
+# ----------------------------------------------------------------------
+# 🌍 Global speech hints for Arabic + English doctor names
+# Used across multiple stages (booking, collect_first_name, etc.)
+# ----------------------------------------------------------------------
+ARABIC_NAME_HINTS = """
+    Ahmed, Ahmad, Mohamed, Muhammad, Faten, Fatma, Mariam, Aisha, Lina, Huda,
+    Nour, Dalia, Layla, Youssef, Ali, Hassan, Khaled, Fady, Karim, Samir,
+    Taha, Salama, Rashed, Mostafa, Abdallah, Ramadan, Said, Farid, Kamel,
+    Lotfi, Saleh, Mansour, Ismail, Mahmoud, Omar, Fawzi, Zaki, Hussein, Attia, Morsi
+"""
+
+
+
 app = Flask(__name__)
 app.url_map.strict_slashes = False
 load_dotenv()
@@ -293,17 +306,21 @@ def make_gather(
       - Accepts next_stage and appends it as '?stage=...' to action.
       - Returns the <Gather> so callers can `resp.append(make_gather(...))`.
 
-    Notes on timing:
-      - timeout controls DTMF first-digit and between-digit wait.
-      - speech_timeout controls how long STT waits for silence; can be "auto" or seconds.
+    Notes:
+      - timeout controls DTMF first-digit / inter-digit wait.
+      - speech_timeout controls how long STT waits for silence ("auto" or seconds).
+      - language can be 'en-US', 'ar-EG', etc.
+      - hints can include multiline Arabic/English name lists.
     """
-    # Normalize speechTimeout for Twilio (int or "auto")
-    _speech_timeout = speech_timeout
-    if isinstance(_speech_timeout, str) and _speech_timeout.isdigit():
-        _speech_timeout = int(_speech_timeout)
-
+    # Normalize speechTimeout
+    _speech_timeout = int(speech_timeout) if str(speech_timeout).isdigit() else speech_timeout
     _num_digits = num_digits if (isinstance(num_digits, int) and num_digits > 0) else None
     _action = _append_stage_to_action(action, next_stage)
+
+    # 🧠 Normalize hints (flatten multiline → comma-separated)
+    _hints = None
+    if hints:
+        _hints = ", ".join(line.strip() for line in hints.splitlines() if line.strip())
 
     try:
         g = Gather(
@@ -314,21 +331,26 @@ def make_gather(
             speechTimeout=_speech_timeout,
             finishOnKey=finish_on_key,
             numDigits=_num_digits,
-            hints=hints,
+            hints=_hints,
             language=language,
             bargeIn=barge_in,
         )
         g.say(gpt_speak(prompt), voice=VOICE)
         return g
+
     except Exception as e:
-        # Soft fallback: at least speak the prompt so the flow doesn't crash
+        debug_print(f"make_gather: ⚠️ failed to build Gather → {e}")
+        # Fallback to ensure the prompt still speaks
         try:
             g = Gather(input=input, action=_action, method=method)
             g.say(gpt_speak(prompt), voice=VOICE)
             return g
         except Exception:
-            debug_print(f"make_gather: failed to build Gather → {e}")
+            debug_print(f"make_gather: ❌ secondary fallback failed → {e}")
             return None
+
+
+
 
 
 def make_gather_dtmf(
@@ -354,6 +376,8 @@ def make_gather_dtmf(
         action=action,
         method=method,
     )
+
+
 
 
 # Prefer speech+DTMF first; escalate to DTMF-only when caller struggles.
@@ -2957,22 +2981,18 @@ def voice():
 
     elif stage == "booking":
         # ----------------------------------------------------------------------
-        # 📍 Booking flow: the caller has just been asked to name a doctor.
-        # Accepts either speech or single-digit DTMF input (from doctor_dtmf_map).
+        # 📍 Booking flow: ask caller to name or select a doctor.
+        # Accepts both speech and single-digit DTMF input.
+        # Supports Arabic and English names.
         # ----------------------------------------------------------------------
 
-        if "retry_booking" not in session_data[call_sid]:
-            session_data[call_sid]["retry_booking"] = 0
+        session_data.setdefault(call_sid, {}).setdefault("retry_booking", 0)
 
-        # Safe punctuation constant (no string import)
         _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
 
-        # Pull DTMF and speech
-        try:
-            dtmf_digits = (request.values.get("Digits") or "").strip()
-        except Exception:
-            dtmf_digits = ""
-        spoken_text = (speech_result or "").lower().strip()
+        # Inputs
+        dtmf_digits = (request.values.get("Digits") or "").strip()
+        spoken_text = (speech_result or "").strip().lower()
         spoken_clean = spoken_text.translate(str.maketrans('', '', _PUNCT)).strip()
 
         print(f"📻 booking :speech_result: {spoken_clean} DTMF='{dtmf_digits}'")
@@ -2980,13 +3000,12 @@ def voice():
         matched_id = None
 
         # ------------------------------------------------------------------
-        # 🔢 Path 1: Direct keypad digit lookup
+        # 🔢 Path 1: Direct DTMF digit → doctor_dtmf_map
         # ------------------------------------------------------------------
         if dtmf_digits and "doctor_dtmf_map" in session_data[call_sid]:
             doctor_map = session_data[call_sid]["doctor_dtmf_map"]
             chosen_name = doctor_map.get(dtmf_digits)
             if chosen_name:
-                # Find doctor_id by name match
                 for doc_id, friendly in googleid_dr_name_map.items():
                     if friendly.lower() == chosen_name.lower():
                         matched_id = doc_id
@@ -2994,32 +3013,41 @@ def voice():
                         break
 
         # ------------------------------------------------------------------
-        # 🎙️ Path 2: Speech-based name lookup
+        # 🎙️ Path 2: Speech-based matching (Arabic + English)
         # ------------------------------------------------------------------
         if matched_id is None:
-            # Skip obvious junk inputs
             junk_inputs = {
                 "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
                 "yo", "test", "1", "yes", "no", "i know", "huh", "what", "okay", "ok",
                 "bye", "goodbye", ""
             }
             if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
-                print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting without retry")
+                print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting")
                 doctor_list_str = ", ".join(googleid_dr_name_map.values())
-                gather = make_gather("Please say the name of the doctor you'd like to book with.", 
-                                    hints=doctor_list_str, num_digits=1)
+                gather = make_gather(
+                    "Please say the name of the doctor you'd like to book with.",
+                    input="speech dtmf",
+                    language="ar-EG",
+                    hints=f"{doctor_list_str}, {ARABIC_NAME_HINTS}",
+                    num_digits=1,
+                    timeout=6,
+                    speech_timeout="5",
+                    barge_in=True,
+                )
                 resp.append(gather)
                 return str(resp)
 
-            # 🔍 Partial token-based match
+            # 🔍 Token-based partial matching
             partial_matches = []
             spoken_tokens = set(spoken_clean.split())
             for doc_id, friendly in googleid_dr_name_map.items():
                 friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
                 friendly_tokens = set(friendly_clean.split())
-                if (spoken_clean in friendly_clean or
-                    friendly_clean in spoken_clean or
-                    spoken_tokens & friendly_tokens):
+                if (
+                    spoken_clean in friendly_clean
+                    or friendly_clean in spoken_clean
+                    or spoken_tokens & friendly_tokens
+                ):
                     partial_matches.append((doc_id, friendly))
 
             if len(partial_matches) == 1:
@@ -3030,33 +3058,46 @@ def voice():
                 matched_id = partial_matches[0][0]
 
         # ------------------------------------------------------------------
-        # ❌ Retry if no match
+        # ❌ Retry if still no match
         # ------------------------------------------------------------------
         if matched_id is None:
-            debug_print(f"❌ No doctor match for: '{spoken_clean or dtmf_digits}'")
             session_data[call_sid]["retry_booking"] += 1
             retries = session_data[call_sid]["retry_booking"]
+            debug_print(f"❌ No doctor match for: '{spoken_clean or dtmf_digits}' retry={retries}")
 
             if retries >= 3:
-                resp.say(gpt_speak(
-                    "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
-                    "Please call us again later."
-                ), VOICE)
+                resp.say(
+                    gpt_speak(
+                        "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
+                        "Please call us again later."
+                    ),
+                    VOICE,
+                )
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
             retry_prompt = (
-                f"I couldn't match that to a doctor. Available doctors are: {doctor_list_str}. "
-                "Please say the doctor name or press the number."
+                f"I couldn't match that to a doctor. "
+                f"Available doctors are: {doctor_list_str}. "
+                "Please say the doctor's name or press the number."
             )
-            gather = make_gather(retry_prompt, hints=doctor_list_str, num_digits=1)
+            gather = make_gather(
+                retry_prompt,
+                input="speech dtmf",
+                language="ar-EG",
+                hints=f"{doctor_list_str}, {ARABIC_NAME_HINTS}",
+                num_digits=1,
+                timeout=6,
+                speech_timeout="5",
+                barge_in=True,
+            )
             resp.append(gather)
             return str(resp)
 
         # ------------------------------------------------------------------
-        # ✅ Success → Store doctor, move to phone collection
+        # ✅ Success → store doctor & move forward
         # ------------------------------------------------------------------
         session_data[call_sid]["doctor_id"] = matched_id
         session_data[call_sid]["stage"] = "collect_phone"
@@ -3067,9 +3108,20 @@ def voice():
             "Please say or enter your phone number including area code."
         )
 
-        gather = make_gather(phone_prompt, num_digits=10)
+        gather = make_gather(
+            phone_prompt,
+            input="speech dtmf",
+            num_digits=10,
+            timeout=8,
+            speech_timeout="6",
+            barge_in=True,
+        )
         resp.append(gather)
         return str(resp)
+
+
+
+
 
 
 
@@ -3754,22 +3806,28 @@ def voice():
 
 
 
+
+
+
     # ===== collect_first_name (stage) =====
     elif stage == "collect_first_name":
         # ----------------------------------------------------------------------
         # 🎯 Goal:
-        #   - Capture FIRST name via speech.
-        #   - Handle silence separately (up to 3 silent retries).
-        #   - Clean & lightly validate (letters/'/- only).
-        #   - Store into session_data[call_sid]["customer"]["first_name"].
+        #   - Capture FIRST name via speech or keypad (DTMF).
+        #   - Handle silence separately (up to 3 retries before hangup).
+        #   - Clean & normalize (supports Arabic + English).
+        #   - Store under session_data[call_sid]["customer"]["first_name"].
         #   - Advance → collect_last_name.
         # ----------------------------------------------------------------------
         session_data.setdefault(call_sid, {}).setdefault("customer", {})
-        raw = (speech_result or "").strip()
-        debug_print(f"collect_first_name: raw='{raw}'")
+        raw_speech = (speech_result or "").strip()
+        raw_dtmf = (request.values.get("Digits") or "").strip()
+        debug_print(f"collect_first_name: speech='{raw_speech}', dtmf='{raw_dtmf}'")
 
-        # 🔇 Silent mode: nothing heard → re-ask (no hangup until 3 tries)
-        if not raw:
+        # -------------------------------
+        # 🔇 Silence Handling
+        # -------------------------------
+        if not raw_speech and not raw_dtmf:
             tries = session_data[call_sid].get("silence_first_name", 0) + 1
             session_data[call_sid]["silence_first_name"] = tries
             debug_print(f"collect_first_name: 🤐 silence; tries={tries}")
@@ -3778,68 +3836,96 @@ def voice():
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
-            gather = make_gather("I didn’t hear your first name. Please say just your first name.")
+
+            # Re-prompt quickly
+            gather = make_gather(
+                "I didn’t hear your first name. You can say your name or type it using the keypad.",
+                input="speech dtmf",
+                language="ar-EG",  # 🌍 Arabic speech model
+                hints=f"{ARABIC_NAME_HINTS}",
+                timeout=6,
+                speech_timeout="5",
+                finish_on_key="#",
+                barge_in=True,
+            )
             resp.append(gather)
-            try:
-                #from flask import url_for
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
+            resp.redirect("/voice")
             return str(resp)
 
-        # We heard something → clear silence counter
+        # ✅ Clear silence counter once input arrives
         session_data[call_sid].pop("silence_first_name", None)
 
-        # 🧽 Clean & normalize (remove punctuation, compress spaces; ignore fillers)
-        #import string  # ensure available; you already import at top, but safe to re-import
-        cleaned = raw.translate(str.maketrans('', '', string.punctuation)).strip()
-        cleaned = _re.sub(r"\s+", " ", cleaned)
+        # -------------------------------
+        # 🧾 Parse & Clean Input
+        # -------------------------------
+        import string
+        if raw_dtmf:
+            # Keypad mode: accept only digits mapped to letters
+            name_digits = _re.sub(r"\D", "", raw_dtmf)
+            first_name = f"User{name_digits[-3:]}" if name_digits else "Unknown"
+            debug_print(f"collect_first_name: 🧮 from keypad → {first_name}")
+        else:
+            cleaned = raw_speech.translate(str.maketrans('', '', string.punctuation)).strip()
+            cleaned = _re.sub(r"\s+", " ", cleaned)
+            # Drop filler phrases like "my name is", "I am", etc.
+            cleaned = _re.sub(r"\b(?:my name is|this is|i am|i'm|it is|it's)\b\s*", "", cleaned, flags=_re.IGNORECASE)
+            # Split and take first token
+            tokens = cleaned.split()
+            first_name = tokens[0] if tokens else ""
 
-        # Heuristics: drop leading fillers like "my name is", "this is", "i am", "i'm", "it's"
-        # Keep it simple: if a filler exists, take tokens AFTER it.
-        lower = cleaned.lower()
-        filler_pat = _re.compile(r"\b(?:my name is|this is|i am|i'm|it is|it's)\b\s*", _re.IGNORECASE)
-        cleaned = filler_pat.sub("", cleaned).strip()
-
-        # Take the first token as FIRST name (avoid multiple words here)
-        tokens = cleaned.split()
-        first_name = tokens[0] if tokens else ""
-
-        # ✅ Validate: letters, apostrophes or hyphens, 1–40 chars, no digits
-        if not first_name or not _re.fullmatch(r"[A-Za-z][A-Za-z'\-]{0,39}", first_name):
-            # Soft reprompt (up to 3 attempts)
+        # -------------------------------
+        # 🌐 Normalize & Validate
+        # -------------------------------
+        # Accept Arabic or Latin alphabet names
+        arabic_letters = r"\u0621-\u064A"  # Arabic Unicode range
+        name_pattern = rf"[A-Za-z{arabic_letters}][A-Za-z{arabic_letters}'\-\s]{{0,39}}"
+        if not first_name or not _re.fullmatch(name_pattern, first_name):
             r = session_data[call_sid].get("retry_first_name", 0) + 1
             session_data[call_sid]["retry_first_name"] = r
-            debug_print(f"collect_first_name: ❌ invalid first name '{first_name}' retry={r}")
+            debug_print(f"collect_first_name: ❌ invalid name '{first_name}' retry={r}")
             if r >= 3:
-                resp.say(gpt_speak("Sorry, I couldn’t capture your first name. Please call again later."), VOICE)
+                resp.say(gpt_speak("Sorry, I couldn’t capture your name. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
-            gather = make_gather("I didn't catch that clearly. Please say just your first name.")
+
+            # Re-ask (Arabic-friendly)
+            gather = make_gather(
+                "I didn't catch that clearly. Please say just your first name. You can also type it using the keypad.",
+                input="speech dtmf",
+                language="ar-EG",
+                hints=f"{ARABIC_NAME_HINTS}",
+                timeout=6,
+                speech_timeout="5",
+                finish_on_key="#",
+                barge_in=True,
+            )
             resp.append(gather)
-            try:
-                #from flask import url_for
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
+            resp.redirect("/voice")
             return str(resp)
 
-        # Store & advance
+        # -------------------------------
+        # ✅ Save & Continue
+        # -------------------------------
         session_data[call_sid]["customer"]["first_name"] = first_name
         session_data[call_sid]["stage"] = "collect_last_name"
-        # Reset name retry counter on success
         session_data[call_sid].pop("retry_first_name", None)
         debug_print(f"collect_first_name: ✅ saved first_name='{first_name}' → next=collect_last_name")
 
-        gather = make_gather("Thank you. Now, what is your last name?")
+        gather = make_gather(
+            f"Thank you {first_name}. Now, what is your last name?",
+            input="speech dtmf",
+            language="ar-EG",
+            hints=f"{ARABIC_NAME_HINTS}",
+            timeout=6,
+            speech_timeout="5",
+            finish_on_key="#",
+            barge_in=True,
+        )
         resp.append(gather)
-        try:
-            #from flask import url_for
-            resp.redirect(url_for("voice"))
-        except Exception:
-            resp.redirect("/voice")
+        resp.redirect("/voice")
         return str(resp)
+
     
 
 
@@ -3849,124 +3935,118 @@ def voice():
     elif stage == "collect_last_name":
         # ----------------------------------------------------------------------
         # 🎯 Goal:
-        #   - Capture LAST name via speech.
-        #   - Handle silence separately (up to 3 silent retries).
-        #   - Clean & lightly validate (letters/spaces/'/-; allow multi-token like "van dyke").
-        #   - Require at least 2 letters to avoid short names like "K."
-        #   - Store into session_data[call_sid]["customer"]["last_name"].
+        #   - Capture LAST name via speech or keypad (DTMF).
+        #   - Handle silence separately (up to 3 retries).
+        #   - Support Arabic + English names.
+        #   - Store → session_data[call_sid]["customer"]["last_name"].
         #   - Advance → collect_address.
         # ----------------------------------------------------------------------
-
-        # ---------- debug hook (prefer using_debug_print if present) ----------
-        _udp = globals().get("using_debug_print")
-        def _dbg(event: str, **kw):
-            try:
-                if callable(_udp):
-                    _udp(event, **kw)
-                else:
-                    # fallback to regular debug_print
-                    msg = ", ".join(f"{k}={kw[k]!r}" for k in kw)
-                    debug_print(f"{event}: {msg}")
-            except Exception as e:
-                try: debug_print(f"collect_last_name: ⚠️ debug hook error → {e!r}")
-                except: pass
-
         session_data.setdefault(call_sid, {}).setdefault("customer", {})
-        raw = (speech_result or "").strip()
-        debug_print(f"collect_last_name: raw='{raw}'")
-        _dbg("collect_last_name.entry",
-            call_sid=call_sid,
-            raw=raw,
-            stage=session_data[call_sid].get("stage"),
-            prior_last_name=session_data[call_sid]["customer"].get("last_name"))
+        raw_speech = (speech_result or "").strip()
+        raw_dtmf = (request.values.get("Digits") or "").strip()
+        debug_print(f"collect_last_name: speech='{raw_speech}', dtmf='{raw_dtmf}'")
 
-        # 🔇 Silent mode
-        if not raw:
+        # -------------------------------
+        # 🔇 Silence handling
+        # -------------------------------
+        if not raw_speech and not raw_dtmf:
             tries = session_data[call_sid].get("silence_last_name", 0) + 1
             session_data[call_sid]["silence_last_name"] = tries
             debug_print(f"collect_last_name: 🤐 silence; tries={tries}")
-            _dbg("collect_last_name.silence", tries=tries)
-
             if tries >= 3:
                 resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
-                _dbg("collect_last_name.hangup_silence_limit")
                 return str(resp)
 
-            gather = make_gather("I didn’t hear your last name. Please say your last name now.")
+            # Prompt again quickly
+            gather = make_gather(
+                "I didn’t hear your last name. Please say or type it now.",
+                input="speech dtmf",
+                language="ar-EG",
+                hints=f"{ARABIC_NAME_HINTS}",
+                timeout=6,
+                speech_timeout="5",
+                finish_on_key="#",
+                barge_in=True,
+            )
             resp.append(gather)
-            try:
-                resp.redirect(url_for("voice"))
-                _dbg("collect_last_name.redirect", target="url_for('voice')")
-            except Exception:
-                resp.redirect("/voice")
-                _dbg("collect_last_name.redirect", target="/voice", fallback=True)
+            resp.redirect("/voice")
             return str(resp)
 
-        # ✅ We heard something → clear silence counter
+        # ✅ clear silence flag
         session_data[call_sid].pop("silence_last_name", None)
 
-        # ✨ Clean: keep apostrophes and hyphens
-        #import string
-        punct_keep = "'-"
-        trans_table = str.maketrans('', '', "".join(ch for ch in string.punctuation if ch not in punct_keep))
-        cleaned = raw.translate(trans_table).strip()
-        cleaned = _re.sub(r"\s+", " ", cleaned)
-        _dbg("collect_last_name.cleaned", cleaned=cleaned)
+        # -------------------------------
+        # 🧾 Parse & Clean
+        # -------------------------------
+        import string
+        if raw_dtmf:
+            digits = _re.sub(r"\D", "", raw_dtmf)
+            last_name = f"Family{digits[-3:]}" if digits else "Unknown"
+            debug_print(f"collect_last_name: 🧮 from keypad → {last_name}")
+        else:
+            punct_keep = "'-"
+            cleaned = raw_speech.translate(
+                str.maketrans('', '', "".join(ch for ch in string.punctuation if ch not in punct_keep))
+            ).strip()
+            cleaned = _re.sub(r"\s+", " ", cleaned)
+            # drop fillers like "my last name is", "family name"
+            cleaned = _re.sub(r"\b(?:my last name is|family name is|this is|i am|i'm|it's)\b\s*", "", cleaned, flags=_re.IGNORECASE)
+            tokens = cleaned.split()
+            last_name = tokens[0] if tokens else ""
 
-        # ✅ Enhanced validation
-        has_letter = bool(_re.search(r"[A-Za-z]", cleaned))
-        allowed_chars = bool(_re.fullmatch(r"[A-Za-z'\- ]{1,60}", cleaned)) if cleaned else False
-        min_len_ok = len(cleaned) >= 2
-        valid = bool(cleaned and has_letter and allowed_chars and min_len_ok)
-        _dbg("collect_last_name.validation",
-            has_letter=has_letter,
-            allowed_chars=allowed_chars,
-            cleaned_len=len(cleaned),
-            min_len_ok=min_len_ok,
-            valid=valid)
-
+        # -------------------------------
+        # 🌐 Validate (Arabic + English)
+        # -------------------------------
+        arabic_letters = r"\u0621-\u064A"
+        pattern = rf"[A-Za-z{arabic_letters}][A-Za-z{arabic_letters}'\-\s]{{1,59}}"
+        valid = bool(last_name and _re.fullmatch(pattern, last_name))
         if not valid:
             r = session_data[call_sid].get("retry_last_name", 0) + 1
             session_data[call_sid]["retry_last_name"] = r
-            debug_print(f"collect_last_name: ❌ invalid last name '{cleaned}' retry={r}")
-            _dbg("collect_last_name.invalid", cleaned=cleaned, retry=r)
-
+            debug_print(f"collect_last_name: ❌ invalid last name '{last_name}' retry={r}")
             if r >= 3:
                 resp.say(gpt_speak("Sorry, I couldn’t capture your last name. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
-                _dbg("collect_last_name.hangup_invalid_limit")
                 return str(resp)
 
-            gather = make_gather("Sorry, I didn't catch your last name. Please repeat it clearly.")
+            gather = make_gather(
+                "Sorry, I didn't catch your last name. Please say it again clearly, or type it.",
+                input="speech dtmf",
+                language="ar-EG",
+                hints=f"{ARABIC_NAME_HINTS}",
+                timeout=6,
+                speech_timeout="5",
+                finish_on_key="#",
+                barge_in=True,
+            )
             resp.append(gather)
-            try:
-                resp.redirect(url_for("voice"))
-                _dbg("collect_last_name.redirect", target="url_for('voice')", reason="retry_invalid")
-            except Exception:
-                resp.redirect("/voice")
-                _dbg("collect_last_name.redirect", target="/voice", fallback=True, reason="retry_invalid")
+            resp.redirect("/voice")
             return str(resp)
 
-        # ✅ Success → store last name & advance
-        session_data[call_sid]["customer"]["last_name"] = cleaned
+        # -------------------------------
+        # ✅ Save & Advance
+        # -------------------------------
+        session_data[call_sid]["customer"]["last_name"] = last_name
         session_data[call_sid]["stage"] = "collect_address"
         session_data[call_sid].pop("retry_last_name", None)
-        debug_print(f"collect_last_name: ✅ saved last_name='{cleaned}' → next=collect_address")
-        _dbg("collect_last_name.store",
-            last_name=cleaned,
-            next_stage="collect_address")
+        debug_print(f"collect_last_name: ✅ saved last_name='{last_name}' → next=collect_address")
 
-        gather = make_gather("Got it. What is your full address, please?")
+        gather = make_gather(
+            f"Thank you {session_data[call_sid]['customer'].get('first_name','') or ''} {last_name}. "
+            "Please tell me your full address.",
+            input="speech dtmf",
+            language="ar-EG",
+            hints=f"{ARABIC_NAME_HINTS}",
+            timeout=7,
+            speech_timeout="5",
+            finish_on_key="#",
+            barge_in=True,
+        )
         resp.append(gather)
-        try:
-            resp.redirect(url_for("voice"))
-            _dbg("collect_last_name.redirect", target="url_for('voice')", reason="advance_to_collect_address")
-        except Exception:
-            resp.redirect("/voice")
-            _dbg("collect_last_name.redirect", target="/voice", fallback=True, reason="advance_to_collect_address")
+        resp.redirect("/voice")
         return str(resp)
 
 
@@ -4322,408 +4402,9 @@ def voice():
 
 
 
-    elif stage == "book_appt_confirm":
-        debug_print("book_appt_confirm: 📍 Stage entered")
+    
+    
 
-        # ----------------------------------------------------------------------
-        # 🔇 LOCALIZED SILENCE HANDLING FOR CONFIRM STAGE
-        # ----------------------------------------------------------------------
-        raw_speech = (speech_result or "").strip()
-        raw_dtmf   = (request.values.get("Digits") or "").strip()
-        if not raw_speech and not raw_dtmf:
-            silent_tries = session_data[call_sid].get("silence_book_appt_confirm", 0) + 1
-            session_data[call_sid]["silence_book_appt_confirm"] = silent_tries
-            debug_print(f"book_appt_confirm: 🤐 silence detected (tries={silent_tries})")
-
-            if silent_tries >= 3:
-                resp.say(gpt_speak("I'm still not hearing anything. Let's try again later."), VOICE)
-                resp.hangup()
-                return str(resp)
-
-            prompt = "Would you like to confirm your appointment now? You can say yes to continue."
-            resp.append(make_gather(prompt))
-            return str(resp)
-
-        # Ignore incidental speech/DTMF here — auto-book
-        if raw_speech or raw_dtmf:
-            debug_print("book_appt_confirm: 🛡️ ignoring incidental input at confirm stage")
-
-        # ---- Doctor info ----
-        doctor_id = session_data[call_sid].get("doctor_id")
-        if not doctor_id:
-            debug_print("book_appt_confirm: ❌ missing doctor_id → choose_doctor")
-            session_data[call_sid]["stage"] = "choose_doctor"
-            resp.append(make_gather("Which doctor would you like to see?"))
-            return str(resp)
-
-        doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
-
-        # ---- Appointment time ----
-        appt = session_data[call_sid].get("appointment_time", {}) or {}
-        appointment_start = appt.get("start")
-        appointment_end   = appt.get("end")
-        if not appointment_start:
-            debug_print("book_appt_confirm: ❌ missing appointment_start")
-            resp.say(gpt_speak("Appointment time is missing. Goodbye!"), VOICE)
-            resp.hangup()
-            return str(resp)
-
-        # Local-friendly formatting
-        tz_name = (globals().get("CLINIC_TZ") or "America/Chicago")
-        try:
-            tz = _pytz.timezone(tz_name)
-        except Exception:
-            tz = _pytz.timezone("America/Chicago")
-
-        try:
-            dt_utc   = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
-            dt_local = dt_utc.astimezone(tz)
-            try:
-                formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
-            except Exception:
-                formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
-        except Exception as e:
-            debug_print(f"book_appt_confirm: time format error → {e}")
-            resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
-            resp.hangup()
-            return str(resp)
-
-        # Compute end if missing (default 30m)
-        if not appointment_end:
-            try:
-                dur = None
-                for k in ("APPOINTMENT_DURATION_MINUTES", "SESSION_TIME", "SESSIUON_TIME"):
-                    v = globals().get(k)
-                    if v:
-                        try: dur = int(v); break
-                        except: pass
-                if dur not in (15, 30, 45, 60): dur = 30
-                end_dt = dt_utc + timedelta(minutes=dur)
-                appointment_end = end_dt.astimezone(_pytz.UTC).isoformat()
-            except Exception as e:
-                debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
-                resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
-                resp.hangup()
-                return str(resp)
-
-        # ---- Customer info ----
-        customer         = session_data[call_sid].get("customer", {}) or {}
-        customer_name    = (customer.get("name") or "").strip()
-        first_name       = (customer.get("first_name") or "").strip()
-        last_name        = (customer.get("last_name")  or "").strip()
-        if not first_name and customer_name:
-            parts = customer_name.split()
-            first_name = parts[0]
-            last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
-        effective_name   = customer_name or " ".join([n for n in (first_name, last_name) if n]).strip()
-        customer_address = (customer.get("address") or "").strip()
-        customer_dob     = (customer.get("dob") or "").strip()
-
-        phone_raw = (customer.get("phone_e164") or customer.get("phone") or "").strip()
-        if phone_raw.startswith("+") and phone_raw[1:].replace(" ", "").isdigit():
-            phone_e164 = "+" + phone_raw[1:].replace(" ", "")
-        else:
-            try:
-                default_country = (session_data[call_sid].get("phone_country") or "US").upper()
-                phone_e164 = normalize_phone_e164(phone_raw, default_country) or ""
-                if not phone_e164:
-                    alt = "EG" if default_country != "EG" else "US"
-                    phone_e164 = normalize_phone_e164(phone_raw, alt) or ""
-            except Exception:
-                phone_e164 = ""
-
-        if not phone_e164:
-            session_data[call_sid]["stage"] = "collect_phone"
-            resp.append(make_gather("Before we confirm your appointment, please provide your phone number."))
-            return str(resp)
-
-        if not customer_dob:
-            session_data[call_sid]["stage"] = "collect_dob"
-            resp.append(make_gather(
-                "Before we confirm, please say your date of birth, for example, 'July 3 1990'."
-            ))
-            return str(resp)
-
-        # ---- Final Availability Guard ----
-        try:
-            slot_ok = is_time_slot_available(doctor_id, appointment_start, appointment_end, creds)
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ slot check failed → {e}")
-            slot_ok = False
-
-        if not slot_ok:
-            debug_print("book_appt_confirm: ❌ Slot no longer available at confirm stage")
-            session_data[call_sid]["stage"] = "ask_time_date"
-            resp.append(make_gather("Sorry, that slot was just taken. Please choose another time."))
-            return str(resp)
-
-        # ---- Upsert customer (best-effort) ----
-        try:
-            init_db()
-            insert_customer(
-                phone=phone_e164, dob=customer_dob,
-                first_name=first_name, last_name=last_name, address=customer_address,
-                cc_name=(customer.get("cc_name") or effective_name or ""),
-                cc_number=(customer.get("cc_number") or ""),
-                cc_exp=(customer.get("cc_exp") or ""),
-                cc_cvv=(customer.get("cc_cvv") or "")
-            )
-        except Exception as e:
-            debug_print(f"book_appt_confirm: insert_customer failed → {e}")
-
-        # ---- Create Google Calendar event ----
-        google_event_id = session_data[call_sid].get("google_event_id", "")
-        if google_event_id:
-            debug_print(f"book_appt_confirm: ℹ️ event already created earlier → id={google_event_id}")
-        else:
-            try:
-                service = build("calendar", "v3", credentials=creds)
-                event_body = {
-                    "summary": f"Appointment: {doctor_name}",
-                    "description": f"Clinic appointment for {effective_name or 'patient'}.",
-                    "start": {"dateTime": appointment_start, "timeZone": "UTC"},
-                    "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
-                    "transparency": "opaque",
-                    "extendedProperties": {
-                        "private": {
-                            "patient_name": effective_name,
-                            "phone_e164": phone_e164,
-                            "dob": customer_dob,
-                            "call_sid": call_sid,
-                        }
-                    },
-                }
-                ev = service.events().insert(calendarId=doctor_id, body=event_body, sendUpdates="none").execute()
-                google_event_id = ev.get("id")
-                session_data[call_sid]["google_event_id"] = google_event_id
-                debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id}")
-            except Exception as e:
-                debug_print(f"book_appt_confirm: ❌ Google insert failed → {e}")
-                session_data[call_sid]["stage"] = "ask_time_date"
-                resp.append(make_gather("Sorry, I couldn't confirm that slot. Please say another time."))
-                return str(resp)
-
-        # ---- Persist locally (JSON) ----
-        try:
-            local_date_str = dt_local.strftime("%Y-%m-%d")
-            try:
-                local_time_disp = dt_local.strftime("%-I:%M %p")
-            except Exception:
-                local_time_disp = dt_local.strftime("%I:%M %p").lstrip("0")
-
-            persist = confirm_appointment_for_dr_name(
-                doctor_name=doctor_name,
-                phone=phone_e164,
-                utc_start=appointment_start,
-                utc_end=appointment_end,
-                calendar_id=doctor_id,
-                name=effective_name,
-                dob=customer_dob,
-                address=customer_address,
-                event_id=google_event_id,
-                friendly_local=formatted_time,
-                local_date=local_date_str,
-                local_time_display=local_time_disp,
-            )
-            debug_print(f"book_appt_confirm: 🗂️ local persist → {persist}")
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ local persist failed → {e}")
-
-        # ---- Voice confirmation + SMS ----
-        msg = f"Your appointment with {doctor_name} has been booked"
-        if formatted_time: msg += f" on {formatted_time}"
-        msg += ". We look forward to seeing you. Goodbye!"
-        resp.say(gpt_speak(msg), VOICE)
-
-        try:
-            sms = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
-            if formatted_time: sms += f" on {formatted_time}"
-            sms += ". Thank you for choosing Epic Therapist Clinic."
-            _ = client.messages.create(body=sms, from_=TWILIO_PHONE_NUMBER, to=phone_e164)
-        except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
-
-        resp.hangup()
-        session_data.pop(call_sid, None)
-        return str(resp)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    elif stage == "cancel_appointment":
-        # ----------------------------------------------------------------------
-        # 🔄 Stage: Cancel Appointment — after the caller says the doctor’s name
-        #  1) Try direct partial match against known doctors.
-        #  2) If no match, try GPT-based extraction.
-        #  3) If still no match, re-prompt (with retry cap).
-        #  4) On match, move to phone collection.
-        #
-        # Notes:
-        #  - Includes "silent mode" handling (no speech heard) with its own counter.
-        #  - Uses only built-ins already in scope; no local imports.
-        #  - Uses make_gather(prompt, hints=...) only (no next_stage arg).
-        #  - ✨ Supports DTMF digit selection for doctors.
-        # ----------------------------------------------------------------------
-        session_data.setdefault(call_sid, {})
-        session_data[call_sid].setdefault("cancel", {})
-
-        # 🧩 Preserve reschedule flag if coming from "change appointment"
-        reschedule_flag = session_data[call_sid].get("reschedule_after_cancel", False)
-
-        try:
-            _PUNCT = string.punctuation
-        except Exception:
-            _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
-
-        def _clean(s: str) -> str:
-            s = (s or "").lower().translate(str.maketrans("", "", _PUNCT)).strip()
-            return " ".join(s.split())
-
-        selected_text = (speech_result or "").strip()
-
-        # Build doctor keypad map for this session
-        doctor_names = list(googleid_dr_name_map.values())
-        doctor_dtmf_map = {str(i + 1): doc for i, doc in enumerate(doctor_names)}
-        session_data[call_sid]["doctor_dtmf_map"] = doctor_dtmf_map
-
-        # ------------------------------ Silent-mode handling ------------------------------
-        if not selected_text and not dtmf_digits:
-            tries = session_data[call_sid].get("silence_cancel_doc", 0) + 1
-            session_data[call_sid]["silence_cancel_doc"] = tries
-            debug_print(f"cancel_appointment: 🤐 No input detected (silence count={tries})")
-
-            if tries >= 3:
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            options = ". ".join([f"{doc} (press {k})" for k, doc in doctor_dtmf_map.items()])
-            retry_prompt = (
-                f"I didn't hear the doctor's name. Available doctors are: {options}. "
-                "Please say the name or press the number."
-            )
-            session_data[call_sid]["stage"] = "cancel_appointment"
-            resp.append(make_gather(retry_prompt, hints=", ".join(doctor_names), num_digits=1))
-            return str(resp)
-
-        # ------------------------------ DTMF / voice matching ------------------------------
-        if dtmf_digits and dtmf_digits in doctor_dtmf_map:
-            matched_name = doctor_dtmf_map[dtmf_digits]
-            matched_id = next(k for k, v in googleid_dr_name_map.items() if v == matched_name)
-            debug_print(f"cancel_appointment: ✅ DTMF match → {matched_name} ({matched_id})")
-        else:
-            session_data[call_sid].pop("silence_cancel_doc", None)
-            selected_clean = _clean(selected_text)
-            debug_print(f"cancel_appointment: 🗣️ Received doctor name → '{selected_clean}'")
-
-            junk_inputs = {
-                "", "yes", "no", "yeah", "nope", "ok", "okay", "hello", "hi", "hey",
-                "good morning", "good afternoon", "good evening", "test", "i know", "what"
-            }
-            if (not selected_clean) or (selected_clean in junk_inputs) or (len(selected_clean) < 2):
-                options = ". ".join([f"{doc} (press {k})" for k, doc in doctor_dtmf_map.items()])
-                retry_prompt = (
-                    f"I didn't recognize that as a doctor's name. Available doctors are: {options}. "
-                    "Please say the name or press the number."
-                )
-                session_data[call_sid]["stage"] = "cancel_appointment"
-                resp.append(make_gather(retry_prompt, hints=", ".join(doctor_names), num_digits=1))
-                return str(resp)
-
-            matched_id = None
-            matched_name = None
-            partial_matches = []
-            spoken_tokens = set(selected_clean.split())
-
-            for doc_id, friendly_name in googleid_dr_name_map.items():
-                friendly_clean = _clean(friendly_name)
-                friendly_tokens = set(friendly_clean.split())
-                if (
-                    selected_clean in friendly_clean
-                    or friendly_clean in selected_clean
-                    or (spoken_tokens & friendly_tokens)
-                ):
-                    partial_matches.append((doc_id, friendly_name))
-
-            if len(partial_matches) == 1:
-                matched_id, matched_name = partial_matches[0]
-                debug_print(f"cancel_appointment: ✅ Partial match → {matched_name} ({matched_id})")
-            elif len(partial_matches) > 1:
-                best = None
-                best_overlap = -1
-                for doc_id, friendly_name in partial_matches:
-                    overlap = len(spoken_tokens & set(_clean(friendly_name).split()))
-                    if overlap > best_overlap:
-                        best = (doc_id, friendly_name)
-                        best_overlap = overlap
-                if best:
-                    matched_id, matched_name = best
-                    debug_print(f"cancel_appointment: ✅ Multiple matches; chose best overlap → {matched_name} ({matched_id})")
-
-            # GPT fallback
-            if not matched_id:
-                try:
-                    extracted_name = extract_doctor_name(selected_text)
-                    debug_print(f"cancel_appointment: 🤖 GPT extracted name → '{extracted_name}'")
-                    if extracted_name:
-                        extracted_clean = _clean(extracted_name)
-                        for doc_id, friendly_name in googleid_dr_name_map.items():
-                            friendly_clean = _clean(friendly_name)
-                            if extracted_clean in friendly_clean or friendly_clean in extracted_clean:
-                                matched_id, matched_name = doc_id, friendly_name
-                                debug_print(f"cancel_appointment: ✅ GPT matched → {matched_name} ({matched_id})")
-                                break
-                except Exception as e:
-                    debug_print(f"cancel_appointment: ⚠️ GPT fallback error → {e}")
-
-        # ------------------------------ Retry if no match ------------------------------
-        if not matched_id:
-            retries = session_data[call_sid].get("retry_booking", 0)
-            session_data[call_sid]["retry_booking"] = retries + 1
-            max_retries = globals().get("MAX_NUMBER_DR_RETRY", 3)
-
-            if retries >= max_retries:
-                resp.say(gpt_speak(
-                    "I'm sorry, I still couldn't match that name with any doctor in our clinic. Please try again later. Goodbye."
-                ), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            options = ". ".join([f"{doc} (press {k})" for k, doc in doctor_dtmf_map.items()])
-            retry_prompt = (
-                f"I didn't recognize that name. Available doctors are: {options}. "
-                "Please say the name or press the number."
-            )
-            session_data[call_sid]["stage"] = "cancel_appointment"
-            resp.append(make_gather(retry_prompt, hints=", ".join(doctor_names), num_digits=1))
-            return str(resp)
-
-        # ------------------------------ Proceed to phone collection ------------------------------
-        session_data[call_sid]["doctor_id"] = matched_id
-        session_data[call_sid]["cancel"]["doctor"] = matched_name or googleid_dr_name_map.get(matched_id, "the doctor")
-        session_data[call_sid]["stage"] = "cancel_appt_get_phone_number"
-
-        # ✅ Preserve reschedule flag if this came from change flow
-        if reschedule_flag:
-            session_data[call_sid]["reschedule_after_cancel"] = True
-
-        resp.append(make_gather(
-            "Thanks. What phone number did you use when booking the appointment?"
-        ))
-        return str(resp)
 
 
 
@@ -5182,6 +4863,215 @@ def voice():
         )
         resp.append(gather)
         return str(resp)
+
+
+
+
+    elif stage == "book_appt_confirm":
+        # ----------------------------------------------------------------------
+        # 💬 Stage: book_appt_confirm
+        # Auto-confirms the appointment without asking for "Yes".
+        # ----------------------------------------------------------------------
+        debug_print("book_appt_confirm: 📍 Stage entered")
+
+        # ---- Doctor info ----
+        doctor_id = session_data[call_sid].get("doctor_id")
+        if not doctor_id:
+            debug_print("book_appt_confirm: ❌ missing doctor_id → choose_doctor")
+            session_data[call_sid]["stage"] = "choose_doctor"
+            resp.append(make_gather("Which doctor would you like to see?"))
+            return str(resp)
+
+        doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
+
+        # ---- Appointment info ----
+        appt = session_data[call_sid].get("appointment_time", {}) or {}
+        appointment_start = appt.get("start")
+        appointment_end   = appt.get("end")
+        if not appointment_start:
+            debug_print("book_appt_confirm: ❌ missing appointment_start")
+            resp.say(gpt_speak("Appointment time is missing. Goodbye!"), VOICE)
+            resp.hangup()
+            return str(resp)
+
+        # Local-friendly formatting
+        tz_name = globals().get("CLINIC_TZ", "America/Chicago")
+        try:
+            tz = _pytz.timezone(tz_name)
+        except Exception:
+            tz = _pytz.timezone("America/Chicago")
+
+        try:
+            dt_utc   = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
+            dt_local = dt_utc.astimezone(tz)
+            try:
+                formatted_time = dt_local.strftime("%A, %B %-d at %-I:%M %p")
+            except Exception:
+                formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
+        except Exception as e:
+            debug_print(f"book_appt_confirm: time format error → {e}")
+            resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+            resp.hangup()
+            return str(resp)
+
+        # Compute end if missing (default 30m)
+        if not appointment_end:
+            try:
+                dur = None
+                for k in ("APPOINTMENT_DURATION_MINUTES", "SESSION_TIME", "SESSIUON_TIME"):
+                    v = globals().get(k)
+                    if v:
+                        try:
+                            dur = int(v)
+                            break
+                        except:
+                            pass
+                if dur not in (15, 30, 45, 60):
+                    dur = 30
+                end_dt = dt_utc + timedelta(minutes=dur)
+                appointment_end = end_dt.astimezone(_pytz.UTC).isoformat()
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
+                resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+                resp.hangup()
+                return str(resp)
+
+        # ---- Customer info ----
+        customer = session_data[call_sid].get("customer", {}) or {}
+        first_name = (customer.get("first_name") or "").strip()
+        last_name  = (customer.get("last_name") or "").strip()
+        effective_name = (customer.get("name") or f"{first_name} {last_name}").strip()
+        address = (customer.get("address") or "").strip()
+        dob = (customer.get("dob") or "").strip()
+
+        phone_raw = (customer.get("phone_e164") or customer.get("phone") or "").strip()
+        if phone_raw.startswith("+") and phone_raw[1:].replace(" ", "").isdigit():
+            phone_e164 = "+" + phone_raw[1:].replace(" ", "")
+        else:
+            try:
+                default_country = (session_data[call_sid].get("phone_country") or "US").upper()
+                phone_e164 = normalize_phone_e164(phone_raw, default_country) or ""
+                if not phone_e164:
+                    alt = "EG" if default_country != "EG" else "US"
+                    phone_e164 = normalize_phone_e164(phone_raw, alt) or ""
+            except Exception:
+                phone_e164 = ""
+
+        if not phone_e164:
+            session_data[call_sid]["stage"] = "collect_phone"
+            resp.append(make_gather("Before we confirm your appointment, please provide your phone number."))
+            return str(resp)
+
+        if not dob:
+            session_data[call_sid]["stage"] = "collect_dob"
+            resp.append(make_gather(
+                "Before we confirm, please say your date of birth, for example, 'July 3 1990'."
+            ))
+            return str(resp)
+
+        # ---- Slot availability check ----
+        try:
+            slot_ok = is_time_slot_available(doctor_id, appointment_start, appointment_end, creds)
+        except Exception as e:
+            debug_print(f"book_appt_confirm: ⚠️ slot check failed → {e}")
+            slot_ok = False
+
+        if not slot_ok:
+            debug_print("book_appt_confirm: ❌ Slot no longer available")
+            session_data[call_sid]["stage"] = "ask_time_date"
+            resp.append(make_gather("Sorry, that slot was just taken. Please choose another time."))
+            return str(resp)
+
+        # ---- Save customer info ----
+        try:
+            init_db()
+            insert_customer(
+                phone=phone_e164, dob=dob,
+                first_name=first_name, last_name=last_name, address=address,
+                cc_name=(customer.get("cc_name") or effective_name or ""),
+                cc_number=(customer.get("cc_number") or ""),
+                cc_exp=(customer.get("cc_exp") or ""),
+                cc_cvv=(customer.get("cc_cvv") or "")
+            )
+        except Exception as e:
+            debug_print(f"book_appt_confirm: insert_customer failed → {e}")
+
+        # ---- Create Google Calendar event ----
+        google_event_id = session_data[call_sid].get("google_event_id", "")
+        if not google_event_id:
+            try:
+                service = build("calendar", "v3", credentials=creds)
+                event_body = {
+                    "summary": f"Appointment: {doctor_name}",
+                    "description": f"Clinic appointment for {effective_name or 'patient'}.",
+                    "start": {"dateTime": appointment_start, "timeZone": "UTC"},
+                    "end": {"dateTime": appointment_end, "timeZone": "UTC"},
+                    "extendedProperties": {
+                        "private": {
+                            "patient_name": effective_name,
+                            "phone_e164": phone_e164,
+                            "dob": dob,
+                            "call_sid": call_sid,
+                        }
+                    },
+                }
+                ev = service.events().insert(calendarId=doctor_id, body=event_body, sendUpdates="none").execute()
+                google_event_id = ev.get("id")
+                session_data[call_sid]["google_event_id"] = google_event_id
+                debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id}")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ❌ Google insert failed → {e}")
+                session_data[call_sid]["stage"] = "ask_time_date"
+                resp.append(make_gather("Sorry, I couldn't confirm that slot. Please say another time."))
+                return str(resp)
+
+        # ---- Persist locally ----
+        try:
+            local_date_str = dt_local.strftime("%Y-%m-%d")
+            try:
+                local_time_disp = dt_local.strftime("%-I:%M %p")
+            except Exception:
+                local_time_disp = dt_local.strftime("%I:%M %p").lstrip("0")
+
+            persist = confirm_appointment_for_dr_name(
+                doctor_name=doctor_name,
+                phone=phone_e164,
+                utc_start=appointment_start,
+                utc_end=appointment_end,
+                calendar_id=doctor_id,
+                name=effective_name,
+                dob=dob,
+                address=address,
+                event_id=google_event_id,
+                friendly_local=formatted_time,
+                local_date=local_date_str,
+                local_time_display=local_time_disp,
+            )
+            debug_print(f"book_appt_confirm: 🗂️ local persist → {persist}")
+        except Exception as e:
+            debug_print(f"book_appt_confirm: ⚠️ local persist failed → {e}")
+
+        # ---- Voice confirmation + SMS ----
+        msg = f"Your appointment with {doctor_name} has been booked"
+        if formatted_time:
+            msg += f" on {formatted_time}"
+        msg += ". We look forward to seeing you. Goodbye!"
+        resp.say(gpt_speak(msg), VOICE)
+
+        try:
+            sms = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
+            if formatted_time:
+                sms += f" on {formatted_time}"
+            sms += ". Thank you for choosing Epic Therapist Clinic."
+            _ = client.messages.create(body=sms, from_=TWILIO_PHONE_NUMBER, to=phone_e164)
+        except Exception as e:
+            debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
+
+        resp.hangup()
+        session_data.pop(call_sid, None)
+        return str(resp)
+
+
 
 
 
