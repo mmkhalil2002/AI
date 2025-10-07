@@ -1827,7 +1827,7 @@ def customer_search(
     phone_number: str = None,
     dob: str = "",
     *,
-    country: str = COUNTRY,
+    default_country: str = COUNTRY,
     phone: str = None,     # ← backward-compatible alias (if some callers still pass phone=)
 ) -> bool:
     """
