@@ -3400,6 +3400,7 @@ def voice():
         if phone_e164 and iso_dob:
             try:
                 found = customer_search(phone_number=phone_e164, dob=iso_dob, country="US")
+                session_data[call_sid]["last_customer_found"] = found   # ✅ store for verify_customer_type
                 debug_print(f"collect_dob: 🔎 customer_search(phone={phone_e164}, dob={iso_dob}) → {found}")
             except Exception as e:
                 debug_print(f"collect_dob: ⚠️ customer_search error → {e}")
@@ -3409,7 +3410,7 @@ def voice():
             session_data[call_sid]["stage"] = "verify_customer_type"
             g = make_gather(
                 "We couldn’t find a record with that phone number and date of birth. "
-                "If you are a new customer, press 1. If you are an existing customer, press 2.",
+                "If you are a new customer, press 1. If you are not an existing customer, press 2.",
                 input="dtmf",
             )
             resp.append(g)
@@ -3421,7 +3422,8 @@ def voice():
         # ------------------------------------------------------------------
         session_data[call_sid]["stage"] = "ask_time_date"
         g = make_gather(
-            "Thanks. Please say the appointment date and time, for example, 'October 12 at 9 AM'."
+            "Thanks. Please say the appointment date and time, for example, 'October 12 at 9 AM'.",
+            input="speech dtmf",
         )
         resp.append(g)
         resp.redirect("/voice")
@@ -3433,50 +3435,67 @@ def voice():
     elif stage == "verify_customer_type":
         debug_print("verify_customer_type: 📍 Stage entered")
         dtmf_digits = (request.values.get("Digits") or "").strip()
+        debug_print(f"verify_customer_type: received DTMF='{dtmf_digits}'")
 
         if not dtmf_digits:
             g = make_gather(
-                "Please press 1 if you are a new customer or 2 if you are an existing customer.",
+                "Please press 1 if you are a new customer, or 2 if you are not an existing customer.",
                 input="dtmf",
             )
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
 
-        if dtmf_digits == "1":
-            # New customer pressed 1 → but record not found → polite hang-up
-            resp.say(
-                gpt_speak(
-                    "I'm sorry, we don’t have any record with this phone number and date of birth. "
-                    "Please contact the clinic to register first."
-                ),
-                VOICE,
-            )
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            return str(resp)
+        # Retrieve last lookup flag
+        last_lookup_found = session_data.get(call_sid, {}).get("last_customer_found", False)
 
-        elif dtmf_digits == "2":
-            # Existing customer → proceed anyway (manual or missed match)
-            debug_print("verify_customer_type: pressed 2 → continuing to ask_time_date")
+        # Press 1 → new customer → now CONTINUE to ask_time_date (instead of hangup)
+        if dtmf_digits == "1":
+            debug_print("verify_customer_type: pressed 1 → new customer (not found) → proceed to ask_time_date")
             session_data[call_sid]["stage"] = "ask_time_date"
             g = make_gather(
-                "Okay, please say the appointment date and time, for example, 'October 8 at 9:30 AM'.",
+                "Welcome! Please say the appointment date and time, for example, 'October 12 at 9 AM'.",
                 input="speech dtmf",
             )
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
 
+        # Press 2 → says not existing customer (explicit no) → polite hangup
+        elif dtmf_digits == "2":
+            if not last_lookup_found:
+                debug_print("verify_customer_type: pressed 2 → confirmed not existing; hanging up politely")
+                resp.say(
+                    gpt_speak(
+                        "Thank you for your time. It seems you are not a current customer in our records. "
+                        "Please contact the clinic if you would like to register."
+                    ),
+                    VOICE,
+                )
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+            else:
+                debug_print("verify_customer_type: pressed 2 but found=True (unexpected) → proceed to ask_time_date")
+                session_data[call_sid]["stage"] = "ask_time_date"
+                g = make_gather(
+                    "Okay, please say the appointment date and time, for example, 'October 8 at 9:30 AM'.",
+                    input="speech dtmf",
+                )
+                resp.append(g)
+                resp.redirect("/voice")
+                return str(resp)
+
+        # Invalid entry
         else:
+            debug_print(f"verify_customer_type: invalid DTMF '{dtmf_digits}' → re-prompt")
             g = make_gather(
-                "Invalid choice. Press 1 if you are a new customer, or 2 if you are an existing customer.",
+                "Invalid choice. Press 1 if you are a new customer, or 2 if you are not an existing customer.",
                 input="dtmf",
             )
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
-
 
 
 
