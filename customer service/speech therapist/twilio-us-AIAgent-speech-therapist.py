@@ -2942,8 +2942,8 @@ def voice():
     #     using a separate counter (silence_dob), then hang up politely.
     # ----------------------------------------------------------------------
     elif stage == "collect_dob":
-        debug_print("collect_dob: 📍 Stage entered")
         t_stage_start = _time_mod.perf_counter()
+        debug_print("collect_dob: 📍 Stage entered")
 
         # ------------------------------------------------------------------
         # 🗓️ Prompts
@@ -2970,28 +2970,31 @@ def voice():
         # ------------------------------------------------------------------
         # Pull input
         # ------------------------------------------------------------------
+        t_input_start = _time_mod.perf_counter()
         try:
             dtmf_digits = (request.values.get("Digits") or "").strip()
         except Exception:
             dtmf_digits = ""
         speech_text = (speech_result or "").strip()
         debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
+        debug_print(f"collect_dob: ⏱️ time after input parsing → {_time_mod.perf_counter() - t_input_start:.3f}s")
 
         # ------------------------------------------------------------------
-        # 🔇 Silence handling (shorter timeout in gathers)
+        # 🔇 Silence handling
         # ------------------------------------------------------------------
         if not dtmf_digits and not speech_text:
             tries = session_data[call_sid].get("silence_dob", 0) + 1
             session_data[call_sid]["silence_dob"] = tries
             debug_print(f"collect_dob: 🤐 no input; silence retries={tries}")
+            debug_print(f"collect_dob: ⏱️ silence check took {_time_mod.perf_counter() - t_stage_start:.3f}s")
 
             if tries < 3:
                 g = make_gather(
                     "I didn’t hear your date of birth. Please say it again, for example, 'July 3 1956'. "
                     "Or you can enter it using your keypad: month, day, and year, then press pound.",
                     input="speech dtmf",
-                    timeout=3,             # ⏱️ was default (~5–10)
-                    speech_timeout="auto", # ⏱️ was longer; now auto-detect
+                    timeout=3,
+                    speech_timeout="auto",
                     barge_in=True,
                 )
                 resp.append(g)
@@ -3008,6 +3011,7 @@ def voice():
         # ------------------------------------------------------------------
         # 1️⃣ Parse DOB
         # ------------------------------------------------------------------
+        t_parse_start = _time_mod.perf_counter()
         dob_date = None
         if dtmf_digits:
             d = _re.sub(r"\D", "", dtmf_digits)
@@ -3015,7 +3019,9 @@ def voice():
                 try:
                     mm, dd, yyyy = int(d[0:2]), int(d[2:4]), int(d[4:8])
                     dob_date = date(yyyy, mm, dd)
-                except Exception:
+                    debug_print("collect_dob: ✅ parsed DOB from keypad")
+                except Exception as e:
+                    debug_print(f"collect_dob: ❌ keypad parse error → {e}")
                     dob_date = None
 
         if not dob_date and speech_text:
@@ -3028,6 +3034,7 @@ def voice():
                 default_base = datetime(today.year, today.month, today.day, 9, 0, 0)
                 parsed = _dtparse(t, default=default_base, dayfirst=False, fuzzy=True)
                 dob_date = date(parsed.year, parsed.month, parsed.day)
+                debug_print("collect_dob: ✅ parsed DOB from speech")
             except Exception as e:
                 debug_print(f"collect_dob: ❌ speech parse failed; reason={e}")
                 g = make_gather(
@@ -3040,10 +3047,12 @@ def voice():
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
+        debug_print(f"collect_dob: ⏱️ parse duration → {_time_mod.perf_counter() - t_parse_start:.3f}s")
 
         # ------------------------------------------------------------------
-        # 2️⃣ Validate DOB range (1900..today)
+        # 2️⃣ Validate DOB
         # ------------------------------------------------------------------
+        t_val_start = _time_mod.perf_counter()
         try:
             today = _date_local.today()
             min_date = date(1900, 1, 1)
@@ -3051,15 +3060,11 @@ def voice():
                 raise ValueError(f"out of range: {dob_date.isoformat()}")
         except Exception as e:
             debug_print(f"collect_dob: ⚠️ Validation error → {e}")
-            g = make_gather(
-                PROMPT_FINAL_DTMF,
-                input="dtmf",
-                timeout=3,
-                barge_in=True,
-            )
+            g = make_gather(PROMPT_FINAL_DTMF, input="dtmf", timeout=3, barge_in=True)
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
+        debug_print(f"collect_dob: ⏱️ validation duration → {_time_mod.perf_counter() - t_val_start:.3f}s")
 
         # ------------------------------------------------------------------
         # 3️⃣ Store DOB
@@ -3073,6 +3078,7 @@ def voice():
         # ------------------------------------------------------------------
         # 4️⃣ Lookup customer
         # ------------------------------------------------------------------
+        t_lookup_start = _time_mod.perf_counter()
         phone_e164 = session_data[call_sid]["customer"].get("phone_e164") or session_data[call_sid].get("phone_e164")
         found = False
         if phone_e164 and iso_dob:
@@ -3082,9 +3088,10 @@ def voice():
                 debug_print(f"collect_dob: 🔎 customer_search(phone={phone_e164}, dob={iso_dob}) → {found}")
             except Exception as e:
                 debug_print(f"collect_dob: ⚠️ customer_search error → {e}")
+        debug_print(f"collect_dob: ⏱️ lookup duration → {_time_mod.perf_counter() - t_lookup_start:.3f}s")
 
         # ------------------------------------------------------------------
-        # 5️⃣ Branch: existing vs new
+        # 5️⃣ Branch to next stage
         # ------------------------------------------------------------------
         if not found:
             session_data[call_sid]["stage"] = "verify_customer_type"
@@ -3092,17 +3099,17 @@ def voice():
                 "We couldn’t find a record with that phone number and date of birth. "
                 "If you are a new customer, press 1. If you are not an existing customer, press 2.",
                 input="dtmf",
-                timeout=4,           # shorter delay
+                timeout=3,
                 speech_timeout="auto",
                 barge_in=True,
             )
             resp.append(g)
             resp.redirect("/voice")
-            debug_print(f"collect_dob: ⏱️ total stage time {_time_mod.perf_counter() - t_stage_start:.3f}s")
+            debug_print(f"collect_dob: ⏱️ total stage duration {_time_mod.perf_counter() - t_stage_start:.3f}s")
             return str(resp)
 
         # ------------------------------------------------------------------
-        # 6️⃣ Continue to next stage
+        # 6️⃣ Success path
         # ------------------------------------------------------------------
         session_data[call_sid]["stage"] = "ask_time_date"
         g = make_gather(
@@ -3114,8 +3121,9 @@ def voice():
         )
         resp.append(g)
         resp.redirect("/voice")
-        debug_print(f"collect_dob: ✅ completed in {_time_mod.perf_counter() - t_stage_start:.3f}s")
+        debug_print(f"collect_dob: ✅ total runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
         return str(resp)
+
 
 
 
