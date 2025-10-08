@@ -1318,10 +1318,12 @@ def customer_search(
     """
     Return True if a customer (phone|dob) exists in customers.json, else False.
 
-    Lookup (E.164 only):
-      1) Normalize input as E.164 using default_country (falls back US↔EG, +000 fallback).
-      2) Normalize DOB to ISO (YYYY-MM-DD), defaulting to 'unknown' if blank.
-      3) Check key = _key(phone_e164, dob_iso).
+    ENGLISH-ONLY VERSION:
+      ✅ Only searches English/Latin customer records.
+      🚫 Ignores Arabic or mixed-language entries.
+      ✅ Normalizes phone to E.164 (US/Egypt supported).
+      ✅ Normalizes DOB to ISO (YYYY-MM-DD).
+      ✅ Rejects invalid or non-English data automatically.
     """
     try:
         debug_print(
@@ -1331,13 +1333,19 @@ def customer_search(
     except Exception:
         pass
 
+    # ------------------------------------------------------------------
+    # Load customer database
+    # ------------------------------------------------------------------
     init_db()
+    data = _load_customers()
 
+    # ------------------------------------------------------------------
+    # Normalize phone number → E.164
+    # ------------------------------------------------------------------
     raw = (phone_number if phone_number is not None else phone) or ""
     raw = raw.strip()
-    dob_iso = (dob or "").strip() or "unknown"  # ✅ unified fallback
+    dob_iso = (dob or "").strip() or "unknown"
 
-    # ---- normalize phone to E.164 -------------------------------------------
     phone_e164 = ""
     if raw.startswith("+") and raw[1:].replace(" ", "").isdigit():
         phone_e164 = "+" + raw[1:].replace(" ", "")
@@ -1353,7 +1361,7 @@ def customer_search(
             except Exception:
                 phone_e164 = ""
 
-    # ✅ fallback to +000 pseudo-E.164 (matches insert_customer)
+    # ✅ fallback to pseudo-E.164 if still empty
     if not phone_e164:
         digits_only = "".join(ch for ch in raw if ch.isdigit())
         if len(digits_only) >= 8:
@@ -1361,30 +1369,49 @@ def customer_search(
             debug_print(f"customer_search: ⚠️ fallback to pseudo-E.164 {phone_e164}")
 
     if not phone_e164:
-        debug_print(f"customer_search: ❌ invalid phone '{raw}' (no E.164 or fallback)")
+        debug_print(f"customer_search: ❌ invalid phone '{raw}' (no valid E.164 format)")
         return False
 
-    # ---- normalize DOB to ISO if provided -----------------------------------
+    # ------------------------------------------------------------------
+    # Normalize DOB → YYYY-MM-DD
+    # ------------------------------------------------------------------
     try:
-        if dob_iso and "_re" in globals():
-            re_mod = globals()["_re"]
-            if re_mod.fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None:
-                m = re_mod.fullmatch(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
-                if m:
-                    mm, dd, yyyy = m.groups()
-                    dob_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
-                else:
-                    dob_iso = dob_iso.replace("/", "-")
+        import re as _re
+        if _re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None:
+            m = _re.fullmatch(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
+            if m:
+                mm, dd, yyyy = m.groups()
+                dob_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
+            else:
+                dob_iso = dob_iso.replace("/", "-")
     except Exception:
         pass
 
-    # ---- lookup --------------------------------------------------------------
-    data = _load_customers()
+    # ------------------------------------------------------------------
+    # English-only data filtering
+    # ------------------------------------------------------------------
+    def _is_english_text(s: str) -> bool:
+        """Accept only English letters, digits, punctuation, and spaces."""
+        return bool(re.fullmatch(r"[A-Za-z0-9\s,.\-'/@]*", (s or "").strip()))
+
+    # Filter dataset: remove any records containing Arabic/non-Latin text
+    filtered_data = {}
+    for key, rec in data.items():
+        # Check all fields (name, address, etc.)
+        if all(_is_english_text(str(v)) for v in rec.values()):
+            filtered_data[key] = rec
+        else:
+            debug_print(f"customer_search: ⚠️ skipped non-English record key={key}")
+
+    # ------------------------------------------------------------------
+    # Perform lookup
+    # ------------------------------------------------------------------
     key_e164 = _key(phone_e164, dob_iso)
-    exists = key_e164 in data
+    exists = key_e164 in filtered_data
 
     debug_print(f"customer_search: phone_e164={phone_e164} dob_iso={dob_iso} key={key_e164} → exists={exists}")
     return exists
+
 
 
 
@@ -3397,7 +3424,8 @@ def voice():
         # 🎯 Goal:
         #   - Capture FIRST name via speech or keypad (DTMF).
         #   - Handle silence separately (up to 3 retries before hangup).
-        #   - Clean & normalize (supports Arabic + English).
+        #   - Accept Arabic names written in English letters (e.g., "Mohamed", "Hossam").
+        #   - Reject true Arabic script (e.g., "ﻢﺤﻣﺩ").
         #   - Store under session_data[call_sid]["customer"]["first_name"].
         #   - Advance → collect_last_name.
         # ----------------------------------------------------------------------
@@ -3419,12 +3447,11 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-prompt quickly
             gather = make_gather(
-                "I didn’t hear your first name. You can say your name or type it using the keypad.",
+                "I didn’t hear your first name. Please say your name in English letters. For example, Mohamed or Hossam.",
                 input="speech dtmf",
-                language="ar-EG",  # 🌍 Arabic speech model
-                hints=f"{ARABIC_NAME_HINTS}",
+                language="en-US",   # English model (Arabic names spoken in English)
+                hints="Mohamed, Ahmad, Hossam, Khalil",
                 timeout=6,
                 speech_timeout="5",
                 finish_on_key="#",
@@ -3442,41 +3469,47 @@ def voice():
         # -------------------------------
         import string
         if raw_dtmf:
-            # Keypad mode: accept only digits mapped to letters
+            # Keypad fallback
             name_digits = _re.sub(r"\D", "", raw_dtmf)
             first_name = f"User{name_digits[-3:]}" if name_digits else "Unknown"
             debug_print(f"collect_first_name: 🧮 from keypad → {first_name}")
         else:
             cleaned = raw_speech.translate(str.maketrans('', '', string.punctuation)).strip()
             cleaned = _re.sub(r"\s+", " ", cleaned)
-            # Drop filler phrases like "my name is", "I am", etc.
-            cleaned = _re.sub(r"\b(?:my name is|this is|i am|i'm|it is|it's)\b\s*", "", cleaned, flags=_re.IGNORECASE)
-            # Split and take first token
+            # Drop filler phrases
+            cleaned = _re.sub(
+                r"\b(?:my name is|this is|i am|i'm|it is|it's)\b\s*",
+                "",
+                cleaned,
+                flags=_re.IGNORECASE,
+            )
             tokens = cleaned.split()
             first_name = tokens[0] if tokens else ""
 
         # -------------------------------
-        # 🌐 Normalize & Validate
+        # 🌐 Accept only English letters
         # -------------------------------
-        # Accept Arabic or Latin alphabet names
-        arabic_letters = r"\u0621-\u064A"  # Arabic Unicode range
-        name_pattern = rf"[A-Za-z{arabic_letters}][A-Za-z{arabic_letters}'\-\s]{{0,39}}"
-        if not first_name or not _re.fullmatch(name_pattern, first_name):
+        # Allow A–Z, a–z, hyphens, apostrophes, and spaces.
+        english_only_pattern = r"^[A-Za-z][A-Za-z'\-\s]{0,39}$"
+
+        # Reject Arabic Unicode range (0621–064A)
+        contains_arabic = bool(_re.search(r"[\u0600-\u06FF]", first_name))
+
+        if not first_name or not _re.fullmatch(english_only_pattern, first_name) or contains_arabic:
             r = session_data[call_sid].get("retry_first_name", 0) + 1
             session_data[call_sid]["retry_first_name"] = r
-            debug_print(f"collect_first_name: ❌ invalid name '{first_name}' retry={r}")
+            debug_print(f"collect_first_name: ❌ invalid or Arabic-script name '{first_name}' retry={r}")
             if r >= 3:
-                resp.say(gpt_speak("Sorry, I couldn’t capture your name. Please call again later."), VOICE)
+                resp.say(gpt_speak("Sorry, I couldn’t capture your name in English letters. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-ask (Arabic-friendly)
             gather = make_gather(
-                "I didn't catch that clearly. Please say just your first name. You can also type it using the keypad.",
+                "Please say your name using English letters only. For example, Mohamed or Hossam.",
                 input="speech dtmf",
-                language="ar-EG",
-                hints=f"{ARABIC_NAME_HINTS}",
+                language="en-US",
+                hints=ARABIC_NAME_HINTS,
                 timeout=6,
                 speech_timeout="5",
                 finish_on_key="#",
@@ -3497,8 +3530,8 @@ def voice():
         gather = make_gather(
             f"Thank you {first_name}. Now, what is your last name?",
             input="speech dtmf",
-            language="ar-EG",
-            hints=f"{ARABIC_NAME_HINTS}",
+            language="en-US",
+            hints=ARABIC_NAME_HINTS,
             timeout=6,
             speech_timeout="5",
             finish_on_key="#",
@@ -3519,7 +3552,8 @@ def voice():
         # 🎯 Goal:
         #   - Capture LAST name via speech or keypad (DTMF).
         #   - Handle silence separately (up to 3 retries).
-        #   - Support Arabic + English names.
+        #   - Accept Arabic names written in English letters only (e.g., "Khalil").
+        #   - Reject Arabic-script text (e.g., "ﻖﻠﻴﻟ", "خليل").
         #   - Store → session_data[call_sid]["customer"]["last_name"].
         #   - Advance → collect_address.
         # ----------------------------------------------------------------------
@@ -3541,12 +3575,12 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Prompt again quickly
+            # Prompt again quickly (English only)
             gather = make_gather(
-                "I didn’t hear your last name. Please say or type it now.",
+                "I didn’t hear your last name. Please say your last name in English letters, for example, Khalil or ElSayed.",
                 input="speech dtmf",
-                language="ar-EG",
-                hints=f"{ARABIC_NAME_HINTS}",
+                language="en-US",  # English ASR
+                hints="Khalil, ElSayed, Hassan, Nasser",
                 timeout=6,
                 speech_timeout="5",
                 finish_on_key="#",
@@ -3574,31 +3608,36 @@ def voice():
             ).strip()
             cleaned = _re.sub(r"\s+", " ", cleaned)
             # drop fillers like "my last name is", "family name"
-            cleaned = _re.sub(r"\b(?:my last name is|family name is|this is|i am|i'm|it's)\b\s*", "", cleaned, flags=_re.IGNORECASE)
+            cleaned = _re.sub(
+                r"\b(?:my last name is|family name is|this is|i am|i'm|it's)\b\s*",
+                "",
+                cleaned,
+                flags=_re.IGNORECASE,
+            )
             tokens = cleaned.split()
             last_name = tokens[0] if tokens else ""
 
         # -------------------------------
-        # 🌐 Validate (Arabic + English)
+        # 🌐 Validate: English letters only
         # -------------------------------
-        arabic_letters = r"\u0621-\u064A"
-        pattern = rf"[A-Za-z{arabic_letters}][A-Za-z{arabic_letters}'\-\s]{{1,59}}"
-        valid = bool(last_name and _re.fullmatch(pattern, last_name))
-        if not valid:
+        english_only_pattern = r"^[A-Za-z][A-Za-z'\-\s]{0,59}$"
+        contains_arabic = bool(_re.search(r"[\u0600-\u06FF]", last_name))
+
+        if not last_name or not _re.fullmatch(english_only_pattern, last_name) or contains_arabic:
             r = session_data[call_sid].get("retry_last_name", 0) + 1
             session_data[call_sid]["retry_last_name"] = r
-            debug_print(f"collect_last_name: ❌ invalid last name '{last_name}' retry={r}")
+            debug_print(f"collect_last_name: ❌ invalid (non-English) name '{last_name}' retry={r}")
             if r >= 3:
-                resp.say(gpt_speak("Sorry, I couldn’t capture your last name. Please call again later."), VOICE)
+                resp.say(gpt_speak("Sorry, I couldn’t capture your last name in English letters. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
             gather = make_gather(
-                "Sorry, I didn't catch your last name. Please say it again clearly, or type it.",
+                "Please say your last name using English letters only. For example, Khalil or ElSayed.",
                 input="speech dtmf",
-                language="ar-EG",
-                hints=f"{ARABIC_NAME_HINTS}",
+                language="en-US",
+                hints=ARABIC_NAME_HINTS,
                 timeout=6,
                 speech_timeout="5",
                 finish_on_key="#",
@@ -3617,11 +3656,11 @@ def voice():
         debug_print(f"collect_last_name: ✅ saved last_name='{last_name}' → next=collect_address")
 
         gather = make_gather(
-            f"Thank you {session_data[call_sid]['customer'].get('first_name','') or ''} {last_name}. "
+            f"Thank you {session_data[call_sid]['customer'].get('first_name','')} {last_name}. "
             "Please tell me your full address.",
             input="speech dtmf",
-            language="ar-EG",
-            hints=f"{ARABIC_NAME_HINTS}",
+            language="en-US",
+            hints="118 Briar Oak Murphy Texas 75094",
             timeout=7,
             speech_timeout="5",
             finish_on_key="#",
@@ -3630,6 +3669,7 @@ def voice():
         resp.append(gather)
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
