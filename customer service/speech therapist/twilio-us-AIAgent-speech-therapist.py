@@ -3061,7 +3061,7 @@ def voice():
         found = False
         if phone_e164 and iso_dob:
             try:
-                found = customer_search(phone_number=phone_e164, dob=iso_dob, country="US")
+                found = customer_search(phone_number=phone_e164, dob=iso_dob, default_country="US")
                 session_data[call_sid]["last_customer_found"] = found   # ✅ store for verify_customer_type
                 debug_print(f"collect_dob: 🔎 customer_search(phone={phone_e164}, dob={iso_dob}) → {found}")
             except Exception as e:
