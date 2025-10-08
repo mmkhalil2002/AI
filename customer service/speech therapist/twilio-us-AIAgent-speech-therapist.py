@@ -4712,39 +4712,13 @@ def voice():
 
 
 
-
-
-
-
     elif stage == "book_appt_confirm":
         # ----------------------------------------------------------------------
         # 💬 Stage: book_appt_confirm
-        # Auto-confirms the appointment without asking for "Yes".
+        # Automatically confirms and books appointment (no user confirmation).
         # ----------------------------------------------------------------------
+        t_stage_start = _time_mod.perf_counter()
         debug_print("book_appt_confirm: 📍 Stage entered")
-
-        # ----------------------------------------------------------------------
-        # 🔇 LOCALIZED SILENCE HANDLING FOR CONFIRM STAGE
-        # ----------------------------------------------------------------------
-        raw_speech = (speech_result or "").strip()
-        raw_dtmf   = (request.values.get("Digits") or "").strip()
-        if not raw_speech and not raw_dtmf:
-            silent_tries = session_data[call_sid].get("silence_book_appt_confirm", 0) + 1
-            session_data[call_sid]["silence_book_appt_confirm"] = silent_tries
-            debug_print(f"book_appt_confirm: 🤐 silence detected (tries={silent_tries})")
-
-            if silent_tries >= 3:
-                resp.say(gpt_speak("I'm still not hearing anything. Let's try again later."), VOICE)
-                resp.hangup()
-                return str(resp)
-
-            prompt = "Would you like to confirm your appointment now? You can say yes to continue."
-            resp.append(make_gather(prompt))
-            return str(resp)
-
-        # Ignore incidental speech/DTMF — continue auto-book flow
-        if raw_speech or raw_dtmf:
-            debug_print("book_appt_confirm: 🛡️ ignoring incidental input at confirm stage")
 
         # ----------------------------------------------------------------------
         # 🧩 Doctor Info
@@ -4764,6 +4738,7 @@ def voice():
         appt = session_data[call_sid].get("appointment_time", {}) or {}
         appointment_start = appt.get("start")
         appointment_end   = appt.get("end")
+
         if not appointment_start:
             debug_print("book_appt_confirm: ❌ missing appointment_start")
             resp.say(gpt_speak("Appointment time is missing. Goodbye!"), VOICE)
@@ -4820,7 +4795,6 @@ def voice():
         first_name       = (customer.get("first_name") or "").strip()
         last_name        = (customer.get("last_name")  or "").strip()
 
-        # Derive first/last from full name if missing
         if not first_name and customer_name:
             parts = customer_name.split()
             first_name = parts[0]
@@ -4845,7 +4819,7 @@ def voice():
 
         if not phone_e164:
             session_data[call_sid]["stage"] = "collect_phone"
-            resp.append(make_gather("Before we confirm your appointment, please provide your phone number."))
+            resp.append(make_gather("Before we finalize your appointment, please provide your phone number."))
             return str(resp)
 
         if not customer_dob:
@@ -4856,7 +4830,7 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Final Availability Guard
+        # 🧩 Availability Check
         # ----------------------------------------------------------------------
         try:
             slot_ok = is_time_slot_available(doctor_id, appointment_start, appointment_end, creds)
@@ -4865,30 +4839,24 @@ def voice():
             slot_ok = False
 
         if not slot_ok:
-            debug_print("book_appt_confirm: ❌ Slot no longer available at confirm stage")
+            debug_print("book_appt_confirm: ❌ Slot no longer available")
             session_data[call_sid]["stage"] = "ask_time_date"
             resp.append(make_gather("Sorry, that slot was just taken. Please choose another time."))
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Upsert Customer (fixed locally)
+        # 🧩 Save/Upsert Customer
         # ----------------------------------------------------------------------
         try:
             init_db()
-
-            # ✅ ensure valid E.164 or fallback
             if not phone_e164:
                 digits = "".join(ch for ch in (phone_raw or "") if ch.isdigit())
                 if len(digits) >= 8:
                     phone_e164 = f"+000{digits[-10:]}"
-                    debug_print(f"book_appt_confirm: ⚠️ using fallback phone_e164={phone_e164}")
-                else:
-                    debug_print("book_appt_confirm: ❌ no valid phone digits, cannot insert customer")
-
+                    debug_print(f"book_appt_confirm: ⚠️ fallback phone_e164={phone_e164}")
             if not customer_dob:
                 customer_dob = "unknown"
 
-            # Insert or update
             inserted_ok = insert_customer(
                 phone=phone_e164, dob=customer_dob,
                 first_name=first_name, last_name=last_name, address=customer_address,
@@ -4898,27 +4866,6 @@ def voice():
                 cc_cvv=(customer.get("cc_cvv") or "")
             )
             debug_print(f"book_appt_confirm: ✅ insert_customer executed (return={inserted_ok})")
-
-            # ✅ Verify persistence
-            try:
-                with open(DB_FILE, "r", encoding="utf-8") as f:
-                    _db_check = json.load(f)
-                key = f"{phone_e164}|{customer_dob}"
-                if key in _db_check:
-                    debug_print(f"book_appt_confirm: 🧾 verified customer record exists for {key}")
-                else:
-                    debug_print(f"book_appt_confirm: ⚠️ customer {key} not found after insert, retrying...")
-                    _ = insert_customer(
-                        phone=phone_e164, dob=customer_dob,
-                        first_name=first_name, last_name=last_name, address=customer_address,
-                        cc_name=(customer.get('cc_name') or effective_name or ''),
-                        cc_number=(customer.get('cc_number') or ''),
-                        cc_exp=(customer.get('cc_exp') or ''),
-                        cc_cvv=(customer.get('cc_cvv') or '')
-                    )
-            except Exception as e2:
-                debug_print(f"book_appt_confirm: ⚠️ verification check failed → {e2}")
-
         except Exception as e:
             debug_print(f"book_appt_confirm: insert_customer failed → {e}")
 
@@ -4927,7 +4874,7 @@ def voice():
         # ----------------------------------------------------------------------
         google_event_id = session_data[call_sid].get("google_event_id", "")
         if google_event_id:
-            debug_print(f"book_appt_confirm: ℹ️ event already created earlier → id={google_event_id}")
+            debug_print(f"book_appt_confirm: ℹ️ event already created → id={google_event_id}")
         else:
             try:
                 service = build("calendar", "v3", credentials=creds)
@@ -4957,7 +4904,7 @@ def voice():
                 return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Persist Locally (doctor file)
+        # 🧩 Local JSON Persistence
         # ----------------------------------------------------------------------
         try:
             local_date_str = dt_local.strftime("%Y-%m-%d")
@@ -4999,11 +4946,13 @@ def voice():
                 sms += f" on {formatted_time}"
             sms += ". Thank you for choosing Epic Therapist Clinic."
             _ = client.messages.create(body=sms, from_=TWILIO_PHONE_NUMBER, to=phone_e164)
+            debug_print(f"book_appt_confirm: 📩 SMS sent to {phone_e164}")
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
 
         resp.hangup()
         session_data.pop(call_sid, None)
+        debug_print(f"book_appt_confirm: ✅ total runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
         return str(resp)
 
 
