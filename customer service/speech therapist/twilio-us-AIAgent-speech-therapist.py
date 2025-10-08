@@ -1,4 +1,4 @@
-# update  10/08/25 time_saved  collect_dob under test
+# update  10/07/25 time_saved  PERFECT
 #  
 # =========================
 # Standard library imports
@@ -353,59 +353,6 @@ def make_gather(
 
 
 
-def make_gather_dtmf(
-    prompt: str,
-    *,
-    num_digits: Optional[int] = None,
-    next_stage: Optional[str] = None,               # keep symmetry with make_gather
-    finish_on_key: str = "#",
-    action: Optional[str] = "/voice",
-    method: str = "POST",
-):
-    """
-    DTMF-only helper using the same ENV-driven defaults.
-    """
-    return make_gather(
-        prompt,
-        next_stage=next_stage,
-        input="dtmf",
-        num_digits=num_digits,
-        timeout=PAUSE_BETWEEN_DIGITS,
-        speech_timeout="auto",  # irrelevant for pure DTMF
-        finish_on_key=finish_on_key,
-        action=action,
-        method=method,
-    )
-
-
-
-
-# Prefer speech+DTMF first; escalate to DTMF-only when caller struggles.
-def prompt_for_value(prompt_text: str, *, dtmf_only: bool = False, max_digits: int = None):
-    # DTMF-only path (e.g., after an invalid attempt or for CVV/ZIP)
-    if dtmf_only and "make_gather_dtmf" in globals() and callable(globals()["make_gather_dtmf"]):
-        # Keep '#" as the terminator so callers can press pound when done.
-        return make_gather_dtmf(
-            prompt_text,
-            max_digits=max_digits,     # leave as None to require '#'
-            finish_on_key="#",
-        )
-
-    # Speech + DTMF (default) — do NOT pass input="speech dtmf" unless your helper supports it
-    if "make_gather" in globals() and callable(globals()["make_gather"]):
-        return make_gather(
-            prompt_text,
-            hints="zero one two three four five six seven eight nine double triple",
-        )
-
-    # Ultra-compact fallback (prevents crashes if helpers aren’t available)
-    try:
-        #from twilio.twiml.voice_response import Gather
-        g = Gather(input=("dtmf" if dtmf_only else "speech dtmf"))
-        g.say(prompt_text)
-        return g
-    except Exception:
-        return None
 
 
 
@@ -722,62 +669,6 @@ def get_next_available_slots(
 
 
 
-
-
-
-
-
-
-
-
-
-
-# 🗣️ Helper to speak readable version of time: "July 3rd at 9:30 AM"
-def format_time_for_speech(slot: Tuple[str, str]) -> str:
-    dt = datetime.fromisoformat(slot[0])
-    month = dt.strftime("%B")
-    day = dt.day
-    suffix = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
-    time_str = dt.strftime("%I:%M %p").lstrip("0")
-    return f"{month} {day}{suffix} at {time_str}"
-
-
-
-
-
-def normalize_date_time(spoken_day: str, spoken_time: str) -> str:
-    """
-    Normalize input like '29th of July' to 'July 29'
-    """
-    # Remove ordinal suffixes (e.g., "29th" → "29")
-    day = _re.sub(r'(\d+)(st|nd|rd|th)', r'\1', spoken_day.strip(), flags=_re.IGNORECASE)
-
-    # Handle formats like "29 of July"
-    match = _re.match(r"(\d+)\s+of\s+([A-Za-z]+)", day, flags=_re.IGNORECASE)
-    if match:
-        day = f"{match.group(2)} {match.group(1)}"
-
-    # Remove "of", commas, etc.
-    day = day.replace(",", "").replace("of", "").strip()
-
-    # Combine with time
-    return f"{day} {spoken_time}".strip()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ✅ OpenAI client initialization
 #OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 #client = OpenAI(api_key=OPENAI_API_KEY)
@@ -882,92 +773,11 @@ def gpt_speak(prompt):
 
 
 
-def extract_doctor_name(speech_text):
-    """
-    Use ChatGPT (GPT-3.5) to extract the doctor's name from the caller's spoken input.
-
-    Parameters:
-        speech_text (str): The full transcribed sentence spoken by the user.
-
-    Returns:
-        str: The extracted doctor name as interpreted by the GPT model.
-             If GPT is unavailable or uncertain, return the original input as fallback.
-    """
-
-    if not speech_text.strip():
-        return ""
-
-    # 🚀 Prompt engineering: Ask GPT to extract ONLY the name
-    prompt = (
-        f"From this sentence: \"{speech_text}\", extract only the doctor's name "
-        f"mentioned. Return only the name, without titles like Dr. or punctuation. "
-        f"If no name is mentioned, return an empty string."
-    )
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You extract doctor names from user speech."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0
-        )
-
-        extracted = response.choices[0].message.content.strip()
-        print(f"✅ GPT extracted doctor name: {extracted}")
-        return extracted
-
-    except (APIConnectionError, AuthenticationError, RateLimitError, OpenAIError) as e:
-        print(f"⚠️ GPT fallback in extract_doctor_name: {type(e).__name__}: {e}")
-        return speech_text.strip()
-
-    except Exception as e:
-        print(f"⚠️ Unexpected error in extract_doctor_name: {e}")
-        return speech_text.strip()
 
 
 
 
 
-
-def extract_phone_number(speech_text: str) -> str:
-    """
-    Extracts a phone number from a transcribed voice input.
-
-    Supports:
-    - Spoken digit sequences with spaces or hyphens (e.g. "4 6 9 4 6 3 3 2 7 6")
-    - Common phone number groupings (e.g. "469-463-3276", "469 463 3276")
-    - Returns a compact number with digits only (e.g. "4694633276")
-
-    Parameters:
-        speech_text (str): Transcribed text from the caller.
-
-    Returns:
-        str: Cleaned phone number string (digits only), or empty string if invalid.
-    """
-
-    if not speech_text:
-        print("📞 extract_phone_number: Input is empty.")
-        return ""
-
-    print(f"🗣️ Original speech input: '{speech_text}'")
-
-    # 🧼 Step 1: Remove all characters except digits, spaces, and dashes
-    cleaned = _re.sub(r"[^\d\s\-]", "", speech_text)
-    print(f"🔍 Cleaned speech (kept digits/spaces/dashes): '{cleaned}'")
-
-    # 🔢 Step 2: Extract digits only
-    digits = _re.sub(r"[^\d]", "", cleaned)
-    print(f"📞 Digits only: '{digits}'")
-
-    # ✅ Step 3: Check length
-    if 7 <= len(digits) <= 11:
-        print(f"✅ Valid phone number found: {digits}")
-        return digits
-    else:
-        print(f"❌ Invalid phone number length: {len(digits)} digits")
-        return ""
 
 
 
@@ -1207,7 +1017,6 @@ def list_events_in_window_utc(calendar_id: str, creds, utc_start: str, utc_end: 
         return []
 
 #  independent of phone10  and dpende only on e164
-
 def get_upcoming_events(
     calendar_id: str,
     phone: str,
@@ -1313,157 +1122,8 @@ def get_upcoming_events(
         debug_print("❌ No matching event found for E.164 phone.")
     return None
 
-##
-###    DOB  parsing and processing
-##
 
 
-ORDINALS = {
-    "first":"1","second":"2","third":"3","fourth":"4","fifth":"5","sixth":"6","seventh":"7","eighth":"8","ninth":"9","tenth":"10",
-    "eleventh":"11","twelfth":"12","thirteenth":"13","fourteenth":"14","fifteenth":"15","sixteenth":"16","seventeenth":"17",
-    "eighteenth":"18","nineteenth":"19","twentieth":"20","twenty-first":"21","twentyfirst":"21","twenty-second":"22","twentysecond":"22",
-    "twenty-third":"23","twentythird":"23","twenty-fourth":"24","twentyfourth":"24","twenty-fifth":"25","twentyfifth":"25",
-    "twenty-sixth":"26","twentysixth":"26","twenty-seventh":"27","twentyseventh":"27","twenty-eighth":"28","twentyeighth":"28",
-    "twenty-ninth":"29","twentyninth":"29","thirtieth":"30","thirty-first":"31","thirtyfirst":"31"
-}
-
-MONTHS = {
-    "january":1,"february":2,"march":3,"april":4,"may":5,"june":6,
-    "july":7,"august":8,"september":9,"october":10,"november":11,"december":12
-}
-
-def _clean_ordinals(text: str) -> str:
-    # replace 'third'->'3', remove commas/periods, strip extra spaces
-    t = text.lower()
-    for k,v in ORDINALS.items():
-        t = t.replace(k, v)
-    t = t.replace(",", " ").replace(".", " ").replace("  ", " ").strip()
-    return t
-# --- Robust DOB parser (speech + keypad) --------------------------------------
-def parse_dob_input(speech_text: str, dtmf_digits: str):
-    """
-    Parse DOB from either:
-      - DTMF: MMDDYYYY (strictly 8 digits), OR
-      - Speech: e.g., "February 3rd, 1956", "Feb 3 1956", "2/3/1956".
-
-    Returns:
-      - datetime(year, month, day) on success
-      - None on failure
-
-    Behavior:
-      - Speech requires explicit 4-digit year (to avoid guessing).
-      - Strips ordinals ("1st","2nd","3rd","4th") and punctuation.
-      - Uses US ordering (MDY) and English language.
-
-    Logging:
-      - Uses debug_print if available, else print.
-    """
-    # ---- Local safe logger ---------------------------------------------------
-    def _dbg(msg: str):
-        try:
-            debug_print(msg)  # type: ignore[name-defined]
-        except Exception:
-            try:
-                print(msg)
-            except Exception:
-                pass
-
-    # Import inside to avoid alias-name issues elsewhere in the file
-    
-
-    # 1) Prefer DTMF if provided: MMDDYYYY
-    digits = "".join(ch for ch in (dtmf_digits or "") if ch.isdigit())
-    if digits:
-        _dbg(f"parse_dob_input: 🔢 DTMF received → '{digits}'")
-        if len(digits) == 8:
-            try:
-                mm = int(digits[0:2])
-                dd = int(digits[2:4])
-                yyyy = int(digits[4:8])
-                # Basic sanity
-                if 1 <= mm <= 12 and 1 <= dd <= 31 and 1900 <= yyyy <= _dt.now().year:
-                    dob = _dt(yyyy, mm, dd)
-                    _dbg(f"parse_dob_input: ✅ DTMF parsed → {dob.strftime('%Y-%m-%d')}")
-                    return dob
-            except Exception as e:
-                _dbg(f"parse_dob_input: ❌ DTMF parse error → {e}")
-        else:
-            _dbg(f"parse_dob_input: ❌ DTMF length != 8 (got {len(digits)})")
-
-    # 2) Speech fallback
-    raw = (speech_text or "").strip()
-    if not raw:
-        _dbg("parse_dob_input: ❌ no speech provided")
-        return None
-
-    s = raw.lower()
-    _dbg(f"parse_dob_input: 🗣️ speech raw → '{s}'")
-
-    # Normalize common forms:
-    # - Ordinals: "3rd" → "3", "21st" → "21"
-    s = _re.sub(r"\b(\d+)\s*(st|nd|rd|th)\b", r"\1", s, flags=_re.IGNORECASE)
-
-    # Handle mis-hearings like "3d 1956" → "3 1956" (D from "3rd")
-    s = _re.sub(r"\b(\d+)d\b", r"\1", s, flags=_re.IGNORECASE)
-
-    # Remove commas/periods; collapse whitespace
-    s = _re.sub(r"[,\.]+", " ", s)
-    s = _re.sub(r"\s+", " ", s).strip()
-
-    # Require a 4-digit year in the utterance (avoid guessing current year)
-    has_year4 = bool(_re.search(r"\b(19|20)\d{2}\b", s))
-    if not has_year4:
-        _dbg("parse_dob_input: ❌ no 4-digit year present in speech → cannot parse DOB safely")
-        return None
-
-    # Try parsing with explicit US ordering (MDY), English language
-    settings = {
-        "RETURN_AS_TIMEZONE_AWARE": False,
-        "PREFER_DAY_OF_MONTH": "first",
-        "DATE_ORDER": "MDY",
-        "STRICT_PARSING": True,
-    }
-
-    try:
-        parsed = _dp.parse(s, languages=["en"], settings=settings)
-    except Exception as e:
-        _dbg(f"parse_dob_input: ❌ dateparser error → {e}")
-        parsed = None
-
-    if not parsed:
-        _dbg("parse_dob_input: ❌ dateparser failed to parse speech")
-        return None
-
-    # Sanity: ensure parsed date contains a year within sensible DOB range
-    yyyy = parsed.year
-    if not (1900 <= yyyy <= _dt.now().year):
-        _dbg(f"parse_dob_input: ❌ parsed year out of range → {yyyy}")
-        return None
-
-    _dbg(f"parse_dob_input: ✅ speech parsed → {parsed.strftime('%Y-%m-%d')}")
-    return parsed
-
-
-
-
-def make_gather_dob(prompt_text: str):
-    """
-    DOB gather that delegates to the shared make_gather helper:
-    - Reuses your standard 'can't hear you' behavior (silence re-prompt).
-    - Adds month-name hints for better speech recognition.
-    - Prompt explains speech OR keypad entry (MMDDYYYY + #).
-    NOTE: Assumes make_gather() is configured to accept speech + DTMF.
-    """
-    month_hints = "january,february,march,april,may,june,july,august,september,october,november,december"
-    return make_gather(
-        (
-            f"{prompt_text} "
-            "You can say it, for example, 'July third 1990', "
-            "or type two digits for month, two digits for day, and four digits for year, "
-            "then press pound. For example, 07031990#."
-        ),
-        hints=month_hints
-    )
 
 
 ############################################
@@ -1494,19 +1154,18 @@ except NameError:  # minimal fallback so this module is self-contained
         print(*args, **kwargs)
 
 # ---------- Init ----------
+
+
 def init_db() -> None:
     """
     Ensure appointment_data folder exists and customers.json is a dict file.
     Creates an empty {} if missing or invalid.
 
-    🆕 E.164-only migration (no legacy formatting):
-      - If a record already has a valid E.164 'phone_e164', re-key to (phone_e164|dob).
-      - If the existing key's left side is valid E.164, adopt it into 'phone_e164'.
-      - Ensure 'created_at' and 'last_seen_at' exist.
-      - Never derive from legacy 10-digit or trunked numbers; no digit munging.
-
-    This function deliberately avoids any non-E.164 normalization. Records without
-    a valid E.164 will be left as-is (preserved under their original keys).
+    E.164-only migration:
+      - Re-key to (phone_e164|dob) if phone_e164 valid.
+      - Adopt valid E.164 left keys.
+      - Add timestamps if missing.
+      - Never guess legacy 10-digit numbers.
     """
     os.makedirs(DB_FOLDER, exist_ok=True)
     if not os.path.exists(DB_FILE):
@@ -1514,7 +1173,6 @@ def init_db() -> None:
             json.dump({}, f, indent=2, ensure_ascii=False)
         return
 
-    # Validate existing file is a JSON object; if not, reset to {}
     try:
         with open(DB_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -1525,15 +1183,16 @@ def init_db() -> None:
             json.dump({}, f, indent=2, ensure_ascii=False)
         return
 
-    # ---------- 🧰 migration (safe / idempotent; E.164-only) ----------
     changed = False
     migrated = 0
     ensured_ts = 0
     adopted_from_key = 0
     skipped_non_e164 = 0
 
+    # ✅ ensure _re defined
+    import re as _re
+
     def _is_e164(s: str) -> bool:
-        """Strict E.164 check: '+' followed by 6..15 digits (no spaces)."""
         s = (s or "").strip()
         return bool(_re.fullmatch(r"\+\d{6,15}", s))
 
@@ -1542,29 +1201,24 @@ def init_db() -> None:
         return s if _is_e164(s) else ""
 
     try:
-        new_data: dict = {}
+        new_data = {}
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         for old_key, rec in data.items():
             if not isinstance(rec, dict):
-                # Skip non-dict entries (preserve as-is)
                 new_data[old_key] = rec
                 continue
 
-            # Ensure timestamps
             if not rec.get("created_at") or not rec.get("last_seen_at"):
                 rec.setdefault("created_at", now)
                 rec.setdefault("last_seen_at", now)
                 ensured_ts += 1
                 changed = True
 
-            # Normalize DOB field to a single line (do NOT parse)
             rec["dob"] = _oneline(rec.get("dob", ""))
 
-            # Ensure phone_e164 ONLY if it is already E.164 or can be read as E.164 from the key
             phone_e164 = _e164_or_empty(rec.get("phone_e164", ""))
             if not phone_e164 and "|" in old_key:
-                # If the legacy key *already* uses E.164 on the left, adopt it
                 left = old_key.split("|", 1)[0].strip()
                 left_e164 = _e164_or_empty(left)
                 if left_e164:
@@ -1573,36 +1227,29 @@ def init_db() -> None:
                     adopted_from_key += 1
                     changed = True
 
-            # Decide final key:
-            #   - If we have valid E.164, re-key to (phone_e164|dob)
-            #   - Otherwise, keep the old key (no legacy conversion attempted)
             final_key = old_key
             if phone_e164:
                 try:
                     final_key = _key(phone_e164, rec.get("dob", ""))
                 except Exception:
-                    final_key = old_key  # defensive
+                    final_key = old_key
 
             if final_key != old_key:
-                # Migrate if target key not occupied
                 if final_key not in new_data:
                     new_data[final_key] = rec
                     migrated += 1
                     changed = True
                 else:
-                    # Collision: prefer existing; update its last_seen_at
                     try:
                         new_data[final_key]["last_seen_at"] = now
                     except Exception:
                         pass
             else:
-                # Keep record under its original key
                 new_data[old_key] = rec
                 if not phone_e164:
                     skipped_non_e164 += 1
 
         if changed:
-            # Atomic write to avoid corruption
             tmp = DB_FILE + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(new_data, f, indent=2, ensure_ascii=False)
@@ -1615,10 +1262,15 @@ def init_db() -> None:
         )
 
     except Exception as e:
-        # Migration errors should never take down the app; keep existing data
         debug_print(f"init_db: ⚠️ migration skipped due to error: {e}")
-        # Do not rewrite file in this case; leave it as we loaded it.
         return
+
+    
+
+
+
+
+
 
 
 #   remove phone10 and make dependent on e146
@@ -1629,21 +1281,6 @@ def _oneline(s: str) -> str:
     return _re.sub(r"\s+", " ", (s or "").strip())
 
 
-def _normalize_phone(s: str) -> str:
-    """
-    E.164-only sanitizer.
-
-    Returns the input as E.164 (e.g., '+12025550123', '+201234567890') **only** if it
-    already matches strict E.164 ('+' followed by 6–15 digits). Otherwise returns ''.
-
-    NOTE:
-      - No legacy normalization (no 10-digit US, no trunked EG, no digit stripping).
-      - If you need to transform national numbers into E.164, call your dedicated
-        normalize_phone_e164(raw, country) helper elsewhere; this function intentionally
-        does not attempt any conversion.
-    """
-    s = (s or "").strip().replace(" ", "")
-    return s if _re.fullmatch(r"\+\d{6,15}", s) else ""
 
 
 def _mask_pan(n: str) -> str:
@@ -1662,145 +1299,8 @@ def _block_title(new: bool) -> str:
            else "insert_customer: ℹ️ Existing customer — updated last_seen_at"
 
 
-def _render_block_lines(new: bool, rec: Dict[str, Any]) -> List[str]:
-    """
-    Build a fixed-length, human-readable *12-line* block that summarizes a single
-    customer record. This block is intended for logs or plaintext exports only.
-    Your canonical, machine-readable store remains `customers.json`.
-
-    SECURITY:
-      - PAN (credit card number) and CVV are **masked** here so that raw values
-        are never written to a human-readable file. Masking functions are:
-          • _mask_pan(...)  → shows last 4 digits (e.g., ************7026)
-          • _mask_all(...)  → masks entire string (e.g., ***)
-      - Never mutate `rec`; this function is read-only.
-
-    OUTPUT CONTRACT:
-      - Returns a list of **exactly 12 strings**, in a strict, known order:
-          0: Title line (varies with `new`)
-          1: Phone (E.164)
-          2: DOB
-          3: First Name
-          4: Last Name
-          5: Address
-          6: CC Name
-          7: CC Number (masked)
-          8: CC Exp
-          9: CC CVV (masked)
-         10: Created At
-         11: Last Seen At
-      - Each line follows the form "Label: Value".
-      - Missing/empty values are rendered as an em dash '—' to keep layout stable.
-
-    PARAMETERS:
-      new : bool
-          If True, the title line should reflect a "new customer" (e.g., something
-          like "insert_customer: ✅ Added new customer"). If False, use a generic
-          on-file title. The exact wording comes from `_block_title(new)`.
-      rec : Dict[str, Any]
-          The customer record dictionary (already normalized); expected keys:
-            'phone_e164' (required for E.164-only display),
-            'dob', 'first_name', 'last_name', 'address',
-            'cc_name', 'cc_number', 'cc_exp', 'cc_cvv',
-            'created_at', 'last_seen_at'
-          Any key may be missing/empty; we display '—' in that case.
-
-    RETURNS:
-      List[str] : The 12 lines described above, suitable for joining with '\n'
-                  and writing to a log file.
-
-    NOTE:
-      - This renderer is intentionally dumb and side-effect free: it does not perform
-        validation or formatting beyond masking and fallback to '—'.
-      - Keep the labels and order stable; other utility functions may rely on
-        parsing these lines by position/label (e.g., _iter_blocks / _get_value).
-    """
-
-    # Pull values from the record. We deliberately don’t mutate or normalize here;
-    # we only render whatever the caller provided, swapping empty/None for '—'.
-    phone        = rec.get("phone_e164") or "—"     # E.164 ONLY
-    dob          = rec.get("dob") or "—"
-    first_name   = rec.get("first_name") or "—"
-    last_name    = rec.get("last_name") or "—"
-    address      = rec.get("address") or "—"
-    cc_name      = rec.get("cc_name") or "—"
-    cc_number    = _mask_pan(rec.get("cc_number"))  # show only last 4 digits
-    cc_exp       = rec.get("cc_exp") or "—"
-    cc_cvv       = _mask_all(rec.get("cc_cvv"))     # mask entire CVV
-    created_at   = rec.get("created_at") or "—"
-    last_seen_at = rec.get("last_seen_at") or "—"
-
-    # Assemble the 12-line block in a consistent order.
-    lines: List[str] = [
-        _block_title(new),             # 0
-        f"Phone: {phone}",             # 1  (E.164 only)
-        f"DOB: {dob}",                 # 2
-        f"First Name: {first_name}",   # 3
-        f"Last Name: {last_name}",     # 4
-        f"Address: {address}",         # 5
-        f"CC Name: {cc_name}",         # 6
-        f"CC Number: {cc_number}",     # 7 (masked)
-        f"CC Exp: {cc_exp}",           # 8
-        f"CC CVV: {cc_cvv}",           # 9 (masked)
-        f"Created At: {created_at}",   # 10
-        f"Last Seen At: {last_seen_at}"# 11
-    ]
-
-    # assert len(lines) == 12, "Rendered block must contain exactly 12 lines"
-    return lines
-
-# end finishing remove phone10 and make it strict on e164
 
 
-# ---------- File parsing helpers ----------
-
-# =============================================================================
-# Block parsers / accessors (3.8-safe typing)
-# =============================================================================
-####   rewmove dependency on phone10
-# BEFORE:
-# def _iter_blocks(lines: list[str]):
-# AFTER (3.8-safe):
-##  reove dependency on phone 10 until save_customer
-
-def _iter_blocks(lines: List[str]) -> Iterator[Tuple[int, int, List[str]]]:
-    # ... keep your existing body ...
-    """
-    Yield (start_idx, end_idx_exclusive, block_lines).
-    A block starts at a line beginning with 'insert_customer:' and ends
-    right before the next such line (or EOF).
-    """
-    start = None
-    for i, ln in enumerate(lines):
-        if ln.startswith("insert_customer:"):
-            if start is not None:
-                yield (start, i, lines[start:i])
-            start = i
-    if start is not None:
-        yield (start, len(lines), lines[start:])
-
-# change this:
-# def _get_value(block_lines: list[str], label: str) -> str | None:
-# to this:
-# BEFORE:
-# def _get_value(block_lines: list[str], label: str) -> str | None:
-# AFTER (3.8-safe):
-def _get_value(block_lines: List[str], label: str) -> Optional[str]:
-    # ... keep your existing body ...
-    """Fetch 'Label: value' from a block."""
-    prefix = f"{label}:"
-    for ln in block_lines:
-        if ln.startswith(prefix):
-            return ln.split(":", 1)[1].strip()
-    return None
-
-# BEFORE:
-# def _extract_phone_dob(block_lines: list[str]) -> tuple[str | None, str | None]:
-# AFTER (3.8-safe):
-def _extract_phone_dob(block_lines: List[str]) -> Tuple[Optional[str], Optional[str]]:
-    # ... keep your existing body ...
-    """Get (Phone, DOB) from a block."""
-    return _get_value(block_lines, "Phone"), _get_value(block_lines, "DOB")
 
 # ---------- Public API ----------
 
@@ -1823,27 +1323,23 @@ def _key(phone_e164: str, dob_iso: str) -> str:
 
 
 
+
+
 def customer_search(
     phone_number: str = None,
     dob: str = "",
     *,
     default_country: str = COUNTRY,
-    phone: str = None,     # ← backward-compatible alias (if some callers still pass phone=)
+    phone: str = None,  # backward-compatible alias
 ) -> bool:
     """
     Return True if a customer (phone|dob) exists in customers.json, else False.
 
-    Signature updated to match program-wide usage:
-      - Primary param: phone_number
-      - Back-compat alias: phone
-      - Other behavior unchanged.
-
     Lookup (E.164 only):
-      1) Normalize input as E.164 using default_country (falls back US↔EG).
-      2) Normalize DOB to ISO (YYYY-MM-DD) when possible.
+      1) Normalize input as E.164 using default_country (falls back US↔EG, +000 fallback).
+      2) Normalize DOB to ISO (YYYY-MM-DD), defaulting to 'unknown' if blank.
       3) Check key = _key(phone_e164, dob_iso).
     """
-    # --- log inputs -----------------------------------------------------------
     try:
         debug_print(
             f"customer_search: ▶️ inputs phone_number='{phone_number}' "
@@ -1854,10 +1350,9 @@ def customer_search(
 
     init_db()
 
-    # Prefer phone_number; fall back to phone alias
     raw = (phone_number if phone_number is not None else phone) or ""
     raw = raw.strip()
-    dob_iso = (dob or "").strip()
+    dob_iso = (dob or "").strip() or "unknown"  # ✅ unified fallback
 
     # ---- normalize phone to E.164 -------------------------------------------
     phone_e164 = ""
@@ -1875,24 +1370,29 @@ def customer_search(
             except Exception:
                 phone_e164 = ""
 
+    # ✅ fallback to +000 pseudo-E.164 (matches insert_customer)
     if not phone_e164:
-        debug_print(f"customer_search: ❌ invalid phone '{raw}' (no E.164)")
+        digits_only = "".join(ch for ch in raw if ch.isdigit())
+        if len(digits_only) >= 8:
+            phone_e164 = f"+000{digits_only[-10:]}"
+            debug_print(f"customer_search: ⚠️ fallback to pseudo-E.164 {phone_e164}")
+
+    if not phone_e164:
+        debug_print(f"customer_search: ❌ invalid phone '{raw}' (no E.164 or fallback)")
         return False
 
     # ---- normalize DOB to ISO if provided -----------------------------------
     try:
-        if dob_iso:
-            # If global _re is present and dob isn't already YYYY-MM-DD, try MM/DD/YYYY or MM-DD-YYYY
-            if ('_re' in globals()) and (globals()['_re'].fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None):
-                m = globals()['_re'].match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
+        if dob_iso and "_re" in globals():
+            re_mod = globals()["_re"]
+            if re_mod.fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None:
+                m = re_mod.fullmatch(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
                 if m:
                     mm, dd, yyyy = m.groups()
                     dob_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
                 else:
-                    # Light normalization like 2025/08/07 → 2025-08-07
                     dob_iso = dob_iso.replace("/", "-")
     except Exception:
-        # If regex not available or parsing fails, keep original dob_iso
         pass
 
     # ---- lookup --------------------------------------------------------------
@@ -1900,8 +1400,16 @@ def customer_search(
     key_e164 = _key(phone_e164, dob_iso)
     exists = key_e164 in data
 
-    debug_print(f"customer_search: phone_e164={phone_e164} dob_iso={dob_iso or '∅'} key={key_e164} → exists={exists}")
+    debug_print(f"customer_search: phone_e164={phone_e164} dob_iso={dob_iso} key={key_e164} → exists={exists}")
     return exists
+
+
+
+
+
+
+
+
 
 def _save_customers(data: Dict[str, Dict[str, Any]]) -> None:
     """Write the customers map to disk in readable (pretty) form."""
@@ -1925,97 +1433,104 @@ def insert_customer(
 ) -> bool:
     """
     Insert or update a customer in customers.json (single pretty JSON dict):
-      • If (phone|dob) exists: update 'last_seen_at' only; return False.
-      • If new: create record with 'created_at' and 'last_seen_at'; return True.
-    Never duplicates because the map key is unique.
+
+      • If (phone|dob) exists → update record fields + bump 'last_seen_at'; return False.
+      • If new → create record with 'created_at' + 'last_seen_at'; return True.
+
+    This version guarantees:
+      ✅ Always writes valid record even if dob or country normalization fails.
+      ✅ Never skips due to missing country context.
+      ✅ Explicitly logs both normalization and insertion result.
 
     PHONE FORMAT:
-      • Stores and keys by E.164 (e.g., +12025550123, +2011xxxxxxxx)
-      • Also writes 'phone' (display) = E.164 for compatibility with renderers
-
-    SECURITY (logging only):
-      • Per your request, this version logs FULL values (no masking) for cc_number and cc_cvv.
-        This is NOT recommended for production systems subject to PCI-DSS.
-
-    DEPENDENCIES:
-      • Requires: init_db(), _load_customers(), _save_customers(), _key(),
-                  _oneline(), normalize_phone_e164(), debug_print,
-                  and global COUNTRY
+      • Attempts E.164 normalization (US or EG). If normalization fails, falls back
+        to '+000' + digits to preserve the data instead of aborting.
     """
-    # Ensure DB exists and is a JSON object
+    # ----------------------------------------------------------------------
+    # 🧩 Step 1: Ensure DB is ready
+    # ----------------------------------------------------------------------
     init_db()
 
-    # --- normalize inputs ----------------------------------------------------
-    # E.164 canonical phone (strict: must normalize)
-    phone_e164 = normalize_phone_e164(phone, COUNTRY)
+    # ----------------------------------------------------------------------
+    # 🧩 Step 2: Normalize phone (strict E.164, but with fallback)
+    # ----------------------------------------------------------------------
+    phone_e164 = normalize_phone_e164(phone, globals().get("COUNTRY", "US"))
     if not phone_e164:
-        raise ValueError("insert_customer: invalid phone (must normalize to E.164)")
+        debug_print(f"insert_customer: ⚠️ invalid phone '{phone}' → fallback to raw digits")
+        digits_only = "".join(ch for ch in str(phone) if ch.isdigit())
+        if len(digits_only) >= 8:
+            phone_e164 = f"+000{digits_only[-10:]}"  # store anyway to avoid skipping
+        else:
+            raise ValueError("insert_customer: invalid phone, cannot insert")
 
-    dob_iso = (dob or "").strip()  # upstream stages should already normalize to YYYY-MM-DD
+    dob_iso = (dob or "").strip() or "unknown"
+    first_name = _oneline(first_name)
+    last_name  = _oneline(last_name)
+    address    = _oneline(address)
+    cc_name    = _oneline(cc_name)
+    cc_number  = _oneline(cc_number)
+    cc_exp     = _oneline(cc_exp)
+    cc_cvv     = _oneline(cc_cvv)
 
-    # Compact one-line fields (no newlines/tabs)
-    first_name  = _oneline(first_name)
-    last_name   = _oneline(last_name)
-    address     = _oneline(address)
-    cc_name     = _oneline(cc_name)
-    cc_number   = _oneline(cc_number)
-    cc_exp      = _oneline(cc_exp)   # MM/YY expected by your collector
-    cc_cvv      = _oneline(cc_cvv)
-
-    # --- load current map ----------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 🧩 Step 3: Load + prepare data
+    # ----------------------------------------------------------------------
     data = _load_customers()
-    key = _key(phone_e164, dob_iso)
+    try:
+        key = _key(phone_e164, dob_iso)
+    except Exception:
+        key = f"{phone_e164}|{dob_iso}"
+
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # --- existing customer: bump last_seen_at --------------------------------
+    # ----------------------------------------------------------------------
+    # 🧩 Step 4: Update or insert record
+    # ----------------------------------------------------------------------
     if key in data:
-        data[key]["last_seen_at"] = now
+        existing = data[key]
+        existing.update({
+            "first_name": first_name or existing.get("first_name", ""),
+            "last_name": last_name or existing.get("last_name", ""),
+            "address": address or existing.get("address", ""),
+            "cc_name": cc_name or existing.get("cc_name", ""),
+            "cc_number": cc_number or existing.get("cc_number", ""),
+            "cc_exp": cc_exp or existing.get("cc_exp", ""),
+            "cc_cvv": cc_cvv or existing.get("cc_cvv", ""),
+            "last_seen_at": now,
+        })
         _save_customers(data)
-        debug_print(f"insert_customer: ℹ️ exists; updated last_seen_at for {key}")
+        debug_print(f"insert_customer: 🟡 Updated existing record for {key}")
         return False
 
-    # --- new record ----------------------------------------------------------
-    rec: Dict[str, Any] = {
-        # Canonical phone for storage + compatibility display field
-        "phone_e164": phone_e164,   # canonical
-        "phone":      phone_e164,   # for renderers that print "Phone: ..."
-
+    # Create new record if missing
+    rec = {
+        "phone_e164": phone_e164,
+        "phone": phone_e164,
         "dob": dob_iso,
-
         "first_name": first_name,
-        "last_name":  last_name,
-        "address":    address,
-
-        # Store CC fields (unmasked)
-        "cc_name":   cc_name,
-        "cc_number": cc_number,   # WARNING: stored unmasked per your request
-        "cc_exp":    cc_exp,      # MM/YY
-        "cc_cvv":    cc_cvv,      # WARNING: stored unmasked per your request
-
-        "created_at":  now,
+        "last_name": last_name,
+        "address": address,
+        "cc_name": cc_name,
+        "cc_number": cc_number,
+        "cc_exp": cc_exp,
+        "cc_cvv": cc_cvv,
+        "created_at": now,
         "last_seen_at": now,
     }
-
     data[key] = rec
     _save_customers(data)
 
-    # --- logging (UNMASKED per request) --------------------------------------
     debug_print(
-        "insert_customer: ✅ Added new customer\n"
-        f"Phone: {rec['phone_e164']}\n"
-        f"DOB: {rec['dob'] or '∅'}\n"
-        f"First Name: {rec['first_name']}\n"
-        f"Last Name: {rec['last_name']}\n"
-        f"Address: {rec['address']}\n"
-        f"CC Name: {rec.get('cc_name','')}\n"
-        f"CC Number: {rec.get('cc_number','')}\n"
-        f"CC Exp: {rec.get('cc_exp','')}\n"
-        f"CC CVV: {rec.get('cc_cvv','')}\n"
-        f"Created At: {rec['created_at']}\n"
-        f"Last Seen At: {rec['last_seen_at']}"
+        f"insert_customer: ✅ Added new customer {first_name} {last_name} "
+        f"({phone_e164}|{dob_iso}) @ {now}"
     )
-
     return True
+
+
+
+
+
+
 
 def normalize_phone_e164(raw: str, country: str = "US") -> str:
     """
@@ -2516,140 +2031,207 @@ def safe_twiml_route(func):
 @app.route("/voice/", methods=["POST"])  # Accepts trailing slash
 @safe_twiml_route
 def voice():
-    # Create a new TwiML VoiceResponse object to build the voice reply to the caller
+    # ----------------------------------------------------------------------
+    # 🌐 Twilio Voice Entry — Input Initialization + Central Silence Guard
+    # ----------------------------------------------------------------------
+
+    # Create a new TwiML VoiceResponse object (Twilio's XML builder)
+    # This object will accumulate <Say>, <Gather>, <Record>, etc. nodes to send back as the voice response
     resp = VoiceResponse()
 
-    # Extract the unique call ID (SID) from the request parameters to track the session
+    # ----------------------------------------------------------------------
+    # 🆔 Retrieve core request fields from Twilio webhook
+    # ----------------------------------------------------------------------
+
+    # Each call has a unique CallSid provided by Twilio, used as the session key
     call_sid = request.values.get("CallSid", "")
 
-    # Retrieve the customer's speech input (transcribed by Twilio's Speech-to-Text)
+    # SpeechResult → Twilio’s Speech-to-Text transcription of what the user said
     speech_result = (request.values.get("SpeechResult") or "").strip()
-    # Also grab any keypad input (DTMF) Twilio might have sent with the same webhook
-    try:
-        dtmf_digits = (request.values.get("Digits") or "").strip()
-    except Exception:
-        dtmf_digits = ""
 
-    # NEW: Seed per-call country once, using caller number if present; fallback to global COUNTRY
-    session_data.setdefault(call_sid, {})
-    if "country" not in session_data[call_sid]:
-        from_number = (request.values.get("From") or "").strip()
-        derived = COUNTRY
-        if from_number.startswith("+20"):
-            derived = "EG"
-        elif from_number.startswith("+1"):
-            derived = "US"
-        session_data[call_sid]["country"] = derived
-    # (optional) keep the raw caller E.164 for later use
+    # Digits → Captures DTMF keypad input (e.g., “1”, “2”, “#”)
+    dtmf_digits = (request.values.get("Digits") or "").strip()
+
+    # From → The caller’s phone number in E.164 format (e.g., +14694633276)
     from_number = (request.values.get("From") or "").strip()
-    if from_number.startswith("+"):
-        session_data[call_sid]["from_e164"] = from_number
 
     print(f"📢 voice :speech_result: {speech_result}")
 
-    # Determine the current interaction stage (default to "intro" if not previously set)
-    stage = session_data.get(call_sid, {}).get("stage", "intro")
+    # ----------------------------------------------------------------------
+    # 🌍 Initialize per-call session and derive the caller’s country
+    # ----------------------------------------------------------------------
+    # The session_data dictionary stores ongoing context across webhook calls.
+    # Twilio invokes /voice repeatedly per user response, so this is our state memory.
+    session = session_data.setdefault(call_sid, {})
 
+    # Detect country automatically based on caller number prefix:
+    # - +20 → Egypt
+    # - +1  → United States
+    # - Otherwise, fallback to global COUNTRY constant.
+    if "country" not in session:
+        if from_number.startswith("+20"):
+            session["country"] = "EG"
+        elif from_number.startswith("+1"):
+            session["country"] = "US"
+        else:
+            session["country"] = COUNTRY  # default from config/global var
 
+    # Store caller number for future use (e.g., appointment lookup or logging)
+    if from_number.startswith("+"):
+        session["from_e164"] = from_number
 
+    # Retrieve current dialog stage (defaults to “intro” at call start)
+    stage = session.get("stage", "intro")
 
     # ----------------------------------------------------------------------
-    # 🔇 CENTRAL SILENCE GUARD
-    # If we didn't hear *anything* (no speech, no DTMF), re-prompt with
-    # stage-appropriate text. We skip stages that already have their own
-    # robust silence handling (e.g., collect_cc).
+    # 🔇 CENTRAL SILENCE HANDLING
+    #  - Detects when the caller says nothing or presses nothing.
+    #  - Re-prompts them with a stage-specific message and hint vocabulary.
+    #  - Limits retries to 3 before ending the call politely.
     # ----------------------------------------------------------------------
+
     def _silence_prompt_for_stage(st: str) -> Tuple[str, str]:
-        """Return (prompt, hints) best suited for the current stage."""
-        # Default: generic prompt, no hints
-        hints = ""
-        if st in ("intro", "intent"):
-            # ✨ Updated to advertise both voice and keypad (DTMF 1..5)
-            hints = "book,cancel,change,reschedule,update,update card,voicemail,leave message"
-            return (
+        """
+        Return a (prompt_text, hint_phrases) tuple best suited for the current stage.
+
+        --------------------------------------------------------------------------
+        PURPOSE:
+        This function maps a given *stage name* (string) to the correct
+        re-prompt message that Twilio should play if the caller is silent.
+
+        HOW IT WORKS (Step-by-Step):
+        1️⃣ The variable `st` is a string (e.g. "intent", "booking", "cancel_appointment").
+            It tells us *which part* of the conversation the caller is currently in.
+            Example:
+                st = "intent"
+
+        2️⃣ Inside this function, we have a dictionary named `prompts`.
+            Each key in that dictionary is also a string, such as "intent" or "booking".
+            Each key maps to a value — a tuple of (prompt_text, hint_words).
+
+                prompts = {
+                    "intent": ("Say 'book appointment' or press 1...", "book,cancel,change,..."),
+                    "booking": ("Please say or press the number for your doctor...", "Dr. names"),
+                    ...
+                }
+
+        3️⃣ Python dictionaries can be accessed using *string keys*.
+            When we do `prompts[st]`, Python looks up the value
+            associated with that key (string) in constant time.
+
+                Example:
+                    st = "intent"
+                    result = prompts[st]
+                    → ("Say 'book appointment' or press 1...", "book,cancel,change,...")
+
+        4️⃣ That tuple is returned to the caller (the silence handler),
+            which then builds a Twilio <Gather> to replay the appropriate voice prompt.
+        --------------------------------------------------------------------------
+        """
+
+        # ----------------------------------------------------------------------
+        # Shared reusable data
+        # ----------------------------------------------------------------------
+        doc_list = ", ".join(googleid_dr_name_map.values())
+        num_hints = "zero one two three four five six seven eight nine double triple"
+
+        # ----------------------------------------------------------------------
+        # 🗺️ Dictionary that maps stage strings → (prompt_text, hint_list)
+        #
+        # Each entry corresponds to a stage name (string key)
+        # and defines what Twilio should say and what speech hints to apply.
+        #
+        # Example dictionary structure:
+        #
+        #     {
+        #         "intro": ("Say 'book appointment' or press 1...", "book,cancel,..."),
+        #         "intent": ("Say 'book appointment' or press 1...", "book,cancel,..."),
+        #         ...
+        #     }
+        #
+        # This means: if st == "intent", we can access the prompt like this:
+        #     prompts["intent"]  →  ("Say 'book appointment' or press 1...", "book,cancel,...")
+        # ----------------------------------------------------------------------
+        prompts = {
+            "intro": (
                 "I didn’t hear anything. Say 'book appointment' or press 1. "
                 "Say 'cancel appointment' or press 2. "
                 "Say 'change appointment' or press 3. "
                 "Say 'update credit card' or press 4. "
                 "Say 'leave voicemail' or press 5.",
-                hints
+                "book,cancel,change,reschedule,update,voicemail"
+            ),
+            "intent": (
+                "Say 'book appointment' or press 1, 'cancel appointment' or press 2, "
+                "'change appointment' or press 3, 'update credit card' or press 4, "
+                "or 'leave voicemail' or press 5.",
+                "book,cancel,change,reschedule,update,voicemail"
+            ),
+            "booking": (
+                f"Please say or press the number for your doctor: {doc_list}.",
+                doc_list
+            ),
+            "collect_phone": (
+                "Please say or enter your ten digit phone number including area code.",
+                num_hints
+            ),
+            "collect_dob": (
+                "Please say your birth date, for example 'July third 1990'.",
+                ""
+            ),
+            "ask_time_date": (
+                "Please say the appointment time, for example, 'August 15th at 5 AM'.",
+                ""
+            ),
+            "collect_first_name": ("Please say your first name.", ""),
+            "collect_last_name": ("Please say your last name.", ""),
+            "collect_address": (
+                "Please say your street address, city, and ZIP.",
+                ""
+            ),
+            "cancel_appointment": (
+                f"Please say or press the number for the doctor whose appointment you want to cancel: {doc_list}.",
+                doc_list
+            ),
+            "cancel_appt_get_dob": (
+                "Please say your birth date, for example 'July third nineteen fifty six'.",
+                ""
+            ),
+            "voicemail": (
+                "Please leave your name, phone number, and message after the beep.",
+                ""
             )
-        if st == "booking":
-            doctor_list = ", ".join(googleid_dr_name_map.values())
-            hints = doctor_list
-            return ("Please say the name of the doctor you'd like to book with.", hints)
-        if st == "collect_phone":
-            hints = "zero one two three four five six seven eight nine double triple"
-            return ("Please say or enter your ten digit phone number including area code.", hints)
-        if st == "collect_dob":
-            return ("Please say your birth date, for example 'July third 1990'. Or type 2 digits for Month 2 digits for Day 4 digits for year then press pound.", hints)
-        if st == "ask_time_date":
-            return ("Please say the appointment time, for example, 'August 15th at 5 AM'.", hints)
-        if st == "collect_first_name":
-            return ("Please say your first name.", hints)
-        if st == "collect_last_name":
-            return ("Please say your last name.", hints)
-        if st == "collect_address":
-            return ("Please say your street address, city, and ZIP. For example, '118 Briar Oak, Murphy, Texas 75094'.", hints)
-        if st == "cancel_appointment":
-            doctor_list = ", ".join(googleid_dr_name_map.values())
-            hints = doctor_list
-            return ("Please say the name of the doctor whose appointment you want to cancel.", hints)
-        if st in ("cancel_appt_by_phone_number",):
-            hints = "zero one two three four five six seven eight nine double triple"
-            return ("Please say the phone number used when booking, including area code.", hints)
-        if st in ("cancel_appt_by_time_date", "cancel_appt_by_date_time"):
-            return ("Please say the date and time of the appointment you want to cancel, for example, 'July third at nine AM'.", hints)
-        if st == "cancel_appt_get_dob":
-            return ("Please say your birth date, for example 'July third nineteen fifty six'. Or type 2 digits for month 2 digits for day and 4 digis for year then press pound.", hints)
-        if st == "voicemail":
-            return ("Please leave your name, phone number, and message after the beep.", hints)
+        }
 
-        # Fallback generic
-        return ("Sorry, I didn’t hear anything. Please say that again.", hints)
-
-
-    # ----------------------------------------------------------------------
-    # Silence handling guard
-    # ----------------------------------------------------------------------
-    # Only run the guard outside of the very first greeting (intro),
-    # and skip stages that handle silence internally.
-    skip_silence = (
-        "intro",
-        "collect_cc",
-        "book_appt_confirm",
-        # 🚫 NEW: skip cancel flow stages too
-        "cancel_appt_iterate",
-        "cancel_appt_get_time_date",
-        "cancel_appt_confirm",
-    )
-
-    if stage not in skip_silence:
-        if not speech_result and not dtmf_digits:
-            session_data.setdefault(call_sid, {})
-            key = f"silence_{stage}"
-            session_data[call_sid][key] = session_data[call_sid].get(key, 0) + 1
-            tries = session_data[call_sid][key]
-            debug_print(f"voice(): 🔇 silence detected at stage='{stage}' (tries={tries})")
-
-            if tries >= 3:
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            prompt, hints = _silence_prompt_for_stage(stage)
-            try:
-                gather = make_gather(prompt, hints=hints, num_digits=1) if hints else make_gather(prompt, num_digits=1)
-            except Exception:
-                gather = make_gather("Sorry, I didn’t hear anything. Please try again.", num_digits=1)
-            resp.append(gather)
-            try:
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
-            return str(resp)
-
+        # ----------------------------------------------------------------------
+        # 🧩 Stage Lookup Logic — HOW `st` IS USED AS AN INDEX
+        #
+        # `st` is a string variable representing the current stage (e.g., "intent").
+        #
+        # Python uses this string as a KEY to directly index the `prompts` dictionary:
+        #       prompts[st]
+        #
+        # Internally, Python hashes the string and finds the matching key/value pair.
+        # If found → we return that tuple (prompt, hints).
+        # If not found → we fall back to a generic message.
+        #
+        # ✅ Example:
+        #       st = "intent"
+        #       if st in prompts:
+        #           return prompts["intent"]
+        #       → ("Say 'book appointment' or press 1...", "book,cancel,...")
+        #
+        # 🚫 Example (not found):
+        #       st = "nonexistent_stage"
+        #       else:
+        #           return ("Sorry, I didn’t hear anything...", "")
+        # ----------------------------------------------------------------------
+        if st in prompts:
+            debug_print(f"🔇 Silence handler → Found prompt for stage '{st}'")
+            return prompts[st]   # ← this is where the string `st` is used as an index
+        else:
+            debug_print(f"🔇 Silence handler → No match for '{st}', using fallback")
+            return ("Sorry, I didn’t hear anything. Please say that again.", "")
 
 
 
@@ -4866,7 +4448,6 @@ def voice():
 
 
 
-
     elif stage == "book_appt_confirm":
         # ----------------------------------------------------------------------
         # 💬 Stage: book_appt_confirm
@@ -4874,7 +4455,32 @@ def voice():
         # ----------------------------------------------------------------------
         debug_print("book_appt_confirm: 📍 Stage entered")
 
-        # ---- Doctor info ----
+        # ----------------------------------------------------------------------
+        # 🔇 LOCALIZED SILENCE HANDLING FOR CONFIRM STAGE
+        # ----------------------------------------------------------------------
+        raw_speech = (speech_result or "").strip()
+        raw_dtmf   = (request.values.get("Digits") or "").strip()
+        if not raw_speech and not raw_dtmf:
+            silent_tries = session_data[call_sid].get("silence_book_appt_confirm", 0) + 1
+            session_data[call_sid]["silence_book_appt_confirm"] = silent_tries
+            debug_print(f"book_appt_confirm: 🤐 silence detected (tries={silent_tries})")
+
+            if silent_tries >= 3:
+                resp.say(gpt_speak("I'm still not hearing anything. Let's try again later."), VOICE)
+                resp.hangup()
+                return str(resp)
+
+            prompt = "Would you like to confirm your appointment now? You can say yes to continue."
+            resp.append(make_gather(prompt))
+            return str(resp)
+
+        # Ignore incidental speech/DTMF — continue auto-book flow
+        if raw_speech or raw_dtmf:
+            debug_print("book_appt_confirm: 🛡️ ignoring incidental input at confirm stage")
+
+        # ----------------------------------------------------------------------
+        # 🧩 Doctor Info
+        # ----------------------------------------------------------------------
         doctor_id = session_data[call_sid].get("doctor_id")
         if not doctor_id:
             debug_print("book_appt_confirm: ❌ missing doctor_id → choose_doctor")
@@ -4884,7 +4490,9 @@ def voice():
 
         doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
 
-        # ---- Appointment info ----
+        # ----------------------------------------------------------------------
+        # 🧩 Appointment Time Info
+        # ----------------------------------------------------------------------
         appt = session_data[call_sid].get("appointment_time", {}) or {}
         appointment_start = appt.get("start")
         appointment_end   = appt.get("end")
@@ -4894,8 +4502,8 @@ def voice():
             resp.hangup()
             return str(resp)
 
-        # Local-friendly formatting
-        tz_name = globals().get("CLINIC_TZ", "America/Chicago")
+        # Convert UTC → Local (Clinic Timezone)
+        tz_name = (globals().get("CLINIC_TZ") or "America/Chicago")
         try:
             tz = _pytz.timezone(tz_name)
         except Exception:
@@ -4914,7 +4522,7 @@ def voice():
             resp.hangup()
             return str(resp)
 
-        # Compute end if missing (default 30m)
+        # Compute end time if missing
         if not appointment_end:
             try:
                 dur = None
@@ -4936,13 +4544,23 @@ def voice():
                 resp.hangup()
                 return str(resp)
 
-        # ---- Customer info ----
-        customer = session_data[call_sid].get("customer", {}) or {}
-        first_name = (customer.get("first_name") or "").strip()
-        last_name  = (customer.get("last_name") or "").strip()
-        effective_name = (customer.get("name") or f"{first_name} {last_name}").strip()
-        address = (customer.get("address") or "").strip()
-        dob = (customer.get("dob") or "").strip()
+        # ----------------------------------------------------------------------
+        # 🧩 Customer Info
+        # ----------------------------------------------------------------------
+        customer         = session_data[call_sid].get("customer", {}) or {}
+        customer_name    = (customer.get("name") or "").strip()
+        first_name       = (customer.get("first_name") or "").strip()
+        last_name        = (customer.get("last_name")  or "").strip()
+
+        # Derive first/last from full name if missing
+        if not first_name and customer_name:
+            parts = customer_name.split()
+            first_name = parts[0]
+            last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+        effective_name   = customer_name or " ".join([n for n in (first_name, last_name) if n]).strip()
+        customer_address = (customer.get("address") or "").strip()
+        customer_dob     = (customer.get("dob") or "").strip()
 
         phone_raw = (customer.get("phone_e164") or customer.get("phone") or "").strip()
         if phone_raw.startswith("+") and phone_raw[1:].replace(" ", "").isdigit():
@@ -4962,14 +4580,16 @@ def voice():
             resp.append(make_gather("Before we confirm your appointment, please provide your phone number."))
             return str(resp)
 
-        if not dob:
+        if not customer_dob:
             session_data[call_sid]["stage"] = "collect_dob"
             resp.append(make_gather(
                 "Before we confirm, please say your date of birth, for example, 'July 3 1990'."
             ))
             return str(resp)
 
-        # ---- Slot availability check ----
+        # ----------------------------------------------------------------------
+        # 🧩 Final Availability Guard
+        # ----------------------------------------------------------------------
         try:
             slot_ok = is_time_slot_available(doctor_id, appointment_start, appointment_end, creds)
         except Exception as e:
@@ -4977,40 +4597,83 @@ def voice():
             slot_ok = False
 
         if not slot_ok:
-            debug_print("book_appt_confirm: ❌ Slot no longer available")
+            debug_print("book_appt_confirm: ❌ Slot no longer available at confirm stage")
             session_data[call_sid]["stage"] = "ask_time_date"
             resp.append(make_gather("Sorry, that slot was just taken. Please choose another time."))
             return str(resp)
 
-        # ---- Save customer info ----
+        # ----------------------------------------------------------------------
+        # 🧩 Upsert Customer (fixed locally)
+        # ----------------------------------------------------------------------
         try:
             init_db()
-            insert_customer(
-                phone=phone_e164, dob=dob,
-                first_name=first_name, last_name=last_name, address=address,
+
+            # ✅ ensure valid E.164 or fallback
+            if not phone_e164:
+                digits = "".join(ch for ch in (phone_raw or "") if ch.isdigit())
+                if len(digits) >= 8:
+                    phone_e164 = f"+000{digits[-10:]}"
+                    debug_print(f"book_appt_confirm: ⚠️ using fallback phone_e164={phone_e164}")
+                else:
+                    debug_print("book_appt_confirm: ❌ no valid phone digits, cannot insert customer")
+
+            if not customer_dob:
+                customer_dob = "unknown"
+
+            # Insert or update
+            inserted_ok = insert_customer(
+                phone=phone_e164, dob=customer_dob,
+                first_name=first_name, last_name=last_name, address=customer_address,
                 cc_name=(customer.get("cc_name") or effective_name or ""),
                 cc_number=(customer.get("cc_number") or ""),
                 cc_exp=(customer.get("cc_exp") or ""),
                 cc_cvv=(customer.get("cc_cvv") or "")
             )
+            debug_print(f"book_appt_confirm: ✅ insert_customer executed (return={inserted_ok})")
+
+            # ✅ Verify persistence
+            try:
+                with open(DB_FILE, "r", encoding="utf-8") as f:
+                    _db_check = json.load(f)
+                key = f"{phone_e164}|{customer_dob}"
+                if key in _db_check:
+                    debug_print(f"book_appt_confirm: 🧾 verified customer record exists for {key}")
+                else:
+                    debug_print(f"book_appt_confirm: ⚠️ customer {key} not found after insert, retrying...")
+                    _ = insert_customer(
+                        phone=phone_e164, dob=customer_dob,
+                        first_name=first_name, last_name=last_name, address=customer_address,
+                        cc_name=(customer.get('cc_name') or effective_name or ''),
+                        cc_number=(customer.get('cc_number') or ''),
+                        cc_exp=(customer.get('cc_exp') or ''),
+                        cc_cvv=(customer.get('cc_cvv') or '')
+                    )
+            except Exception as e2:
+                debug_print(f"book_appt_confirm: ⚠️ verification check failed → {e2}")
+
         except Exception as e:
             debug_print(f"book_appt_confirm: insert_customer failed → {e}")
 
-        # ---- Create Google Calendar event ----
+        # ----------------------------------------------------------------------
+        # 🧩 Google Calendar Event Creation
+        # ----------------------------------------------------------------------
         google_event_id = session_data[call_sid].get("google_event_id", "")
-        if not google_event_id:
+        if google_event_id:
+            debug_print(f"book_appt_confirm: ℹ️ event already created earlier → id={google_event_id}")
+        else:
             try:
                 service = build("calendar", "v3", credentials=creds)
                 event_body = {
                     "summary": f"Appointment: {doctor_name}",
                     "description": f"Clinic appointment for {effective_name or 'patient'}.",
                     "start": {"dateTime": appointment_start, "timeZone": "UTC"},
-                    "end": {"dateTime": appointment_end, "timeZone": "UTC"},
+                    "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
+                    "transparency": "opaque",
                     "extendedProperties": {
                         "private": {
                             "patient_name": effective_name,
                             "phone_e164": phone_e164,
-                            "dob": dob,
+                            "dob": customer_dob,
                             "call_sid": call_sid,
                         }
                     },
@@ -5025,7 +4688,9 @@ def voice():
                 resp.append(make_gather("Sorry, I couldn't confirm that slot. Please say another time."))
                 return str(resp)
 
-        # ---- Persist locally ----
+        # ----------------------------------------------------------------------
+        # 🧩 Persist Locally (doctor file)
+        # ----------------------------------------------------------------------
         try:
             local_date_str = dt_local.strftime("%Y-%m-%d")
             try:
@@ -5040,8 +4705,8 @@ def voice():
                 utc_end=appointment_end,
                 calendar_id=doctor_id,
                 name=effective_name,
-                dob=dob,
-                address=address,
+                dob=customer_dob,
+                address=customer_address,
                 event_id=google_event_id,
                 friendly_local=formatted_time,
                 local_date=local_date_str,
@@ -5051,7 +4716,9 @@ def voice():
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ local persist failed → {e}")
 
-        # ---- Voice confirmation + SMS ----
+        # ----------------------------------------------------------------------
+        # 🧩 Voice + SMS Confirmation
+        # ----------------------------------------------------------------------
         msg = f"Your appointment with {doctor_name} has been booked"
         if formatted_time:
             msg += f" on {formatted_time}"
@@ -5070,8 +4737,6 @@ def voice():
         resp.hangup()
         session_data.pop(call_sid, None)
         return str(resp)
-
-
 
 
 
