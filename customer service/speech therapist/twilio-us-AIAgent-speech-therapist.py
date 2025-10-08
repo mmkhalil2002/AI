@@ -1318,100 +1318,142 @@ def customer_search(
     """
     Return True if a customer (phone|dob) exists in customers.json, else False.
 
-    ENGLISH-ONLY VERSION:
-      ✅ Only searches English/Latin customer records.
-      🚫 Ignores Arabic or mixed-language entries.
-      ✅ Normalizes phone to E.164 (US/Egypt supported).
-      ✅ Normalizes DOB to ISO (YYYY-MM-DD).
-      ✅ Rejects invalid or non-English data automatically.
+    🧭 DEBUG-ENHANCED (English-only)
+      - Prints every step: normalization, key generation, record scan.
+      - Helps detect mismatched DOB, bad E.164, or missing keys.
+      - Still returns True/False for main logic.
     """
     try:
-        debug_print(
-            f"customer_search: ▶️ inputs phone_number='{phone_number}' "
-            f"phone(alias)='{phone}' dob='{dob}' default_country='{default_country}'"
-        )
+        debug_print("─────────────────────────────")
+        debug_print(f"customer_search: ▶️ INPUTS → phone_number='{phone_number}', alias='{phone}', dob='{dob}', default_country='{default_country}'")
     except Exception:
         pass
 
     # ------------------------------------------------------------------
-    # Load customer database
+    # Load DB
     # ------------------------------------------------------------------
-    init_db()
-    data = _load_customers()
+    try:
+        init_db()
+        data = _load_customers()
+        debug_print(f"customer_search: 📂 Loaded {len(data)} customer records from DB_FILE='{DB_FILE}'")
+    except Exception as e:
+        debug_print(f"customer_search: ❌ DB load failed → {e}")
+        return False
 
     # ------------------------------------------------------------------
-    # Normalize phone number → E.164
+    # Normalize phone → E.164
     # ------------------------------------------------------------------
     raw = (phone_number if phone_number is not None else phone) or ""
-    raw = raw.strip()
-    dob_iso = (dob or "").strip() or "unknown"
+    raw = raw.strip().replace(" ", "")
+    debug_print(f"customer_search: 🧩 Raw phone input='{raw}'")
 
     phone_e164 = ""
-    if raw.startswith("+") and raw[1:].replace(" ", "").isdigit():
-        phone_e164 = "+" + raw[1:].replace(" ", "")
+    if raw.startswith("+") and raw[1:].isdigit():
+        phone_e164 = raw
+        debug_print(f"customer_search: ✅ Already valid E.164 '{phone_e164}'")
     else:
         try:
             phone_e164 = normalize_phone_e164(raw, default_country) or ""
-        except Exception:
+            debug_print(f"customer_search: 🔧 normalized via {default_country} → {phone_e164}")
+        except Exception as e:
+            debug_print(f"customer_search: ⚠️ normalize_phone_e164({default_country}) failed → {e}")
             phone_e164 = ""
+
+        # fallback to alt country
         if not phone_e164:
+            alt = "US" if str(default_country).upper() != "US" else "EG"
             try:
-                alt = "EG" if str(default_country).upper() != "EG" else "US"
                 phone_e164 = normalize_phone_e164(raw, alt) or ""
-            except Exception:
+                debug_print(f"customer_search: 🔁 fallback normalize ({alt}) → {phone_e164}")
+            except Exception as e:
+                debug_print(f"customer_search: ⚠️ fallback normalize_phone_e164({alt}) failed → {e}")
                 phone_e164 = ""
 
-    # ✅ fallback to pseudo-E.164 if still empty
+    # Fallback pseudo-E.164 if still nothing
     if not phone_e164:
-        digits_only = "".join(ch for ch in raw if ch.isdigit())
-        if len(digits_only) >= 8:
-            phone_e164 = f"+000{digits_only[-10:]}"
-            debug_print(f"customer_search: ⚠️ fallback to pseudo-E.164 {phone_e164}")
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if len(digits) >= 8:
+            phone_e164 = f"+000{digits[-10:]}"
+            debug_print(f"customer_search: ⚠️ fallback pseudo-E.164 '{phone_e164}'")
+        else:
+            debug_print("customer_search: ❌ no valid digits for pseudo-E.164 fallback")
 
     if not phone_e164:
-        debug_print(f"customer_search: ❌ invalid phone '{raw}' (no valid E.164 format)")
+        debug_print("customer_search: ❌ aborting — invalid phone after normalization")
         return False
 
     # ------------------------------------------------------------------
     # Normalize DOB → YYYY-MM-DD
     # ------------------------------------------------------------------
-    try:
-        import re as _re
-        if _re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None:
-            m = _re.fullmatch(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
-            if m:
-                mm, dd, yyyy = m.groups()
-                dob_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
+    import re as _re
+    dob_iso = (dob or "").strip()
+    if not dob_iso:
+        dob_iso = "unknown"
+        debug_print("customer_search: ℹ️ DOB not provided → using 'unknown'")
+    else:
+        dob_iso = dob_iso.replace("/", "-").replace(".", "-").strip()
+        debug_print(f"customer_search: 🧩 Raw DOB='{dob_iso}'")
+
+        try:
+            m1 = _re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", dob_iso)
+            m2 = _re.fullmatch(r"(\d{1,2})-(\d{1,2})-(\d{4})", dob_iso)
+            if m1:
+                yyyy, mm, dd = m1.groups()
+            elif m2:
+                mm, dd, yyyy = m2.groups()
             else:
-                dob_iso = dob_iso.replace("/", "-")
-    except Exception:
-        pass
+                raise ValueError("unrecognized format")
+
+            dob_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
+            debug_print(f"customer_search: ✅ Normalized DOB → {dob_iso}")
+        except Exception as e:
+            debug_print(f"customer_search: ⚠️ DOB normalization failed ({dob_iso}) → {e}")
+            return False
 
     # ------------------------------------------------------------------
-    # English-only data filtering
-    # ------------------------------------------------------------------
-    def _is_english_text(s: str) -> bool:
-        """Accept only English letters, digits, punctuation, and spaces."""
-        return bool(re.fullmatch(r"[A-Za-z0-9\s,.\-'/@]*", (s or "").strip()))
-
-    # Filter dataset: remove any records containing Arabic/non-Latin text
-    filtered_data = {}
-    for key, rec in data.items():
-        # Check all fields (name, address, etc.)
-        if all(_is_english_text(str(v)) for v in rec.values()):
-            filtered_data[key] = rec
-        else:
-            debug_print(f"customer_search: ⚠️ skipped non-English record key={key}")
-
-    # ------------------------------------------------------------------
-    # Perform lookup
+    # Build lookup key
     # ------------------------------------------------------------------
     key_e164 = _key(phone_e164, dob_iso)
-    exists = key_e164 in filtered_data
+    debug_print(f"customer_search: 🧱 lookup key = '{key_e164}'")
 
-    debug_print(f"customer_search: phone_e164={phone_e164} dob_iso={dob_iso} key={key_e164} → exists={exists}")
-    return exists
+    # ------------------------------------------------------------------
+    # Perform main lookup
+    # ------------------------------------------------------------------
+    exists = key_e164 in data
+    if exists:
+        debug_print(f"customer_search: ✅ FOUND exact key match '{key_e164}'")
+        return True
+    else:
+        debug_print(f"customer_search: ❌ NOT FOUND key='{key_e164}' → scanning alternatives")
 
+    # ------------------------------------------------------------------
+    # Alternative key strategies
+    # ------------------------------------------------------------------
+    alt_keys = []
+    alt_keys.append(_key(phone_e164.replace("+", ""), dob_iso))
+    alt_keys.append(_key(phone_e164, dob_iso.lstrip("0")))
+    alt_keys.append(_key(phone_e164, dob_iso.replace("-0", "-")))
+    alt_keys.append(_key(phone_e164.strip(), dob_iso.strip()))
+
+    found_alt = False
+    for alt_key in alt_keys:
+        if alt_key in data:
+            debug_print(f"customer_search: ✅ FOUND via alternate key '{alt_key}'")
+            found_alt = True
+            break
+        else:
+            debug_print(f"customer_search: 🔎 alt_key '{alt_key}' not found")
+
+    # ------------------------------------------------------------------
+    # Final report
+    # ------------------------------------------------------------------
+    if not found_alt:
+        debug_print(f"customer_search: 🚫 no matches found for phone_e164={phone_e164}, dob_iso={dob_iso}")
+        debug_print(f"customer_search: ℹ️ DB keys sample → {list(data.keys())[:5]}")
+
+    debug_print(f"customer_search: 🏁 RESULT → {found_alt or exists}")
+    debug_print("─────────────────────────────")
+    return found_alt or exists
 
 
 
