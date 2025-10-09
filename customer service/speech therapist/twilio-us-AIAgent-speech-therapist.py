@@ -3166,64 +3166,109 @@ def voice():
      # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
         # ----------------------------------------------------------------------
-        # 📅 ASK_TIME_DATE: Get date+time input, validate, and offer 3 alternatives
+        # 📅 ASK_TIME_DATE: Capture appointment date/time and offer alternatives
+        #   - Repeats 3 suggested options ONLY on silence (up to 3x), then hangup
+        #   - Counts wrong-time attempts (parse/invalid) (up to 3x), then hangup
         # ----------------------------------------------------------------------
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
 
-        # ------------------------------------------------------------------
-        # 📅 Working day/hour definitions
-        # ------------------------------------------------------------------
+        # -------------------------- Config / Constants --------------------------
         working_days = globals().get("WORKING_DAYS", (0, 1, 2, 3, 4, 5))
         working_start = globals().get("WORKING_HOURS_START", 8)
-        working_end = globals().get("WORKING_HOURS_END", 17)
+        working_end   = globals().get("WORKING_HOURS_END", 17)
+
         DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         available_days = [DAY_NAMES[d] for d in working_days if 0 <= d < 7]
-        days_str = (
-            ", ".join(available_days[:-1]) + f", and {available_days[-1]}"
-            if len(available_days) > 1
-            else available_days[0] if available_days else "weekdays"
-        )
 
         def _fmt_hour(h):
-            if h == 0: return "12:00 AM"
-            if h < 12: return f"{h}:00 AM"
+            if h == 0:  return "12:00 AM"
+            if h < 12:  return f"{h}:00 AM"
             if h == 12: return "12:00 PM"
             return f"{h-12}:00 PM"
 
+        days_str  = (", ".join(available_days[:-1]) + f", and {available_days[-1]}" if len(available_days) > 1
+                    else (available_days[0] if available_days else "weekdays"))
         hours_str = f"{_fmt_hour(working_start)} and {_fmt_hour(working_end)}"
+
         PROMPT_NEED_BOTH = (
             "Please say or enter the date and time, for example, 'October 8 at 9:30 AM', "
             "or type month, day, hour, and minute then press pound — for example 10080930#."
         )
         PROMPT_PAST_TIME = "That date and time have already passed. Please choose a future appointment time."
         PROMPT_NEED_VALID_DAY = (
-            f"That day isn’t available for appointments. "
-            f"Our working days are {days_str}, between {hours_str}."
+            f"That day isn’t available for appointments. Our working days are {days_str}, between {hours_str}."
         )
 
-        # ------------------------------------------------------------------
-        # Ensure doctor context
-        # ------------------------------------------------------------------
+        # ----------------------------- Session Setup ----------------------------
         session_data.setdefault(call_sid, {})
-        doctor_id = session_data.get(call_sid, {}).get("doctor_id")
+        sd = session_data[call_sid]  # alias
+
+        # counters
+        bad_time_tries = sd.get("bad_time_tries", 0)          # wrong time attempts (parse/invalid)
+        silence_time   = sd.get("silence_time", 0)            # initial silence guard
+        silence_alts   = sd.get("silence_alts", 0)            # silence during alternatives (reactive)
+        alts_prompt    = sd.get("alts_prompt", "")            # last alternatives prompt (to repeat on silence)
+
+        # doctor context
+        doctor_id = sd.get("doctor_id")
         if not doctor_id:
             debug_print("ask_time_date: ❌ no doctor selected → choose_doctor")
-            session_data[call_sid]["stage"] = "choose_doctor"
+            sd["stage"] = "choose_doctor"
             doctor_list = ", ".join(googleid_dr_name_map.values())
             resp.append(make_gather("Which doctor would you like to see?", hints=doctor_list))
             return str(resp)
         calendar_id = doctor_id
 
-        # ------------------------------------------------------------------
-        # 🔇 Handle silence for first date/time prompt
-        # ------------------------------------------------------------------
+        # input snapshot
         raw_speech = (speech_result or "").strip()
-        raw_dtmf = (request.values.get("Digits") or "").strip()
-        if not (raw_speech or raw_dtmf):
-            tries = session_data[call_sid].get("silence_time", 0) + 1
-            session_data[call_sid]["silence_time"] = tries
-            debug_print(f"ask_time_date: 🤐 silence (tries={tries})")
-            if tries < 3:
+        raw_dtmf   = (request.values.get("Digits") or "").strip()
+
+        # ------------------------------------------------------------------
+        # 🔁 REACTIVE ALT REPEAT: If we previously offered 3 options and NOW
+        # we got silence (no speech, no digits), repeat SAME options (up to 3x)
+        # ------------------------------------------------------------------
+        if alts_prompt and not (raw_speech or raw_dtmf):
+            silence_alts += 1
+            sd["silence_alts"] = silence_alts
+            debug_print(f"ask_time_date: 🤐 silence on alternatives → repeat {silence_alts}/3")
+
+            if silence_alts < 3:
+                g = make_gather(
+                    f"I didn’t hear you. Let me repeat: {alts_prompt}",
+                    input="speech dtmf",
+                    timeout=5,
+                    speech_timeout="auto",
+                    barge_in=True
+                )
+                resp.append(g)
+                sd["stage"] = "ask_time_date"
+                return str(resp)
+            else:
+                # exceeded reactive repeats
+                debug_print("ask_time_date: ❌ 3 silent repeats on alternatives → hangup")
+                resp.say(gpt_speak("I didn’t hear a response. Please call again later."), VOICE)
+                resp.hangup()
+                # cleanup
+                sd.pop("alts_prompt", None)
+                sd.pop("silence_alts", None)
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+        # If we DO have input after offering alternatives → reset alt counters
+        if alts_prompt and (raw_speech or raw_dtmf):
+            debug_print("ask_time_date: 🎧 input received after alternatives → continuing, clearing alt state")
+            sd["silence_alts"] = 0
+            sd["alts_prompt"]  = ""
+
+        # ------------------------------------------------------------------
+        # 🔇 Initial Silence Guard (only when we haven't offered alts yet)
+        # ------------------------------------------------------------------
+        if not alts_prompt and not (raw_speech or raw_dtmf):
+            silence_time += 1
+            sd["silence_time"] = silence_time
+            debug_print(f"ask_time_date: 🤐 initial silence (tries={silence_time})")
+
+            if silence_time < 3:
                 prompt = (
                     "I didn’t hear the appointment date and time. "
                     "Please say the appointment date and time, for example, 'October 12 at 9 AM'. "
@@ -3231,20 +3276,21 @@ def voice():
                 )
                 g = make_gather(prompt, input="speech dtmf", timeout=4, speech_timeout="auto", barge_in=True)
                 resp.append(g)
-                session_data[call_sid]["stage"] = "ask_time_date"
+                sd["stage"] = "ask_time_date"
                 return str(resp)
             else:
                 resp.say(gpt_speak("I'm sorry, I still didn't get your appointment time. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
-        session_data[call_sid].pop("silence_time", None)
 
-        # ------------------------------------------------------------------
-        # 🧠 Extract day/time parts (speech)
-        # ------------------------------------------------------------------
+        # reset initial silence once we have input
+        sd.pop("silence_time", None)
+
+        # ---------------------------- Parse Helpers -----------------------------
         def _extract_day_time(s: str) -> tuple:
-            if not s: return ("", "")
+            if not s:
+                return ("", "")
             s = s.lower()
             s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s)
             s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s)
@@ -3262,50 +3308,54 @@ def voice():
                 return (day, timep)
             return ("", "")
 
+        # Maintain partial day/time memory
+        partial_ctx = sd.setdefault("partial_datetime", {})
         day_part, time_part = _extract_day_time(raw_speech)
-        partial_ctx = session_data[call_sid].setdefault("partial_datetime", {})
 
-        # store partials
         if day_part and not time_part:
             partial_ctx["day"] = day_part
-            g = make_gather(f"Got it — {day_part}. What time would you like?", input="speech dtmf", timeout=3, speech_timeout="auto", barge_in=True)
+            g = make_gather(
+                f"Got it — {day_part}. What time would you like?",
+                input="speech dtmf", timeout=3, speech_timeout="auto", barge_in=True
+            )
             resp.append(g)
-            session_data[call_sid]["stage"] = "ask_time_date"
+            sd["stage"] = "ask_time_date"
             return str(resp)
 
         if time_part and not day_part and "day" in partial_ctx:
             day_part = partial_ctx.pop("day")
-        if day_part and time_part: partial_ctx.clear()
+        if day_part and time_part:
+            partial_ctx.clear()
 
-        # ------------------------------------------------------------------
-        # 🕒 Build UTC slot
-        # ------------------------------------------------------------------
+        # --------------------------- Build Slot Helper ---------------------------
         def _build_slot(day_str: str, time_str: str) -> tuple:
-            tz_name = globals().get("CLINIC_TZ", "America/Chicago")
+            tz_name  = globals().get("CLINIC_TZ", "America/Chicago")
             tz_local = _pytz.timezone(tz_name)
-            dur = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
-            combined = f"{day_str} at {time_str}"
-            today = _date_local.today()
+            dur      = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
+
+            combined    = f"{day_str} at {time_str}"
+            today       = _date_local.today()
             default_base = tz_local.localize(datetime(today.year, today.month, today.day, 9, 0, 0))
-            parsed = _dtparse(combined, default=default_base, fuzzy=True)
+            parsed      = _dtparse(combined, default=default_base, fuzzy=True)
             if parsed.tzinfo is None:
                 parsed = tz_local.localize(parsed)
             else:
                 parsed = parsed.astimezone(tz_local)
             if not _re.search(r"\b\d{4}\b", combined):
                 parsed = parsed.replace(year=today.year)
+
+            # Working day validation
             if parsed.weekday() not in working_days:
                 raise ValueError("invalid_weekday")
+
             start_local = parsed
-            end_local = start_local + timedelta(minutes=dur)
+            end_local   = start_local + timedelta(minutes=dur)
             return (
                 start_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z"),
                 end_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z"),
             )
 
-        # ------------------------------------------------------------------
-        # ⏳ Parse and build slot
-        # ------------------------------------------------------------------
+        # -------------------------- Parse → Build Slot ---------------------------
         appointment_start, appointment_end = None, None
         try:
             if raw_dtmf:
@@ -3314,87 +3364,78 @@ def voice():
                 today = _date_local.today()
                 if len(digits) >= 8:
                     mm, dd, hh, mn = int(digits[0:2]), int(digits[2:4]), int(digits[4:6]), int(digits[6:8])
-                    day_str = f"{today.year}-{mm:02d}-{dd:02d}"
+                    day_str  = f"{today.year}-{mm:02d}-{dd:02d}"
                     time_str = f"{hh}:{mn:02d}"
                 elif len(digits) == 4:
-                    day_str = today.strftime("%Y-%m-%d")
-                    hh, mn = int(digits[0:2]), int(digits[2:4])
+                    day_str  = today.strftime("%Y-%m-%d")
+                    hh, mn   = int(digits[0:2]), int(digits[2:4])
                     time_str = f"{hh}:{mn:02d}"
                 else:
                     raise ValueError("invalid_dtmf_format")
                 appointment_start, appointment_end = _build_slot(day_str, time_str)
             else:
                 if not day_part or not time_part:
+                    # wrong-time attempt
+                    bad_time_tries += 1
+                    sd["bad_time_tries"] = bad_time_tries
+                    debug_print(f"ask_time_date: ❌ missing parts → wrong-time tries={bad_time_tries}/3")
+
+                    if bad_time_tries >= 3:
+                        resp.say(gpt_speak("I’m sorry, I’m still not getting a valid date and time. Please call again later."), VOICE)
+                        resp.hangup()
+                        session_data.pop(call_sid, None)
+                        return str(resp)
+
                     resp.append(make_gather(PROMPT_NEED_BOTH))
-                    session_data[call_sid]["stage"] = "ask_time_date"
+                    sd["stage"] = "ask_time_date"
                     return str(resp)
+
                 appointment_start, appointment_end = _build_slot(day_part, time_part)
+
             debug_print(f"ask_time_date: ⏰ Built slot → Start={appointment_start}, End={appointment_end}")
+
         except ValueError as e:
             err = str(e)
-            debug_print(f"ask_time_date: ❌ parse/build error → {err}")
+            # wrong-time attempt
+            bad_time_tries += 1
+            sd["bad_time_tries"] = bad_time_tries
+            debug_print(f"ask_time_date: ❌ parse/build error='{err}' → wrong-time tries={bad_time_tries}/3")
+
+            if bad_time_tries >= 3:
+                resp.say(gpt_speak("I’m sorry, I’m still not getting a valid date and time. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
             if "invalid_weekday" in err:
                 resp.append(make_gather(PROMPT_NEED_VALID_DAY))
             else:
                 resp.append(make_gather(PROMPT_NEED_BOTH))
-            session_data[call_sid]["stage"] = "ask_time_date"
+            sd["stage"] = "ask_time_date"
             return str(resp)
 
-        # ------------------------------------------------------------------
-        # ⏳ Reject past times — repeat 3 time options (3× retry)
-        # ------------------------------------------------------------------
+        # Reset wrong-time counter once we built a valid slot
+        sd["bad_time_tries"] = 0
+
+        # ----------------------------- Past-Time Case ----------------------------
         now_utc = _pytz.UTC.localize(datetime.utcnow())
         start_dt = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
         if start_dt <= now_utc:
             alts = get_next_available_slots(calendar_id, creds, from_start_iso=appointment_end, limit=3) or []
             options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
-            prompt = f"That time has already passed. Would you like {options}?" if options else PROMPT_PAST_TIME
-            silence_tries = session_data[call_sid].get("silence_alts", 0)
-            debug_print(f"ask_time_date: 🔁 silence_alts={silence_tries}, options={options}")
+            prompt  = (f"That time has already passed. Would you like {options}?"
+                    if options else PROMPT_PAST_TIME)
 
-            if not (speech_result or request.values.get("Digits")):
-                if silence_tries < 2:
-                    session_data[call_sid]["silence_alts"] = silence_tries + 1
-                    debug_print(f"ask_time_date: 🔁 repeating ({silence_tries+1}/3)")
-                    gather = Gather(
-                        input="speech dtmf",
-                        timeout=6,
-                        speech_timeout="auto",
-                        barge_in=True,
-                        action="/voice",
-                        method="POST"
-                    )
-                    gather.say(gpt_speak(f"I didn’t hear you. Let me repeat: {prompt}"), VOICE)
-                    resp.append(gather)
-                    resp.say(gpt_speak("Please choose one of the suggested times or say another time."), VOICE)
-                    session_data[call_sid]["stage"] = "ask_time_date"
-                    return str(resp)
-                else:
-                    debug_print("ask_time_date: ❌ 3 silent attempts → hangup")
-                    resp.say(gpt_speak("I didn’t hear a response. Please call again later."), VOICE)
-                    resp.hangup()
-                    session_data.pop(call_sid, None)
-                    return str(resp)
+            # store prompt for reactive-repeat-on-silence
+            sd["alts_prompt"]  = prompt
+            sd["silence_alts"] = 0
 
-            # reset silence counter once user speaks
-            session_data[call_sid]["silence_alts"] = 0
-            gather = Gather(
-                input="speech dtmf",
-                timeout=6,
-                speech_timeout="auto",
-                barge_in=True,
-                action="/voice",
-                method="POST"
-            )
-            gather.say(gpt_speak(prompt), VOICE)
-            resp.append(gather)
-            resp.say(gpt_speak("Please choose one of the suggested times."), VOICE)
-            session_data[call_sid]["stage"] = "ask_time_date"
+            g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True)
+            resp.append(g)
+            sd["stage"] = "ask_time_date"
             return str(resp)
 
-        # ------------------------------------------------------------------
-        # ✅ Continue booking if slot valid and available
-        # ------------------------------------------------------------------
+        # ---------------------- Availability Check / Alternatives ----------------
         try:
             slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
         except Exception as e:
@@ -3404,59 +3445,44 @@ def voice():
         if not slot_available:
             alts = get_next_available_slots(calendar_id, creds, from_start_iso=appointment_end, limit=3) or []
             options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
-            prompt = f"That time is not available. Would you like {options}?" if options else "That time is not available. Please say another date and time."
+            prompt  = (f"That time is not available. Would you like {options}?"
+                    if options else "That time is not available. Please say another date and time.")
 
-            # Repeat logic (same as above)
-            silence_tries = session_data[call_sid].get("silence_alts", 0)
-            if not (speech_result or request.values.get("Digits")):
-                if silence_tries < 2:
-                    session_data[call_sid]["silence_alts"] = silence_tries + 1
-                    gather = Gather(
-                        input="speech dtmf",
-                        timeout=6,
-                        speech_timeout="auto",
-                        barge_in=True,
-                        action="/voice",
-                        method="POST"
-                    )
-                    gather.say(gpt_speak(f"I didn’t hear you. Let me repeat: {prompt}"), VOICE)
-                    resp.append(gather)
-                    resp.say(gpt_speak("Please choose one of the suggested times or say another time."), VOICE)
-                    session_data[call_sid]["stage"] = "ask_time_date"
-                    return str(resp)
-                else:
-                    resp.say(gpt_speak("I didn’t hear a response. Please call again later."), VOICE)
-                    resp.hangup()
-                    session_data.pop(call_sid, None)
-                    return str(resp)
+            # store prompt for reactive-repeat-on-silence
+            sd["alts_prompt"]  = prompt
+            sd["silence_alts"] = 0
 
-            session_data[call_sid]["silence_alts"] = 0
-            gather = Gather(input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True, action="/voice", method="POST")
-            gather.say(gpt_speak(prompt), VOICE)
-            resp.append(gather)
-            resp.say(gpt_speak("Please choose one of the suggested times."), VOICE)
-            session_data[call_sid]["stage"] = "ask_time_date"
+            g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True)
+            resp.append(g)
+            sd["stage"] = "ask_time_date"
             return str(resp)
 
-        # ------------------------------------------------------------------
-        # ✅ Valid & available slot — continue to booking
-        # ------------------------------------------------------------------
-        session_data[call_sid]["appointment_time"] = {"start": appointment_start, "end": appointment_end}
-        reschedule_flag = session_data.get(call_sid, {}).get("reschedule_after_cancel", False)
-        if reschedule_flag:
-            cancel_info = session_data[call_sid].get("cancel", {})
-            cust = session_data[call_sid].setdefault("customer", {})
-            if cancel_info.get("phone_e164"): cust["phone_e164"] = cancel_info["phone_e164"]
-            if cancel_info.get("dob"): cust["dob"] = cancel_info["dob"]
-            session_data[call_sid]["reschedule_after_cancel"] = False
+        # ------------------------------ Continue Flow ----------------------------
+        # Clear any alt state if we reach here
+        sd.pop("alts_prompt", None)
+        sd["silence_alts"] = 0
 
-        cust = session_data[call_sid].setdefault("customer", {})
-        phone_e164 = cust.get("phone_e164") or session_data[call_sid].get("phone_e164")
-        dob = cust.get("dob") or session_data[call_sid].get("dob")
+        # Save slot and proceed
+        sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
+
+        # Reschedule carry-over
+        if sd.get("reschedule_after_cancel", False):
+            cancel_info = sd.get("cancel", {})
+            cust = sd.setdefault("customer", {})
+            if cancel_info.get("phone_e164"): cust["phone_e164"] = cancel_info["phone_e164"]
+            if cancel_info.get("dob"):        cust["dob"]        = cancel_info["dob"]
+            sd["reschedule_after_cancel"] = False
+
+        # Ensure we have customer identity
+        cust = sd.setdefault("customer", {})
+        phone_e164 = cust.get("phone_e164") or sd.get("phone_e164")
+        dob        = cust.get("dob")        or sd.get("dob")
 
         if not phone_e164 or not dob:
-            session_data[call_sid]["stage"] = "collect_phone" if not phone_e164 else "collect_dob"
-            prompt = "Please say your 10-digit phone number." if not phone_e164 else "Please say your date of birth, for example, 'July third 1990'."
+            sd["stage"] = "collect_phone" if not phone_e164 else "collect_dob"
+            prompt = ("Please say your 10-digit phone number."
+                    if not phone_e164 else
+                    "Please say your date of birth, for example, 'July third 1990'.")
             resp.append(make_gather(prompt))
             return str(resp)
 
@@ -3467,8 +3493,8 @@ def voice():
             debug_print(f"ask_time_date: ⚠️ customer_search error → {e}")
             found = False
 
-        session_data[call_sid]["stage"] = "book_appt_confirm" if found else "collect_first_name"
-        debug_print(f"ask_time_date: 🎯 Next stage → {session_data[call_sid]['stage']}")
+        sd["stage"] = "book_appt_confirm" if found else "collect_first_name"
+        debug_print(f"ask_time_date: 🎯 Next stage → {sd['stage']}")
         resp.redirect("/voice")
         return str(resp)
 
