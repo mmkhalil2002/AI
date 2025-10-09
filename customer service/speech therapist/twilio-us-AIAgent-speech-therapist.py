@@ -2065,24 +2065,14 @@ def voice():
     # 🌐 Twilio Voice Entry — Input Initialization + Central Silence Guard
     # ----------------------------------------------------------------------
 
-    # Create a new TwiML VoiceResponse object (Twilio's XML builder)
-    # This object will accumulate <Say>, <Gather>, <Record>, etc. nodes to send back as the voice response
     resp = VoiceResponse()
 
     # ----------------------------------------------------------------------
     # 🆔 Retrieve core request fields from Twilio webhook
     # ----------------------------------------------------------------------
-
-    # Each call has a unique CallSid provided by Twilio, used as the session key
     call_sid = request.values.get("CallSid", "")
-
-    # SpeechResult → Twilio’s Speech-to-Text transcription of what the user said
     speech_result = (request.values.get("SpeechResult") or "").strip()
-
-    # Digits → Captures DTMF keypad input (e.g., “1”, “2”, “#”)
     dtmf_digits = (request.values.get("Digits") or "").strip()
-
-    # From → The caller’s phone number in E.164 format (e.g., +14694633276)
     from_number = (request.values.get("From") or "").strip()
 
     print(f"📢 voice :speech_result: {speech_result}")
@@ -2090,98 +2080,44 @@ def voice():
     # ----------------------------------------------------------------------
     # 🌍 Initialize per-call session and derive the caller’s country
     # ----------------------------------------------------------------------
-    # The session_data dictionary stores ongoing context across webhook calls.
-    # Twilio invokes /voice repeatedly per user response, so this is our state memory.
     session = session_data.setdefault(call_sid, {})
 
-    # Detect country automatically based on caller number prefix:
-    # - +20 → Egypt
-    # - +1  → United States
-    # - Otherwise, fallback to global COUNTRY constant.
     if "country" not in session:
         if from_number.startswith("+20"):
             session["country"] = "EG"
         elif from_number.startswith("+1"):
             session["country"] = "US"
         else:
-            session["country"] = COUNTRY  # default from config/global var
+            session["country"] = COUNTRY  # fallback
 
-    # Store caller number for future use (e.g., appointment lookup or logging)
     if from_number.startswith("+"):
         session["from_e164"] = from_number
 
-    # Retrieve current dialog stage (defaults to “intro” at call start)
     stage = session.get("stage", "intro")
 
     # ----------------------------------------------------------------------
-    # 🔇 CENTRAL SILENCE HANDLING
-    #  - Detects when the caller says nothing or presses nothing.
-    #  - Re-prompts them with a stage-specific message and hint vocabulary.
-    #  - Limits retries to 3 before ending the call politely.
+    # 🧠 Disable central silence handling for locally managed stages
     # ----------------------------------------------------------------------
+    SILENCE_HANDLED_LOCALLY = {
+        "ask_time_date",          # has its own retry loop for 3 timing options
+        "collect_dob",            # handles silence and retries internally
+        "cancel_appt_iterate",    # retry logic and looping built-in
+        "book_appt_confirm",      # immediate confirmation or skip
+    }
 
+    if stage in SILENCE_HANDLED_LOCALLY:
+        debug_print(f"🔇 Skipping global silence handling for stage '{stage}' (handled locally)")
+
+    # ----------------------------------------------------------------------
+    # 🔇 CENTRAL SILENCE HANDLING
+    # ----------------------------------------------------------------------
     def _silence_prompt_for_stage(st: str) -> Tuple[str, str]:
         """
         Return a (prompt_text, hint_phrases) tuple best suited for the current stage.
-
-        --------------------------------------------------------------------------
-        PURPOSE:
-        This function maps a given *stage name* (string) to the correct
-        re-prompt message that Twilio should play if the caller is silent.
-
-        HOW IT WORKS (Step-by-Step):
-        1️⃣ The variable `st` is a string (e.g. "intent", "booking", "cancel_appointment").
-            It tells us *which part* of the conversation the caller is currently in.
-            Example:
-                st = "intent"
-
-        2️⃣ Inside this function, we have a dictionary named `prompts`.
-            Each key in that dictionary is also a string, such as "intent" or "booking".
-            Each key maps to a value — a tuple of (prompt_text, hint_words).
-
-                prompts = {
-                    "intent": ("Say 'book appointment' or press 1...", "book,cancel,change,..."),
-                    "booking": ("Please say or press the number for your doctor...", "Dr. names"),
-                    ...
-                }
-
-        3️⃣ Python dictionaries can be accessed using *string keys*.
-            When we do `prompts[st]`, Python looks up the value
-            associated with that key (string) in constant time.
-
-                Example:
-                    st = "intent"
-                    result = prompts[st]
-                    → ("Say 'book appointment' or press 1...", "book,cancel,change,...")
-
-        4️⃣ That tuple is returned to the caller (the silence handler),
-            which then builds a Twilio <Gather> to replay the appropriate voice prompt.
-        --------------------------------------------------------------------------
         """
-
-        # ----------------------------------------------------------------------
-        # Shared reusable data
-        # ----------------------------------------------------------------------
         doc_list = ", ".join(googleid_dr_name_map.values())
         num_hints = "zero one two three four five six seven eight nine double triple"
 
-        # ----------------------------------------------------------------------
-        # 🗺️ Dictionary that maps stage strings → (prompt_text, hint_list)
-        #
-        # Each entry corresponds to a stage name (string key)
-        # and defines what Twilio should say and what speech hints to apply.
-        #
-        # Example dictionary structure:
-        #
-        #     {
-        #         "intro": ("Say 'book appointment' or press 1...", "book,cancel,..."),
-        #         "intent": ("Say 'book appointment' or press 1...", "book,cancel,..."),
-        #         ...
-        #     }
-        #
-        # This means: if st == "intent", we can access the prompt like this:
-        #     prompts["intent"]  →  ("Say 'book appointment' or press 1...", "book,cancel,...")
-        # ----------------------------------------------------------------------
         prompts = {
             "intro": (
                 "I didn’t hear anything. Say 'book appointment' or press 1. "
@@ -2233,35 +2169,23 @@ def voice():
             )
         }
 
-        # ----------------------------------------------------------------------
-        # 🧩 Stage Lookup Logic — HOW `st` IS USED AS AN INDEX
-        #
-        # `st` is a string variable representing the current stage (e.g., "intent").
-        #
-        # Python uses this string as a KEY to directly index the `prompts` dictionary:
-        #       prompts[st]
-        #
-        # Internally, Python hashes the string and finds the matching key/value pair.
-        # If found → we return that tuple (prompt, hints).
-        # If not found → we fall back to a generic message.
-        #
-        # ✅ Example:
-        #       st = "intent"
-        #       if st in prompts:
-        #           return prompts["intent"]
-        #       → ("Say 'book appointment' or press 1...", "book,cancel,...")
-        #
-        # 🚫 Example (not found):
-        #       st = "nonexistent_stage"
-        #       else:
-        #           return ("Sorry, I didn’t hear anything...", "")
-        # ----------------------------------------------------------------------
         if st in prompts:
             debug_print(f"🔇 Silence handler → Found prompt for stage '{st}'")
-            return prompts[st]   # ← this is where the string `st` is used as an index
+            return prompts[st]
         else:
             debug_print(f"🔇 Silence handler → No match for '{st}', using fallback")
             return ("Sorry, I didn’t hear anything. Please say that again.", "")
+
+    # ----------------------------------------------------------------------
+    # 🚫 Skip the central silence guard for locally handled stages
+    # ----------------------------------------------------------------------
+    if stage not in SILENCE_HANDLED_LOCALLY:
+        # your existing global silence logic here (for intro, intent, etc.)
+        prompt_text, hint_phrases = _silence_prompt_for_stage(stage)
+        # ... build your <Gather> and return as usual
+    else:
+        debug_print(f"🧭 Central silence handler disabled for '{stage}' — using stage-level retry logic")
+
 
 
 
