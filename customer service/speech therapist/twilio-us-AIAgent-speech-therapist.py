@@ -2944,8 +2944,8 @@ def voice():
     elif stage == "collect_dob":
         # ----------------------------------------------------------------------
         # 🎯 Goal: Capture caller's Date of Birth
-        #   - Accepts speech (e.g., "July 3 1956") or DTMF ("07031956#")
-        #   - Optimized for instant webhook POST on both voice & keypad input
+        #   - Accepts speech ("July 3 1956") or DTMF ("07031956#")
+        #   - After DOB, asks for appointment with explicit AM/PM requirement
         # ----------------------------------------------------------------------
 
         t_stage_start = _time_mod.perf_counter()
@@ -2956,14 +2956,14 @@ def voice():
         # ----------------------------------------------------------------------
         PROMPT_DOB_SHORT = (
             "Say your birth date, for example, 'July 3 1956'. "
-            "Or enter two digits for month, two for day, and four for year, then press #. Example: 07 03 1956#."
+            "Or enter two digits for month, two for day, and four for year, then press pound. Example: 07 03 1956#."
         )
         PROMPT_REPEAT_FULL = (
             "I didn’t catch your full birth date. Please say the complete date, for example, 'July 3 1956'. "
-            "You can also enter it using your keypad: month, day, and year, then press #. Example: 07 03 1956#."
+            "You can also enter it using your keypad: month, day, and year, then press pound. Example: 07 03 1956#."
         )
         PROMPT_FINAL_DTMF = (
-            "Please enter two digits for month, two for day, and four for year, then press #. Example: 07 03 1956#."
+            "Please enter two digits for month, two for day, and four for year, then press pound. Example: 07 03 1956#."
         )
 
         # ----------------------------------------------------------------------
@@ -2999,13 +2999,12 @@ def voice():
                     "Or you can enter it using your keypad: month, day, and year, then press pound.",
                     input="speech dtmf",
                     timeout=3,
-                    speech_timeout="auto",   # ✅ instant response after speech ends
-                    barge_in=True,            # ✅ allows interrupting prompt
-                    finish_on_key="#"         # ✅ instant DTMF submission
+                    speech_timeout="auto",
+                    barge_in=True,
+                    finish_on_key="#"
                 )
                 resp.append(g)
                 resp.redirect("/voice")
-                debug_print(f"collect_dob: 🕓 re-prompting user (timeout=3s)")
                 return str(resp)
             else:
                 resp.say(gpt_speak("Sorry, I couldn’t get your date of birth. Please call again later."), VOICE)
@@ -3024,7 +3023,7 @@ def voice():
         # --- DTMF path ---
         if dtmf_digits:
             d = _re.sub(r"\D", "", dtmf_digits)
-            if len(d) == 8:
+            if len(d) >= 8:
                 try:
                     mm, dd, yyyy = int(d[0:2]), int(d[2:4]), int(d[4:8])
                     dob_date = date(yyyy, mm, dd)
@@ -3071,13 +3070,7 @@ def voice():
                 raise ValueError(f"out of range: {dob_date.isoformat()}")
         except Exception as e:
             debug_print(f"collect_dob: ⚠️ Validation error → {e}")
-            g = make_gather(
-                PROMPT_FINAL_DTMF,
-                input="dtmf",
-                timeout=3,
-                barge_in=True,
-                finish_on_key="#"
-            )
+            g = make_gather(PROMPT_FINAL_DTMF, input="dtmf", timeout=3, barge_in=True, finish_on_key="#")
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
@@ -3130,11 +3123,17 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 6️⃣ Success path → ask for appointment time
+        # 6️⃣ Success path → explicit AM/PM prompt
         # ----------------------------------------------------------------------
         session_data[call_sid]["stage"] = "ask_time_date"
+
+        PROMPT_APPT_DATE_TIME = (
+            "Thanks. Please say the appointment date and time, for example, 'October 12 at 9 AM' "
+            "You can also enter two digits for month, two for day, and four for hour and minute, specify PM, or AM then press pound — "
+        )
+
         g = make_gather(
-            "Thanks. Please say the appointment date and time, for example, 'October 12 at 9 AM'.",
+            PROMPT_APPT_DATE_TIME,
             input="speech dtmf",
             timeout=3,
             speech_timeout="auto",
@@ -3145,7 +3144,6 @@ def voice():
         resp.redirect("/voice")
         debug_print(f"collect_dob: ✅ total runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
         return str(resp)
-
 
 
 
@@ -3309,8 +3307,8 @@ def voice():
             if tries < 3:
                 prompt = (
                     "I didn’t hear the appointment date and time. "
-                    "Please say it again, for example, 'October 8 at 9:30 AM'. "
-                    "Or type month, day, hour, and minute then press pound."
+                    "Please say the appointment date and time, for example, 'October 12 at 9 AM' "
+                    "You can also enter two digits for month, two for day, and four for hour and minute, specify PM, or AM then press pound — "
                 )
                 resp.append(make_gather(prompt, input="speech dtmf", timeout=3,
                                         speech_timeout="auto", barge_in=True))
