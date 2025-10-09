@@ -2064,127 +2064,214 @@ def voice():
     # ----------------------------------------------------------------------
     # 🌐 Twilio Voice Entry — Input Initialization + Central Silence Guard
     # ----------------------------------------------------------------------
-
+    t0 = time.time()
     resp = VoiceResponse()
 
-    # ----------------------------------------------------------------------
-    # 🆔 Retrieve core request fields from Twilio webhook
-    # ----------------------------------------------------------------------
-    call_sid = request.values.get("CallSid", "")
-    speech_result = (request.values.get("SpeechResult") or "").strip()
-    dtmf_digits = (request.values.get("Digits") or "").strip()
-    from_number = (request.values.get("From") or "").strip()
+    try:
+        # ------------------------------------------------------------------
+        # 🆔 Retrieve core request fields from Twilio webhook
+        # ------------------------------------------------------------------
+        call_sid     = (request.values.get("CallSid") or "").strip()
+        speech_result= (request.values.get("SpeechResult") or "").strip()
+        dtmf_digits  = (request.values.get("Digits") or "").strip()
+        from_number  = (request.values.get("From") or "").strip()
+        to_number    = (request.values.get("To") or "").strip()
+        call_status  = (request.values.get("CallStatus") or "").strip()
+        direction    = (request.values.get("Direction") or "").strip()
 
-    print(f"📢 voice :speech_result: {speech_result}")
+        # 🔎 Raw input snapshot
+        debug_print(f"[voice] ▶ enter: call_sid={call_sid} status={call_status} dir={direction} to={to_number} from={from_number}")
+        debug_print(f"[voice] 🗣 SpeechResult='{speech_result}' | 🔢 Digits='{dtmf_digits}'")
 
-    # ----------------------------------------------------------------------
-    # 🌍 Initialize per-call session and derive the caller’s country
-    # ----------------------------------------------------------------------
-    session = session_data.setdefault(call_sid, {})
+        # Keep your original print if you want it too
+        print(f"📢 voice :speech_result: {speech_result}")
 
-    if "country" not in session:
-        if from_number.startswith("+20"):
-            session["country"] = "EG"
-        elif from_number.startswith("+1"):
-            session["country"] = "US"
+        # ------------------------------------------------------------------
+        # 🌍 Initialize per-call session and derive the caller’s country
+        # ------------------------------------------------------------------
+        session = session_data.setdefault(call_sid, {})
+        debug_print(f"[voice] 📦 session.keys() before={list(session.keys())}")
+
+        if "country" not in session:
+            if from_number.startswith("+20"):
+                session["country"] = "EG"
+            elif from_number.startswith("+1"):
+                session["country"] = "US"
+            else:
+                session["country"] = COUNTRY  # fallback
+            debug_print(f"[voice] 🌐 country set → {session['country']}")
         else:
-            session["country"] = COUNTRY  # fallback
+            debug_print(f"[voice] 🌐 country exists → {session.get('country')}")
 
-    if from_number.startswith("+"):
-        session["from_e164"] = from_number
+        if from_number.startswith("+"):
+            session["from_e164"] = from_number
 
-    stage = session.get("stage", "intro")
+        stage = session.get("stage", "intro")
+        debug_print(f"[voice] 🎯 current stage → {stage}")
 
-    # ----------------------------------------------------------------------
-    # 🧠 Disable central silence handling for locally managed stages
-    # ----------------------------------------------------------------------
-    SILENCE_HANDLED_LOCALLY = {
-        "ask_time_date",          # has its own retry loop for 3 timing options
-        "collect_dob",            # handles silence and retries internally
-        "cancel_appt_iterate",    # retry logic and looping built-in
-        "book_appt_confirm",      # immediate confirmation or skip
-    }
-
-    if stage in SILENCE_HANDLED_LOCALLY:
-        debug_print(f"🔇 Skipping global silence handling for stage '{stage}' (handled locally)")
-
-    # ----------------------------------------------------------------------
-    # 🔇 CENTRAL SILENCE HANDLING
-    # ----------------------------------------------------------------------
-    def _silence_prompt_for_stage(st: str) -> Tuple[str, str]:
-        """
-        Return a (prompt_text, hint_phrases) tuple best suited for the current stage.
-        """
-        doc_list = ", ".join(googleid_dr_name_map.values())
-        num_hints = "zero one two three four five six seven eight nine double triple"
-
-        prompts = {
-            "intro": (
-                "I didn’t hear anything. Say 'book appointment' or press 1. "
-                "Say 'cancel appointment' or press 2. "
-                "Say 'change appointment' or press 3. "
-                "Say 'update credit card' or press 4. "
-                "Say 'leave voicemail' or press 5.",
-                "book,cancel,change,reschedule,update,voicemail"
-            ),
-            "intent": (
-                "Say 'book appointment' or press 1, 'cancel appointment' or press 2, "
-                "'change appointment' or press 3, 'update credit card' or press 4, "
-                "or 'leave voicemail' or press 5.",
-                "book,cancel,change,reschedule,update,voicemail"
-            ),
-            "booking": (
-                f"Please say or press the number for your doctor: {doc_list}.",
-                doc_list
-            ),
-            "collect_phone": (
-                "Please say or enter your ten digit phone number including area code.",
-                num_hints
-            ),
-            "collect_dob": (
-                "Please say your birth date, for example 'July third 1990'.",
-                ""
-            ),
-            "ask_time_date": (
-                "Please say the appointment time, for example, 'August 15th at 5 AM'.",
-                ""
-            ),
-            "collect_first_name": ("Please say your first name.", ""),
-            "collect_last_name": ("Please say your last name.", ""),
-            "collect_address": (
-                "Please say your street address, city, and ZIP.",
-                ""
-            ),
-            "cancel_appointment": (
-                f"Please say or press the number for the doctor whose appointment you want to cancel: {doc_list}.",
-                doc_list
-            ),
-            "cancel_appt_get_dob": (
-                "Please say your birth date, for example 'July third nineteen fifty six'.",
-                ""
-            ),
-            "voicemail": (
-                "Please leave your name, phone number, and message after the beep.",
-                ""
-            )
+        # ------------------------------------------------------------------
+        # 🧠 Disable central silence handling for locally managed stages
+        # ------------------------------------------------------------------
+        SILENCE_HANDLED_LOCALLY = {
+            "ask_time_date",          # has its own retry loop for 3 timing options
+            "collect_dob",            # handles silence and retries internally
+            "cancel_appt_iterate",    # retry logic and looping built-in
+            "book_appt_confirm",      # immediate confirmation or skip
         }
 
-        if st in prompts:
-            debug_print(f"🔇 Silence handler → Found prompt for stage '{st}'")
-            return prompts[st]
+        if stage in SILENCE_HANDLED_LOCALLY:
+            debug_print(f"[voice] 🔇 Skipping GLOBAL silence handler for '{stage}' (handled locally)")
         else:
-            debug_print(f"🔇 Silence handler → No match for '{st}', using fallback")
-            return ("Sorry, I didn’t hear anything. Please say that again.", "")
+            debug_print(f"[voice] 🔊 Using GLOBAL silence handler for stage '{stage}'")
 
-    # ----------------------------------------------------------------------
-    # 🚫 Skip the central silence guard for locally handled stages
-    # ----------------------------------------------------------------------
-    if stage not in SILENCE_HANDLED_LOCALLY:
-        # your existing global silence logic here (for intro, intent, etc.)
-        prompt_text, hint_phrases = _silence_prompt_for_stage(stage)
-        # ... build your <Gather> and return as usual
-    else:
-        debug_print(f"🧭 Central silence handler disabled for '{stage}' — using stage-level retry logic")
+        # ------------------------------------------------------------------
+        # 🔇 CENTRAL SILENCE HANDLING
+        #   Only runs when stage NOT in SILENCE_HANDLED_LOCALLY
+        # ------------------------------------------------------------------
+        def _silence_prompt_for_stage(st: str) -> Tuple[str, str]:
+            """
+            Return a (prompt_text, hint_phrases) tuple best suited for the current stage.
+            """
+            doc_list = ", ".join(googleid_dr_name_map.values())
+            num_hints = "zero one two three four five six seven eight nine double triple"
+
+            prompts = {
+                "intro": (
+                    "I didn’t hear anything. Say 'book appointment' or press 1. "
+                    "Say 'cancel appointment' or press 2. "
+                    "Say 'change appointment' or press 3. "
+                    "Say 'update credit card' or press 4. "
+                    "Say 'leave voicemail' or press 5.",
+                    "book,cancel,change,reschedule,update,voicemail"
+                ),
+                "intent": (
+                    "Say 'book appointment' or press 1, 'cancel appointment' or press 2, "
+                    "'change appointment' or press 3, 'update credit card' or press 4, "
+                    "or 'leave voicemail' or press 5.",
+                    "book,cancel,change,reschedule,update,voicemail"
+                ),
+                "booking": (
+                    f"Please say or press the number for your doctor: {doc_list}.",
+                    doc_list
+                ),
+                "collect_phone": (
+                    "Please say or enter your ten digit phone number including area code.",
+                    num_hints
+                ),
+                "collect_dob": (
+                    "Please say your birth date, for example 'July third 1990'.",
+                    ""
+                ),
+                "ask_time_date": (
+                    "Please say the appointment time, for example, 'August 15th at 5 AM'.",
+                    ""
+                ),
+                "collect_first_name": ("Please say your first name.", ""),
+                "collect_last_name":  ("Please say your last name.",  ""),
+                "collect_address":    ("Please say your street address, city, and ZIP.", ""),
+                "cancel_appointment": (
+                    f"Please say or press the number for the doctor whose appointment you want to cancel: {doc_list}.",
+                    doc_list
+                ),
+                "cancel_appt_get_dob": (
+                    "Please say your birth date, for example 'July third nineteen fifty six'.",
+                    ""
+                ),
+                "voicemail": (
+                    "Please leave your name, phone number, and message after the beep.",
+                    ""
+                )
+            }
+
+            if st in prompts:
+                debug_print(f"[voice] 🔇 Silence handler → prompt for stage '{st}' found")
+                return prompts[st]
+            else:
+                debug_print(f"[voice] 🔇 Silence handler → no prompt for '{st}', using generic fallback")
+                return ("Sorry, I didn’t hear anything. Please say that again.", "")
+
+        # ------------------------------------------------------------------
+        # 🚫 Skip the central silence guard for locally handled stages
+        # ------------------------------------------------------------------
+        if stage not in SILENCE_HANDLED_LOCALLY:
+            # Decide whether to trigger central silence guard
+            # Only when neither speech nor digits present
+            if not (speech_result or dtmf_digits):
+                debug_print(f"[voice] 🛡 central-silence: triggering (stage='{stage}')")
+                prompt_text, hint_phrases = _silence_prompt_for_stage(stage)
+
+                # Build <Gather> for silence recovery
+                g = Gather(
+                    input="speech dtmf",
+                    timeout=4,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    action="/voice",
+                    method="POST"
+                )
+                g.say(gpt_speak(prompt_text), VOICE)
+                resp.append(g)
+
+                # Backup line to avoid empty TwiML if user stays silent after gather
+                resp.say(gpt_speak("Please try again."), VOICE)
+
+                # Keep same stage
+                session["stage"] = stage
+                debug_print(f"[voice] 🛡 central-silence: responded with <Gather>, keeping stage='{stage}'")
+                debug_print(f"[voice] ◀ exit(central-silence) dt={(time.time()-t0):.3f}s")
+                return str(resp)
+            else:
+                debug_print(f"[voice] 🛡 central-silence: not triggered (we have input)")
+        else:
+            debug_print(f"[voice] 🧭 Central silence handler disabled for '{stage}' — using stage-level retry logic")
+
+        # ------------------------------------------------------------------
+        # 🔀 Stage dispatcher (your existing logic follows below)
+        #     Keep these logs so every transition is visible in traces.
+        # ------------------------------------------------------------------
+        debug_print(f"[voice] 🚦 dispatch → stage='{stage}' (handing off to stage-specific code)")
+
+        # ⭐ NOTE:
+        # From here, your existing stage handlers run (intro/intent/booking/etc.)
+        # Make sure each stage returns TwiML or sets a new stage and redirects.
+        # Keep a final fallback return if nothing else returns.
+
+        # ... your existing stage handling code here ...
+        # e.g.:
+        # if stage == "intro":
+        #     ...
+        #     return str(resp)
+        # elif stage == "intent":
+        #     ...
+        #     return str(resp)
+        # elif stage == "ask_time_date":
+        #     ...
+        #     return str(resp)
+        # else:
+        #     ...
+
+        debug_print(f"[voice] ⚠️ dispatcher fell-through without return; sending generic help")
+        # Fallback: generic help to avoid empty TwiML
+        g = Gather(input="speech dtmf", timeout=4, speech_timeout="auto", barge_in=True, action="/voice", method="POST")
+        g.say(gpt_speak("Please tell me what you would like to do."), VOICE)
+        resp.append(g)
+        debug_print(f"[voice] ◀ exit(fallback) dt={(time.time()-t0):.3ff}s")
+        return str(resp)
+
+    except Exception as e:
+        # ------------------------------------------------------------------
+        # 🧯 Hard error guard — never return empty body on exceptions
+        # ------------------------------------------------------------------
+        err_msg = f"{type(e).__name__}: {e}"
+        debug_print(f"[voice] 💥 EXCEPTION → {err_msg}")
+        try:
+            traceback.print_exc()
+        except Exception:
+            pass
+
+        resp.say(gpt_speak("Sorry, something went wrong. Please call again later."), VOICE)
+        debug_print(f"[voice] ◀ exit(exception) dt={(time.time()-t0):.3ff}s")
+        return str(resp)
 
 
 
@@ -3192,7 +3279,7 @@ def voice():
 
         PROMPT_NEED_BOTH = (
             "Please say or enter the date and time, for example, 'October 8 at 9:30 AM', "
-            "or type month, day, hour, and minute then press pound — for example 10080930#."
+            "or type 2 digits for month, 2 digits for day, 4 digits for hour, and minute, AM or PM then press pound."
         )
         PROMPT_PAST_TIME = "That date and time have already passed. Please choose a future appointment time."
         PROMPT_NEED_VALID_DAY = (
@@ -3430,7 +3517,13 @@ def voice():
             sd["alts_prompt"]  = prompt
             sd["silence_alts"] = 0
 
-            g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True)
+            g = make_gather(
+                            prompt,
+                            input="speech dtmf",
+                            timeout=6, 
+                            speech_timeout="auto",
+                             barge_in=True
+                            )
             resp.append(g)
             sd["stage"] = "ask_time_date"
             return str(resp)
