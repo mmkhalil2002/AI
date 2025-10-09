@@ -3252,13 +3252,12 @@ def voice():
 
         DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         available_days = [DAY_NAMES[d] for d in working_days if 0 <= d < 7]
+        days_str = (
+            ", ".join(available_days[:-1]) + f", and {available_days[-1]}"
+            if len(available_days) > 1
+            else available_days[0] if available_days else "weekdays"
+        )
 
-        if len(available_days) > 1:
-            days_str = ", ".join(available_days[:-1]) + f", and {available_days[-1]}"
-        else:
-            days_str = available_days[0] if available_days else "weekdays"
-
-        # Format hours as 12-hour AM/PM
         def _fmt_hour(h):
             if h == 0:
                 return "12:00 AM"
@@ -3307,8 +3306,8 @@ def voice():
             if tries < 3:
                 prompt = (
                     "I didn’t hear the appointment date and time. "
-                    "Please say the appointment date and time, for example, 'October 12 at 9 AM' "
-                    "You can also enter two digits for month, two for day, and four for hour and minute, specify PM, or AM then press pound — "
+                    "Please say the appointment date and time, for example, 'October 12 at 9 AM'. "
+                    "You can also enter two digits for month, two for day, and four for hour and minute, specify PM or AM, then press pound."
                 )
                 resp.append(make_gather(prompt, input="speech dtmf", timeout=3,
                                         speech_timeout="auto", barge_in=True))
@@ -3326,7 +3325,6 @@ def voice():
         # ------------------------------------------------------------------
         partial_ctx = session_data[call_sid].setdefault("partial_datetime", {})
 
-        # Extract possible day/time parts
         def _extract_day_time(s: str) -> tuple:
             if not s:
                 return ("", "")
@@ -3349,7 +3347,7 @@ def voice():
 
         day_part, time_part = _extract_day_time(raw_speech)
 
-        # If only day spoken → remember and prompt for time
+        # partial input handling
         if day_part and not time_part:
             partial_ctx["day"] = day_part
             debug_print(f"ask_time_date: 🧭 stored partial day='{day_part}', waiting for time")
@@ -3361,12 +3359,10 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # If only time spoken but we have a remembered day → combine
         if time_part and not day_part and "day" in partial_ctx:
             day_part = partial_ctx.pop("day")
             debug_print(f"ask_time_date: 🧩 combined remembered day='{day_part}' with new time='{time_part}'")
 
-        # If both present → clear memory
         if day_part and time_part:
             partial_ctx.clear()
 
@@ -3398,7 +3394,7 @@ def voice():
             )
 
         # ------------------------------------------------------------------
-        # 🧠 Parse input (speech or DTMF)
+        # 🧠 Parse input
         # ------------------------------------------------------------------
         appointment_start, appointment_end = None, None
         try:
@@ -3406,7 +3402,7 @@ def voice():
                 digits = _re.sub(r"\D", "", raw_dtmf)
                 debug_print(f"ask_time_date: 📟 DTMF entered → {digits}")
                 today = _date_local.today()
-                if len(digits) >= 8:  # MMDDHHMM
+                if len(digits) >= 8:
                     mm, dd, hh, mn = int(digits[0:2]), int(digits[2:4]), int(digits[4:6]), int(digits[6:8])
                     day_str = f"{today.year}-{mm:02d}-{dd:02d}"
                     time_str = f"{hh}:{mn:02d}"
@@ -3433,24 +3429,40 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # Reset memory once slot confirmed
-        session_data[call_sid].pop("partial_datetime", None)
-
         # ------------------------------------------------------------------
-        # ⏳ Reject past times and suggest alternatives
+        # ⏳ Reject past times and suggest alternatives (with 3× repetition)
         # ------------------------------------------------------------------
         now_utc = _pytz.UTC.localize(datetime.utcnow())
         start_dt = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
         if start_dt <= now_utc:
-            debug_print("ask_time_date: 🕒 requested time is in the past → suggesting alternatives")
             alts = get_next_available_slots(calendar_id, creds, from_start_iso=appointment_end, limit=3) or []
             options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
             prompt = f"That time has already passed. Would you like {options}?" if options else PROMPT_PAST_TIME
-            resp.append(make_gather(prompt))
+
+            silence_tries = session_data[call_sid].get("silence_alts", 0)
+            if not (speech_result or request.values.get("Digits")):
+                if silence_tries < 2:
+                    session_data[call_sid]["silence_alts"] = silence_tries + 1
+                    debug_print(f"ask_time_date: 🔁 repeating same options ({silence_tries+1}/3)")
+                    g = make_gather(
+                        f"I didn’t hear you. Let me repeat: {prompt}",
+                        input="speech dtmf", timeout=4, speech_timeout="auto", barge_in=True, finish_on_key="#"
+                    )
+                    resp.append(g)
+                    resp.redirect("/voice")
+                    return str(resp)
+                else:
+                    debug_print("ask_time_date: ❌ 3 silent attempts → hangup")
+                    resp.say(gpt_speak("I didn’t hear a response. Please call again later."), VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    return str(resp)
+            session_data[call_sid]["silence_alts"] = 0
+            resp.append(make_gather(prompt, input="speech dtmf"))
             return str(resp)
 
         # ------------------------------------------------------------------
-        # 🔍 Check availability
+        # 🔍 Check availability (with 3× repetition)
         # ------------------------------------------------------------------
         try:
             slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
@@ -3459,11 +3471,30 @@ def voice():
             slot_available = False
 
         if not slot_available:
-            debug_print("ask_time_date: ❌ Slot not available → suggesting alternatives")
             alts = get_next_available_slots(calendar_id, creds, from_start_iso=appointment_end, limit=3) or []
             options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
             prompt = f"That time is not available. Would you like {options}?" if options else "That time is not available. Please say another date and time."
-            resp.append(make_gather(prompt))
+
+            silence_tries = session_data[call_sid].get("silence_alts", 0)
+            if not (speech_result or request.values.get("Digits")):
+                if silence_tries < 2:
+                    session_data[call_sid]["silence_alts"] = silence_tries + 1
+                    debug_print(f"ask_time_date: 🔁 repeating same options ({silence_tries+1}/3)")
+                    g = make_gather(
+                        f"I didn’t hear you. Let me repeat: {prompt}",
+                        input="speech dtmf", timeout=4, speech_timeout="auto", barge_in=True, finish_on_key="#"
+                    )
+                    resp.append(g)
+                    resp.redirect("/voice")
+                    return str(resp)
+                else:
+                    debug_print("ask_time_date: ❌ 3 silent attempts → hangup")
+                    resp.say(gpt_speak("I didn’t hear a response. Please call again later."), VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    return str(resp)
+            session_data[call_sid]["silence_alts"] = 0
+            resp.append(make_gather(prompt, input="speech dtmf"))
             return str(resp)
 
         # ------------------------------------------------------------------
@@ -3479,7 +3510,6 @@ def voice():
             if cancel_info.get("dob"):
                 cust["dob"] = cancel_info["dob"]
             session_data[call_sid]["reschedule_after_cancel"] = False
-            debug_print("ask_time_date: 🔁 reused phone/DOB from cancel flow for reschedule")
 
         cust = session_data[call_sid].setdefault("customer", {})
         phone_e164 = cust.get("phone_e164") or session_data[call_sid].get("phone_e164")
