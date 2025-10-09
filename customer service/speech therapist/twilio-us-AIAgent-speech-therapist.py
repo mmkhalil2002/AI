@@ -82,7 +82,7 @@ import pytz as _pytz
 import pytz as _TZMOD
 import time as _time_mod
 import threading
-
+import traceback
 
 
 
@@ -2064,26 +2064,24 @@ def voice():
     # ----------------------------------------------------------------------
     # 🌐 Twilio Voice Entry — Input Initialization + Central Silence Guard
     # ----------------------------------------------------------------------
-    t0 = time.time()
+    t0 = _time_mod.monotonic()
     resp = VoiceResponse()
 
     try:
         # ------------------------------------------------------------------
         # 🆔 Retrieve core request fields from Twilio webhook
         # ------------------------------------------------------------------
-        call_sid     = (request.values.get("CallSid") or "").strip()
-        speech_result= (request.values.get("SpeechResult") or "").strip()
-        dtmf_digits  = (request.values.get("Digits") or "").strip()
-        from_number  = (request.values.get("From") or "").strip()
-        to_number    = (request.values.get("To") or "").strip()
-        call_status  = (request.values.get("CallStatus") or "").strip()
-        direction    = (request.values.get("Direction") or "").strip()
+        call_sid      = (request.values.get("CallSid") or "").strip()
+        speech_result = (request.values.get("SpeechResult") or "").strip()
+        dtmf_digits   = (request.values.get("Digits") or "").strip()
+        from_number   = (request.values.get("From") or "").strip()
+        to_number     = (request.values.get("To") or "").strip()
+        call_status   = (request.values.get("CallStatus") or "").strip()
+        direction     = (request.values.get("Direction") or "").strip()
 
         # 🔎 Raw input snapshot
         debug_print(f"[voice] ▶ enter: call_sid={call_sid} status={call_status} dir={direction} to={to_number} from={from_number}")
         debug_print(f"[voice] 🗣 SpeechResult='{speech_result}' | 🔢 Digits='{dtmf_digits}'")
-
-        # Keep your original print if you want it too
         print(f"📢 voice :speech_result: {speech_result}")
 
         # ------------------------------------------------------------------
@@ -2218,7 +2216,7 @@ def voice():
                 # Keep same stage
                 session["stage"] = stage
                 debug_print(f"[voice] 🛡 central-silence: responded with <Gather>, keeping stage='{stage}'")
-                debug_print(f"[voice] ◀ exit(central-silence) dt={(time.time()-t0):.3f}s")
+                debug_print(f"[voice] ◀ exit(central-silence) dt={(_time_mod.monotonic()-t0):.3f}s")
                 return str(resp)
             else:
                 debug_print(f"[voice] 🛡 central-silence: not triggered (we have input)")
@@ -2231,31 +2229,14 @@ def voice():
         # ------------------------------------------------------------------
         debug_print(f"[voice] 🚦 dispatch → stage='{stage}' (handing off to stage-specific code)")
 
-        # ⭐ NOTE:
-        # From here, your existing stage handlers run (intro/intent/booking/etc.)
-        # Make sure each stage returns TwiML or sets a new stage and redirects.
-        # Keep a final fallback return if nothing else returns.
-
-        # ... your existing stage handling code here ...
-        # e.g.:
-        # if stage == "intro":
-        #     ...
-        #     return str(resp)
-        # elif stage == "intent":
-        #     ...
-        #     return str(resp)
-        # elif stage == "ask_time_date":
-        #     ...
-        #     return str(resp)
-        # else:
-        #     ...
+        # ... your existing stage handling code here, each returns str(resp) ...
 
         debug_print(f"[voice] ⚠️ dispatcher fell-through without return; sending generic help")
         # Fallback: generic help to avoid empty TwiML
         g = Gather(input="speech dtmf", timeout=4, speech_timeout="auto", barge_in=True, action="/voice", method="POST")
         g.say(gpt_speak("Please tell me what you would like to do."), VOICE)
         resp.append(g)
-        debug_print(f"[voice] ◀ exit(fallback) dt={(time.time()-t0):.3ff}s")
+        debug_print(f"[voice] ◀ exit(fallback) dt={(_time_mod.monotonic()-t0):.3f}s")
         return str(resp)
 
     except Exception as e:
@@ -2265,13 +2246,15 @@ def voice():
         err_msg = f"{type(e).__name__}: {e}"
         debug_print(f"[voice] 💥 EXCEPTION → {err_msg}")
         try:
+            #import traceback
             traceback.print_exc()
         except Exception:
             pass
 
         resp.say(gpt_speak("Sorry, something went wrong. Please call again later."), VOICE)
-        debug_print(f"[voice] ◀ exit(exception) dt={(time.time()-t0):.3ff}s")
+        debug_print(f"[voice] ◀ exit(exception) dt={(_time_mod.monotonic()-t0):.3f}s")
         return str(resp)
+
 
 
 
