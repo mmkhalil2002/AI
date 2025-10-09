@@ -3246,16 +3246,41 @@ def voice():
         debug_print(f"ask_time_date: 🗣️ Received speech: {speech_result}")
 
         # ------------------------------------------------------------------
-        # 📋 Prompts
+        # 📅 Dynamically build working days + hours prompt
         # ------------------------------------------------------------------
+        working_days = globals().get("WORKING_DAYS", (0, 1, 2, 3, 4, 5))  # Default Mon–Sat
+        working_start = globals().get("WORKING_HOURS_START", 8)
+        working_end = globals().get("WORKING_HOURS_END", 17)
+
+        DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        available_days = [DAY_NAMES[d] for d in working_days if 0 <= d < 7]
+
+        if len(available_days) > 1:
+            days_str = ", ".join(available_days[:-1]) + f", and {available_days[-1]}"
+        else:
+            days_str = available_days[0] if available_days else "weekdays"
+
+        # Build natural-language hours string
+        def _fmt_hour(h):
+            if h == 0:
+                return "12:00 AM"
+            elif h < 12:
+                return f"{h}:00 AM"
+            elif h == 12:
+                return "12:00 PM"
+            else:
+                return f"{h-12}:00 PM"
+
+        hours_str = f"{_fmt_hour(working_start)} and {_fmt_hour(working_end)}"
+
         PROMPT_NEED_BOTH = (
             "Please say or enter the date and time, for example, 'October 8 at 9:30 AM', "
             "or type month, day, hour, and minute then press pound — for example 10080930#."
         )
         PROMPT_PAST_TIME = "That date and time have already passed. Please choose a future appointment time."
         PROMPT_NEED_VALID_DAY = (
-            "That day isn’t available for appointments. "
-            "Please choose a weekday between Monday and Saturday, for example, 'October 7 at 10 AM'."
+            f"That day isn’t available for appointments. "
+            f"Our working days are {days_str}, between {hours_str}."
         )
 
         # ------------------------------------------------------------------
@@ -3283,17 +3308,15 @@ def voice():
             debug_print(f"ask_time_date: 🤐 silence (tries={tries})")
 
             if tries < 3:
-                # Friendly retry
                 prompt = (
                     "I didn’t hear the appointment date and time. "
                     "Please say it again, for example, 'October 8 at 9:30 AM'. "
                     "Or type month, day, hour, and minute then press pound."
                 )
-                resp.append(make_gather(prompt, input="speech dtmf"))
+                resp.append(make_gather(prompt, input="speech dtmf", timeout=3, speech_timeout="auto", barge_in=True))
                 resp.redirect("/voice")
                 return str(resp)
             else:
-                # Too many silent attempts → end call
                 resp.say(gpt_speak("I'm sorry, I still didn't get your appointment time. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
@@ -3332,20 +3355,12 @@ def voice():
         # 🧩 Helper: Build UTC slot from parsed day/time
         # ------------------------------------------------------------------
         def _build_slot(day_str: str, time_str: str) -> tuple:
-            """
-            Convert parsed day/time → UTC start & end ISO strings.
-
-            Example:
-            'October 8' + '9:30 AM'
-            → localize to America/Chicago → convert to UTC → return ISO Z strings.
-            """
             tz_name = globals().get("CLINIC_TZ", "America/Chicago")
             tz_local = _pytz.timezone(tz_name)
             dur = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
             combined = f"{day_str} at {time_str}"
 
             today = _date_local.today()
-            # ✅ Ensure default base is timezone-aware (prevents naive → local mismatch)
             default_base = tz_local.localize(datetime(today.year, today.month, today.day, 9, 0, 0))
             parsed = _dtparse(combined, default=default_base, fuzzy=True)
 
@@ -3358,11 +3373,10 @@ def voice():
             else:
                 parsed = parsed.astimezone(tz_local)
 
-            # If year missing → assume current year
             if not _re.search(r"\b\d{4}\b", combined):
                 parsed = parsed.replace(year=today.year)
 
-            # Check weekday validity
+            # ✅ Validate weekday
             working_days = globals().get("WORKING_DAYS", (0, 1, 2, 3, 4, 5))
             if parsed.weekday() not in working_days:
                 raise ValueError("invalid_weekday")
@@ -3370,7 +3384,6 @@ def voice():
             start_local = parsed
             end_local = start_local + timedelta(minutes=dur)
 
-            # Convert both start/end to UTC for consistency
             start_utc = start_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
             end_utc = end_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
             return (start_utc, end_utc)
@@ -3395,7 +3408,7 @@ def voice():
                 else:
                     raise ValueError("invalid_dtmf_format")
 
-                if hh == 12:  # default PM if ambiguous
+                if hh == 12:
                     time_str = f"{hh}:{mn:02d} PM"
 
                 appointment_start, appointment_end = _build_slot(day_str, time_str)
@@ -3407,7 +3420,6 @@ def voice():
                 appointment_start, appointment_end = _build_slot(day_part, time_part)
 
             debug_print(f"ask_time_date: ⏰ Built slot → Start={appointment_start}, End={appointment_end}")
-            debug_print(f"ask_time_date: 🌐 Slot in UTC → start={appointment_start}, end={appointment_end}")
 
         except ValueError as e:
             err = str(e)
@@ -3420,7 +3432,7 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # ⏳ Reject past dates — offer alternatives
+        # ⏳ Reject past times and suggest alternatives
         # ------------------------------------------------------------------
         now_utc = _pytz.UTC.localize(datetime.utcnow())
         start_dt = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
@@ -3476,7 +3488,6 @@ def voice():
             return str(resp)
 
         try:
-            # ✅ Fixed argument name (default_country instead of country)
             found = customer_search(phone_number=phone_e164, dob=dob, default_country="US")
             debug_print(f"ask_time_date: 🔎 customer_search(phone={phone_e164}, dob={dob}) → {found}")
         except Exception as e:
@@ -3487,6 +3498,7 @@ def voice():
         debug_print(f"ask_time_date: 🎯 Next stage → {session_data[call_sid]['stage']}")
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
