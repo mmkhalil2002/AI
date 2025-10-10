@@ -3214,7 +3214,7 @@ def voice():
         debug_print(f"[ask_time_date] 🗣️ Received speech: {speech_result}")
 
         # -------------------------- Config / Text --------------------------
-        working_days = globals().get("WORKING_DAYS", (0, 1, 2, 3, 4, 5))
+        working_days  = globals().get("WORKING_DAYS", (0, 1, 2, 3, 4, 5))
         working_start = globals().get("WORKING_HOURS_START", 8)
         working_end   = globals().get("WORKING_HOURS_END", 17)
 
@@ -3333,8 +3333,9 @@ def voice():
             if silence_time < 3:
                 prompt = (
                     "I didn’t hear the appointment date and time. "
-                    "Please say it like 'October 12 at 9:00 A M' "
-                    "or  enter 2 digits for month, 2 digits for day, 4 digits for hours and minutes, specify  A M or P M."
+                    "Please say it like 'October 12 at 9:00 A M' or 'October 12 at 9:00 P M'. "
+                    "You must explicitly include A M or P M. "
+                    "If you enter digits, please then say A M or P M."
                 )
                 g = make_gather(prompt, input="speech dtmf", timeout=4, speech_timeout="auto", barge_in=True,
                                 action="/voice", method="POST")
@@ -3366,15 +3367,31 @@ def voice():
             t = _re.sub(r"[!?;]+", "", t)
             t = _re.sub(r"\s+", " ", t).strip()
             t = t.replace(" at noon", " at 12 pm").replace(" at midnight", " at 12 am")
+
+            # Primary: "DAY at TIME"
             if " at " in t:
                 day, timep = t.split(" at ", 1)
                 return (day.strip().rstrip(","), timep.strip())
+
+            # Try to find a time with digits
             m = _re.search(r"\b(\d{1,2}(:\d{2})?)\b", t)
             if m:
                 timep = m.group(1)
                 day = t[:m.start()].strip().rstrip(",")
                 return (day, timep)
-            return ("", "")
+
+            # Date-only like "july 30th"
+            MONTHS = r"january|february|march|april|may|june|july|august|september|october|november|december"
+            date_only = _re.search(rf"\b({MONTHS})\s+\d{{1,2}}(?:st|nd|rd|th)?\b", t)
+            if date_only:
+                return (date_only.group(0), "")
+
+            # Fuzzy date detection fallback
+            try:
+                _ = dtparser.parse(t, fuzzy=True, default=_dt(2000, 1, 1, 9, 0, 0))
+                return (t, "")
+            except Exception:
+                return ("", "")
 
         partial_ctx = sd.setdefault("partial_datetime", {})
         day_part, time_part = _extract_day_time(raw_speech)
@@ -3382,23 +3399,26 @@ def voice():
         # ---------------------- Partial capture flows ----------------------
         if day_part and not time_part:
             partial_ctx["day"] = day_part
+            debug_print(f"[ask_time_date] 🧭 stored partial day='{day_part}', prompting specifically for time")
             g = make_gather(
-                f"Got it — {day_part}. What time would you like? Please include A M or P M.",
-                input="speech dtmf", timeout=3, speech_timeout="auto", barge_in=True,
+                f"Got it — {day_part}. What time would you like? Please say just the time, like '8 A M' or '3 30 P M'.",
+                input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True,
                 action="/voice", method="POST"
             )
             resp.append(g)
             try:
                 resp.redirect(url_for("voice"))
-                debug_print("[ask_time_date] 🔁 partial day only → redirect url_for('voice')")
+                debug_print("[ask_time_date] 🔁 day-without-time → redirect url_for('voice')")
             except Exception:
                 resp.redirect("/voice")
-                debug_print("[ask_time_date] 🔁 partial day only → redirect /voice (fallback)")
+                debug_print("[ask_time_date] 🔁 day-without-time → redirect /voice (fallback)")
             sd["stage"] = "ask_time_date"
             return str(resp)
 
         if time_part and not day_part and "day" in partial_ctx:
             day_part = partial_ctx.pop("day")
+            debug_print(f"[ask_time_date] 🧩 combined remembered day='{day_part}' with new time='{time_part}'")
+
         if day_part and time_part:
             partial_ctx.clear()
 
@@ -3434,7 +3454,7 @@ def voice():
         # ------------------------- Parse / build slot ----------------------
         appointment_start, appointment_end = None, None
         try:
-            # If we asked for AM/PM after digits previously:
+            # Pending digits path (awaiting AM/PM)
             if pending_digits and raw_speech:
                 ampm = _extract_ampm(raw_speech)
                 if not ampm:
@@ -3464,7 +3484,7 @@ def voice():
                 if len(digits) >= 8:
                     mm, dd, hh, mn = int(digits[0:2]), int(digits[2:4]), int(digits[4:6]), int(digits[6:8])
                     day_str  = f"{today.year}-{mm:02d}-{dd:02d}"
-                    ampm = _extract_ampm(raw_speech)  # did caller say AM/PM as well this turn?
+                    ampm = _extract_ampm(raw_speech)  # check if caller said AM/PM this turn
                     if not ampm:
                         sd["pending_dt_digits"] = digits[:8]
                         g = make_gather(PROMPT_NEED_AMPM, input="speech", timeout=5, speech_timeout="auto", barge_in=True,
@@ -3667,6 +3687,7 @@ def voice():
         debug_print(f"[ask_time_date] 🎯 Next stage → {sd['stage']}")
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
