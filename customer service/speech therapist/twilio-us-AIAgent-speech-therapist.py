@@ -2141,7 +2141,7 @@ def voice():
             return ("Please say your birth date, for example 'July third 1990'. Or type 2 digits for Month 2 digits for Day 4 digits for year then press pound.", hints)
         if st == "ask_time_date":
             debug_print("[voice] 🔇 using ask_time_date silence prompt")
-            return ("Please say the appointment time, for example, 'August 15th at 5 AM'.", hints)
+            return ("Please say the appointment time, for example, 'August 15th at 5 AM' Or enter 2 digits for month, 2 for day, 4 for hour and minuttes and specifiy AM pr PM" hints)
         if st == "collect_first_name":
             debug_print("[voice] 🔇 using collect_first_name silence prompt")
             return ("Please say your first name.", hints)
@@ -3209,7 +3209,7 @@ def voice():
      # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
     # ----------------------------------------------------------------------
-    # 📅 ASK_TIME_DATE (AM/PM required; reactive repeats on silence)
+    # 📅 ASK_TIME_DATE — AM/PM (or A/P) required, repeats on silence, 3 wrongs → hangup
     # ----------------------------------------------------------------------
         debug_print(f"[ask_time_date] 🗣️ Received speech: {speech_result}")
 
@@ -3232,15 +3232,14 @@ def voice():
         hours_str = f"{_fmt_hour(working_start)} and {_fmt_hour(working_end)}"
 
         PROMPT_NEED_BOTH = (
-            "Please say or enter the date and time, for example, 'October 8 at 9:30 A M' or 'October 8 at 9:30 P M'. "
-            "You must explicitly include A M or P M — saying just the hour isn’t enough. "
-            "You can also enter digits for month, day, hour, minute, then say A M or P M."
+            "Say the date and time, like 'October 8 at 9:30 A M' or 'October 8 at 2 P M'. "
+            "You can also enter MMDDHHMM, then say A or P."
         )
-        PROMPT_PAST_TIME = "That date and time have already passed. Please choose a future appointment time."
+        PROMPT_PAST_TIME = "That time has already passed. Please choose a future time."
         PROMPT_NEED_VALID_DAY = (
-            f"That day isn’t available for appointments. Our working days are {days_str}, between {hours_str}."
+            f"That day isn’t available. We’re open {days_str}, between {hours_str}."
         )
-        PROMPT_NEED_AMPM = "Please say whether the time is A M or P M."
+        PROMPT_NEED_AMPM = "Say A or P to indicate A M or P M."
 
         # ----------------------------- Session -----------------------------
         session_data.setdefault(call_sid, {})
@@ -3250,7 +3249,7 @@ def voice():
         silence_time   = sd.get("silence_time", 0)       # initial silence
         silence_alts   = sd.get("silence_alts", 0)       # silence during alternatives
         alts_prompt    = sd.get("alts_prompt", "")       # last alternatives prompt
-        pending_digits = sd.get("pending_dt_digits")     # awaiting explicit AM/PM after DTMF
+        pending_digits = sd.get("pending_dt_digits")     # awaiting explicit A/P after DTMF
 
         # doctor / calendar
         doctor_id = sd.get("doctor_id")
@@ -3268,11 +3267,16 @@ def voice():
 
         # ------------------------- AM/PM helpers ---------------------------
         def _extract_ampm(s: str) -> str:
-            """Return 'am' or 'pm' if AM/PM (or A/P) is explicitly present."""
+            """
+            Return 'am' or 'pm' if AM/PM (or single 'A'/'P') is explicitly present in s.
+            Accepts A, P, AM, PM (with optional dots/spaces).
+            """
             if not s: return ""
-            t = s.lower()
+            t = s.lower().strip()
+            # normalize "a.m." / "p.m." and variants
             t = _re.sub(r"\ba\s*\.?\s*m\.?\b", "am", t)
             t = _re.sub(r"\bp\s*\.?\s*m\.?\b", "pm", t)
+            # allow bare "a" or "p" tokens
             if _re.search(r"\bam\b", t): return "am"
             if _re.search(r"\bpm\b", t): return "pm"
             if _re.search(r"\ba\b",  t): return "am"
@@ -3280,13 +3284,14 @@ def voice():
             return ""
 
         def _ensure_ampm_in_time(time_str: str, speech_src: str) -> Tuple[bool, str, str]:
-            """Ensure explicit AM/PM exists. Returns (ok, time_with_ampm, reason_if_not_ok)."""
+            """Ensure explicit A/P (or AM/PM). Returns (ok, time_with_ampm, reason)."""
             if not time_str:
                 return (False, "", "missing_parts")
             ampm = _extract_ampm(time_str) or _extract_ampm(speech_src)
             if not ampm:
                 return (False, "", "missing_ampm")
-            t = _re.sub(r"\s*\b(am|pm)\b", "", time_str.lower()).strip()
+            # remove any trailing am/pm already in time_str; re-append normalized value
+            t = _re.sub(r"\s*\b(am|pm|a|p)\b", "", time_str.lower()).strip()
             return (True, f"{t} {ampm}", "")
 
         # -------------------- Alternatives reactive repeat -----------------
@@ -3297,7 +3302,7 @@ def voice():
 
             if silence_alts < 3:
                 g = make_gather(
-                    f"I didn’t hear you. Let me repeat: {alts_prompt}",
+                    f"I didn’t hear you. {alts_prompt}",
                     input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True,
                     action="/voice", method="POST"
                 )
@@ -3332,10 +3337,8 @@ def voice():
 
             if silence_time < 3:
                 prompt = (
-                    "I didn’t hear the appointment date and time. "
-                    "Please say it like 'October 12 at 9:00 A M' or 'October 12 at 9:00 P M'. "
-                    "You must explicitly include A M or P M. "
-                    "If you enter digits, please then say A M or P M."
+                    "Say the date and time, like 'October 12 at 9 A M'. "
+                    "Or enter MMDDHHMM, then say A or P."
                 )
                 g = make_gather(prompt, input="speech dtmf", timeout=4, speech_timeout="auto", barge_in=True,
                                 action="/voice", method="POST")
@@ -3373,7 +3376,7 @@ def voice():
                 day, timep = t.split(" at ", 1)
                 return (day.strip().rstrip(","), timep.strip())
 
-            # Try to find a time with digits
+            # Time digits anywhere → treat preceding as day
             m = _re.search(r"\b(\d{1,2}(:\d{2})?)\b", t)
             if m:
                 timep = m.group(1)
@@ -3386,7 +3389,7 @@ def voice():
             if date_only:
                 return (date_only.group(0), "")
 
-            # Fuzzy date detection fallback
+            # Fuzzy date detection fallback (no explicit time)
             try:
                 _ = dtparser.parse(t, fuzzy=True, default=_dt(2000, 1, 1, 9, 0, 0))
                 return (t, "")
@@ -3399,9 +3402,9 @@ def voice():
         # ---------------------- Partial capture flows ----------------------
         if day_part and not time_part:
             partial_ctx["day"] = day_part
-            debug_print(f"[ask_time_date] 🧭 stored partial day='{day_part}', prompting specifically for time")
+            debug_print(f"[ask_time_date] 🧭 stored partial day='{day_part}', prompting for time only")
             g = make_gather(
-                f"Got it — {day_part}. What time would you like? Please say just the time, like '8 A M' or '3 30 P M'.",
+                f"Got it — {day_part}. What time? Say like '8 A M' or '3 30 P M'.",
                 input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True,
                 action="/voice", method="POST"
             )
@@ -3454,7 +3457,7 @@ def voice():
         # ------------------------- Parse / build slot ----------------------
         appointment_start, appointment_end = None, None
         try:
-            # Pending digits path (awaiting AM/PM)
+            # Pending digits path (awaiting A/P or AM/PM in speech)
             if pending_digits and raw_speech:
                 ampm = _extract_ampm(raw_speech)
                 if not ampm:
@@ -3463,10 +3466,10 @@ def voice():
                     resp.append(g)
                     try:
                         resp.redirect(url_for("voice"))
-                        debug_print("[ask_time_date] 🔁 awaiting AM/PM after digits → redirect url_for('voice')")
+                        debug_print("[ask_time_date] 🔁 awaiting A/P after digits → redirect url_for('voice')")
                     except Exception:
                         resp.redirect("/voice")
-                        debug_print("[ask_time_date] 🔁 awaiting AM/PM after digits → redirect /voice (fallback)")
+                        debug_print("[ask_time_date] 🔁 awaiting A/P after digits → redirect /voice (fallback)")
                     sd["stage"] = "ask_time_date"
                     return str(resp)
 
@@ -3484,7 +3487,7 @@ def voice():
                 if len(digits) >= 8:
                     mm, dd, hh, mn = int(digits[0:2]), int(digits[2:4]), int(digits[4:6]), int(digits[6:8])
                     day_str  = f"{today.year}-{mm:02d}-{dd:02d}"
-                    ampm = _extract_ampm(raw_speech)  # check if caller said AM/PM this turn
+                    ampm = _extract_ampm(raw_speech)  # check if caller said A/P this turn
                     if not ampm:
                         sd["pending_dt_digits"] = digits[:8]
                         g = make_gather(PROMPT_NEED_AMPM, input="speech", timeout=5, speech_timeout="auto", barge_in=True,
@@ -3492,10 +3495,10 @@ def voice():
                         resp.append(g)
                         try:
                             resp.redirect(url_for("voice"))
-                            debug_print("[ask_time_date] 🔁 digits w/o AM/PM → redirect url_for('voice')")
+                            debug_print("[ask_time_date] 🔁 digits w/o A/P → redirect url_for('voice')")
                         except Exception:
                             resp.redirect("/voice")
-                            debug_print("[ask_time_date] 🔁 digits w/o AM/PM → redirect /voice (fallback)")
+                            debug_print("[ask_time_date] 🔁 digits w/o A/P → redirect /voice (fallback)")
                         sd["stage"] = "ask_time_date"
                         return str(resp)
                     time_str = f"{hh}:{mn:02d} {ampm}"
@@ -3530,7 +3533,7 @@ def voice():
                 if not ok:
                     bad_time_tries += 1
                     sd["bad_time_tries"] = bad_time_tries
-                    debug_print(f"[ask_time_date] ❌ AM/PM missing → wrong-time tries={bad_time_tries}/3")
+                    debug_print(f"[ask_time_date] ❌ AM/PM (A/P) missing → wrong-time tries={bad_time_tries}/3")
                     if bad_time_tries >= 3:
                         debug_print("[ask_time_date] ❌ AM/PM missing maxed → hangup")
                         resp.say(gpt_speak("I’m sorry, I’m still not getting a valid date and time. Please call again later."), VOICE)
@@ -3538,17 +3541,17 @@ def voice():
                         session_data.pop(call_sid, None)
                         return str(resp)
                     g = make_gather(
-                        "Please include whether the time is A M or P M. For example, 'October 12 at 9:00 A M'.",
+                        "Say the time again and include A or P, like '9 A M' or '2 30 P M'.",
                         input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True,
                         action="/voice", method="POST"
                     )
                     resp.append(g)
                     try:
                         resp.redirect(url_for("voice"))
-                        debug_print("[ask_time_date] 🔁 missing AM/PM → redirect url_for('voice')")
+                        debug_print("[ask_time_date] 🔁 missing A/P → redirect url_for('voice')")
                     except Exception:
                         resp.redirect("/voice")
-                        debug_print("[ask_time_date] 🔁 missing AM/PM → redirect /voice (fallback)")
+                        debug_print("[ask_time_date] 🔁 missing A/P → redirect /voice (fallback)")
                     sd["stage"] = "ask_time_date"
                     return str(resp)
 
@@ -3624,7 +3627,7 @@ def voice():
             alts = get_next_available_slots(calendar_id, creds, from_start_iso=appointment_end, limit=3) or []
             options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
             prompt  = (f"That time is not available. Would you like {options}?"
-                    if options else "That time is not available. Please say another date and time with A M or P M.")
+                    if options else "That time isn’t available. Please say another time with A or P.")
 
             sd["alts_prompt"]  = prompt
             sd["silence_alts"] = 0
@@ -3664,7 +3667,7 @@ def voice():
             sd["stage"] = "collect_phone" if not phone_e164 else "collect_dob"
             prompt = ("Please say your 10-digit phone number."
                     if not phone_e164 else
-                    "Please say your date of birth, for example, 'July third 1990'.")
+                    "Please say your date of birth, like 'July third 1990'.")
             g = make_gather(prompt, input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True,
                             action="/voice", method="POST")
             resp.append(g)
@@ -3687,7 +3690,6 @@ def voice():
         debug_print(f"[ask_time_date] 🎯 Next stage → {sd['stage']}")
         resp.redirect("/voice")
         return str(resp)
-
 
 
 
