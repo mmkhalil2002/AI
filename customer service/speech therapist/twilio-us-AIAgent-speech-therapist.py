@@ -2142,7 +2142,7 @@ def voice():
         if st == "ask_time_date":
             debug_print("[voice] 🔇 using ask_time_date silence prompt")
             return ("Please say the appointment time, for example, 'August 15th at 5 AM'. "
-                        "Or enter two digits for month, two for day, two for hour, and two for minutes, then say A or P.", hints)
+                        "Or enter two digits for month, two for day, two for hour, and two for minutes, then enter  A for AM or P for PM. then press #", hints)
 
             debug_print("[voice] 🔇 using collect_first_name silence prompt")
             return ("Please say your first name.", hints)
@@ -3097,7 +3097,7 @@ def voice():
 
         PROMPT_APPT_DATE_TIME = (
             "Thanks. Please say the appointment date and time, for example, 'October 12 at 9 AM' "
-            "You can also enter two digits for month, two for day, and four for hour and minute, specify PM, or AM then press pound — "
+            "You can also enter two digits for month, two for day, and four for hour and minute, specify A for AM, or P for PM then press pound — "
         )
 
         g = make_gather(
