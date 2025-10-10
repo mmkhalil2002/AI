@@ -2141,8 +2141,9 @@ def voice():
             return ("Please say your birth date, for example 'July third 1990'. Or type 2 digits for Month 2 digits for Day 4 digits for year then press pound.", hints)
         if st == "ask_time_date":
             debug_print("[voice] 🔇 using ask_time_date silence prompt")
-            return ("Please say the appointment time, for example, 'August 15th at 5 AM' Or enter 2 digits for month, 2 for day, 4 for hour and minuttes and specifiy AM pr PM" hints)
-        if st == "collect_first_name":
+            return ("Please say the appointment time, for example, 'August 15th at 5 AM'. "
+                        "Or enter two digits for month, two for day, two for hour, and two for minutes, then say A or P.", hints)
+
             debug_print("[voice] 🔇 using collect_first_name silence prompt")
             return ("Please say your first name.", hints)
         if st == "collect_last_name":
