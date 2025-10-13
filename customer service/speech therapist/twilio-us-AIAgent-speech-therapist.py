@@ -2712,65 +2712,54 @@ def voice():
         #
         # HOW THIS ROUTINE RUNS (Twilio lifecycle)
         # --------------------------------------------------------------------------
-        # 1) Your server returns TwiML for THIS webhook (usually a <Gather>).
-        #    As soon as we `return str(resp)`, this Python call ENDS. There is no resume.
+        # 1) We return TwiML for THIS webhook (usually a <Gather>). Once we
+        #    `return str(resp)`, this Python call ENDS. There is no resume.
         #
-        # 2) Twilio executes the TwiML you returned:
+        # 2) Twilio executes that TwiML:
         #      • If caller SPEAKS / PRESSES KEYS → <Gather> completes and Twilio
-        #        POSTs a NEW webhook to /voice (the Gather `action`) with SpeechResult/Digits.
-        #      • If caller is SILENT until timeout → <Gather> does NOT call the action
-        #        (default); Twilio continues to next verb in the same TwiML. We place a
-        #        trailing <Redirect>/voice so Twilio still POSTs a NEW webhook to /voice.
+        #        POSTs a NEW webhook to /voice (the Gather `action`) with
+        #        SpeechResult/Digits.
+        #      • If caller is SILENT until timeout → default <Gather> does NOT
+        #        call the action; Twilio continues to the next verb in the same
+        #        TwiML. We therefore place a trailing <Redirect>/voice so Twilio
+        #        still POSTs a NEW webhook to /voice (safety net).
         #
-        # 3) In that next /voice call, your code reads saved state from session_data
-        #    (e.g., sd["stage"], silence counters) and continues. Think: state machine.
+        # 3) In that next /voice call, we read state from `session_data` (e.g.
+        #    sd["stage"], counters) and continue. Think: state machine across
+        #    webhooks.
         #
         # HOW WE HANDLE “LOCAL SILENCE” IN *THIS* STAGE
         # --------------------------------------------------------------------------
-        #  • We deem it “silence” when BOTH SpeechResult and Digits are empty
-        #    in the current webhook.
-        #  • We count consecutive silences for this stage in: sd["silence_collect_phone"].
+        #  • “Silence” = BOTH SpeechResult and Digits empty in the current webhook.
+        #  • Counter: sd["silence_collect_phone"] (consecutive silences here).
         #  • Branching:
         #      - If silence and tries < 3:
         #          (a) Build a <Gather> to re-prompt for the phone number.
-        #          (b) Append a <Redirect>/voice as a safety net (so even if the user
-        #              stays silent again, Twilio will still call /voice).
-        #          (c) Set sd["stage"] = "collect_phone".
-        #          (d) RETURN TwiML immediately (this request ends).
+        #          (b) Append a <Redirect>/voice (safety net if the caller stays silent).
+        #          (c) Keep sd["stage"] = "collect_phone".
+        #          (d) RETURN TwiML (this request ends).
         #      - If silence and tries == 3:
         #          Apologize, hang up, clear session → RETURN.
         #
         # 🔍 SILENCE EXAMPLE (counter < 3)
         # --------------------------------------------------------------------------
-        #  Scenario: The caller is silent on the first re-prompt.
-        #
-        #  • Webhook #1:
-        #      - Inputs: SpeechResult="", Digits=""  → silence
-        #      - sd["silence_collect_phone"] goes 0 → 1
-        #      - We build <Gather> ("Say or enter your 10-digit number…") + <Redirect>/voice
-        #      - We set sd["stage"]="collect_phone", then RETURN TwiML
-        #
-        #  • Twilio executes returned TwiML:
-        #      - Plays the <Gather> prompt.
-        #      - Caller remains silent → <Gather> times out (no action call).
-        #      - Twilio runs the next verb → our <Redirect>/voice → NEW webhook to /voice.
-        #
-        #  • Webhook #2 (triggered by <Redirect>):
-        #      - Inputs: still silence → SpeechResult="", Digits=""
-        #      - sd["silence_collect_phone"] now 1 → 2  (still < 3)
-        #      - We again build <Gather> + <Redirect>, set stage, RETURN.
-        #
-        #  (If the caller finally speaks on the next attempt, the <Gather> will
-        #   call /voice with SpeechResult/Digits; we clear the silence counter and proceed.
-        #   If the caller stays silent a third time, tries==3 → hang up.)
+        #  • Webhook #1: SpeechResult="", Digits="" → silence; counter 0→1; we
+        #    return <Gather>(prompt) + <Redirect>/voice. Twilio plays prompt.
+        #    If still silent → <Gather> times out → Twilio executes <Redirect>
+        #    → NEW webhook to /voice.
+        #  • Webhook #2: still silence → counter 1→2 (<3). We re-prompt exactly
+        #    the same way. If user speaks on the next attempt, the <Gather>
+        #    action will post to /voice with input; we clear the counter.
+        #  • Webhook #3: if silence again → counter 2→3 → hang up.
         #
         # KEY PRACTICES
         # --------------------------------------------------------------------------
-        #  • Always set sd["stage"] (and counters) BEFORE returning TwiML.
-        #  • After appending a <Gather> or <Redirect>, immediately `return str(resp)`.
-        #  • Do NOT expect code after a return to run later — each webhook is a new call.
-        #  • Optional: If you’d rather route silence directly to the Gather action,
-        #    set actionOnEmptyResult="true" on <Gather> and you can omit the <Redirect>.
+        #  • Always set/keep sd["stage"] BEFORE returning.
+        #  • After appending a <Gather> (and optional <Redirect>), immediately
+        #    `return str(resp)`. Do NOT expect code after return to run later.
+        #  • Optional: If you prefer the <Gather> action to fire even on silence,
+        #    set `actionOnEmptyResult="true"` and you can omit the trailing
+        #    <Redirect>. We keep the Redirect for explicit safety.
         # ==========================================================================
 
         debug_print("[collect_phone] 📍 entered")
@@ -2793,27 +2782,6 @@ def voice():
 
         # ------------------------------------------------------------------
         # 🔇 LOCAL SILENCE HANDLING
-        #
-        # WHEN THIS TRIGGERS:
-        #   - This code path runs when Twilio just called /voice and provided no
-        #     SpeechResult and no Digits (i.e., the user said nothing and pressed nothing).
-        #
-        # WHAT HAPPENS IF SILENCE CONTINUES ACROSS CALLS?
-        #   - We increment a per-stage counter “silence_collect_phone”.
-        #   - For tries 1 and 2:
-        #       * We respond with a <Gather> prompt AND a trailing <Redirect>/voice.
-        #         Twilio then:
-        #           > plays the Gather prompt;
-        #           > IF user speaks/presses → posts to /voice with input (new request);
-        #           > ELSE (still silent) → Gather times out → Twilio executes the
-        #             following <Redirect> → posts to /voice WITHOUT input (new request).
-        #       * We RETURN immediately; this Python call is over. The next request
-        #         will hit /voice and re-enter this stage, seeing the incremented counter.
-        #   - On the 3rd silent try, we apologize and hang up.
-        #
-        # DOES <Redirect> “STAY IN SAME ROUTINE” OR “GO TO voice()”?
-        #   - It ALWAYS goes to your /voice route in a NEW HTTP request.
-        #   - Your current function does NOT resume after return.
         # ------------------------------------------------------------------
         if not (speech_text or dtmf_digits):
             tries = sd.get("silence_collect_phone", 0) + 1
@@ -2825,24 +2793,19 @@ def voice():
                     "I didn’t hear your phone number. "
                     "Please say or enter your 10-digit number, then press pound."
                 )
-
-                # Build a Gather that will post to /voice when input is provided
                 g = Gather(
                     input="speech dtmf",
                     timeout=4,
                     speech_timeout="auto",
-                    barge_in=True,       # caller can interrupt the prompt
-                    finish_on_key="#",   # submit DTMF early with '#'
+                    barge_in=True,
+                    finish_on_key="#",
                     action="/voice", method="POST"
-                    # actionOnEmptyResult="true"  # (optional) call /voice even on silence
+                    # actionOnEmptyResult="true"  # optional alternative to Redirect
                 )
                 g.say(gpt_speak(prompt), VOICE)
                 resp.append(g)
 
-                # SAFETY NET for silence: if Gather times out with NO input,
-                # Twilio continues to the next verb—this <Redirect>—which forces a NEW
-                # webhook to /voice. That lets us re-enter here, increment tries, and
-                # either prompt again (try 2) or hang up (try 3).
+                # Safety net if still silent: force a NEW webhook to /voice
                 resp.redirect("/voice")
                 debug_print("[collect_phone] 🔁 re-prompt & redirect → /voice (new webhook regardless of input)")
                 return str(resp)
@@ -2859,8 +2822,6 @@ def voice():
 
         # ------------------------------------------------------------------
         # 🧠 Speech → digits helper
-        #   Converts spoken words (“four six nine”, “double five”) to numeric digits.
-        #   Keeps literal digits that may appear in the transcript (e.g., “214-555-…”).
         # ------------------------------------------------------------------
         def _spoken_to_digits(raw: str) -> str:
             if not raw:
@@ -2919,8 +2880,7 @@ def voice():
             debug_print(f"[collect_phone] ⚠️ fallback normalize → '{phone_e164}'")
 
         # ------------------------------------------------------------------
-        # ❌ Invalid number → local retry (3 attempts, separate from “silence”)
-        #   Same redirect pattern ensures a new webhook even if the caller is quiet again.
+        # ❌ Invalid number → local retry (3 attempts; separate from “silence”)
         # ------------------------------------------------------------------
         if not phone_e164:
             r = sd.get("retry_phone", 0) + 1
@@ -2942,8 +2902,8 @@ def voice():
                 )
                 g.say(gpt_speak(prompt), VOICE)
                 resp.append(g)
-                resp.redirect("/voice")
-                debug_print("[collect_phone] 🔁 invalid → re-prompt & redirect (new webhook guarantees progress)")
+                resp.redirect("/voice")  # safety net if still no input
+                debug_print("[collect_phone] 🔁 invalid → re-prompt & redirect")
                 return str(resp)
 
             debug_print("[collect_phone] ❌ max invalid attempts → hangup")
@@ -2953,7 +2913,7 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # ✅ Valid → Save + Mirror (used by cancel/reschedule flows)
+        # ✅ Valid → Save & mirror (for cancel/reschedule reuse)
         # ------------------------------------------------------------------
         cust["phone_e164"] = phone_e164
         cust["phone"]      = phone_e164
@@ -2964,18 +2924,16 @@ def voice():
 
         # ------------------------------------------------------------------
         # ↩️ Return to prior stage if specified
-        #   If some upstream step requested a phone capture “in the middle” of
-        #   another stage, we jump back to that stage now.
         # ------------------------------------------------------------------
         return_stage = sd.pop("return_stage", None)
         if return_stage:
             sd["stage"] = return_stage
             debug_print(f"[collect_phone] ↩️ returning to stage '{return_stage}'")
-            resp.redirect("/voice")  # new webhook into /voice, which will read sd["stage"]
+            resp.redirect("/voice")
             return str(resp)
 
         # ------------------------------------------------------------------
-        # 🔁 Reschedule flow → skip straight to ask_time_date
+        # 🔁 Reschedule flow → jump directly to ask_time_date
         # ------------------------------------------------------------------
         if sd.get("reschedule_after_cancel"):
             sd["stage"] = "ask_time_date"
@@ -2990,7 +2948,7 @@ def voice():
             )
             g.say(gpt_speak(prompt), VOICE)
             resp.append(g)
-            resp.redirect("/voice")  # again, guarantees a new webhook even on silence
+            resp.redirect("/voice")
             debug_print("[collect_phone] 🔁 reschedule → ask_time_date (redirect to new /voice)")
             return str(resp)
 
