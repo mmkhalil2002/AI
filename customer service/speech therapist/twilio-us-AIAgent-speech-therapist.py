@@ -2993,35 +2993,34 @@ def voice():
 
 
 
-
-    # ----------------------------------------------------------------------
-    # 🎂 Stage: collect_dob
-    # Purpose:
-    #   - Accept DOB via speech (e.g., “July third 1956”) or keypad (two-digit month, two-digit day, four-digit year + #).
-    #   - Parse and validate reasonable date range.
-    #   - Store DOB as ISO (YYYY-MM-DD) in session.
-    #   - On failure, re-prompt (briefly) asking for the FULL birth date again.
-    # Integration points:
-    #   - Uses: make_gather(), gpt_speak(), session_data, call_sid, request, url_for
-    #   - Uses global imports: _re, _dtparse, datetime/date from python-dateutil & stdlib
-    #   - Next stage: ask_time_date (after successful DOB store)
-    # 🆕 Silent mode:
-    #   - If neither speech nor digits were received, re-prompt up to 3 times
-    #     using a separate counter (silence_dob), then hang up politely.
-    # ----------------------------------------------------------------------
     elif stage == "collect_dob":
         # ----------------------------------------------------------------------
-        # 🎯 Goal: Capture caller's Date of Birth
-        #   - Accepts speech ("July 3 1956") or DTMF ("07031956#")
-        #   - After DOB, asks for appointment with explicit AM/PM requirement
+        # 🎂 Stage: collect_dob
+        #
+        # PURPOSE
+        #   • Capture DOB from caller via Speech (e.g., “July 3 1956”) or DTMF
+        #     (two digits for month, two for day, four for year, then #).
+        #   • Validate reasonable date range and store as ISO (YYYY-MM-DD).
+        #   • On failure, re-prompt briefly; on repeated silence, hang up politely.
+        #
+        # HOW SILENCE IS HANDLED (LOCAL to this stage)
+        #   • “Silence” means BOTH SpeechResult and Digits are empty on this webhook.
+        #   • We count consecutive silences in session_data[call_sid]["silence_dob"].
+        #   • For tries 1–2: we <Gather> a re-prompt AND append <Redirect>/voice.
+        #       - If the caller remains silent again, <Gather> times out and Twilio
+        #         executes the trailing <Redirect> → NEW webhook to /voice.
+        #       - We re-enter collect_dob, increment the counter, and re-prompt again.
+        #   • On try 3: we apologize and hang up.
+        #
+        # NOTE
+        #   • We explicitly set sd["stage"]="collect_dob" before returning re-prompts,
+        #     so the next /voice webhook routes back here correctly.
         # ----------------------------------------------------------------------
 
         t_stage_start = _time_mod.perf_counter()
         debug_print(f"collect_dob: 📍 Stage entered at {_time_mod.strftime('%H:%M:%S')}")
 
-        # ----------------------------------------------------------------------
-        # 🗓️ Prompts
-        # ----------------------------------------------------------------------
+        # ---------------- Prompts ----------------
         PROMPT_DOB_SHORT = (
             "Say your birth date, for example, 'July 3 1956'. "
             "Or enter two digits for month, two for day, and four for year, then press pound. Example: 07 03 1956#."
@@ -3034,16 +3033,12 @@ def voice():
             "Please enter two digits for month, two for day, and four for year, then press pound. Example: 07 03 1956#."
         )
 
-        # ----------------------------------------------------------------------
-        # 🧩 Ensure session context
-        # ----------------------------------------------------------------------
-        session_data.setdefault(call_sid, {})
-        session_data[call_sid].setdefault("customer", {})
-        session_data[call_sid].setdefault("cancel", {})
+        # ---------------- Session context ----------------
+        sd = session_data.setdefault(call_sid, {})
+        sd.setdefault("customer", {})
+        sd.setdefault("cancel", {})
 
-        # ----------------------------------------------------------------------
-        # 🎙️ Pull input
-        # ----------------------------------------------------------------------
+        # ---------------- Inputs ----------------
         t_input_start = _time_mod.perf_counter()
         try:
             dtmf_digits = (request.values.get("Digits") or "").strip()
@@ -3053,15 +3048,14 @@ def voice():
         debug_print(f"collect_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
         debug_print(f"collect_dob: ⏱️ time after input parsing → {_time_mod.perf_counter() - t_input_start:.3f}s")
 
-        # ----------------------------------------------------------------------
-        # 🔇 Silence handling
-        # ----------------------------------------------------------------------
+        # ---------------- Local SILENCE handling (3 tries) ----------------
         if not dtmf_digits and not speech_text:
-            tries = session_data[call_sid].get("silence_dob", 0) + 1
-            session_data[call_sid]["silence_dob"] = tries
-            debug_print(f"collect_dob: 🤐 no input; silence retries={tries}")
+            tries = sd.get("silence_dob", 0) + 1
+            sd["silence_dob"] = tries
+            debug_print(f"collect_dob: 🤐 no input; silence retries={tries}/3")
 
             if tries < 3:
+                sd["stage"] = "collect_dob"  # ensure we come back here on the next webhook
                 g = make_gather(
                     "I didn’t hear your date of birth. Please say it again, for example, 'July 3 1956'. "
                     "Or you can enter it using your keypad: month, day, and year, then press pound.",
@@ -3072,23 +3066,24 @@ def voice():
                     finish_on_key="#"
                 )
                 resp.append(g)
+                # Safety net: if caller stays silent, Twilio executes this and POSTs /voice again
                 resp.redirect("/voice")
                 return str(resp)
-            else:
-                resp.say(gpt_speak("Sorry, I couldn’t get your date of birth. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
 
-        session_data[call_sid].pop("silence_dob", None)
+            # 3rd silent try → hang up
+            resp.say(gpt_speak("Sorry, I couldn’t get your date of birth. Please call again later."), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 1️⃣ Parse DOB (DTMF or Speech)
-        # ----------------------------------------------------------------------
+        # Some input arrived → clear silence counter
+        sd.pop("silence_dob", None)
+
+        # ---------------- 1) Parse DOB (DTMF or Speech) ----------------
         t_parse_start = _time_mod.perf_counter()
         dob_date = None
 
-        # --- DTMF path ---
+        # DTMF path
         if dtmf_digits:
             d = _re.sub(r"\D", "", dtmf_digits)
             if len(d) >= 8:
@@ -3100,7 +3095,7 @@ def voice():
                     debug_print(f"collect_dob: ❌ keypad parse error → {e}")
                     dob_date = None
 
-        # --- Speech path ---
+        # Speech path
         if not dob_date and speech_text:
             try:
                 t = _re.sub(r"[.,;:]+$", "", speech_text)
@@ -3109,11 +3104,12 @@ def voice():
                 t = _re.sub(r"\s+", " ", t).strip()
                 today = _date_local.today()
                 default_base = datetime(today.year, today.month, today.day, 9, 0, 0)
-                parsed = _dtparse(t, default=default_base, dayfirst=False, fuzzy=True)
+                parsed = _dtparse(t, default=default_base, dayfirst=False, fuzzy=True)  # expects your alias to dateutil.parser.parse
                 dob_date = date(parsed.year, parsed.month, parsed.day)
                 debug_print("collect_dob: ✅ parsed DOB from speech")
             except Exception as e:
                 debug_print(f"collect_dob: ❌ speech parse failed; reason={e}")
+                sd["stage"] = "collect_dob"
                 g = make_gather(
                     PROMPT_REPEAT_FULL,
                     input="speech dtmf",
@@ -3125,57 +3121,49 @@ def voice():
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
+
         debug_print(f"collect_dob: ⏱️ parse duration → {_time_mod.perf_counter() - t_parse_start:.3f}s")
 
-        # ----------------------------------------------------------------------
-        # 2️⃣ Validate DOB range
-        # ----------------------------------------------------------------------
+        # ---------------- 2) Validate DOB range ----------------
         t_val_start = _time_mod.perf_counter()
         try:
             today = _date_local.today()
             min_date = date(1900, 1, 1)
-            if not (min_date <= dob_date <= today):
-                raise ValueError(f"out of range: {dob_date.isoformat()}")
+            if not dob_date or not (min_date <= dob_date <= today):
+                raise ValueError(f"out of range: {dob_date.isoformat() if dob_date else 'None'}")
         except Exception as e:
             debug_print(f"collect_dob: ⚠️ Validation error → {e}")
+            sd["stage"] = "collect_dob"
             g = make_gather(PROMPT_FINAL_DTMF, input="dtmf", timeout=3, barge_in=True, finish_on_key="#")
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
+
         debug_print(f"collect_dob: ⏱️ validation duration → {_time_mod.perf_counter() - t_val_start:.3f}s")
 
-        # ----------------------------------------------------------------------
-        # 3️⃣ Store DOB
-        # ----------------------------------------------------------------------
+        # ---------------- 3) Store DOB ----------------
         iso_dob = dob_date.strftime("%Y-%m-%d")
-        session_data[call_sid]["customer"]["dob"] = iso_dob
-        session_data[call_sid]["cancel"]["dob"] = iso_dob
-        session_data[call_sid].pop("retry_dob", None)
+        sd["customer"]["dob"] = iso_dob
+        sd["cancel"]["dob"] = iso_dob
+        sd.pop("retry_dob", None)
         debug_print(f"collect_dob: ✅ Stored DOB → {iso_dob}")
 
-        # ----------------------------------------------------------------------
-        # 4️⃣ Customer lookup
-        # ----------------------------------------------------------------------
+        # ---------------- 4) Customer lookup (optional) ----------------
         t_lookup_start = _time_mod.perf_counter()
-        phone_e164 = (
-            session_data[call_sid]["customer"].get("phone_e164")
-            or session_data[call_sid].get("phone_e164")
-        )
+        phone_e164 = sd["customer"].get("phone_e164") or sd.get("phone_e164")
         found = False
         if phone_e164 and iso_dob:
             try:
                 found = customer_search(phone_number=phone_e164, dob=iso_dob, default_country="US")
-                session_data[call_sid]["last_customer_found"] = found
+                sd["last_customer_found"] = found
                 debug_print(f"collect_dob: 🔎 customer_search(phone={phone_e164}, dob={iso_dob}) → {found}")
             except Exception as e:
                 debug_print(f"collect_dob: ⚠️ customer_search error → {e}")
         debug_print(f"collect_dob: ⏱️ lookup duration → {_time_mod.perf_counter() - t_lookup_start:.3f}s")
 
-        # ----------------------------------------------------------------------
-        # 5️⃣ Branch to next stage
-        # ----------------------------------------------------------------------
+        # ---------------- 5) Branch to next stage ----------------
         if not found:
-            session_data[call_sid]["stage"] = "verify_customer_type"
+            sd["stage"] = "verify_customer_type"
             g = make_gather(
                 "We couldn’t find a record with that phone number and date of birth. "
                 "If you are a new customer, press 1. If you are not an existing customer, press 2.",
@@ -3190,16 +3178,13 @@ def voice():
             debug_print(f"collect_dob: ⏱️ total stage duration {_time_mod.perf_counter() - t_stage_start:.3f}s")
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 6️⃣ Success path → explicit AM/PM prompt
-        # ----------------------------------------------------------------------
-        session_data[call_sid]["stage"] = "ask_time_date"
-
+        # ---------------- 6) Success → go ask_time_date (explicit A/P accepted) ----------------
+        sd["stage"] = "ask_time_date"
         PROMPT_APPT_DATE_TIME = (
-            "Thanks. Please say the appointment date and time, for example, 'October 12 at 9 AM' "
-            "You can also enter two digits for month, two for day, and four for hour and minute, specify A for AM, or P for PM then press pound — "
+            "Thanks. Please say the appointment date and time, for example, 'October 12 at 9 A M'. "
+            "Or enter two digits for month, two for day, two for hour, and two for minutes, "
+            "then say A for A M or P for P M, then press pound."
         )
-
         g = make_gather(
             PROMPT_APPT_DATE_TIME,
             input="speech dtmf",
@@ -3212,8 +3197,6 @@ def voice():
         resp.redirect("/voice")
         debug_print(f"collect_dob: ✅ total runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
         return str(resp)
-
-
 
 
 
