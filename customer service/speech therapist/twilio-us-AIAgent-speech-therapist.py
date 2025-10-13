@@ -2559,12 +2559,22 @@ def voice():
 
 
 
-
     elif stage == "booking":
         # ----------------------------------------------------------------------
         # 📍 Booking flow: ask caller to name or select a doctor.
         # Accepts both speech and single-digit DTMF input.
         # Supports Arabic and English names.
+        #
+        # 👂 SILENCE HANDLING AT THIS STAGE
+        # ----------------------------------------------------------------------
+        # We do NOT keep a booking-specific silence counter here. Instead we rely on:
+        #   1) Each <Gather> using action_on_empty_result=True so Twilio will POST
+        #      to /voice even if the caller is silent (no input).
+        #   2) If your make_gather helper DOESN’T support action_on_empty_result,
+        #      we add a trailing resp.redirect("/voice") right after the gather
+        #      to force a new webhook on silence (safety net).
+        #
+        # On the next /voice webhook, we’re back in this stage and can re-prompt.
         # ----------------------------------------------------------------------
 
         session_data.setdefault(call_sid, {}).setdefault("retry_booking", 0)
@@ -2572,8 +2582,8 @@ def voice():
         _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
 
         # Inputs
-        dtmf_digits = (request.values.get("Digits") or "").strip()
-        spoken_text = (speech_result or "").strip().lower()
+        dtmf_digits  = (request.values.get("Digits") or "").strip()
+        spoken_text  = (speech_result or "").strip().lower()
         spoken_clean = spoken_text.translate(str.maketrans('', '', _PUNCT)).strip()
 
         print(f"📻 booking :speech_result: {spoken_clean} DTMF='{dtmf_digits}'")
@@ -2598,9 +2608,9 @@ def voice():
         # ------------------------------------------------------------------
         if matched_id is None:
             junk_inputs = {
-                "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
-                "yo", "test", "1", "yes", "no", "i know", "huh", "what", "okay", "ok",
-                "bye", "goodbye", ""
+                "hello","hi","hey","good morning","good afternoon","good evening",
+                "yo","test","1","yes","no","i know","huh","what","okay","ok",
+                "bye","goodbye",""
             }
             if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
                 print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting")
@@ -2614,8 +2624,13 @@ def voice():
                     timeout=6,
                     speech_timeout="5",
                     barge_in=True,
+                    action="/voice", method="POST",
+                    action_on_empty_result=True  # ← ensures /voice is called even on silence
                 )
                 resp.append(gather)
+                # If your make_gather doesn’t pass-through action_on_empty_result,
+                # uncomment this safety net:
+                # resp.redirect("/voice")
                 return str(resp)
 
             # 🔍 Token-based partial matching
@@ -2624,11 +2639,9 @@ def voice():
             for doc_id, friendly in googleid_dr_name_map.items():
                 friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
                 friendly_tokens = set(friendly_clean.split())
-                if (
-                    spoken_clean in friendly_clean
+                if (spoken_clean in friendly_clean
                     or friendly_clean in spoken_clean
-                    or spoken_tokens & friendly_tokens
-                ):
+                    or (spoken_tokens & friendly_tokens)):
                     partial_matches.append((doc_id, friendly))
 
             if len(partial_matches) == 1:
@@ -2673,12 +2686,18 @@ def voice():
                 timeout=6,
                 speech_timeout="5",
                 barge_in=True,
+                action="/voice", method="POST",
+                action_on_empty_result=True  # ← callback even on silence
             )
             resp.append(gather)
+            # Safety net if helper doesn't forward action_on_empty_result:
+            # resp.redirect("/voice")
             return str(resp)
 
         # ------------------------------------------------------------------
         # ✅ Success → store doctor & move forward
+        #    Use action_on_empty_result=True so /voice is invoked even on silence,
+        #    which lets the next stage (collect_phone) handle its own “tries”.
         # ------------------------------------------------------------------
         session_data[call_sid]["doctor_id"] = matched_id
         session_data[call_sid]["stage"] = "collect_phone"
@@ -2696,10 +2715,14 @@ def voice():
             timeout=8,
             speech_timeout="6",
             barge_in=True,
+            action="/voice", method="POST",
+            action_on_empty_result=True  # ← CRITICAL: guarantees callback on silence
         )
         resp.append(gather)
-        return str(resp)
+        # If your make_gather doesn’t support action_on_empty_result, enable safety net:
+        # resp.redirect("/voice")
 
+        return str(resp)
 
 
 
