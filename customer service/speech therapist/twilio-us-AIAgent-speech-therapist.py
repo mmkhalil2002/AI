@@ -2187,6 +2187,7 @@ def voice():
         # 🚫 NEW: skip cancel flow stages too
         "cancel_appt_iterate",
         "cancel_appt_get_time_date",
+        "collect_phone",
         "cancel_appt_confirm",
     )
     debug_print(f"[voice] 🔇 skip_silence={skip_silence}")
