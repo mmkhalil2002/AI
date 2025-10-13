@@ -2559,22 +2559,18 @@ def voice():
 
 
 
+    
     elif stage == "booking":
         # ----------------------------------------------------------------------
         # 📍 Booking flow: ask caller to name or select a doctor.
         # Accepts both speech and single-digit DTMF input.
         # Supports Arabic and English names.
         #
-        # 👂 SILENCE HANDLING AT THIS STAGE
-        # ----------------------------------------------------------------------
-        # We do NOT keep a booking-specific silence counter here. Instead we rely on:
-        #   1) Each <Gather> using action_on_empty_result=True so Twilio will POST
-        #      to /voice even if the caller is silent (no input).
-        #   2) If your make_gather helper DOESN’T support action_on_empty_result,
-        #      we add a trailing resp.redirect("/voice") right after the gather
-        #      to force a new webhook on silence (safety net).
-        #
-        # On the next /voice webhook, we’re back in this stage and can re-prompt.
+        # 👂 SILENCE HANDLING HERE
+        # We rely on a trailing resp.redirect("/voice") AFTER each <Gather>.
+        # If the caller is silent and the <Gather> times out without input,
+        # Twilio will execute the next verb (our <Redirect>) and POST a NEW
+        # webhook to /voice. That re-enters this stage so you can re-prompt.
         # ----------------------------------------------------------------------
 
         session_data.setdefault(call_sid, {}).setdefault("retry_booking", 0)
@@ -2624,13 +2620,11 @@ def voice():
                     timeout=6,
                     speech_timeout="5",
                     barge_in=True,
-                    action="/voice", method="POST",
-                    action_on_empty_result=True  # ← ensures /voice is called even on silence
+                    # Do NOT pass action_on_empty_result here; helper doesn't support it
                 )
                 resp.append(gather)
-                # If your make_gather doesn’t pass-through action_on_empty_result,
-                # uncomment this safety net:
-                # resp.redirect("/voice")
+                # SAFETY NET: ensures a new webhook to /voice even if the caller is silent
+                resp.redirect("/voice")
                 return str(resp)
 
             # 🔍 Token-based partial matching
@@ -2686,18 +2680,17 @@ def voice():
                 timeout=6,
                 speech_timeout="5",
                 barge_in=True,
-                action="/voice", method="POST",
-                action_on_empty_result=True  # ← callback even on silence
             )
             resp.append(gather)
-            # Safety net if helper doesn't forward action_on_empty_result:
-            # resp.redirect("/voice")
+            # SAFETY NET for silence:
+            resp.redirect("/voice")
             return str(resp)
 
         # ------------------------------------------------------------------
         # ✅ Success → store doctor & move forward
-        #    Use action_on_empty_result=True so /voice is invoked even on silence,
-        #    which lets the next stage (collect_phone) handle its own “tries”.
+        #    Handoff to collect_phone. We append Redirect so that if the caller
+        #    stays silent at the phone prompt, Twilio still calls /voice and the
+        #    collect_phone stage can count tries (1/3, 2/3, 3/3).
         # ------------------------------------------------------------------
         session_data[call_sid]["doctor_id"] = matched_id
         session_data[call_sid]["stage"] = "collect_phone"
@@ -2715,14 +2708,12 @@ def voice():
             timeout=8,
             speech_timeout="6",
             barge_in=True,
-            action="/voice", method="POST",
-            action_on_empty_result=True  # ← CRITICAL: guarantees callback on silence
         )
         resp.append(gather)
-        # If your make_gather doesn’t support action_on_empty_result, enable safety net:
-        # resp.redirect("/voice")
-
+        # CRITICAL: Redirect safety net for silence → guarantees new /voice webhook
+        resp.redirect("/voice")
         return str(resp)
+
 
 
 
