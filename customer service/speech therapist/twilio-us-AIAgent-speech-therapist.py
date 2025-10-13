@@ -2189,6 +2189,7 @@ def voice():
         "cancel_appt_get_time_date",
         "collect_phone",
         "cancel_appt_confirm",
+        "collect_dob"
     )
     debug_print(f"[voice] 🔇 skip_silence={skip_silence}")
 
@@ -2774,6 +2775,13 @@ def voice():
         #  • Optional: If you prefer the <Gather> action to fire even on silence,
         #    set `actionOnEmptyResult="true"` and you can omit the trailing
         #    <Redirect>. We keep the Redirect for explicit safety.
+        #
+        # ✅ WHAT I CHANGED (this patch):
+        #  • Added an explicit resp.redirect("/voice") *after* the normal-flow
+        #    handoff to collect_dob. This guarantees a NEW /voice webhook if the
+        #    caller is silent at the DOB prompt, so collect_dob’s local silence
+        #    handler can run (prevents “hang up after silence”).
+        #  • Kept and clarified comments around all silence-handling branches.
         # ==========================================================================
 
         debug_print("[collect_phone] 📍 entered")
@@ -2983,10 +2991,14 @@ def voice():
             "two for day, and four for year, then press pound."
         ), VOICE)
         resp.append(g)
-        debug_print("[collect_phone] ➡️ next stage → collect_dob (prompted)")
+
+        # 🔴 NEW (important): Redirect safety net so DOB silence posts back to /voice.
+        # Without this, a silent caller at the DOB prompt would cause Twilio to
+        # finish the TwiML (no more verbs) and the call would look like it hung up.
+        resp.redirect("/voice")
+
+        debug_print("[collect_phone] ➡️ next stage → collect_dob (prompted + redirect safety net)")
         return str(resp)
-
-
 
 
 
