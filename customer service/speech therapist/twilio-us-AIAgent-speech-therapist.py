@@ -1,4 +1,4 @@
-# update  10/10/25 time_saved  PERFECT
+# update  10/13/25 time_saved  PERFECT
 #  
 # =========================
 # Standard library imports
@@ -2706,91 +2706,184 @@ def voice():
 
 
     elif stage == "collect_phone":
-        # ----------------------------------------------------------------------
-        # 📞 Stage: collect_phone  (Local input → E.164; NO country-code prompt)
+        # ==========================================================================
+        # 📞 Stage: collect_phone — EXECUTION, BRANCHING, and SILENCE EXAMPLE
         #
-        # Handles both normal booking and cancel/reschedule flow.
-        # Mirrors phone number into customer + cancel contexts.
-        # If reschedule_after_cancel=True → jumps directly to ask_time_date.
-        # ----------------------------------------------------------------------
-        debug_print("collect_phone: 📍 Stage entered")
+        # HOW THIS ROUTINE RUNS (Twilio lifecycle)
+        # --------------------------------------------------------------------------
+        # 1) Your server returns TwiML for THIS webhook (usually a <Gather>).
+        #    As soon as we `return str(resp)`, this Python call ENDS. There is no resume.
+        #
+        # 2) Twilio executes the TwiML you returned:
+        #      • If caller SPEAKS / PRESSES KEYS → <Gather> completes and Twilio
+        #        POSTs a NEW webhook to /voice (the Gather `action`) with SpeechResult/Digits.
+        #      • If caller is SILENT until timeout → <Gather> does NOT call the action
+        #        (default); Twilio continues to next verb in the same TwiML. We place a
+        #        trailing <Redirect>/voice so Twilio still POSTs a NEW webhook to /voice.
+        #
+        # 3) In that next /voice call, your code reads saved state from session_data
+        #    (e.g., sd["stage"], silence counters) and continues. Think: state machine.
+        #
+        # HOW WE HANDLE “LOCAL SILENCE” IN *THIS* STAGE
+        # --------------------------------------------------------------------------
+        #  • We deem it “silence” when BOTH SpeechResult and Digits are empty
+        #    in the current webhook.
+        #  • We count consecutive silences for this stage in: sd["silence_collect_phone"].
+        #  • Branching:
+        #      - If silence and tries < 3:
+        #          (a) Build a <Gather> to re-prompt for the phone number.
+        #          (b) Append a <Redirect>/voice as a safety net (so even if the user
+        #              stays silent again, Twilio will still call /voice).
+        #          (c) Set sd["stage"] = "collect_phone".
+        #          (d) RETURN TwiML immediately (this request ends).
+        #      - If silence and tries == 3:
+        #          Apologize, hang up, clear session → RETURN.
+        #
+        # 🔍 SILENCE EXAMPLE (counter < 3)
+        # --------------------------------------------------------------------------
+        #  Scenario: The caller is silent on the first re-prompt.
+        #
+        #  • Webhook #1:
+        #      - Inputs: SpeechResult="", Digits=""  → silence
+        #      - sd["silence_collect_phone"] goes 0 → 1
+        #      - We build <Gather> ("Say or enter your 10-digit number…") + <Redirect>/voice
+        #      - We set sd["stage"]="collect_phone", then RETURN TwiML
+        #
+        #  • Twilio executes returned TwiML:
+        #      - Plays the <Gather> prompt.
+        #      - Caller remains silent → <Gather> times out (no action call).
+        #      - Twilio runs the next verb → our <Redirect>/voice → NEW webhook to /voice.
+        #
+        #  • Webhook #2 (triggered by <Redirect>):
+        #      - Inputs: still silence → SpeechResult="", Digits=""
+        #      - sd["silence_collect_phone"] now 1 → 2  (still < 3)
+        #      - We again build <Gather> + <Redirect>, set stage, RETURN.
+        #
+        #  (If the caller finally speaks on the next attempt, the <Gather> will
+        #   call /voice with SpeechResult/Digits; we clear the silence counter and proceed.
+        #   If the caller stays silent a third time, tries==3 → hang up.)
+        #
+        # KEY PRACTICES
+        # --------------------------------------------------------------------------
+        #  • Always set sd["stage"] (and counters) BEFORE returning TwiML.
+        #  • After appending a <Gather> or <Redirect>, immediately `return str(resp)`.
+        #  • Do NOT expect code after a return to run later — each webhook is a new call.
+        #  • Optional: If you’d rather route silence directly to the Gather action,
+        #    set actionOnEmptyResult="true" on <Gather> and you can omit the <Redirect>.
+        # ==========================================================================
+
+        debug_print("[collect_phone] 📍 entered")
 
         # Ensure session buckets exist
-        session_data.setdefault(call_sid, {})
-        session_data[call_sid].setdefault("customer", {})
-        session_data[call_sid].setdefault("cancel", {})  # ✅ for mirrored reuse
+        sd = session_data.setdefault(call_sid, {})
+        cust = sd.setdefault("customer", {})
+        cancel_ctx = sd.setdefault("cancel", {})
 
-        # Infer country once per call
-        if "phone_country" not in session_data[call_sid]:
+        # Infer country once per call (used by phone normalization)
+        if "phone_country" not in sd:
             from_country = (request.values.get("FromCountry") or "").upper()
-            session_data[call_sid]["phone_country"] = from_country or (COUNTRY or "US")
+            sd["phone_country"] = from_country or (COUNTRY or "US")
+            debug_print(f"[collect_phone] 🌐 phone_country={sd['phone_country']}")
 
-        # Pull inputs
-        try:
-            dtmf_digits = (request.values.get("Digits") or "").strip()
-        except Exception:
-            dtmf_digits = ""
+        # Inputs Twilio heard this turn
+        dtmf_digits = (request.values.get("Digits") or "").strip()
         speech_text = (speech_result or "").strip()
-        debug_print(f"collect_phone: speech='{speech_text}' DTMF='{dtmf_digits}'")
+        debug_print(f"[collect_phone] 🗣 speech='{speech_text}'  🔢 DTMF='{dtmf_digits}'")
 
-        # ----------------------------------------------------------------------
-        # 🔇 Silence handling — improved re-prompt
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🔇 LOCAL SILENCE HANDLING
+        #
+        # WHEN THIS TRIGGERS:
+        #   - This code path runs when Twilio just called /voice and provided no
+        #     SpeechResult and no Digits (i.e., the user said nothing and pressed nothing).
+        #
+        # WHAT HAPPENS IF SILENCE CONTINUES ACROSS CALLS?
+        #   - We increment a per-stage counter “silence_collect_phone”.
+        #   - For tries 1 and 2:
+        #       * We respond with a <Gather> prompt AND a trailing <Redirect>/voice.
+        #         Twilio then:
+        #           > plays the Gather prompt;
+        #           > IF user speaks/presses → posts to /voice with input (new request);
+        #           > ELSE (still silent) → Gather times out → Twilio executes the
+        #             following <Redirect> → posts to /voice WITHOUT input (new request).
+        #       * We RETURN immediately; this Python call is over. The next request
+        #         will hit /voice and re-enter this stage, seeing the incremented counter.
+        #   - On the 3rd silent try, we apologize and hang up.
+        #
+        # DOES <Redirect> “STAY IN SAME ROUTINE” OR “GO TO voice()”?
+        #   - It ALWAYS goes to your /voice route in a NEW HTTP request.
+        #   - Your current function does NOT resume after return.
+        # ------------------------------------------------------------------
         if not (speech_text or dtmf_digits):
-            tries = session_data[call_sid].get("silence_collect_phone", 0) + 1
-            session_data[call_sid]["silence_collect_phone"] = tries
-            debug_print(f"collect_phone: 🤐 no input heard (tries={tries})")
+            tries = sd.get("silence_collect_phone", 0) + 1
+            sd["silence_collect_phone"] = tries
+            debug_print(f"[collect_phone] 🤐 no input (tries={tries}/3)")
 
             if tries < 3:
-                # 🗣️ Re-prompt politely
                 prompt = (
                     "I didn’t hear your phone number. "
-                    "Please say or type your 10-digit phone number, then press pound."
+                    "Please say or enter your 10-digit number, then press pound."
                 )
-                gather = make_gather(prompt, hints="zero one two three four five six seven eight nine double triple")
-                resp.append(gather)
+
+                # Build a Gather that will post to /voice when input is provided
+                g = Gather(
+                    input="speech dtmf",
+                    timeout=4,
+                    speech_timeout="auto",
+                    barge_in=True,       # caller can interrupt the prompt
+                    finish_on_key="#",   # submit DTMF early with '#'
+                    action="/voice", method="POST"
+                    # actionOnEmptyResult="true"  # (optional) call /voice even on silence
+                )
+                g.say(gpt_speak(prompt), VOICE)
+                resp.append(g)
+
+                # SAFETY NET for silence: if Gather times out with NO input,
+                # Twilio continues to the next verb—this <Redirect>—which forces a NEW
+                # webhook to /voice. That lets us re-enter here, increment tries, and
+                # either prompt again (try 2) or hang up (try 3).
                 resp.redirect("/voice")
-                return str(resp)
-            else:
-                # 😔 After 3 tries, end gracefully
-                resp.say(gpt_speak("I'm sorry, I still didn't get your phone number. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
+                debug_print("[collect_phone] 🔁 re-prompt & redirect → /voice (new webhook regardless of input)")
                 return str(resp)
 
-        # If input received → clear silence counter
-        session_data[call_sid].pop("silence_collect_phone", None)
+            # 3rd silence → graceful termination
+            debug_print("[collect_phone] ❌ max silence → hangup")
+            resp.say(gpt_speak("I'm sorry, I still didn't get your phone number. Please call again later."), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
 
-        # ----------------------------------------------------------------------
+        # We DID receive some input → clear the silence counter
+        sd.pop("silence_collect_phone", None)
+
+        # ------------------------------------------------------------------
         # 🧠 Speech → digits helper
-        # ----------------------------------------------------------------------
+        #   Converts spoken words (“four six nine”, “double five”) to numeric digits.
+        #   Keeps literal digits that may appear in the transcript (e.g., “214-555-…”).
+        # ------------------------------------------------------------------
         def _spoken_to_digits(raw: str) -> str:
             if not raw:
                 return ""
             words = (
                 raw.lower()
-                .replace("-", " ")
-                .replace(",", " ")
-                .replace(".", " ")
-                .replace("(", " ")
-                .replace(")", " ")
-                .split()
+                .replace("-", " ").replace(",", " ").replace(".", " ")
+                .replace("(", " ").replace(")", " ").split()
             )
             m = {
-                "zero": "0", "oh": "0", "o": "0",
-                "one": "1", "two": "2", "to": "2", "too": "2",
-                "three": "3", "four": "4", "for": "4",
-                "five": "5", "six": "6", "seven": "7",
-                "eight": "8", "ate": "8", "nine": "9",
+                "zero":"0","oh":"0","o":"0",
+                "one":"1","two":"2","to":"2","too":"2",
+                "three":"3","four":"4","for":"4",
+                "five":"5","six":"6","seven":"7",
+                "eight":"8","ate":"8","nine":"9",
             }
             out = []
             i = 0
             while i < len(words):
-                w = words[i].strip()
-                if w in ("double", "triple") and i + 1 < len(words):
-                    nxt = words[i + 1].strip()
+                w = words[i]
+                if w in ("double","triple") and i+1 < len(words):
+                    nxt = words[i+1]
                     if nxt in m:
-                        out.extend([m[nxt]] * (2 if w == "double" else 3))
+                        out.extend([m[nxt]] * (2 if w=="double" else 3))
                         i += 2
                         continue
                 if w in m:
@@ -2800,94 +2893,128 @@ def voice():
                 i += 1
             return "".join(out)
 
-        # ----------------------------------------------------------------------
-        # 🔢 Normalize digits to E.164
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🔢 Normalize digits to E.164 (prefer DTMF; else use speech)
+        # ------------------------------------------------------------------
         if dtmf_digits:
             raw_digits = _re.sub(r"\D", "", dtmf_digits)
         else:
             raw_digits = _re.sub(r"\D", "", _spoken_to_digits(speech_text))
-        debug_print(f"collect_phone: raw_digits='{raw_digits}'")
+        debug_print(f"[collect_phone] 🔍 raw_digits='{raw_digits}'")
 
-        country = session_data[call_sid].get("phone_country", (COUNTRY or "US")).upper()
+        country = sd.get("phone_country", (COUNTRY or "US")).upper()
         try:
             phone_e164 = normalize_phone_e164(raw_digits, country)
+            debug_print(f"[collect_phone] ✅ normalized → {phone_e164}")
         except NameError:
-            debug_print("collect_phone: ⚠️ normalize_phone_e164 not defined; using minimal fallback")
-            phone_e164 = ""
+            # Minimal US fallback if helper isn’t available
+            d = raw_digits
             if country == "US":
-                d = raw_digits
                 if len(d) == 11 and d.startswith("1"):
                     d = d[1:]
-                if len(d) == 10:
-                    phone_e164 = f"+1{d}"
+                phone_e164 = f"+1{d}" if len(d) == 10 else ""
+            else:
+                phone_e164 = ""
+            debug_print(f"[collect_phone] ⚠️ fallback normalize → '{phone_e164}'")
 
-        # ----------------------------------------------------------------------
-        # ❌ Invalid number → re-prompt (3 tries)
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # ❌ Invalid number → local retry (3 attempts, separate from “silence”)
+        #   Same redirect pattern ensures a new webhook even if the caller is quiet again.
+        # ------------------------------------------------------------------
         if not phone_e164:
-            r = session_data[call_sid].get("retry_phone", 0) + 1
-            session_data[call_sid]["retry_phone"] = r
-            debug_print(f"collect_phone: ❌ invalid digits='{raw_digits}' retry={r}")
+            r = sd.get("retry_phone", 0) + 1
+            sd["retry_phone"] = r
+            debug_print(f"[collect_phone] ❌ invalid number (retry {r}/3) input='{raw_digits}'")
 
             if r < 3:
                 prompt = (
-                    "That doesn’t sound like a complete phone number. "
-                    "Please say or type your 10-digit phone number including area code, then press pound."
+                    "That doesn’t sound complete. "
+                    "Please say or enter your 10-digit phone number including area code, then press pound."
                 )
-                gather = make_gather(prompt, hints="zero one two three four five six seven eight nine double triple")
-                resp.append(gather)
+                g = Gather(
+                    input="speech dtmf",
+                    timeout=5,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    finish_on_key="#",
+                    action="/voice", method="POST"
+                )
+                g.say(gpt_speak(prompt), VOICE)
+                resp.append(g)
                 resp.redirect("/voice")
-                return str(resp)
-            else:
-                resp.say(gpt_speak("I'm sorry, I couldn’t capture your phone number. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
+                debug_print("[collect_phone] 🔁 invalid → re-prompt & redirect (new webhook guarantees progress)")
                 return str(resp)
 
-        # ----------------------------------------------------------------------
-        # ✅ Valid → Save + Mirror
-        # ----------------------------------------------------------------------
-        session_data[call_sid]["customer"]["phone_e164"] = phone_e164
-        session_data[call_sid]["customer"]["phone"] = phone_e164
-        session_data[call_sid]["cancel"]["phone_e164"] = phone_e164  # ✅ mirror for cancel/reschedule
-        session_data[call_sid]["phone_e164"] = phone_e164
-        session_data[call_sid]["retry_phone"] = 0
-        debug_print(f"collect_phone: ✅ saved phone_e164={phone_e164} (mirrored into cancel context)")
+            debug_print("[collect_phone] ❌ max invalid attempts → hangup")
+            resp.say(gpt_speak("I'm sorry, I couldn’t capture your phone number. Please call again later."), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
 
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # ✅ Valid → Save + Mirror (used by cancel/reschedule flows)
+        # ------------------------------------------------------------------
+        cust["phone_e164"] = phone_e164
+        cust["phone"]      = phone_e164
+        cancel_ctx["phone_e164"] = phone_e164
+        sd["phone_e164"]   = phone_e164
+        sd["retry_phone"]  = 0
+        debug_print(f"[collect_phone] 💾 saved phone_e164={phone_e164} (mirrored to cancel context)")
+
+        # ------------------------------------------------------------------
         # ↩️ Return to prior stage if specified
-        # ----------------------------------------------------------------------
-        return_stage = session_data[call_sid].pop("return_stage", None)
+        #   If some upstream step requested a phone capture “in the middle” of
+        #   another stage, we jump back to that stage now.
+        # ------------------------------------------------------------------
+        return_stage = sd.pop("return_stage", None)
         if return_stage:
-            session_data[call_sid]["stage"] = return_stage
-            debug_print(f"collect_phone: ➡️ returning to {return_stage}")
-            resp.redirect("/voice")
+            sd["stage"] = return_stage
+            debug_print(f"[collect_phone] ↩️ returning to stage '{return_stage}'")
+            resp.redirect("/voice")  # new webhook into /voice, which will read sd["stage"]
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🔁 Reschedule → jump directly to ask_time_date
-        # ----------------------------------------------------------------------
-        if session_data.get(call_sid, {}).get("reschedule_after_cancel"):
-            debug_print("collect_phone: 🔁 reschedule_after_cancel=True → jump to ask_time_date")
-            session_data[call_sid]["stage"] = "ask_time_date"
-            gather = make_gather(
-                "Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 AM'."
+        # ------------------------------------------------------------------
+        # 🔁 Reschedule flow → skip straight to ask_time_date
+        # ------------------------------------------------------------------
+        if sd.get("reschedule_after_cancel"):
+            sd["stage"] = "ask_time_date"
+            prompt = "Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 A M'."
+            g = Gather(
+                input="speech dtmf",
+                timeout=5,
+                speech_timeout="auto",
+                barge_in=True,
+                finish_on_key="#",
+                action="/voice", method="POST"
             )
-            resp.append(gather)
-            resp.redirect("/voice")
+            g.say(gpt_speak(prompt), VOICE)
+            resp.append(g)
+            resp.redirect("/voice")  # again, guarantees a new webhook even on silence
+            debug_print("[collect_phone] 🔁 reschedule → ask_time_date (redirect to new /voice)")
             return str(resp)
 
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # 🗓️ Normal flow → ask DOB next
-        # ----------------------------------------------------------------------
-        session_data[call_sid]["stage"] = "collect_dob"
-        gather = make_gather(
+        # ------------------------------------------------------------------
+        sd["stage"] = "collect_dob"
+        g = Gather(
+            input="speech dtmf",
+            timeout=5,
+            speech_timeout="auto",
+            barge_in=True,
+            finish_on_key="#",
+            action="/voice", method="POST"
+        )
+        g.say(gpt_speak(
             "Thanks. What’s your date of birth? You can say it, or enter two digits for month, "
             "two for day, and four for year, then press pound."
-        )
-        resp.append(gather)
+        ), VOICE)
+        resp.append(g)
+        debug_print("[collect_phone] ➡️ next stage → collect_dob (prompted)")
         return str(resp)
+
+
+
 
 
 
