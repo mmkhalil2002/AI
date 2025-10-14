@@ -4034,7 +4034,20 @@ def voice():
         import string, unicodedata as _uni
 
         def _t9_digit_for_char(ch: str) -> str:
-            ch = _uni.normalize("NFKD", ch).encode("ascii", "ignore").decode("ascii").upper()
+            # Normalize, encode, decode, and uppercase a character for uniform text processing
+            ch = (
+                _uni.normalize("NFKD", ch)        # Step 1: Unicode normalization (NFKD = Compatibility Decomposition)
+                                                # Example: "é" → "e" + "´" (accent is separated)
+                                                # Ensures all accented characters are split into base + modifier
+                .encode("ascii", "ignore")        # Step 2: Encode to ASCII and drop non-ASCII parts
+                                                # This removes accents and any non-ASCII symbols
+                                                # Example: "é" → "e", "ø" → "", "ç" → "c"
+                .decode("ascii")                  # Step 3: Convert from bytes back to string
+                                                # Necessary after encoding; returns a clean ASCII string
+                .upper()                          # Step 4: Convert result to uppercase for case-insensitive matching
+                                                # Example: "e" → "E", "c" → "C"
+            )
+
             if ch in "ABC":   return "2"
             if ch in "DEF":   return "3"
             if ch in "GHI":   return "4"
@@ -4044,6 +4057,7 @@ def voice():
             if ch in "TUV":   return "8"
             if ch in "WXYZ":  return "9"
             return ""  # ignore non A–Z for T9
+
         
 
         def _t9_code(name: str) -> str:
