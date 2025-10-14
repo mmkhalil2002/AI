@@ -76,13 +76,13 @@ import re as _re       # use _re everywhere to avoid UnboundLocalError
 import pickle
 import openai
 import calendar as _calendar
-import dateparser as _dp
 import dateparser
 import pytz as _pytz
 import pytz as _TZMOD
 import time as _time_mod
 import threading
 import traceback
+import dateutil.parser as dp
 
 
 
@@ -186,6 +186,8 @@ MAX_TIME_SELECTION_ATTEMPTS = int(os.getenv("MAX_TIME_SELECTION_ATTEMPTS", 3))
 MAX_SILENCE_RETRIES = int(os.getenv("MAX_SILENCE_RETRIES", 3))
 
 MAX_GET_PHONE_RETRIES = int(os.getenv("MAX_GET_PHONE_RETRIES", 3))
+# do u allow to create new customer on LINE
+CREATE_NEW_CUSTOMER = bool(os.getenv("CREATE_NEW_CUSTOMER", True))  # d
 
 DB_FOLDER = "appointment_data"
 DB_FILE   = os.path.join(DB_FOLDER, "customers.json")  # human-readable, not JSON
@@ -1175,7 +1177,7 @@ def init_db() -> None:
     skipped_non_e164 = 0
 
     # ✅ ensure _re defined
-    import re as _re
+    #import re as _re
 
     def _is_e164(s: str) -> bool:
         s = (s or "").strip()
@@ -1381,7 +1383,7 @@ def customer_search(
         debug_print("customer_search: ⚠️ Empty DOB → using 'unknown'")
         dob_str = "unknown"
     else:
-        import re as _re
+        #import re as _re
         dob_str = dob_str.replace("/", "-").replace(".", "-")
         try:
             # matches YYYY-MM-DD or MM-DD-YYYY
@@ -3180,7 +3182,7 @@ def voice():
             sd["stage"] = "verify_customer_type"
             g = make_gather(
                 "We couldn’t find a record with that phone number and date of birth. "
-                "If you are a new customer, press 1. If you are not an existing customer, press 2.",
+                "If you are a new customer, press 1. If you are an existing customer, press 2.",
                 input="dtmf",
                 timeout=3,
                 speech_timeout="auto",
@@ -3221,42 +3223,118 @@ def voice():
     # 🧩 NEW: Verify customer type (after DOB mismatch)
     # ----------------------------------------------------------------------
     elif stage == "verify_customer_type":
+        # ----------------------------------------------------------------------
+        # 🧭 Stage: verify_customer_type
+        # Purpose:
+        #   - Handle branching when a phone+dob lookup didn't find a customer.
+        #   - Behavior depends on global CREATE_NEW_CUSTOMER flag.
+        #       * If False → tell caller to contact the clinic; hang up.
+        #       * If True  → let caller choose: 1=new, 2=existing.
+        #
+        # Inputs:
+        #   - DTMF only (1 or 2). We also locally handle silence (no Digits).
+        #
+        # Local state used:
+        #   - session_data[call_sid]["last_customer_found"] (bool)
+        #   - session_data[call_sid]["silence_verify_type"] (int) — local silence counter
+        #   - session_data[call_sid]["retry_verify_type"]   (int) — invalid entry counter
+        #
+        # Twilio lifecycle pattern:
+        #   - On each echo to /voice, if no input → we <Gather> + <Redirect>/voice and return.
+        #   - That produces a new webhook; we increment counters and branch accordingly.
+        # ----------------------------------------------------------------------
         debug_print("verify_customer_type: 📍 Stage entered")
+
+        sd = session_data.setdefault(call_sid, {})
+        last_lookup_found = sd.get("last_customer_found", False)
+        allow_new = bool(globals().get("CREATE_NEW_CUSTOMER", False))  # default False if not set
+
+        # Pull current inputs
         dtmf_digits = (request.values.get("Digits") or "").strip()
-        debug_print(f"verify_customer_type: received DTMF='{dtmf_digits}'")
+        debug_print(f"verify_customer_type: received DTMF='{dtmf_digits}', allow_new={allow_new}, found={last_lookup_found}")
 
+        # If lookup FAILED and clinic does NOT allow new-customer creation → exit early.
+        if not last_lookup_found and not allow_new:
+            debug_print("verify_customer_type: not found & CREATE_NEW_CUSTOMER=False → advise to contact clinic; hangup")
+            resp.say(
+                gpt_speak(
+                    "We couldn’t find a record with that phone number and date of birth. "
+                    "Please contact the clinic to create your customer record, then call us again."
+                ),
+                VOICE,
+            )
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
+
+        # From here, either:
+        #  - found=True (unexpected path) → just proceed,
+        #  - or not found but allow_new=True → ask 1/2.
+
+        # -------------------------------
+        # 🔇 Local silence handling
+        # -------------------------------
         if not dtmf_digits:
-            g = make_gather(
-                "Please press 1 if you are a new customer, or 2 if you are not an existing customer.",
-                input="dtmf",
+            tries = sd.get("silence_verify_type", 0) + 1
+            sd["silence_verify_type"] = tries
+            debug_print(f"verify_customer_type: 🤐 no input; silence tries={tries}/3")
+
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            prompt = (
+                "Please press 1 if you are a new customer, or 2 if you are an existing customer."
+                if not last_lookup_found
+                else "You are already in our system. Press 1 to continue scheduling."
             )
+            g = make_gather(prompt, input="dtmf", timeout=4, barge_in=True, finish_on_key="#", num_digits=1)
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
 
-        # Retrieve last lookup flag
-        last_lookup_found = session_data.get(call_sid, {}).get("last_customer_found", False)
+        # Clear silence counter once we have input
+        sd.pop("silence_verify_type", None)
 
-        # Press 1 → new customer → now CONTINUE to ask_time_date (instead of hangup)
+        # -------------------------------
+        # 🧭 Branch on DTMF choice
+        # -------------------------------
         if dtmf_digits == "1":
-            debug_print("verify_customer_type: pressed 1 → new customer (not found) → proceed to ask_time_date")
-            session_data[call_sid]["stage"] = "ask_time_date"
-            g = make_gather(
-                "Welcome! Please say the appointment date and time, for example, 'October 12 at 9 AM'.",
-                input="speech dtmf",
-            )
-            resp.append(g)
-            resp.redirect("/voice")
-            return str(resp)
-
-        # Press 2 → says not existing customer (explicit no) → polite hangup
-        elif dtmf_digits == "2":
+            # 1 → "New customer"
             if not last_lookup_found:
-                debug_print("verify_customer_type: pressed 2 → confirmed not existing; hanging up politely")
+                # Not found + new → proceed to schedule as new customer
+                debug_print("verify_customer_type: 1=new; not found → proceed to ask_time_date")
+                sd["stage"] = "ask_time_date"
+                g = make_gather(
+                    "Welcome. Please say the appointment date and time, for example, 'October 12 at 9 A M'.",
+                    input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True, finish_on_key="#"
+                )
+                resp.append(g)
+                resp.redirect("/voice")
+                return str(resp)
+            else:
+                # Found but pressed 1 (new) — odd, but let them continue to scheduling
+                debug_print("verify_customer_type: 1=new; found=True (unexpected) → proceed to ask_time_date")
+                sd["stage"] = "ask_time_date"
+                g = make_gather(
+                    "Okay. Please say the appointment date and time, for example, 'October 8 at 9 30 A M'.",
+                    input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True, finish_on_key="#"
+                )
+                resp.append(g)
+                resp.redirect("/voice")
+                return str(resp)
+
+        elif dtmf_digits == "2":
+            # 2 → "Existing customer"
+            if not last_lookup_found:
+                # Caller claims existing but we didn't find them → advise to contact clinic
+                debug_print("verify_customer_type: 2=existing; not found → advise to contact clinic; hangup")
                 resp.say(
                     gpt_speak(
-                        "Thank you for your time. It seems you are not a current customer in our records. "
-                        "Please contact the clinic if you would like to register."
+                        "We couldn’t find you as an existing customer. "
+                        "Please contact the clinic to set up your record, then call us again."
                     ),
                     VOICE,
                 )
@@ -3264,26 +3342,37 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
             else:
-                debug_print("verify_customer_type: pressed 2 but found=True (unexpected) → proceed to ask_time_date")
-                session_data[call_sid]["stage"] = "ask_time_date"
+                # Found=True & says existing → proceed to scheduling
+                debug_print("verify_customer_type: 2=existing; found=True → proceed to ask_time_date")
+                sd["stage"] = "ask_time_date"
                 g = make_gather(
-                    "Okay, please say the appointment date and time, for example, 'October 8 at 9:30 AM'.",
-                    input="speech dtmf",
+                    "Great. Please say the appointment date and time, for example, 'October 8 at 2 P M'.",
+                    input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True, finish_on_key="#"
                 )
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
 
-        # Invalid entry
-        else:
-            debug_print(f"verify_customer_type: invalid DTMF '{dtmf_digits}' → re-prompt")
-            g = make_gather(
-                "Invalid choice. Press 1 if you are a new customer, or 2 if you are not an existing customer.",
-                input="dtmf",
-            )
-            resp.append(g)
-            resp.redirect("/voice")
+        # -------------------------------
+        # ❌ Invalid entry → retry up to 3
+        # -------------------------------
+        r = sd.get("retry_verify_type", 0) + 1
+        sd["retry_verify_type"] = r
+        debug_print(f"verify_customer_type: ❌ invalid DTMF '{dtmf_digits}' retry={r}/3")
+
+        if r >= 3:
+            resp.say(gpt_speak("Sorry, I didn’t get a valid choice. Please call again later."), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
             return str(resp)
+
+        g = make_gather(
+            "Invalid choice. Press 1 if you are a new customer, or 2 if you are an existing customer.",
+            input="dtmf", timeout=4, barge_in=True, finish_on_key="#", num_digits=1
+        )
+        resp.append(g)
+        resp.redirect("/voice")
+        return str(resp)
 
 
 
@@ -3878,7 +3967,7 @@ def voice():
         # -------------------------------
         # 🧾 Parse & Clean Input
         # -------------------------------
-        import string
+        #import string
         if raw_dtmf:
             # Keypad fallback (e.g., user typed random keys). Create a placeholder.
             name_digits = _re.sub(r"\D", "", raw_dtmf)
@@ -4033,7 +4122,7 @@ def voice():
         # -------------------------------
         # 🧾 Parse & Clean
         # -------------------------------
-        import string
+        #import string
         if raw_dtmf:
             # Keypad fallback → synthesize a placeholder last name from digits
             digits = _re.sub(r"\D", "", raw_dtmf)
@@ -4664,7 +4753,7 @@ def voice():
 
         # --- Parse DOB ---
         try:
-            import dateutil.parser as dp
+            #import dateutil.parser as dp
             dt = None
             if dtmf_digits:
                 if len(dtmf_digits) == 8:  # MMDDYYYY
