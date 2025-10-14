@@ -4044,21 +4044,110 @@ def voice():
             if ch in "TUV":   return "8"
             if ch in "WXYZ":  return "9"
             return ""  # ignore non A–Z for T9
+        
 
         def _t9_code(name: str) -> str:
+            """
+            Convert a given name to its T9 keypad numeric equivalent.
+            
+            This is useful for matching speech or DTMF input (e.g., user typing a name using 
+            a phone keypad), especially when dealing with foreign names or partial matches.
+
+            Steps:
+            -------
+            1. Normalize the input name to ASCII-only by removing accents (e.g., "José" → "Jose").
+            2. Remove any non-letter characters (e.g., hyphens, apostrophes, spaces).
+            3. Convert each letter to its T9 digit using _t9_digit_for_char().
+            The mapping is like old mobile phones:
+                2 → ABC, 3 → DEF, 4 → GHI, 5 → JKL, 6 → MNO, 7 → PQRS, 8 → TUV, 9 → WXYZ
+
+            Example:
+            --------
+            Input:  name = "Mohamed"
+            Output: "6642633"
+
+            Breakdown:
+                M → 6
+                O → 6
+                H → 4
+                A → 2
+                M → 6
+                E → 3
+                D → 3
+            """
+
+            # 1. Remove accents/diacritics by converting to ASCII characters
             base = _uni.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
-            base = _re.sub(r"[^A-Za-z]", "", base)  # keep letters only for T9
+
+            # 2. Keep only alphabetic characters (remove numbers, spaces, hyphens, etc.)
+            base = _re.sub(r"[^A-Za-z]", "", base)
+
+            # 3. Convert each letter to its T9 digit equivalent
             return "".join(_t9_digit_for_char(c) for c in base)
 
+
+        
+        
         def _build_t9_index_from_hints(hints: str) -> dict:
-            # hints expected like: "Ahmed, Ahmad, Mohamed, ..., Faten, ..."
+            """
+            Build a T9 lookup index from a comma-separated list of name hints.
+
+            This function takes a long string of names (e.g., Arabic, Indian, Persian names)
+            and maps each name to its corresponding T9 numeric keypad code using `_t9_code`.
+            It returns a dictionary that allows you to look up all possible names for a 
+            given T9 input sequence — useful for matching keypad input or fuzzy recognition.
+
+            Parameters:
+            ------------
+            hints (str): A string of names separated by commas.
+                        Example: "Ahmed, Ahmad, Mohamed, Faten, Fatma, Aisha"
+
+            Returns:
+            ---------
+            dict[str, list[str]]:
+                A dictionary where:
+                - keys are T9 codes as strings (e.g., "26433")
+                - values are lists of names that match that code
+
+            Example:
+            ---------
+            Input:
+                hints = "Ahmed, Ahmad, Mohamed, Faten, Fatma"
+
+            Output:
+                {
+                    "26433": ["Ahmed", "Ahmad"],
+                    "6642633": ["Mohamed"],
+                    "32862": ["Faten"],
+                    "32862": ["Faten", "Fatma"]   # Both names have same T9 code!
+                }
+
+            Step-by-step:
+            --------------
+            1. Split the string into individual names by comma.
+            2. Clean up each name (remove whitespace).
+            3. Convert each name to its T9 keypad code using `_t9_code()`.
+            4. Group names by the T9 code in a dictionary.
+            """
+
+            # Step 1: Split the input string into individual names
             names = [n.strip() for n in hints.split(",") if n.strip()]
+
+            # Step 2: Prepare an empty dictionary to store T9 code → name list
             idx = {}
+
+            # Step 3: For each name, calculate its T9 code and add to index
             for nm in names:
-                code = _t9_code(nm)
+                code = _t9_code(nm)  # e.g., "Mohamed" → "6642633"
                 if code:
                     idx.setdefault(code, []).append(nm)
+
+            # Step 4: Return the final index mapping T9 → list of matching names
             return idx
+
+
+
+
 
         # -------------------------------
         # 🔇 Silence Handling (local)
