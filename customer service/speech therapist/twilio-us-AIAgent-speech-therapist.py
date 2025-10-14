@@ -3395,9 +3395,9 @@ def voice():
      #   - Every code path returns `str(resp)` (Flask requirement).
      # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
-    # ----------------------------------------------------------------------
-    # 📅 ASK_TIME_DATE — AM/PM (or A/P) required, repeats on silence, 3 wrongs → hangup
-    # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # 📅 ASK_TIME_DATE — AM/PM (or A/P) required, repeats on silence, 3 wrongs → hangup
+        # ----------------------------------------------------------------------
         debug_print(f"[ask_time_date] 🗣️ Received speech: {speech_result}")
 
         # -------------------------- Config / Text --------------------------
@@ -3581,7 +3581,7 @@ def voice():
 
         # ---------------------- Partial capture flows ----------------------
         if day_part and not time_part:
-            # NEW: validate that the day-only isn't already in the past (clinic TZ)
+            # Validate day-only not in the past (clinic TZ)
             try:
                 tz_name  = globals().get("CLINIC_TZ", "America/Chicago")
                 tz_local = _pytz.timezone(tz_name)
@@ -3875,30 +3875,38 @@ def voice():
                 resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 continue flow (ID collection) → redirect /voice (fallback)")
             return str(resp)
 
+        # ------------------------------------------------------------------
+        # 🛠️ FIX: define `found` safely in-scope, then set stage & prompt
+        # ------------------------------------------------------------------
+        found = False
         try:
             found = customer_search(phone_number=phone_e164, dob=dob, default_country="US")
             debug_print(f"[ask_time_date] 🔎 customer_search(phone={phone_e164}, dob={dob}) → {found}")
         except Exception as e:
             debug_print(f"[ask_time_date] ⚠️ customer_search error → {e}")
             found = False
-    sd["stage"] = "book_appt_confirm" if found else "collect_first_name"
-    debug_print(f"[ask_time_date] 🎯 Next stage → {sd['stage']}")
 
-    # If we need the first name, prompt right now (speech or DTMF + #)
-    if sd["stage"] == "collect_first_name":
-        prompt = (
-            "Please say your first name, or type it and press pound."
-        )
-        g = make_gather(
-            prompt,
-            input="speech dtmf",
-            timeout=6,
-            speech_timeout="5",
-            barge_in=True,
-            finish_on_key="#"
-        )
-        resp.append(g)
-        # Safety net so we re-enter /voice even if the caller stays silent
+        sd["stage"] = "book_appt_confirm" if found else "collect_first_name"
+        debug_print(f"[ask_time_date] 🎯 Next stage → {sd['stage']}")
+
+        # If we need the first name, prompt right now (speech or DTMF + #)
+        if sd["stage"] == "collect_first_name":
+            prompt = "Please say your first name, or type it and press pound."
+            g = make_gather(
+                prompt,
+                input="speech dtmf",
+                timeout=6,
+                speech_timeout="5",
+                barge_in=True,
+                finish_on_key="#",
+                action="/voice", method="POST",
+            )
+            resp.append(g)
+            # Safety net so we re-enter /voice even if the caller stays silent
+            resp.redirect("/voice")
+            return str(resp)
+
+        # Otherwise we’re going to book_appt_confirm; redirect to continue flow
         resp.redirect("/voice")
         return str(resp)
 
