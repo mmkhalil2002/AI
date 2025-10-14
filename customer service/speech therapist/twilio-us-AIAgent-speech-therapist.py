@@ -3881,9 +3881,24 @@ def voice():
         except Exception as e:
             debug_print(f"[ask_time_date] ⚠️ customer_search error → {e}")
             found = False
+    sd["stage"] = "book_appt_confirm" if found else "collect_first_name"
+    debug_print(f"[ask_time_date] 🎯 Next stage → {sd['stage']}")
 
-        sd["stage"] = "book_appt_confirm" if found else "collect_first_name"
-        debug_print(f"[ask_time_date] 🎯 Next stage → {sd['stage']}")
+    # If we need the first name, prompt right now (speech or DTMF + #)
+    if sd["stage"] == "collect_first_name":
+        prompt = (
+            "Please say your first name, or type it and press pound."
+        )
+        g = make_gather(
+            prompt,
+            input="speech dtmf",
+            timeout=6,
+            speech_timeout="5",
+            barge_in=True,
+            finish_on_key="#"
+        )
+        resp.append(g)
+        # Safety net so we re-enter /voice even if the caller stays silent
         resp.redirect("/voice")
         return str(resp)
 
