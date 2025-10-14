@@ -1,4 +1,4 @@
-# update  10/13/25 time_saved  PERFECT
+# update  10/14/25 time_saved  PERFECT
 #  
 # =========================
 # Standard library imports
@@ -3330,13 +3330,11 @@ def voice():
         hours_str = f"{_fmt_hour(working_start)} and {_fmt_hour(working_end)}"
 
         PROMPT_NEED_BOTH = (
-            "Say the date and time, like 'October 8 at 9:30 A M' or 'October 8 at 2 P M'. "
-            "You can also enter MMDDHHMM, then say A or P."
+            "Say the date and time, like 'October 8 at 9 30 A M' or 'October 8 at 2 P M'. "
+            "Or enter two digits for month, two for day, two for hour, two for minutes, then say A or P."
         )
         PROMPT_PAST_TIME = "That time has already passed. Please choose a future time."
-        PROMPT_NEED_VALID_DAY = (
-            f"That day isn’t available. We’re open {days_str}, between {hours_str}."
-        )
+        PROMPT_NEED_VALID_DAY = f"That day isn’t available. We’re open {days_str}, between {hours_str}."
         PROMPT_NEED_AMPM = "Say A or P to indicate A M or P M."
 
         # ----------------------------- Session -----------------------------
@@ -3371,14 +3369,14 @@ def voice():
             """
             if not s: return ""
             t = s.lower().strip()
-            # normalize "a.m." / "p.m." and variants
+            # normalize a.m./p.m.
             t = _re.sub(r"\ba\s*\.?\s*m\.?\b", "am", t)
             t = _re.sub(r"\bp\s*\.?\s*m\.?\b", "pm", t)
-            # allow bare "a" or "p" tokens
+            # whole-token AM/PM or bare A/P tokens
             if _re.search(r"\bam\b", t): return "am"
             if _re.search(r"\bpm\b", t): return "pm"
-            if _re.search(r"\ba\b",  t): return "am"
-            if _re.search(r"\bp\b",  t): return "pm"
+            if _re.search(r"(^|[\s,])a($|[\s,])", t): return "am"
+            if _re.search(r"(^|[\s,])p($|[\s,])", t): return "pm"
             return ""
 
         def _ensure_ampm_in_time(time_str: str, speech_src: str) -> Tuple[bool, str, str]:
@@ -3388,7 +3386,7 @@ def voice():
             ampm = _extract_ampm(time_str) or _extract_ampm(speech_src)
             if not ampm:
                 return (False, "", "missing_ampm")
-            # remove any trailing am/pm already in time_str; re-append normalized value
+            # strip any am/pm/a/p already attached, then re-attach normalized
             t = _re.sub(r"\s*\b(am|pm|a|p)\b", "", time_str.lower()).strip()
             return (True, f"{t} {ampm}", "")
 
@@ -3406,19 +3404,16 @@ def voice():
                 )
                 resp.append(g)
                 try:
-                    resp.redirect(url_for("voice"))
-                    debug_print("[ask_time_date] 🔁 alts repeat → redirect url_for('voice')")
+                    resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 alts repeat → redirect url_for('voice')")
                 except Exception:
-                    resp.redirect("/voice")
-                    debug_print("[ask_time_date] 🔁 alts repeat → redirect /voice (fallback)")
+                    resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 alts repeat → redirect /voice (fallback)")
                 sd["stage"] = "ask_time_date"
                 return str(resp)
             else:
                 debug_print("[ask_time_date] ❌ 3 silent repeats on alternatives → hangup")
                 resp.say(gpt_speak("I didn’t hear a response. Please call again later."), VOICE)
                 resp.hangup()
-                sd.pop("alts_prompt", None)
-                sd.pop("silence_alts", None)
+                sd.pop("alts_prompt", None); sd.pop("silence_alts", None)
                 session_data.pop(call_sid, None)
                 return str(resp)
 
@@ -3436,17 +3431,15 @@ def voice():
             if silence_time < 3:
                 prompt = (
                     "Say the date and time, like 'October 12 at 9 A M'. "
-                    "Or enter MMDDHHMM, then say A or P."
+                    "Or enter two digits for month, two for day, two for hour, two for minutes, then say A or P."
                 )
                 g = make_gather(prompt, input="speech dtmf", timeout=4, speech_timeout="auto", barge_in=True,
                                 action="/voice", method="POST")
                 resp.append(g)
                 try:
-                    resp.redirect(url_for("voice"))
-                    debug_print("[ask_time_date] 🔁 initial silence → redirect url_for('voice')")
+                    resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 initial silence → redirect url_for('voice')")
                 except Exception:
-                    resp.redirect("/voice")
-                    debug_print("[ask_time_date] 🔁 initial silence → redirect /voice (fallback)")
+                    resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 initial silence → redirect /voice (fallback)")
                 sd["stage"] = "ask_time_date"
                 return str(resp)
             else:
@@ -3499,6 +3492,42 @@ def voice():
 
         # ---------------------- Partial capture flows ----------------------
         if day_part and not time_part:
+            # NEW: validate that the day-only isn't already in the past (clinic TZ)
+            try:
+                tz_name  = globals().get("CLINIC_TZ", "America/Chicago")
+                tz_local = _pytz.timezone(tz_name)
+                today    = _date_local.today()
+                default_base = tz_local.localize(_dt(today.year, today.month, today.day, 9, 0, 0))
+                parsed_day   = dtparser.parse(day_part, default=default_base, fuzzy=True)
+                if not _re.search(r"\b\d{4}\b", day_part):
+                    parsed_day = parsed_day.replace(year=today.year)
+                local_day_date = parsed_day.astimezone(tz_local).date()
+
+                if local_day_date < today:
+                    debug_print(f"[ask_time_date] ⛔ day-only is past → '{day_part}'")
+                    # Offer alternatives starting now
+                    now_utc_iso = _pytz.UTC.localize(_dt.utcnow()).isoformat().replace("+00:00", "Z")
+                    alts = get_next_available_slots(calendar_id, creds, from_start_iso=now_utc_iso, limit=3) or []
+                    options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
+                    prompt = (f"That date has already passed. Would you like {options}?" if options
+                            else "That date has already passed. Please say a future date.")
+                    sd["alts_prompt"]  = prompt
+                    sd["silence_alts"] = 0
+                    sd["stage"]        = "ask_time_date"
+
+                    g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True,
+                                    action="/voice", method="POST")
+                    resp.append(g)
+                    try:
+                        resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 past day-only → redirect url_for('voice')")
+                    except Exception:
+                        resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 past day-only → redirect /voice (fallback)")
+                    return str(resp)
+
+            except Exception as e:
+                debug_print(f"[ask_time_date] ⚠️ day-only parse error → {e} (fallback to need-both)")
+
+            # Day is today or future → proceed with original partial flow
             partial_ctx["day"] = day_part
             debug_print(f"[ask_time_date] 🧭 stored partial day='{day_part}', prompting for time only")
             g = make_gather(
@@ -3508,11 +3537,9 @@ def voice():
             )
             resp.append(g)
             try:
-                resp.redirect(url_for("voice"))
-                debug_print("[ask_time_date] 🔁 day-without-time → redirect url_for('voice')")
+                resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 day-without-time → redirect url_for('voice')")
             except Exception:
-                resp.redirect("/voice")
-                debug_print("[ask_time_date] 🔁 day-without-time → redirect /voice (fallback)")
+                resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 day-without-time → redirect /voice (fallback)")
             sd["stage"] = "ask_time_date"
             return str(resp)
 
@@ -3563,11 +3590,9 @@ def voice():
                                     action="/voice", method="POST")
                     resp.append(g)
                     try:
-                        resp.redirect(url_for("voice"))
-                        debug_print("[ask_time_date] 🔁 awaiting A/P after digits → redirect url_for('voice')")
+                        resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 awaiting A/P after digits → redirect url_for('voice')")
                     except Exception:
-                        resp.redirect("/voice")
-                        debug_print("[ask_time_date] 🔁 awaiting A/P after digits → redirect /voice (fallback)")
+                        resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 awaiting A/P after digits → redirect /voice (fallback)")
                     sd["stage"] = "ask_time_date"
                     return str(resp)
 
@@ -3592,11 +3617,9 @@ def voice():
                                         action="/voice", method="POST")
                         resp.append(g)
                         try:
-                            resp.redirect(url_for("voice"))
-                            debug_print("[ask_time_date] 🔁 digits w/o A/P → redirect url_for('voice')")
+                            resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 digits w/o A/P → redirect url_for('voice')")
                         except Exception:
-                            resp.redirect("/voice")
-                            debug_print("[ask_time_date] 🔁 digits w/o A/P → redirect /voice (fallback)")
+                            resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 digits w/o A/P → redirect /voice (fallback)")
                         sd["stage"] = "ask_time_date"
                         return str(resp)
                     time_str = f"{hh}:{mn:02d} {ampm}"
@@ -3619,11 +3642,9 @@ def voice():
                                     action="/voice", method="POST")
                     resp.append(g)
                     try:
-                        resp.redirect(url_for("voice"))
-                        debug_print("[ask_time_date] 🔁 missing parts → redirect url_for('voice')")
+                        resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 missing parts → redirect url_for('voice')")
                     except Exception:
-                        resp.redirect("/voice")
-                        debug_print("[ask_time_date] 🔁 missing parts → redirect /voice (fallback)")
+                        resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 missing parts → redirect /voice (fallback)")
                     sd["stage"] = "ask_time_date"
                     return str(resp)
 
@@ -3645,11 +3666,9 @@ def voice():
                     )
                     resp.append(g)
                     try:
-                        resp.redirect(url_for("voice"))
-                        debug_print("[ask_time_date] 🔁 missing A/P → redirect url_for('voice')")
+                        resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 missing A/P → redirect url_for('voice')")
                     except Exception:
-                        resp.redirect("/voice")
-                        debug_print("[ask_time_date] 🔁 missing A/P → redirect /voice (fallback)")
+                        resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 missing A/P → redirect /voice (fallback)")
                     sd["stage"] = "ask_time_date"
                     return str(resp)
 
@@ -3678,11 +3697,9 @@ def voice():
                                 action="/voice", method="POST")
             resp.append(g)
             try:
-                resp.redirect(url_for("voice"))
-                debug_print("[ask_time_date] 🔁 parse error branch → redirect url_for('voice')")
+                resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 parse error branch → redirect url_for('voice')")
             except Exception:
-                resp.redirect("/voice")
-                debug_print("[ask_time_date] 🔁 parse error branch → redirect /voice (fallback)")
+                resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 parse error branch → redirect /voice (fallback)")
             sd["stage"] = "ask_time_date"
             return str(resp)
 
@@ -3705,12 +3722,9 @@ def voice():
                             action="/voice", method="POST")
             resp.append(g)
             try:
-                resp.redirect(url_for("voice"))
-                debug_print("[ask_time_date] 🔁 past-time → redirect url_for('voice')")
+                resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 past-time → redirect url_for('voice')")
             except Exception:
-                resp.redirect("/voice")
-                debug_print("[ask_time_date] 🔁 past-time → redirect /voice (fallback)")
-
+                resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 past-time → redirect /voice (fallback)")
             sd["stage"] = "ask_time_date"
             return str(resp)
 
@@ -3734,12 +3748,9 @@ def voice():
                             action="/voice", method="POST")
             resp.append(g)
             try:
-                resp.redirect(url_for("voice"))
-                debug_print("[ask_time_date] 🔁 unavailable → redirect url_for('voice')")
+                resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 unavailable → redirect url_for('voice')")
             except Exception:
-                resp.redirect("/voice")
-                debug_print("[ask_time_date] 🔁 unavailable → redirect /voice (fallback)")
-
+                resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 unavailable → redirect /voice (fallback)")
             sd["stage"] = "ask_time_date"
             return str(resp)
 
@@ -3770,11 +3781,9 @@ def voice():
                             action="/voice", method="POST")
             resp.append(g)
             try:
-                resp.redirect(url_for("voice"))
-                debug_print("[ask_time_date] 🔁 continue flow (ID collection) → redirect url_for('voice')")
+                resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 continue flow (ID collection) → redirect url_for('voice')")
             except Exception:
-                resp.redirect("/voice")
-                debug_print("[ask_time_date] 🔁 continue flow (ID collection) → redirect /voice (fallback)")
+                resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 continue flow (ID collection) → redirect /voice (fallback)")
             return str(resp)
 
         try:
@@ -3788,6 +3797,7 @@ def voice():
         debug_print(f"[ask_time_date] 🎯 Next stage → {sd['stage']}")
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
