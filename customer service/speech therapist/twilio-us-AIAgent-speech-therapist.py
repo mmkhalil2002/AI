@@ -150,49 +150,64 @@ from flask import Flask, request, url_for
 # ----------------------------------------------------------------------
 
 FOREIGN_NAME_HINTS = """
+# Arabic Names (Egypt, Levant, Gulf)
 Ahmed, Ahmad, Mohamed, Muhammad, Hamza, Youssef, Yousef, Yasin, Yassin, Ali, Hassan, Hussain, Hussein, Mostafa, Mustafa,
 Khaled, Khalid, Karim, Kareem, Samir, Sameer, Omar, Omer, Amr, Tarek, Tariq, Farid, Fadi, Fady, Fawzi, Zaki, Zain, Zayd, Ziad, Mazen,
 Mahmoud, Mahmood, Ismail, Ismael, Mansour, Mansoor, Saleh, Salih, Said, Saeed, Salem, Kamel, Kamil, Lotfi, Lutfi, Rashed, Rashid, Taha,
-Abdallah, Abdullah, Ramadan, Attia, Atiya, Morsi, Nabil, Nabeel, Basel, Bassem, Hany, Hani, Walid, Waleed, Nasser, Nasir, Adel, Aadel, Adel,
+Abdallah, Abdullah, Ramadan, Attia, Atiya, Morsi, Nabil, Nabeel, Basel, Bassem, Hany, Hani, Walid, Waleed, Nasser, Nasir, Adel, Aadel,
 Rami, Ramy, Sherif, Sharif, Magdy, Magdi, Hatem, Hatim, Yasser, Yasser, Ayman, Aiman, Marwan, Mourad, Murad, Anas, Bilal, Faisal, Faysal,
 Amine, Amin, Younes, Yunus, Younis, Jawad, Jamal, Jamil, Ghassan, Ghaith, Qasim, Kassim,
 
-Aisha, Ayesha, Aysha, Mariam, Maryam, Miriam, Fatma, Fatima, Faten, Fatin, Huda, Huda, Hanaa, Hana, Rania, Ranya, Ranya,
-Nour, Noor, Nor, Dalia, Dalya, Layla, Leila, Laila, Lina, Lena, Riham, Reham, Rania, Salma, Selma, Sara, Sarah, Zahra, Zehra, Zeinab, Zainab,
-Nadia, Nadiya, Nadera, Nadera, Hiba, Heba, Maha, Maha, Mona, Muna, Manal, Amal, Iman, Eman, Doaa, Dua, Somaya, Sumaya, Samira, Sameera,
-Yasmin, Yasmine, Jasmine, Nourhan, Nermin, Nirmeen, Reem, Rym, Rym, Nesma, Nesma, Hager, Hajar, Rahma, Rahmah,
+# Arabic Female Names
+Aisha, Ayesha, Aysha, Mariam, Maryam, Miriam, Fatma, Fatima, Faten, Fatin, Huda, Huda, Hanaa, Hana, Rania, Ranya, Ranya, Esraa, Alaa,
+Nour, Noor, Nor, Dalia, Dalya, Layla, Leila, Laila, Lina, Lena, Riham, Reham, Salma, Selma, Sara, Sarah, Zahra, Zehra, Zeinab, Zainab,
+Nadia, Nadiya, Nadera, Hiba, Heba, Maha, Mona, Muna, Manal, Amal, Iman, Eman, Doaa, Dua, Somaya, Sumaya, Samira, Sameera,
+Yasmin, Yasmine, Jasmine, Nourhan, Nermin, Nirmeen, Reem, Rym, Hager, Hajar, Rahma, Rahmah,
 
+# Indian Male Names
 Rahul, Rohan, Arjun, Vikram, Raj, Rajesh, Ravi, Rohit, Rakesh, Sunil, Sanjay, Suresh, Amit, Deepak, Anil, Nikhil, Karthik, Kartik, Varun,
 Vijay, Akshay, Abhishek, Aditya, Siddharth, Sidharth, Ishaan, Ishan, Pranav, Prakash, Mohan, Manoj, Anurag, Arnav, Yash, Harsh, Kunal, Naveen,
 Aman, Gaurav, Dev, Devansh, Parth, Shubham, Shreyas, Sagar, Suraj, Tejas, Ankit,
 
+# Indian Female Names
 Priya, Anjali, Neha, Pooja, Kiran, Ritu, Sneha, Aarti, Arti, Kavita, Meera, Mira, Nisha, Riya, Diya, Isha, Asha, Sanya, Tanya, Ananya,
 Aishwarya, Shreya, Shruti, Bhavna, Poonam, Karishma, Radhika, Rituparna, Nandini, Trisha, Ishita, Komal, Juhi,
 
-Arif, Arshad, Imran, Irfan, Faisal, Danish, Danish, Saad, Adeel, Naveed, Javed, Junaid, Rehan, Reza, Riza, Farhan, Fahad,
+# Pakistani / Muslim South Asian Names
+Arif, Arshad, Imran, Irfan, Faisal, Danish, Saad, Adeel, Naveed, Javed, Junaid, Rehan, Reza, Riza, Farhan, Fahad,
 Hammad, Hamid, Kamran, Salman, Shahid, Shahbaz,
 
+# Chinese Names
 Zhang, Li, Wang, Chen, Liu, Huang, Lin, Yang, Zhao, Wu, Zhou, Xu, Sun, Ma, Zhu, Guo, He, Gao, Luo, Deng, Qian, Mei, Jia, Wei, Hao, Ying, Ning, Long,
 Xiao, Xia, Xiu, Xin, Xue, Qiao, Qiu, Qi, Rui, Lei, Fang, Hui, Yan, Yuan, Yao, Tao, Dong, Fei, Jun, Jian, Jing, Liang, Lian, Ling, Ming, Ping, Qing, Sheng, Shu, Wen,
 
+# Japanese Names
 Ken, Yuki, Sora, Haru, Rina, Aoi, Ren, Ryo, Yuta, Yuto, Yuya, Hana, Hina, Mai, Kai, Daiki, Sakura, Takashi, Yoko, Yuka, Ayumi, Akira, Daichi, Keiko, Naoki, Satoshi,
 Takeshi, Taro, Jiro, Ichiro, Kenta, Shota, Yuma, Riku, Erika, Emi,
 
+# Korean Names
 Kim, Lee, Park, Choi, Jung, Jeong, Kang, Yoon, Yun, Lim, Im, Han, Shin, Seo, Suh, Kwon, Hwang, Yoo, Ryu, Ryou, Baek, Byun, Nam, Oh, Song, Moon, Cho, Jo, Jang,
 Jiho, Ji-hoon, Minji, Min-ji, Jisoo, Ji-soo, Seojun, Seo-jun, Yeonwoo, Yeon-woo, Hyun, Hyunwoo, Hyun-woo, Soo-min, Su-min,
 
+# Vietnamese Names
 Nguyen, Tran, Le, Pham, Huynh, Vo, Phan, Truong, Bui, Do, Dang, Dinh, Vu, Vuong, Anh, Linh, Thao, Nhan, Quang, Minh, Nam, Duc, Hoa, Huong, Lan, Mai, My, Phuong, Trang,
 
+# Indonesian / Malay Names
 Putra, Putri, Budi, Siti, Nur, Dewi, Agus, Rizki, Rizky, Dian, Andi, Wulan, Eka, Rani, Adi, Hendra, Fitri, Widya, Yuli,
 
-Jose, Maria, Juan, Mark, Marco, Carlo, Carlos, Miguel, Andrea, Angel, Angelo, Anne, Anna, Liza, Jessa, Katrina, Kristine, Paolo, Paolo, Ramon,
+# Filipino / Spanish-influenced Names
+Jose, Maria, Juan, Mark, Marco, Carlo, Carlos, Miguel, Andrea, Angel, Angelo, Anne, Anna, Liza, Jessa, Katrina, Kristine, Paolo, Ramon,
 
+# Thai Names
 Somchai, Suriya, Anan, Apichai, Niran, Chai, Kanya, Mali, Suda, Nicha, Nisa, Lalita, Siriporn, Thanya, Prapa, Arisa,
 
+# Burmese Names (Myanmar)
 Aung, Min, Hla, Htoo, Nandi, Su, Suu, Thura, Thant, Nyein, Phyo, Zaw, Zin, Ei, Ei Mon,
 
+# Cambodian (Khmer) Names
 Sok, Soth, Dara, Vannak, Chan, Sophea, Sreypov, Pisey, Rith, Ratha,
 
+# Persian / Iranian Names
 Reza, Rezaul, Rezaan, Farzad, Farshad, Arman, Arash, AliReza, Alireza, Navid, Nima, Sina, Sara, Sahar, Parisa, Ladan, Leila, Leyla, Negin
 """.strip()
 
