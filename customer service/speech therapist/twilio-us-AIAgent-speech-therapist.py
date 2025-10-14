@@ -4094,10 +4094,39 @@ def voice():
             base = _uni.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
 
             # 2. Keep only alphabetic characters (remove numbers, spaces, hyphens, etc.)
+            # Step 2: Remove all non-alphabetic characters (keep only A–Z and a–z)
+            # ------------------------------------------------------------
+            # This regular expression replaces any character that is NOT a letter with an empty string.
+            # - `[^A-Za-z]` means "any character that is NOT between A–Z or a–z"
+            # - This strips out digits, punctuation, whitespace, and special characters.
+
+            # Example transformations:
+            #   "Jose Andres"          → "JoseAndres"     (removes the space)
+            #   "M@h@m0ud!"            → "Mhmoud"         (removes symbols and digits)
+            #   "Abd_el-Rahman"        → "AbdelRahman"    (removes underscore and hyphen)
+            #   "123Hello_There!"      → "HelloThere"     (removes numbers and symbols)
+
             base = _re.sub(r"[^A-Za-z]", "", base)
 
+
             # 3. Convert each letter to its T9 digit equivalent
+            # Step 5: Convert each character in the cleaned name into its T9 digit
+            # ---------------------------------------------------------------------
+            # The T9 keypad mapping (used in old mobile phones) maps letters to digits like this:
+            #   - ABC → 2, DEF → 3, GHI → 4, JKL → 5, MNO → 6, PQRS → 7, TUV → 8, WXYZ → 9
+            #
+            # This line iterates over each character in the preprocessed name (`base`)
+            # and converts it to its corresponding T9 digit using `_t9_digit_for_char(c)`.
+            # All resulting digits are then concatenated into a single string using `"".join(...)`.
+
+            # Example:
+            #   Input name: "Mohamed"
+            #   After cleaning: base = "MOHAMED"
+            #   T9 digits: M→6, O→6, H→4, A→2, M→6, E→3, D→3
+            #   Output: "6642633"
+
             return "".join(_t9_digit_for_char(c) for c in base)
+
 
 
         
@@ -4154,12 +4183,46 @@ def voice():
             for nm in names:
                 code = _t9_code(nm)  # e.g., "Mohamed" → "6642633"
                 if code:
+                    # Step 6: Group names by their T9 code in a dictionary
+                    # ----------------------------------------------------
+                    # This line ensures that all names which map to the same T9 digit sequence
+                    # are grouped together in the same list within the dictionary `idx`.
+                    #
+                    # - `setdefault(code, [])` checks if the T9 `code` already exists as a key.
+                    #   - If it exists, it returns the existing list.
+                    #   - If it doesn't exist, it creates a new list `[]` for that key.
+                    # - `.append(nm)` then adds the current name (`nm`) to that list.
+                    # [] is used as a default value.
+                    #
+                    #    It says:
+                    #    ➤ "If code is not already in the dictionary idx, set it to an empty list [], and then append nm."
+                    #
+                    #    Example:
+                    #    idx = {}
+                    #    code = "123"
+                    #    name = "Ali"
+                    #
+                    #    idx.setdefault(code, []).append(name)
+                    #    print(idx)
+                    #    Output: {'123': ['Ali']}
+                    #
+                    # Example:
+                    #   Let's say:
+                    #       code = "6642633"
+                    #       nm = "Mohamed"
+                    #   If this is the first "Mohamed"-type name, the dictionary becomes:
+                    #       idx = {"6642633": ["Mohamed"]}
+                    #
+                    #   Later, if we process:
+                    #       nm = "Muhamed"  → also has code = "6642633"
+                    #   Then the dictionary becomes:
+                    #       idx = {"6642633": ["Mohamed", "Muhamed"]}
+
                     idx.setdefault(code, []).append(nm)
+
 
             # Step 4: Return the final index mapping T9 → list of matching names
             return idx
-
-
 
 
 
@@ -4204,13 +4267,52 @@ def voice():
 
         if raw_dtmf:
             # NEW: T9 decoding for keypad-entered names (e.g., 32836 → Faten)
+            # Step: Clean the input and keep only numeric digits (0–9)
+            # --------------------------------------------------------
+            # This line uses a regular expression to remove any character that is NOT a digit.
+            #
+            # - `\D` (uppercase D) means "any non-digit character" in regex.
+            # - `_re.sub(r"\D", "", raw_dtmf)` means:
+            #       → find all non-digit characters in `raw_dtmf`
+            #       → replace them with an empty string ""
+            #
+            # Purpose:
+            #   This ensures the phone number input contains only digits, removing symbols,
+            #   spaces, parentheses, plus signs, or letters.
+            #
+            # Examples:
+            #   raw_dtmf = "(469) 463-3276"   →  "4694633276"
+            #   raw_dtmf = "+1 800-CALLME"    →  "1800"
+            #   raw_dtmf = " 123 456 7890 "   →  "1234567890"
+            #   raw_dtmf = "abc123xyz"        →  "123"
+            #
+            # ✅ Result: digits = clean numeric string ready for E.164 normalization
+
             digits = _re.sub(r"\D", "", raw_dtmf)
+
             debug_print(f"collect_first_name: 🔢 keypad digits='{digits}'")
 
             # Only try T9 if looks like a real name entry: 2–12 digits, only 2–9
             if 2 <= len(digits) <= 12 and _re.fullmatch(r"[2-9]+", digits):
                 t9_index = _build_t9_index_from_hints(FOREIGN_NAME_HINTS)
+                # Step: Look up possible name matches using the T9 digit code
+                # -----------------------------------------------------------
+                # `t9_index` is a dictionary that maps T9 numeric codes (like "4663") to possible names (like ["HOME", "GOOD", "GONE"]).
+                # 
+                # `digits` contains the user-entered keypad sequence (e.g., from speech-to-text converted T9 input).
+                #
+                # - `t9_index.get(digits, [])` tries to fetch the list of names matching the input digits.
+                # - If the digits are NOT in the dictionary, it returns an empty list `[]` by default.
+                #
+                # This ensures the code never crashes if there’s no match — it safely returns an empty list instead of None.
+                #
+                # Examples:
+                #   t9_index = {"43556": ["HELLO", "GELLO"], "4663": ["GOOD", "HOME", "GONE"]}
+                #   digits = "4663"  → matches = ["GOOD", "HOME", "GONE"]
+                #   digits = "1234"  → matches = []   (no match found)
+
                 matches = t9_index.get(digits, [])
+
 
                 if len(matches) == 1:
                     first_name = matches[0]
@@ -4323,6 +4425,8 @@ def voice():
         resp.append(gather)
         resp.redirect("/voice")  # safety net for silence on last-name prompt
         return str(resp)
+
+
 
 
 
