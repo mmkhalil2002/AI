@@ -148,21 +148,31 @@ from flask import Flask, request, url_for
 # 🌍 Global speech hints for Arabic + English doctor names
 # Used across multiple stages (booking, collect_first_name, etc.)
 # ----------------------------------------------------------------------
-
 FOREIGN_NAME_HINTS = """
-# Arabic Names (Egypt, Levant, Gulf)
+# Arabic Names (Egypt, Levant, Gulf) — includes 99 Names of Allah (Asma' ul‑Husna)
 Ahmed, Ahmad, Mohamed, Muhammad, Hamza, Youssef, Yousef, Yasin, Yassin, Ali, Hassan, Hussain, Hussein, Mostafa, Mustafa,
 Khaled, Khalid, Karim, Kareem, Samir, Sameer, Omar, Omer, Amr, Tarek, Tariq, Farid, Fadi, Fady, Fawzi, Zaki, Zain, Zayd, Ziad, Mazen,
 Mahmoud, Mahmood, Ismail, Ismael, Mansour, Mansoor, Saleh, Salih, Said, Saeed, Salem, Kamel, Kamil, Lotfi, Lutfi, Rashed, Rashid, Taha,
 Abdallah, Abdullah, Ramadan, Attia, Atiya, Morsi, Nabil, Nabeel, Basel, Bassem, Hany, Hani, Walid, Waleed, Nasser, Nasir, Adel, Aadel,
-Rami, Ramy, Sherif, Sharif, Magdy, Magdi, Hatem, Hatim, Yasser, Yasser, Ayman, Aiman, Marwan, Mourad, Murad, Anas, Bilal, Faisal, Faysal,
+Rami, Ramy, Sherif, Sharif, Magdy, Magdi, Hatem, Hatim, Yasser, Ayman, Aiman, Marwan, Mourad, Murad, Anas, Bilal, Faisal, Faysal,
 Amine, Amin, Younes, Yunus, Younis, Jawad, Jamal, Jamil, Ghassan, Ghaith, Qasim, Kassim,
 
+# 99 Names of Allah (used in Arabic male names with “Abdul‑” prefix)
+Rahman, Rahim, Malik, Quddus, Salam, Mu'min, Muhaymin, Aziz, Jabbar, Mutakabbir,
+Khaliq, Bari, Musawwir, Ghaffar, Qahhar, Wahhab, Razzaq, Fattah, Alim, Qabid, Basit, Khafid,
+Rafi, Mu'izz, Mudhill, Sami, Basir, Hakim, Adl, Latif, Khabir, Halim, Azim, Ghafur,
+Shakur, Ali, Kabir, Hafiz, Muqit, Hasib, Jalil, Karim, Raqib, Mujib, Wasi, Hakim,
+Wadud, Majid, Ba'ith, Shahid, Haqq, Wakil, Qawi, Matin, Wali, Hamid, Muhsi, Mubdi,
+Mu'id, Muhyi, Mumit, Hayy, Qayyum, Wajid, Majid, Wahid, Samad, Qadir, Muqtadir,
+Muqaddim, Mu’akhkhir, Awwal, Akhir, Zaher, Batin, Wali, Muta'ali, Barr, Tawwab,
+Muntaqim, Afu, Rauf, Malik al‑Mulk, Dhul‑Jalal wal‑Ikram, Muqsit, Jami, Ghani,
+Mughni, Mani, Darr, Nafi, Nur, Hadi, Badi, Baqi, Warith, Rashid, Sabur,
+
 # Arabic Female Names
-Aisha, Ayesha, Aysha, Mariam, Maryam, Miriam, Fatma, Fatima, Faten, Fatin, Huda, Huda, Hanaa, Hana, Rania, Ranya, Ranya, Esraa, Alaa,
-Nour, Noor, Nor, Dalia, Dalya, Layla, Leila, Laila, Lina, Lena, Riham, Reham, Salma, Selma, Sara, Sarah, Zahra, Zehra, Zeinab, Zainab,
-Nadia, Nadiya, Nadera, Hiba, Heba, Maha, Mona, Muna, Manal, Amal, Iman, Eman, Doaa, Dua, Somaya, Sumaya, Samira, Sameera,
-Yasmin, Yasmine, Jasmine, Nourhan, Nermin, Nirmeen, Reem, Rym, Hager, Hajar, Rahma, Rahmah,
+Aisha, Ayesha, Aysha, Mariam, Maryam, Miriam, Fatma, Fatima, Faten, Fatin, Huda, Hanaa, Hana, Rania, Ranya, Esraa, Alaa,
+Nour, Noor, Nor, Dalia, Dalya, Layla, Leila, Laila, Lina, Lena, Riham, Reham, Salma, Selma, Sara, Sarah, Zahra, Zehra,
+Zeinab, Zainab, Nadia, Nadiya, Nadera, Hiba, Heba, Maha, Mona, Muna, Manal, Amal, Iman, Eman, Doaa, Dua, Somaya, Sumaya,
+Samira, Sameera, Yasmin, Yasmine, Jasmine, Nourhan, Nermin, Nirmeen, Reem, Rym, Hager, Hajar, Rahma, Rahmah,
 
 # Indian Male Names
 Rahul, Rohan, Arjun, Vikram, Raj, Rajesh, Ravi, Rohit, Rakesh, Sunil, Sanjay, Suresh, Amit, Deepak, Anil, Nikhil, Karthik, Kartik, Varun,
@@ -210,6 +220,7 @@ Sok, Soth, Dara, Vannak, Chan, Sophea, Sreypov, Pisey, Rith, Ratha,
 # Persian / Iranian Names
 Reza, Rezaul, Rezaan, Farzad, Farshad, Arman, Arash, AliReza, Alireza, Navid, Nima, Sina, Sara, Sahar, Parisa, Ladan, Leila, Leyla, Negin
 """.strip()
+
 
 
 
