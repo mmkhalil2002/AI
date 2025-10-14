@@ -3924,30 +3924,26 @@ def voice():
 
 
     # ===== collect_first_name (stage) =====
+    # ===== collect_first_name (stage) =====
     elif stage == "collect_first_name":
         # ----------------------------------------------------------------------
         # 🎯 Goal:
         #   - Capture FIRST name via speech or keypad (DTMF).
-        #   - Handle silence locally (up to 3 retries) so we don’t rely on the
-        #     central silence guard.
-        #   - Accept Arabic names spoken but written with English letters
-        #     (e.g., "Mohamed", "Hossam"). Reject true Arabic script input.
+        #   - Handle silence locally (up to 3 retries).
+        #   - Accept general foreign names with Unicode letters (e.g., “Renée”, “José”).
+        #   - Reject Arabic-script input (user should speak names in English letters).
         #   - Store under session_data[call_sid]["customer"]["first_name"].
         #   - Advance → collect_last_name.
         #
-        # 🔇 How SILENCE is handled here (local mode):
-        #   • Silence = BOTH SpeechResult and Digits are empty in this webhook.
-        #   • We count consecutive silences in sd["silence_first_name"].
-        #   • For tries 1–2:
-        #       - Build a <Gather> re-prompt (input="speech dtmf"), append it to TwiML.
-        #       - Append a trailing <Redirect>/voice as a safety net; if caller stays
-        #         silent again, Twilio executes the Redirect and POSTs a NEW webhook,
-        #         bringing us back here with the incremented counter.
-        #       - Ensure sd["stage"]="collect_first_name" before returning.
-        #   • On try 3: apologize + hang up.
+        # 🧠 What’s new in this version:
+        #   • Unicode-friendly validation: letters from most scripts are allowed.
+        #   • ASR split repair: joins tiny tokens (e.g., "mo ha med" → "Mohamed").
+        #   • Robust cleanup: punctuation trimming, filler phrase removal.
+        #   • Still rejects Arabic block U+0600–U+06FF (true Arabic script).
         # ----------------------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
         sd.setdefault("customer", {})
+
 
         raw_speech = (speech_result or "").strip()
         raw_dtmf   = (request.values.get("Digits") or "").strip()
@@ -3969,8 +3965,8 @@ def voice():
                 return str(resp)
 
             gather = make_gather(
-                "I didn’t hear your first name. Please say your first name using English letters. "
-                "For example, Mohamed or Hossam.",
+                "I didn’t hear your first name. Please say your first name in English letters. "
+                "You can also type it and press pound.",
                 input="speech dtmf",
                 language="en-US",
                 hints=ARABIC_NAME_HINTS,
@@ -3988,40 +3984,101 @@ def voice():
         sd.pop("silence_first_name", None)
 
         # -------------------------------
-        # 🧾 Parse & Clean Input
+        # 🧾 Normalize & Parse Input
         # -------------------------------
-        #import string
-        if raw_dtmf:
-            # Keypad fallback (e.g., user typed random keys). Create a placeholder.
-            name_digits = _re.sub(r"\D", "", raw_dtmf)
-            first_name = f"User{name_digits[-3:]}" if name_digits else "Unknown"
-            debug_print(f"collect_first_name: 🧮 from keypad → {first_name}")
-        else:
-            cleaned = raw_speech.translate(str.maketrans('', '', string.punctuation)).strip()
-            cleaned = _re.sub(r"\s+", " ", cleaned)
-            # Drop filler phrases (e.g., "my name is John")
-            cleaned = _re.sub(
+        import string
+        import unicodedata as _uni
+
+        def _strip_fillers(s: str) -> str:
+            return _re.sub(
                 r"\b(?:my name is|this is|i am|i'm|it is|it's)\b\s*",
                 "",
-                cleaned,
+                s,
                 flags=_re.IGNORECASE,
-            )
-            tokens = cleaned.split()
-            first_name = tokens[0] if tokens else ""
+            ).strip()
+
+        def _normalize_spaces_punct(s: str) -> str:
+            # Keep apostrophes and hyphens (O'Neil, Jean-Luc); remove other punct.
+            keep = "'-"
+            drop = "".join(ch for ch in string.punctuation if ch not in keep)
+            s = s.translate(str.maketrans('', '', drop))
+            s = _re.sub(r"\s+", " ", s).strip()
+            # Trim trailing common enders
+            s = s.rstrip(" .,!?:;")
+            return s
+
+        def _join_tiny_tokens(tokens) -> str:
+            """
+            If ASR split a simple name into tiny pieces (e.g., 'mo ha med'),
+            join them back to a single string. Conservative limit to avoid
+            merging full phrases; allow up to ~12 letters.
+            """
+            if not tokens:
+                return ""
+            # If first token already looks like a reasonable name, keep it.
+            if len(tokens) == 1 and len(tokens[0]) >= 2:
+                return tokens[0]
+            # Many ASR oddities: tiny pieces of 1–2 letters; join them.
+            joined = "".join(tokens)
+            if 2 <= len(joined) <= 12:
+                return joined
+            # Otherwise, prefer the first token (common for "John Smith" speech)
+            return tokens[0]
+
+        def _looks_like_name_unicode(s: str) -> bool:
+            """
+            Accept names that:
+            • start with a letter,
+            • contain only Unicode letters, apostrophes, hyphens, or spaces,
+            • are 2..40 chars,
+            • are NOT in Arabic script block (U+0600–U+06FF).
+            """
+            if not s or len(s) < 2 or len(s) > 40:
+                return False
+            # reject Arabic block explicitly (true Arabic script)
+            if _re.search(r"[\u0600-\u06FF]", s):
+                return False
+            # first char must be a letter
+            if not s[0].isalpha():
+                return False
+            # all chars must be letters or allowed punctuation/space
+            for ch in s:
+                if ch.isalpha():
+                    continue
+                if ch in ("'", "-", " "):
+                    continue
+                return False
+            return True
+
+        if raw_dtmf:
+            # Keypad fallback → not letters; keep flow with a placeholder
+            digits = _re.sub(r"\D", "", raw_dtmf)
+            first_name = f"User{digits[-3:]}" if digits else "Unknown"
+            debug_print(f"collect_first_name: 🧮 from keypad → {first_name}")
+        else:
+            # Unicode-aware cleanup
+            spoken = _strip_fillers(raw_speech)
+            # Normalize Unicode spacing (NFKC keeps diacritics, standardizes forms)
+            spoken = _uni.normalize("NFKC", spoken)
+            spoken = _normalize_spaces_punct(spoken)
+
+            # Split, then try to repair split names
+            tokens = spoken.split()
+            candidate = _join_tiny_tokens(tokens)
+
+            # Title-case the final candidate (José stays José because of diacritics)
+            first_name = candidate[:1].upper() + candidate[1:] if candidate else ""
+
+            debug_print(f"collect_first_name: 🎙️ normalized → '{first_name}'")
 
         # -------------------------------
-        # 🌐 Accept only English letters
+        # ✅ Validate (Unicode letters; not Arabic script)
         # -------------------------------
-        # Allow A–Z, a–z, hyphens, apostrophes, and spaces. First char must be a letter.
-        english_only_pattern = r"^[A-Za-z][A-Za-z'\-\s]{0,39}$"
-        # Reject Arabic Unicode block (0600–06FF)
-        contains_arabic = bool(_re.search(r"[\u0600-\u06FF]", first_name))
-
-        if not first_name or not _re.fullmatch(english_only_pattern, first_name) or contains_arabic:
+        if not _looks_like_name_unicode(first_name):
             r = sd.get("retry_first_name", 0) + 1
             sd["retry_first_name"] = r
-            sd["stage"] = "collect_first_name"  # stay in this stage on retry
-            debug_print(f"collect_first_name: ❌ invalid/Arabic-script '{first_name}' retry={r}/3")
+            sd["stage"] = "collect_first_name"
+            debug_print(f"collect_first_name: ❌ invalid name '{first_name}' retry={r}/3")
 
             if r >= 3:
                 resp.say(gpt_speak("Sorry, I couldn’t capture your name in English letters. Please call again later."), VOICE)
@@ -4030,10 +4087,11 @@ def voice():
                 return str(resp)
 
             gather = make_gather(
-                "Please say your first name using English letters only. For example, Mohamed or Hossam.",
+                "Please say your first name using English letters. "
+                "You can also type it and press pound.",
                 input="speech dtmf",
                 language="en-US",
-                hints=ARABIC_NAME_HINTS,
+                hints=ARABIC_NAME_HINTS,  # ASR bias (kept from your config)
                 timeout=6,
                 speech_timeout="5",
                 finish_on_key="#",
@@ -4045,7 +4103,7 @@ def voice():
             return str(resp)
 
         # -------------------------------
-        # ✅ Save & Continue → last name
+        # 💾 Save & Continue → last name
         # -------------------------------
         sd["customer"]["first_name"] = first_name
         sd["stage"] = "collect_last_name"
@@ -4056,7 +4114,7 @@ def voice():
             f"Thank you {first_name}. Now, what is your last name?",
             input="speech dtmf",
             language="en-US",
-            hints=ARABIC_NAME_HINTS,
+            hints=ARABIC_NAME_HINTS,   # still helps recognition of common family names
             timeout=6,
             speech_timeout="5",
             finish_on_key="#",
@@ -4068,172 +4126,6 @@ def voice():
         return str(resp)
 
 
-
-    
-
-
-
-    
-    elif stage == "collect_last_name":
-        # ----------------------------------------------------------------------
-        # 🎯 Goal:
-        #   - Capture LAST name via speech or keypad (DTMF).
-        #   - Handle silence *locally* (up to 3 retries) — independent of any
-        #     central silence guard.
-        #   - Accept Arabic names spoken but written in English letters
-        #     (e.g., "Khalil", "ElSayed"). Reject true Arabic-script input.
-        #   - Store → session_data[call_sid]["customer"]["last_name"].
-        #   - Advance → collect_address.
-        #
-        # 🔇 LOCAL SILENCE HANDLING — how it works here:
-        #   • We consider it “silence” when BOTH SpeechResult and Digits are empty
-        #     on this webhook.
-        #   • We track consecutive silences with session_data[call_sid]["silence_last_name"].
-        #   • On tries 1–2:
-        #       1) Build a <Gather> that prompts again for the last name.
-        #       2) Append a trailing <Redirect>/voice. If the caller stays silent,
-        #          Twilio runs the Redirect after Gather times out and POSTs a NEW
-        #          webhook to /voice — re-entering this same stage with the counter
-        #          incremented. (Be sure to keep sd["stage"] = "collect_last_name".)
-        #       3) Return the TwiML immediately; this Python call ends. Do not
-        #          expect code below to run later — each webhook is a fresh call.
-        #   • On try 3: apologize + hang up; clear session.
-        # ----------------------------------------------------------------------
-        sd = session_data.setdefault(call_sid, {})
-        sd.setdefault("customer", {})
-
-        raw_speech = (speech_result or "").strip()
-        raw_dtmf   = (request.values.get("Digits") or "").strip()
-        debug_print(f"collect_last_name: speech='{raw_speech}', dtmf='{raw_dtmf}'")
-
-        # -------------------------------
-        # 🔇 Silence handling (local)
-        # -------------------------------
-        if not raw_speech and not raw_dtmf:
-            tries = sd.get("silence_last_name", 0) + 1
-            sd["silence_last_name"] = tries
-            sd["stage"] = "collect_last_name"  # ensure next webhook lands back here
-            debug_print(f"collect_last_name: 🤐 silence; tries={tries}/3")
-
-            if tries >= 3:
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            # Try again (short, clear prompt). We include a safety Redirect so that
-            # even if the user stays silent again, Twilio will POST a NEW webhook to /voice.
-            gather = make_gather(
-                "I didn’t hear your last name. Please say your last name using English letters, "
-                "for example, Khalil or ElSayed.",
-                input="speech dtmf",
-                language="en-US",
-                hints=ARABIC_NAME_HINTS,   # helpful ASR biasing toward common names
-                timeout=6,
-                speech_timeout="5",
-                finish_on_key="#",
-                barge_in=True,
-                action="/voice", method="POST",
-            )
-            resp.append(gather)
-            resp.redirect("/voice")  # safety net if still silent (forces a NEW webhook)
-            return str(resp)
-
-        # ✅ Some input arrived → clear the silence counter
-        sd.pop("silence_last_name", None)
-
-        # -------------------------------
-        # 🧾 Parse & Clean
-        # -------------------------------
-        #import string
-        if raw_dtmf:
-            # Keypad fallback → synthesize a placeholder last name from digits
-            digits = _re.sub(r"\D", "", raw_dtmf)
-            last_name = f"Family{digits[-3:]}" if digits else "Unknown"
-            debug_print(f"collect_last_name: 🧮 from keypad → {last_name}")
-        else:
-            # Allow apostrophes and hyphens (O'Neill, El-Sayed)
-            punct_keep = "'-"
-            cleaned = raw_speech.translate(
-                str.maketrans('', '', "".join(ch for ch in string.punctuation if ch not in punct_keep))
-            ).strip()
-            cleaned = _re.sub(r"\s+", " ", cleaned)
-
-            # Drop common filler phrases that precede a name
-            cleaned = _re.sub(
-                r"\b(?:my last name is|family name is|last name is|this is|i am|i'm|it is|it's)\b\s*",
-                "",
-                cleaned,
-                flags=_re.IGNORECASE,
-            )
-
-            tokens = cleaned.split()
-            # Prefer the *last* token for last names (handles “John Michael Smith”)
-            last_name = tokens[-1] if tokens else ""
-
-        # -------------------------------
-        # 🌐 Validate: English letters only
-        # -------------------------------
-        # First char must be a letter; allow letters, apostrophes, hyphens, and spaces thereafter.
-        english_only_pattern = r"^[A-Za-z][A-Za-z'\-\s]{0,59}$"
-        # Reject Arabic Unicode block (0600–06FF) to avoid non-Latin script
-        contains_arabic = bool(_re.search(r"[\u0600-\u06FF]", last_name))
-
-        if not last_name or not _re.fullmatch(english_only_pattern, last_name) or contains_arabic:
-            r = sd.get("retry_last_name", 0) + 1
-            sd["retry_last_name"] = r
-            sd["stage"] = "collect_last_name"  # keep stage on retry
-            debug_print(f"collect_last_name: ❌ invalid (non-English) name '{last_name}' retry={r}/3")
-
-            if r >= 3:
-                resp.say(gpt_speak("Sorry, I couldn’t capture your last name in English letters. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            # Re-prompt with safety Redirect; same flow as silence handling
-            gather = make_gather(
-                "Please say your last name using English letters only. For example, Khalil or ElSayed.",
-                input="speech dtmf",
-                language="en-US",
-                hints=ARABIC_NAME_HINTS,
-                timeout=6,
-                speech_timeout="5",
-                finish_on_key="#",
-                barge_in=True,
-                action="/voice", method="POST",
-            )
-            resp.append(gather)
-            resp.redirect("/voice")
-            return str(resp)
-
-        # -------------------------------
-        # ✅ Save & Advance
-        # -------------------------------
-        sd["customer"]["last_name"] = last_name
-        sd["stage"] = "collect_address"       # or your next stage
-        sd.pop("retry_last_name", None)
-        debug_print(f"collect_last_name: ✅ saved last_name='{last_name}' → next=collect_address")
-
-        # Prompt for the next field with the same safety pattern (Gather + Redirect)
-        next_prompt = (
-            f"Thank you {sd['customer'].get('first_name','')} {last_name}. "
-            "Please say your full street address, city, and ZIP."
-        )
-        gather = make_gather(
-            next_prompt,
-            input="speech dtmf",
-            language="en-US",
-            hints="118 Briar Oak Murphy Texas 75094",
-            timeout=7,
-            speech_timeout="5",
-            finish_on_key="#",
-            barge_in=True,
-            action="/voice", method="POST",
-        )
-        resp.append(gather)
-        resp.redirect("/voice")  # safety net for silence on the next prompt
-        return str(resp)
 
 
 
