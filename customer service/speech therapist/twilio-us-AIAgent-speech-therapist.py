@@ -4858,7 +4858,6 @@ def voice():
 
 
 
-
     elif stage == "collect_cc":
         # ----------------------------------------------------------------------
         # 💳 Stage: collect_cc  (optimized for shorter expiration & CVV steps)
@@ -4869,9 +4868,14 @@ def voice():
         #   (3) CVV (3–4 digits, DTMF-only for speed)
         #
         # Improvements:
-        #   - Shorter timeouts for steps 2 & 3 (expiration, CVV)
-        #   - DTMF-only for CVV (speech removed for faster processing)
-        #   - Immediate step advance after # pressed
+        #   - User can now press "#" (pound) to finish entry at any step.
+        #   - All prompts explicitly tell the user about "#" termination.
+        #   - Shorter timeouts for steps 2 & 3 (expiration, CVV).
+        #   - DTMF-only for CVV (speech removed for faster processing).
+        #   - Immediate step advance after "#" pressed.
+        #
+        # Example voice prompt:
+        #   "Please enter your card number now, then press pound (#) when finished."
         # ----------------------------------------------------------------------
 
         # --- helpers ------------------------------------------------------------
@@ -4945,7 +4949,7 @@ def voice():
         debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{raw_dtmf}', speech='{raw_speech}'")
 
         # -------------------------------
-        # 🔇 Silence handling (inline)
+        # 🔇 Silence handling
         # -------------------------------
         if not raw_dtmf and not raw_speech:
             tries = session_data[call_sid].get("silence_cc", 0) + 1
@@ -4959,10 +4963,10 @@ def voice():
                 return str(resp)
 
             prompt = {
-                1: "Please enter your card number now, then press pound.",
-                2: "Please enter the expiration as two digits for month and two digits for year, then press pound.",
-                3: "Please enter the three or four digit security code, then press pound."
-            }.get(cc_step, "Please enter your card details, then press pound.")
+                1: "Please enter your card number now, then press pound (#) when finished.",
+                2: "Please enter the expiration as two digits for month and two digits for year, then press pound (#).",
+                3: "Please enter the three or four digit security code, then press pound (#)."
+            }.get(cc_step, "Please enter your card details, then press pound (#).")
 
             gather = make_gather(
                 prompt,
@@ -4980,7 +4984,7 @@ def voice():
         session_data[call_sid].pop("silence_cc", None)
 
         # -------------------------------
-        # Step 1: Card Number (13–19)
+        # Step 1: Card Number
         # -------------------------------
         if cc_step == 1:
             pan = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=enforce_dm)
@@ -4988,14 +4992,13 @@ def voice():
                 pan = pan[:19]
 
             if not (13 <= len(pan) <= 19) or not _luhn_ok(pan):
-                # Retry with DTMF enforcement after 2 speech failures
                 if not raw_dtmf:
                     session_data[call_sid]["cc_speech_tries"] = session_data[call_sid].get("cc_speech_tries", 0) + 1
                     if session_data[call_sid]["cc_speech_tries"] >= 2:
                         session_data[call_sid]["enforce_dtmf_cc"] = True
                         debug_print("collect_cc: 📟 enforcing DTMF for card number entry")
                         gather = make_gather(
-                            "That number didn’t sound clear. Please TYPE the full card number now, then press pound.",
+                            "That number didn’t sound clear. Please TYPE the full card number now, then press pound (#).",
                             input="dtmf",
                             timeout=20,
                             finish_on_key="#",
@@ -5006,7 +5009,7 @@ def voice():
                         return str(resp)
 
                 gather = make_gather(
-                    "That card number doesn't look right. Please re-enter the full card number, then press pound.",
+                    "That card number doesn't look right. Please re-enter the full card number, then press pound (#).",
                     input="speech dtmf",
                     timeout=20,
                     speech_timeout="8",
@@ -5026,18 +5029,18 @@ def voice():
             return str(resp)
 
         # -------------------------------
-        # Step 2: Expiration (MMYY/MMYYYY)
+        # Step 2: Expiration
         # -------------------------------
         if cc_step == 2:
-            session_data[call_sid]["no_input_expected"] = True  # DTMF-only preferred
+            session_data[call_sid]["no_input_expected"] = True
             digits = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=True)
             debug_print(f"collect_cc: Step 2 digits='{digits}'")
 
             if len(digits) not in (4, 6):
                 gather = make_gather(
-                    "Please enter expiration as two digits for month and two digits for year, for example 0 9 2 7, then press pound.",
+                    "Please enter expiration as two digits for month and two digits for year, then press pound (#).",
                     input="dtmf",
-                    timeout=8,               # ⏱ shorter wait
+                    timeout=8,
                     finish_on_key="#",
                     action="/voice",
                 )
@@ -5055,13 +5058,12 @@ def voice():
                 expiry_boundary = datetime(exp_year, mm, 1, 0, 0, 0, tzinfo=_pytz.UTC) + timedelta(days=31)
                 if now >= expiry_boundary:
                     raise ValueError("expired")
-
                 customer["cc_exp"] = f"{mm:02d}/{yy}"
                 debug_print(f"collect_cc: ✅ Expiration saved → {customer['cc_exp']}")
             except Exception as e:
                 debug_print(f"collect_cc: ❌ Expiration parse failed → {e}")
                 gather = make_gather(
-                    "That doesn’t look valid. Please enter month and year as M M Y Y, then press pound.",
+                    "That doesn’t look valid. Please enter month and year as M M Y Y, then press pound (#).",
                     input="dtmf",
                     timeout=8,
                     finish_on_key="#",
@@ -5071,13 +5073,12 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
-            # Advance immediately
             session_data[call_sid]["cc_step"] = 3
             resp.redirect("/voice")
             return str(resp)
 
         # -------------------------------
-        # Step 3: CVV (3–4 digits)
+        # Step 3: CVV
         # -------------------------------
         if cc_step == 3:
             session_data[call_sid]["no_input_expected"] = True
@@ -5086,9 +5087,9 @@ def voice():
 
             if not (3 <= len(digits) <= 4 and digits.isdigit()):
                 gather = make_gather(
-                    "Please enter the three or four digit security code, then press pound.",
+                    "Please enter the three or four digit security code, then press pound (#).",
                     input="dtmf",
-                    timeout=6,              # ⏱ shorter wait
+                    timeout=6,
                     finish_on_key="#",
                     action="/voice",
                 )
@@ -5101,7 +5102,7 @@ def voice():
                 customer["cc_name"] = f"{customer.get('first_name','')} {customer.get('last_name','')}".strip()
             debug_print(f"collect_cc: ✅ CVV saved (len={len(digits)}) ; cc_name='{customer.get('cc_name')}'")
 
-            # Advance to confirmation or update flow
+            # Advance to next stage
             session_data[call_sid].pop("no_input_expected", None)
             session_data[call_sid].pop("cc_step", None)
             session_data[call_sid]["cc_speech_tries"] = 0
@@ -5116,6 +5117,7 @@ def voice():
             debug_print(f"collect_cc: ➡️ Auto-advancing to {next_stage}")
             resp.redirect("/voice")
             return str(resp)
+
 
 
 
