@@ -1,4 +1,4 @@
-# update  10/14/25 time_saved  PERFECT
+# update  10/15/25 time_saved  PERFECT
 #  
 # =========================
 # Standard library imports
@@ -1224,6 +1224,7 @@ def init_db() -> None:
       - Adopt valid E.164 left keys.
       - Add timestamps if missing.
       - Never guess legacy 10-digit numbers.
+      - Add customer_status field (default = "current").
     """
     os.makedirs(DB_FOLDER, exist_ok=True)
     if not os.path.exists(DB_FILE):
@@ -1247,9 +1248,6 @@ def init_db() -> None:
     adopted_from_key = 0
     skipped_non_e164 = 0
 
-    # ✅ ensure _re defined
-    #import re as _re
-
     def _is_e164(s: str) -> bool:
         s = (s or "").strip()
         return bool(_re.fullmatch(r"\+\d{6,15}", s))
@@ -1267,10 +1265,17 @@ def init_db() -> None:
                 new_data[old_key] = rec
                 continue
 
+            # ✅ Ensure created_at and last_seen_at timestamps
             if not rec.get("created_at") or not rec.get("last_seen_at"):
                 rec.setdefault("created_at", now)
                 rec.setdefault("last_seen_at", now)
                 ensured_ts += 1
+                changed = True
+
+            # ✅ Ensure customer_status always present (default = "current")
+            # Possible values: "current" or "new"
+            if not rec.get("customer_status"):
+                rec["customer_status"] = "current"
                 changed = True
 
             rec["dob"] = _oneline(rec.get("dob", ""))
@@ -1307,6 +1312,7 @@ def init_db() -> None:
                 if not phone_e164:
                     skipped_non_e164 += 1
 
+        # ✅ Save updated database only if changed
         if changed:
             tmp = DB_FILE + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
@@ -1323,7 +1329,6 @@ def init_db() -> None:
         debug_print(f"init_db: ⚠️ migration skipped due to error: {e}")
         return
 
-    
 
 
 
@@ -1522,7 +1527,6 @@ def _save_customers(data: Dict[str, Dict[str, Any]]) -> None:
 
 
 #   update to remove legacy phone10
-
 def insert_customer(
     phone: str,
     dob: str,
@@ -1533,38 +1537,30 @@ def insert_customer(
     cc_number: str,
     cc_exp: str,
     cc_cvv: str,
+    customer_status: str = "current",
 ) -> bool:
     """
-    Insert or update a customer in customers.json (single pretty JSON dict):
+    Insert or update a customer in customers.json (single pretty JSON dict).
 
       • If (phone|dob) exists → update record fields + bump 'last_seen_at'; return False.
       • If new → create record with 'created_at' + 'last_seen_at'; return True.
 
     This version guarantees:
-      ✅ Always writes valid record even if dob or country normalization fails.
-      ✅ Never skips due to missing country context.
-      ✅ Explicitly logs both normalization and insertion result.
-
-    PHONE FORMAT:
-      • Attempts E.164 normalization (US or EG). If normalization fails, falls back
-        to '+000' + digits to preserve the data instead of aborting.
+      ✅ Strict E.164 enforcement (no legacy 10-digit fallback).
+      ✅ Adds 'customer_status' field (default = "current", or explicitly set to "new").
+      ✅ Preserves timestamps and existing customer data.
     """
     # ----------------------------------------------------------------------
-    # 🧩 Step 1: Ensure DB is ready
+    # 🧩 Step 1: Ensure DB is initialized
     # ----------------------------------------------------------------------
     init_db()
 
     # ----------------------------------------------------------------------
-    # 🧩 Step 2: Normalize phone (strict E.164, but with fallback)
+    # 🧩 Step 2: Normalize phone (strict E.164 only)
     # ----------------------------------------------------------------------
     phone_e164 = normalize_phone_e164(phone, globals().get("COUNTRY", "US"))
     if not phone_e164:
-        debug_print(f"insert_customer: ⚠️ invalid phone '{phone}' → fallback to raw digits")
-        digits_only = "".join(ch for ch in str(phone) if ch.isdigit())
-        if len(digits_only) >= 8:
-            phone_e164 = f"+000{digits_only[-10:]}"  # store anyway to avoid skipping
-        else:
-            raise ValueError("insert_customer: invalid phone, cannot insert")
+        raise ValueError(f"insert_customer: invalid phone '{phone}' (must be valid E.164)")
 
     dob_iso = (dob or "").strip() or "unknown"
     first_name = _oneline(first_name)
@@ -1576,7 +1572,7 @@ def insert_customer(
     cc_cvv     = _oneline(cc_cvv)
 
     # ----------------------------------------------------------------------
-    # 🧩 Step 3: Load + prepare data
+    # 🧩 Step 3: Load + prepare customer data
     # ----------------------------------------------------------------------
     data = _load_customers()
     try:
@@ -1587,7 +1583,7 @@ def insert_customer(
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # ----------------------------------------------------------------------
-    # 🧩 Step 4: Update or insert record
+    # 🧩 Step 4: Update existing customer
     # ----------------------------------------------------------------------
     if key in data:
         existing = data[key]
@@ -1600,12 +1596,15 @@ def insert_customer(
             "cc_exp": cc_exp or existing.get("cc_exp", ""),
             "cc_cvv": cc_cvv or existing.get("cc_cvv", ""),
             "last_seen_at": now,
+            "customer_status": customer_status or "current",  # ✅ override if specified
         })
         _save_customers(data)
-        debug_print(f"insert_customer: 🟡 Updated existing record for {key}")
+        debug_print(f"insert_customer: 🟡 Updated existing record for {key} (status={customer_status})")
         return False
 
-    # Create new record if missing
+    # ----------------------------------------------------------------------
+    # 🧩 Step 5: Insert new customer record
+    # ----------------------------------------------------------------------
     rec = {
         "phone_e164": phone_e164,
         "phone": phone_e164,
@@ -1619,15 +1618,17 @@ def insert_customer(
         "cc_cvv": cc_cvv,
         "created_at": now,
         "last_seen_at": now,
+        "customer_status": customer_status or "current",  # ✅ input-controlled value
     }
     data[key] = rec
     _save_customers(data)
 
     debug_print(
-        f"insert_customer: ✅ Added new customer {first_name} {last_name} "
+        f"insert_customer: ✅ Added {customer_status.upper()} customer {first_name} {last_name} "
         f"({phone_e164}|{dob_iso}) @ {now}"
     )
     return True
+
 
 
 
@@ -1687,7 +1688,156 @@ def normalize_phone_e164(raw: str, country: str = "US") -> str:
     # Unknown country → fail closed
     return ""
 
-                                                    
+
+
+def update_customer_status(
+    phone: str,
+    dob: str,
+    new_status: str,
+    default_country: str = COUNTRY
+) -> bool:
+    """
+    Update the 'customer_status' value for a given customer record.
+
+    Args:
+        phone (str): Customer's phone number (must be E.164 or normalizable).
+        dob (str): Date of birth string as stored in record (e.g., "1990-04-12").
+        new_status (str): New value for 'customer_status' ("new" or "current").
+        default_country (str): Default country for normalization (default = COUNTRY).
+
+    Returns:
+        bool: True if update succeeded, False if no record found or invalid input.
+
+    Behavior:
+      ✅ Strict E.164 enforcement (no legacy 10-digit fallback).
+      ✅ Updates in-place within customers.json and preserves timestamps.
+      ✅ Returns False if record not found or normalization fails.
+      ✅ Logs every step for debugging visibility.
+    """
+    # ----------------------------------------------------------------------
+    # 🧩 Step 1: Sanitize and validate input
+    # ----------------------------------------------------------------------
+    if new_status not in {"new", "current"}:
+        debug_print(f"update_customer_status: ❌ invalid status '{new_status}' (must be 'new' or 'current')")
+        return False
+
+    init_db()
+    dob_iso = (dob or "").strip()
+    raw_phone = (phone or "").strip()
+
+    # ----------------------------------------------------------------------
+    # 🧩 Step 2: Normalize phone to E.164
+    # ----------------------------------------------------------------------
+    phone_e164 = ""
+    try:
+        if raw_phone.startswith("+") and raw_phone[1:].replace(" ", "").isdigit():
+            phone_e164 = "+" + raw_phone[1:].replace(" ", "")
+            debug_print(f"update_customer_status: 📞 using existing E.164 '{phone_e164}'")
+        else:
+            for country in [(default_country or "US").upper(), "EG", "US"]:
+                phone_e164 = normalize_phone_e164(raw_phone, country)
+                if phone_e164:
+                    debug_print(f"update_customer_status: 📞 normalized to {phone_e164} ({country})")
+                    break
+    except Exception as e:
+        debug_print(f"update_customer_status: ⚠️ normalization failed → {e}")
+
+    if not phone_e164:
+        debug_print("update_customer_status: ❌ could not normalize phone to E.164; aborting")
+        return False
+
+    # ----------------------------------------------------------------------
+    # 🧩 Step 3: Load database and locate record
+    # ----------------------------------------------------------------------
+    data = _load_customers()
+    key = _key(phone_e164, dob_iso)
+    rec = data.get(key)
+
+    # Fallback scan if not found directly
+    if rec is None:
+        for k, r in data.items():
+            if (r.get("phone_e164") or "").strip() == phone_e164 and (r.get("dob") or "").strip() == dob_iso:
+                rec = r
+                key = k
+                debug_print(f"update_customer_status: ✅ found record by scan under key '{k}'")
+                break
+        if rec is None:
+            debug_print(f"update_customer_status: ❌ no record found for {phone_e164}|{dob_iso}")
+            return False
+
+    # ----------------------------------------------------------------------
+    # 🧩 Step 4: Update the customer_status field
+    # ----------------------------------------------------------------------
+    old_status = rec.get("customer_status", "current")
+    rec["customer_status"] = new_status
+    rec["last_seen_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # ----------------------------------------------------------------------
+    # 🧩 Step 5: Save and log changes
+    # ----------------------------------------------------------------------
+    _save_customers(data)
+    debug_print(
+        f"update_customer_status: ✅ Updated {phone_e164}|{dob_iso}\n"
+        f"  Old status: {old_status}\n"
+        f"  New status: {new_status}\n"
+        f"  Last Seen At: {rec['last_seen_at']}"
+    )
+    return True
+
+
+
+def get_customer_status(phone: str, dob: str, default_country: str = COUNTRY) -> Optional[str]:
+    """
+    Retrieve the customer's current status ("new" or "current") from customers.json.
+
+    Behavior:
+      ✅ Uses strict E.164-only lookup (no legacy phone fallback).
+      ✅ Returns "new" or "current" if found, None if no record exists.
+      ✅ Performs a light scan fallback if the exact key is missing.
+    """
+    init_db()
+    dob_iso = (dob or "").strip()
+    raw_phone = (phone or "").strip()
+
+    # --- Normalize phone to E.164 ---
+    phone_e164 = ""
+    try:
+        if raw_phone.startswith("+") and raw_phone[1:].replace(" ", "").isdigit():
+            phone_e164 = "+" + raw_phone[1:].replace(" ", "")
+            debug_print(f"get_customer_status: 📞 using E.164 '{phone_e164}' directly")
+        else:
+            for country in [(default_country or "US").upper(), "EG", "US"]:
+                phone_e164 = normalize_phone_e164(raw_phone, country)
+                if phone_e164:
+                    debug_print(f"get_customer_status: 📞 normalized to {phone_e164} ({country})")
+                    break
+    except Exception as e:
+        debug_print(f"get_customer_status: ⚠️ normalization failed → {e}")
+
+    if not phone_e164:
+        debug_print("get_customer_status: ❌ invalid phone; cannot normalize to E.164")
+        return None
+
+    # --- Load data and find record ---
+    data = _load_customers()
+    key = _key(phone_e164, dob_iso)
+    rec = data.get(key)
+
+    # Light scan fallback
+    if rec is None:
+        for k, r in data.items():
+            if (r.get("phone_e164") or "").strip() == phone_e164 and (r.get("dob") or "").strip() == dob_iso:
+                rec = r
+                debug_print(f"get_customer_status: ✅ found record by scan under key '{k}'")
+                break
+        if rec is None:
+            debug_print(f"get_customer_status: ❌ no record found for {phone_e164}|{dob_iso}")
+            return None
+
+    # --- Return status safely ---
+    status = rec.get("customer_status", "current")
+    debug_print(f"get_customer_status: ✅ status for {phone_e164}|{dob_iso} = '{status}'")
+    return status
 
 
 
@@ -1703,94 +1853,85 @@ def update_cc_info(
     default_country: str = COUNTRY,  # e.g., "US" or "EG"
 ) -> bool:
     """
-    Update the customer's CC fields in customers.json by (phone_e164|dob).
+    Update the customer's credit card info in customers.json by (phone_e164|dob).
 
-    E.164 ONLY:
-      - No legacy 10-digit fallback or migration here.
-      - `phone` may be already +E.164 or will be normalized with normalize_phone_e164.
-      - If E.164 cannot be obtained, returns False.
-
-    Lookup:
-      - Primary key: _key(phone_e164, dob_iso)
-      - If not found under that exact key, we do a light scan of records to
-        locate a record whose rec['phone_e164'] == phone_e164 AND rec['dob'] == dob_iso.
-        (Still E.164-only; no 10-digit logic.)
-
-    Returns:
-      True if updated, False if no such customer.
-
-    NOTE: Logs are UNMASKED per your request (not recommended for production).
+    Optimization goals:
+      ✅ Strict E.164-only normalization (no legacy fallback).
+      ✅ Clearer flow with early returns.
+      ✅ Reduced redundant normalization and string ops.
+      ✅ Maintains identical behavior and full debug traceability.
     """
+    # ----------------------------------------------------------------------
+    # 🧩 Step 1: Ensure DB ready + normalize input
+    # ----------------------------------------------------------------------
     init_db()
     dob_iso = (dob or "").strip()
+    raw_phone = (phone or "").strip()
 
-    # --- Normalize to E.164 (primary & only) ---
-    raw = (phone or "").strip()
-    if raw.startswith("+") and raw[1:].replace(" ", "").isdigit():
-        phone_e164 = "+" + raw[1:].replace(" ", "")
-        debug_print(f"update_cc_info: 📞 pass-through E.164 = '{phone_e164}'")
-    else:
-        phone_e164 = ""
-        try:
-            debug_print(f"update_cc_info: 📞 trying normalize_phone_e164(raw, {default_country})")
-            phone_e164 = normalize_phone_e164(raw, (default_country or "US").upper()) or ""
-            if not phone_e164:
-                alt = "EG" if (default_country or "US").upper() != "EG" else "US"
-                debug_print(f"update_cc_info: 📞 trying normalize_phone_e164(raw, {alt})")
-                phone_e164 = normalize_phone_e164(raw, alt) or ""
-        except Exception as e:
-            debug_print(f"update_cc_info: ⚠️ normalize_phone_e164 error → {e}")
-            phone_e164 = ""
+    # --- Normalize to E.164 once ---
+    phone_e164 = ""
+    try:
+        if raw_phone.startswith("+") and raw_phone[1:].replace(" ", "").isdigit():
+            phone_e164 = "+" + raw_phone[1:].replace(" ", "")
+            debug_print(f"update_cc_info: 📞 using existing E.164: {phone_e164}")
+        else:
+            for country in [(default_country or "US").upper(), "EG", "US"]:
+                phone_e164 = normalize_phone_e164(raw_phone, country)
+                if phone_e164:
+                    debug_print(f"update_cc_info: 📞 normalized to {phone_e164} ({country})")
+                    break
+    except Exception as e:
+        debug_print(f"update_cc_info: ⚠️ normalization failed → {e}")
 
     if not phone_e164:
         debug_print("update_cc_info: ❌ could not normalize phone to E.164; aborting")
         return False
 
+    # ----------------------------------------------------------------------
+    # 🧩 Step 2: Load customer data
+    # ----------------------------------------------------------------------
     data = _load_customers()
     key = _key(phone_e164, dob_iso)
     rec = data.get(key)
 
-    # Light scan fallback (E.164-only; no legacy):
+    # --- Fallback: Light scan (E.164 + DOB match only) ---
     if rec is None:
-        debug_print("update_cc_info: ℹ️ exact key not found; scanning for E.164+DOB match in records")
         for k, r in data.items():
-            try:
-                pe = (r.get("phone_e164") or "").strip()
-                rd = (r.get("dob") or "").strip()
-                if pe == phone_e164 and rd == dob_iso:
-                    rec = r
-                    key = k
-                    debug_print(f"update_cc_info: ✅ found record by scan under key '{k}'")
-                    break
-            except Exception:
-                continue
+            if (r.get("phone_e164") or "").strip() == phone_e164 and (r.get("dob") or "").strip() == dob_iso:
+                rec = r
+                key = k
+                debug_print(f"update_cc_info: ✅ found record under key '{k}' (scan match)")
+                break
+        if rec is None:
+            debug_print(f"update_cc_info: ❌ no record for phone={phone_e164} dob={dob_iso or '∅'}")
+            return False
 
-    if rec is None:
-        debug_print(f"update_cc_info: ❌ no record for phone={phone_e164} dob={dob_iso or '∅'}")
-        return False
-
-    # --- Apply updates (UNMASKED) ---
-    if cc_number is not None:
-        rec["cc_number"] = _oneline(cc_number)
-    if cc_exp is not None:
-        rec["cc_exp"] = _oneline(cc_exp)
-    if cc_cvv is not None:
-        rec["cc_cvv"] = _oneline(cc_cvv)
+    # ----------------------------------------------------------------------
+    # 🧩 Step 3: Apply CC updates
+    # ----------------------------------------------------------------------
+    for field, value in {
+        "cc_number": cc_number,
+        "cc_exp": cc_exp,
+        "cc_cvv": cc_cvv,
+    }.items():
+        if value is not None:
+            rec[field] = _oneline(value)
 
     rec["last_seen_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     _save_customers(data)
 
+    # ----------------------------------------------------------------------
+    # 🧩 Step 4: Log changes
+    # ----------------------------------------------------------------------
     debug_print(
-        "update_cc_info: ✅ updated\n"
-        f"Phone(E.164): {phone_e164}\n"
-        f"DOB: {dob_iso or '∅'}\n"
-        f"CC Number: {rec.get('cc_number','')}\n"
-        f"CC Exp: {rec.get('cc_exp','')}\n"
-        f"CC CVV: {rec.get('cc_cvv','')}\n"
-        f"Last Seen At: {rec['last_seen_at']}"
+        f"update_cc_info: ✅ updated record for {phone_e164}\n"
+        f"  DOB: {dob_iso or '∅'}\n"
+        f"  CC Number: {rec.get('cc_number', '')}\n"
+        f"  CC Exp: {rec.get('cc_exp', '')}\n"
+        f"  CC CVV: {rec.get('cc_cvv', '')}\n"
+        f"  Last Seen At: {rec['last_seen_at']}"
     )
     return True
-
 
 
 
@@ -2200,7 +2341,7 @@ def voice():
                 "Say 'leave voicemail' or press 5.",
                 hints
             )
-        if st == "booking":
+        if st == "book_appointment":
             doctor_list = ", ".join(googleid_dr_name_map.values())
             hints = doctor_list
             debug_print("[voice] 🔇 using booking silence prompt")
@@ -2375,7 +2516,7 @@ def voice():
         # ----------------------------------------------------------------------
 
         lower = (speech_result or "").lower().strip()
-        print(f"📢 intent :speech_result: {lower}")
+        debuf_print(f"📢 intent :speech_result: {lower}")
 
         # --- New: handle keypad selection 1..5 (or literal spoken "1".."5") first ---
         choice = None
@@ -2388,10 +2529,10 @@ def voice():
             # Map choices to flows
             if choice == "1":
                 # ✅ Booking
-                print("📅 DTMF=1 → booking")
+                debug_print("intent:📅 DTMF=1 → booking")
                 session_data.setdefault(call_sid, {})
                 session_data[call_sid].update({
-                    "stage": "booking",
+                    "stage": "book_appointment",
                     "booking": {},
                     "retry_booking": 0,
                     "retry_time": 0
@@ -2413,7 +2554,7 @@ def voice():
 
             if choice == "2":
                 # ✅ Cancellation
-                print("❌ DTMF=2 → cancel flow")
+                debug_print("intent:❌ DTMF=2 → cancel flow")
                 session_data[call_sid] = {
                     "stage": "cancel_appointment",
                     "cancel": {},
@@ -2437,7 +2578,7 @@ def voice():
 
             if choice == "3":
                 # ✅ Reschedule (cancel then rebook)
-                print("🔁 DTMF=3 → reschedule (cancel then rebook)")
+                debug_print("🔁 DTMF=3 → reschedule (cancel then rebook)")
                 session_data[call_sid] = {
                      "stage": "cancel_appointment",
                      "cancel": {},
@@ -2462,7 +2603,7 @@ def voice():
 
             if choice == "4":
                 # ✅ Update CC
-                print("💳 DTMF=4 → update CC flow")
+                debug_print("intent:💳 DTMF=4 → update CC flow")
                 session_data.setdefault(call_sid, {})
                 session_data[call_sid].update({
                     "stage": "update_cc",
@@ -2477,7 +2618,7 @@ def voice():
 
             if choice == "5":
                 # ✅ Voicemail
-                print("📩 DTMF=5 → voicemail")
+                debug_print("intent:📩 DTMF=5 → voicemail")
                 session_data.setdefault(call_sid, {})
                 session_data[call_sid]["stage"] = "voicemail"
                 resp.say(gpt_speak("Please leave your name, phone number, and message after the beep."), VOICE)
@@ -2492,7 +2633,7 @@ def voice():
         # 🚫 Ignore junk greetings
         junk_inputs = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "yo", "test", "1", "yes", "no"}
         if not lower or lower in junk_inputs:
-            print(f"⛔ Ignored junk input: '{lower}' — re-prompting without response")
+            debug_print(f"intent:⛔ Ignored junk input: '{lower}' — re-prompting without response")
             gather = make_gather(
                 "Thank you for calling EPIC therapist. "
                 "Say 'book appointment' or press 1. "
@@ -2636,7 +2777,7 @@ def voice():
 
 
     
-    elif stage == "booking":
+    elif stage == "book_appointment":
         # ----------------------------------------------------------------------
         # 📍 Booking flow: ask caller to name or select a doctor.
         # Accepts both speech and single-digit DTMF input.
@@ -3292,41 +3433,39 @@ def voice():
 
     # ----------------------------------------------------------------------
     # 🧩 NEW: Verify customer type (after DOB mismatch)
-    # ----------------------------------------------------------------------
     elif stage == "verify_customer_type":
         # ----------------------------------------------------------------------
         # 🧭 Stage: verify_customer_type
         # Purpose:
         #   - Handle branching when a phone+dob lookup didn't find a customer.
-        #   - Behavior depends on global CREATE_NEW_CUSTOMER flag.
-        #       * If False → tell caller to contact the clinic; hang up.
-        #       * If True  → let caller choose: 1=new, 2=existing.
+        #   - Behavior depends on CREATE_NEW_CUSTOMER flag.
+        #       * If False → hang up with message.
+        #       * If True  → allow caller to choose: 1=new, 2=existing.
         #
         # Inputs:
-        #   - DTMF only (1 or 2). We also locally handle silence (no Digits).
+        #   - DTMF (1=new, 2=existing)
+        #   - Local silence handling and retries.
         #
-        # Local state used:
-        #   - session_data[call_sid]["last_customer_found"] (bool)
-        #   - session_data[call_sid]["silence_verify_type"] (int) — local silence counter
-        #   - session_data[call_sid]["retry_verify_type"]   (int) — invalid entry counter
-        #
-        # Twilio lifecycle pattern:
-        #   - On each echo to /voice, if no input → we <Gather> + <Redirect>/voice and return.
-        #   - That produces a new webhook; we increment counters and branch accordingly.
+        # Session Data:
+        #   - last_customer_found (bool)
+        #   - customer_status ("new" | "current")
+        #   - silence_verify_type, retry_verify_type counters
         # ----------------------------------------------------------------------
         debug_print("verify_customer_type: 📍 Stage entered")
 
         sd = session_data.setdefault(call_sid, {})
         last_lookup_found = sd.get("last_customer_found", False)
-        allow_new = bool(globals().get("CREATE_NEW_CUSTOMER", False))  # default False if not set
+        allow_new = bool(globals().get("CREATE_NEW_CUSTOMER", False))
 
-        # Pull current inputs
+        # Pull current DTMF input
         dtmf_digits = (request.values.get("Digits") or "").strip()
-        debug_print(f"verify_customer_type: received DTMF='{dtmf_digits}', allow_new={allow_new}, found={last_lookup_found}")
+        debug_print(
+            f"verify_customer_type: received DTMF='{dtmf_digits}', allow_new={allow_new}, found={last_lookup_found}"
+        )
 
-        # If lookup FAILED and clinic does NOT allow new-customer creation → exit early.
+        # If new creation not allowed
         if not last_lookup_found and not allow_new:
-            debug_print("verify_customer_type: not found & CREATE_NEW_CUSTOMER=False → advise to contact clinic; hangup")
+            debug_print("verify_customer_type: not found & CREATE_NEW_CUSTOMER=False → hang up")
             resp.say(
                 gpt_speak(
                     "We couldn’t find a record with that phone number and date of birth. "
@@ -3338,17 +3477,13 @@ def voice():
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # From here, either:
-        #  - found=True (unexpected path) → just proceed,
-        #  - or not found but allow_new=True → ask 1/2.
-
         # -------------------------------
-        # 🔇 Local silence handling
+        # 🔇 Silence handling
         # -------------------------------
         if not dtmf_digits:
             tries = sd.get("silence_verify_type", 0) + 1
             sd["silence_verify_type"] = tries
-            debug_print(f"verify_customer_type: 🤐 no input; silence tries={tries}/3")
+            debug_print(f"verify_customer_type: 🤐 silence tries={tries}/3")
 
             if tries >= 3:
                 resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
@@ -3366,7 +3501,7 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # Clear silence counter once we have input
+        # Clear silence counter once input received
         sd.pop("silence_verify_type", None)
 
         # -------------------------------
@@ -3374,20 +3509,24 @@ def voice():
         # -------------------------------
         if dtmf_digits == "1":
             # 1 → "New customer"
+            sd["customer_status"] = "new"
+            debug_print("verify_customer_type: 🆕 customer_status='new' stored in session")
+
+            # Not found → proceed to collect first name
             if not last_lookup_found:
-                # Not found + new → proceed to schedule as new customer
-                debug_print("verify_customer_type: 1=new; not found → proceed to ask_time_date")
-                sd["stage"] = "ask_time_date"
+                debug_print("verify_customer_type: new customer not found → go to collect_first_name")
+                sd["stage"] = "collect_first_name"
                 g = make_gather(
-                    "Welcome. Please say the appointment date and time, for example, 'October 12 at 9 A M'.",
+                    "Welcome! Please say your first name after the beep.",
                     input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True, finish_on_key="#"
                 )
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
+
+            # Found but pressed 1 (odd case)
             else:
-                # Found but pressed 1 (new) — odd, but let them continue to scheduling
-                debug_print("verify_customer_type: 1=new; found=True (unexpected) → proceed to ask_time_date")
+                debug_print("verify_customer_type: found=True but pressed 1=new → continue to scheduling")
                 sd["stage"] = "ask_time_date"
                 g = make_gather(
                     "Okay. Please say the appointment date and time, for example, 'October 8 at 9 30 A M'.",
@@ -3399,9 +3538,11 @@ def voice():
 
         elif dtmf_digits == "2":
             # 2 → "Existing customer"
+            sd["customer_status"] = "current"
+            debug_print("verify_customer_type: 👤 customer_status='current' stored in session")
+
             if not last_lookup_found:
-                # Caller claims existing but we didn't find them → advise to contact clinic
-                debug_print("verify_customer_type: 2=existing; not found → advise to contact clinic; hangup")
+                debug_print("verify_customer_type: 2=existing; not found → hang up")
                 resp.say(
                     gpt_speak(
                         "We couldn’t find you as an existing customer. "
@@ -3413,7 +3554,6 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
             else:
-                # Found=True & says existing → proceed to scheduling
                 debug_print("verify_customer_type: 2=existing; found=True → proceed to ask_time_date")
                 sd["stage"] = "ask_time_date"
                 g = make_gather(
@@ -3425,7 +3565,7 @@ def voice():
                 return str(resp)
 
         # -------------------------------
-        # ❌ Invalid entry → retry up to 3
+        # ❌ Invalid entry → retry
         # -------------------------------
         r = sd.get("retry_verify_type", 0) + 1
         sd["retry_verify_type"] = r
@@ -3444,8 +3584,6 @@ def voice():
         resp.append(g)
         resp.redirect("/voice")
         return str(resp)
-
-
 
 
 
@@ -5625,19 +5763,49 @@ def voice():
 
 
 
-
     elif stage == "book_appt_confirm":
         # ----------------------------------------------------------------------
         # 💬 Stage: book_appt_confirm
-        # Automatically confirms and books appointment (no user confirmation).
+        #
+        # BEHAVIOR SUMMARY:
+        #
+        #   🆕 NEW CUSTOMER:
+        #       • Triggered when session_data[call_sid]["customer_status"] == "new".
+        #       • Calls only insert_customer() to save basic customer info.
+        #       • Does NOT create a Google Calendar event or confirm appointment.
+        #       • Plays message:
+        #           "Thank you. You need to verify your information with the clinic
+        #            before booking an appointment."
+        #       • Ends the call immediately afterward.
+        #
+        #   👤 CURRENT CUSTOMER:
+        #       • Triggered when session_data[call_sid]["customer_status"] == "current".
+        #       • Proceeds with the full appointment confirmation flow:
+        #           1. Validate slot availability (is_time_slot_available()).
+        #           2. Insert or update customer record via insert_customer().
+        #           3. Create Google Calendar event for the selected doctor.
+        #           4. Persist appointment locally using confirm_appointment_for_dr_name().
+        #           5. Send SMS confirmation to the caller.
+        #       • Ends the call with a “Your appointment has been booked” message.
+        #
+        # NOTE:
+        #   - Assumes both phone_e164 and customer_dob are always available in session.
+        #   - No fallback gathers for missing data.
         # ----------------------------------------------------------------------
         t_stage_start = _time_mod.perf_counter()
         debug_print("book_appt_confirm: 📍 Stage entered")
 
         # ----------------------------------------------------------------------
-        # 🧩 Doctor Info
+        # 🧩 Retrieve session data
         # ----------------------------------------------------------------------
-        doctor_id = session_data[call_sid].get("doctor_id")
+        sd = session_data.get(call_sid, {})
+        customer_status = sd.get("customer_status", "current")
+        debug_print(f"book_appt_confirm: 🧾 customer_status={customer_status}")
+
+        # ----------------------------------------------------------------------
+        # 🧩 Doctor Information
+        # ----------------------------------------------------------------------
+        doctor_id = sd.get("doctor_id")
         if not doctor_id:
             debug_print("book_appt_confirm: ❌ missing doctor_id → choose_doctor")
             session_data[call_sid]["stage"] = "choose_doctor"
@@ -5647,20 +5815,19 @@ def voice():
         doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
 
         # ----------------------------------------------------------------------
-        # 🧩 Appointment Time Info
+        # 🧩 Appointment Information
         # ----------------------------------------------------------------------
-        appt = session_data[call_sid].get("appointment_time", {}) or {}
+        appt = sd.get("appointment_time", {}) or {}
         appointment_start = appt.get("start")
         appointment_end   = appt.get("end")
 
         if not appointment_start:
-            debug_print("book_appt_confirm: ❌ missing appointment_start")
             resp.say(gpt_speak("Appointment time is missing. Goodbye!"), VOICE)
             resp.hangup()
             return str(resp)
 
         # Convert UTC → Local (Clinic Timezone)
-        tz_name = (globals().get("CLINIC_TZ") or "America/Chicago")
+        tz_name = globals().get("CLINIC_TZ", "America/Chicago")
         try:
             tz = _pytz.timezone(tz_name)
         except Exception:
@@ -5683,14 +5850,11 @@ def voice():
         if not appointment_end:
             try:
                 dur = None
-                for k in ("APPOINTMENT_DURATION_MINUTES", "SESSION_TIME", "SESSIUON_TIME"):
+                for k in ("APPOINTMENT_DURATION_MINUTES", "SESSION_TIME"):
                     v = globals().get(k)
                     if v:
-                        try:
-                            dur = int(v)
-                            break
-                        except:
-                            pass
+                        dur = int(v)
+                        break
                 if dur not in (15, 30, 45, 60):
                     dur = 30
                 end_dt = dt_utc + timedelta(minutes=dur)
@@ -5702,50 +5866,55 @@ def voice():
                 return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Customer Info
+        # 🧩 Customer Information (assumes phone and DOB exist)
         # ----------------------------------------------------------------------
-        customer         = session_data[call_sid].get("customer", {}) or {}
-        customer_name    = (customer.get("name") or "").strip()
+        customer         = sd.get("customer", {}) or {}
         first_name       = (customer.get("first_name") or "").strip()
         last_name        = (customer.get("last_name")  or "").strip()
+        customer_address = (customer.get("address")    or "").strip()
+        customer_dob     = (customer.get("dob")        or "").strip()
+        phone_e164       = (customer.get("phone_e164") or "").strip()
 
-        if not first_name and customer_name:
-            parts = customer_name.split()
-            first_name = parts[0]
-            last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
+        # ----------------------------------------------------------------------
+        # 🆕 NEW CUSTOMER FLOW
+        # ----------------------------------------------------------------------
+        if customer_status == "new":
+            debug_print("book_appt_confirm: 🆕 new customer flow triggered")
 
-        effective_name   = customer_name or " ".join([n for n in (first_name, last_name) if n]).strip()
-        customer_address = (customer.get("address") or "").strip()
-        customer_dob     = (customer.get("dob") or "").strip()
-
-        phone_raw = (customer.get("phone_e164") or customer.get("phone") or "").strip()
-        if phone_raw.startswith("+") and phone_raw[1:].replace(" ", "").isdigit():
-            phone_e164 = "+" + phone_raw[1:].replace(" ", "")
-        else:
             try:
-                default_country = (session_data[call_sid].get("phone_country") or "US").upper()
-                phone_e164 = normalize_phone_e164(phone_raw, default_country) or ""
-                if not phone_e164:
-                    alt = "EG" if default_country != "EG" else "US"
-                    phone_e164 = normalize_phone_e164(phone_raw, alt) or ""
-            except Exception:
-                phone_e164 = ""
+                inserted_ok = insert_customer(
+                    phone=phone_e164, dob=customer_dob,
+                    first_name=first_name, last_name=last_name, address=customer_address,
+                    cc_name=(customer.get("cc_name") or f"{first_name} {last_name}"),
+                    cc_number=(customer.get("cc_number") or ""),
+                    cc_exp=(customer.get("cc_exp") or ""),
+                    cc_cvv=(customer.get("cc_cvv") or ""),
+                    customer_status="new",
+                )
+                debug_print(f"book_appt_confirm: ✅ insert_customer (new) → {inserted_ok}")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ❌ insert_customer failed for new customer → {e}")
 
-        if not phone_e164:
-            session_data[call_sid]["stage"] = "collect_phone"
-            resp.append(make_gather("Before we finalize your appointment, please provide your phone number."))
-            return str(resp)
-
-        if not customer_dob:
-            session_data[call_sid]["stage"] = "collect_dob"
-            resp.append(make_gather(
-                "Before we confirm, please say your date of birth, for example, 'July 3 1990'."
-            ))
+            msg = (
+                "Thank you for providing your information. "
+                "You need to verify your details with the clinic before scheduling an appointment. "
+                "Please contact the clinic to complete your registration. Goodbye!"
+            )
+            resp.say(gpt_speak(msg), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            debug_print(
+                f"book_appt_confirm: 🆕 new customer flow completed in "
+                f"{_time_mod.perf_counter() - t_stage_start:.3f}s"
+            )
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Availability Check
+        # 👤 CURRENT CUSTOMER FLOW
         # ----------------------------------------------------------------------
+        debug_print("book_appt_confirm: 👤 current customer flow continues")
+
+        # STEP 1: Check slot availability
         try:
             slot_ok = is_time_slot_available(doctor_id, appointment_start, appointment_end, creds)
         except Exception as e:
@@ -5758,49 +5927,35 @@ def voice():
             resp.append(make_gather("Sorry, that slot was just taken. Please choose another time."))
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🧩 Save/Upsert Customer
-        # ----------------------------------------------------------------------
+        # STEP 2: Insert or update customer
         try:
-            init_db()
-            if not phone_e164:
-                digits = "".join(ch for ch in (phone_raw or "") if ch.isdigit())
-                if len(digits) >= 8:
-                    phone_e164 = f"+000{digits[-10:]}"
-                    debug_print(f"book_appt_confirm: ⚠️ fallback phone_e164={phone_e164}")
-            if not customer_dob:
-                customer_dob = "unknown"
-
             inserted_ok = insert_customer(
                 phone=phone_e164, dob=customer_dob,
                 first_name=first_name, last_name=last_name, address=customer_address,
-                cc_name=(customer.get("cc_name") or effective_name or ""),
+                cc_name=(customer.get("cc_name") or f"{first_name} {last_name}"),
                 cc_number=(customer.get("cc_number") or ""),
                 cc_exp=(customer.get("cc_exp") or ""),
-                cc_cvv=(customer.get("cc_cvv") or "")
+                cc_cvv=(customer.get("cc_cvv") or ""),
+                customer_status="current",
             )
-            debug_print(f"book_appt_confirm: ✅ insert_customer executed (return={inserted_ok})")
+            debug_print(f"book_appt_confirm: ✅ insert_customer (current) → {inserted_ok}")
         except Exception as e:
-            debug_print(f"book_appt_confirm: insert_customer failed → {e}")
+            debug_print(f"book_appt_confirm: ❌ insert_customer failed → {e}")
 
-        # ----------------------------------------------------------------------
-        # 🧩 Google Calendar Event Creation
-        # ----------------------------------------------------------------------
-        google_event_id = session_data[call_sid].get("google_event_id", "")
-        if google_event_id:
-            debug_print(f"book_appt_confirm: ℹ️ event already created → id={google_event_id}")
-        else:
+        # STEP 3: Create Google Calendar event
+        google_event_id = sd.get("google_event_id", "")
+        if not google_event_id:
             try:
                 service = build("calendar", "v3", credentials=creds)
                 event_body = {
                     "summary": f"Appointment: {doctor_name}",
-                    "description": f"Clinic appointment for {effective_name or 'patient'}.",
+                    "description": f"Clinic appointment for {first_name} {last_name or ''}.",
                     "start": {"dateTime": appointment_start, "timeZone": "UTC"},
                     "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
                     "transparency": "opaque",
                     "extendedProperties": {
                         "private": {
-                            "patient_name": effective_name,
+                            "patient_name": f"{first_name} {last_name or ''}",
                             "phone_e164": phone_e164,
                             "dob": customer_dob,
                             "call_sid": call_sid,
@@ -5808,7 +5963,7 @@ def voice():
                     },
                 }
                 ev = service.events().insert(calendarId=doctor_id, body=event_body, sendUpdates="none").execute()
-                google_event_id = ev.get("id")
+                google_event_id = ev.get("id", "")
                 session_data[call_sid]["google_event_id"] = google_event_id
                 debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id}")
             except Exception as e:
@@ -5817,23 +5972,17 @@ def voice():
                 resp.append(make_gather("Sorry, I couldn't confirm that slot. Please say another time."))
                 return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🧩 Local JSON Persistence
-        # ----------------------------------------------------------------------
+        # STEP 4: Persist locally via confirm_appointment_for_dr_name()
         try:
             local_date_str = dt_local.strftime("%Y-%m-%d")
-            try:
-                local_time_disp = dt_local.strftime("%-I:%M %p")
-            except Exception:
-                local_time_disp = dt_local.strftime("%I:%M %p").lstrip("0")
-
+            local_time_disp = dt_local.strftime("%I:%M %p").lstrip("0")
             persist = confirm_appointment_for_dr_name(
                 doctor_name=doctor_name,
                 phone=phone_e164,
                 utc_start=appointment_start,
                 utc_end=appointment_end,
                 calendar_id=doctor_id,
-                name=effective_name,
+                name=f"{first_name} {last_name}".strip(),
                 dob=customer_dob,
                 address=customer_address,
                 event_id=google_event_id,
@@ -5845,9 +5994,7 @@ def voice():
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ local persist failed → {e}")
 
-        # ----------------------------------------------------------------------
-        # 🧩 Voice + SMS Confirmation
-        # ----------------------------------------------------------------------
+        # STEP 5: Voice + SMS confirmation
         msg = f"Your appointment with {doctor_name} has been booked"
         if formatted_time:
             msg += f" on {formatted_time}"
@@ -5855,7 +6002,7 @@ def voice():
         resp.say(gpt_speak(msg), VOICE)
 
         try:
-            sms = f"Hi {(effective_name or 'there')}, your appointment with {doctor_name} is confirmed"
+            sms = f"Hi {first_name or 'there'}, your appointment with {doctor_name} is confirmed"
             if formatted_time:
                 sms += f" on {formatted_time}"
             sms += ". Thank you for choosing Epic Therapist Clinic."
@@ -5864,10 +6011,12 @@ def voice():
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
 
+        # Finalize
         resp.hangup()
         session_data.pop(call_sid, None)
         debug_print(f"book_appt_confirm: ✅ total runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
         return str(resp)
+
 
 
 
