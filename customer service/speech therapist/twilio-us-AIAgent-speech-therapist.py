@@ -2516,7 +2516,7 @@ def voice():
         # ----------------------------------------------------------------------
 
         lower = (speech_result or "").lower().strip()
-        debuf_print(f"📢 intent :speech_result: {lower}")
+        debug_print(f"📢 intent :speech_result: {lower}")
 
         # --- New: handle keypad selection 1..5 (or literal spoken "1".."5") first ---
         choice = None
