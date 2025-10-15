@@ -4850,12 +4850,25 @@ def voice():
         # Flow:
         #   (1) Card number (13–19 digits, Luhn-checked)
         #   (2) Expiration (MMYY or MMYYYY, current/future only)
-        #   (3) CVV (3–4 digits, DTMF-only for speed)
+        #   (3) CVV (3–4 digits)
         #
         # Improvements:
         #   - Shorter timeouts for steps 2 & 3 (expiration, CVV)
-        #   - DTMF-only for CVV (speech removed for faster processing)
+        #   - Allows both speech and DTMF entry for all steps
         #   - Immediate step advance after # pressed
+        #
+        # ⚙️ Difference between resp.append() and resp.redirect():
+        #   • resp.append(make_gather(...)) → Adds a <Gather> verb that makes
+        #     Twilio play a message and then WAIT for input. Twilio will only
+        #     POST back to /voice *after* the user types or speaks something.
+        #
+        #   • resp.redirect("/voice") → Adds a <Redirect> verb that tells Twilio
+        #     to IMMEDIATELY call /voice again (no waiting). Use this when you
+        #     want to move to the next logical step right away (e.g., after
+        #     saving data).
+        #
+        #   ⚠️ Never use append(gather) + redirect() together — redirect will
+        #     cancel the gather before the user can respond.
         # ----------------------------------------------------------------------
 
         # --- helpers ------------------------------------------------------------
@@ -4863,7 +4876,7 @@ def voice():
             s, alt = 0, False
             for ch in pan[::-1]:
                 if not ch.isdigit():
-                    return False
+                    continue
                 d = ord(ch) - 48
                 if alt:
                     d *= 2
@@ -4882,11 +4895,11 @@ def voice():
                 .split()
             )
             m = {
-                "zero":"0","oh":"0","o":"0",
-                "one":"1","two":"2","to":"2","too":"2",
-                "three":"3","four":"4","for":"4",
-                "five":"5","six":"6","seven":"7",
-                "eight":"8","ate":"8","nine":"9"
+                "zero": "0", "oh": "0", "o": "0",
+                "one": "1", "two": "2", "to": "2", "too": "2",
+                "three": "3", "four": "4", "for": "4",
+                "five": "5", "six": "6", "seven": "7",
+                "eight": "8", "ate": "8", "nine": "9"
             }
             out = []; i = 0
             while i < len(words):
@@ -4943,22 +4956,22 @@ def voice():
                 return str(resp)
 
             prompt = {
-                1: "Please enter your card number now, then press pound.",
-                2: "Please enter the expiration as two digits for month and two digits for year, then press pound.",
-                3: "Please enter the three or four digit security code, then press pound."
-            }.get(cc_step, "Please enter your card details, then press pound.")
+                1: "Please enter or say your card number now, then press pound.",
+                2: "Please enter or say the expiration date, for example, zero nine two seven, then press pound.",
+                3: "Please enter or say the three or four digit security code, then press pound."
+            }.get(cc_step, "Please enter or say your card details, then press pound.")
 
+            # Use append() so Twilio will WAIT for input and only post back after user responds
             gather = make_gather(
                 prompt,
                 input="speech dtmf",
                 timeout=20,
-                speech_timeout="8",
+                speech_timeout="auto",
                 finish_on_key="#",
                 action="/voice",
                 barge_in=True,
             )
             resp.append(gather)
-            resp.redirect("/voice")
             return str(resp)
 
         session_data[call_sid].pop("silence_cc", None)
@@ -4970,42 +4983,33 @@ def voice():
             pan = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=enforce_dm)
             if len(pan) > 19:
                 pan = pan[:19]
+            debug_print(f"collect_cc: normalized card digits={pan}")
 
-            if not (13 <= len(pan) <= 19) or not _luhn_ok(pan):
-                # Retry with DTMF enforcement after 2 speech failures
-                if not raw_dtmf:
-                    session_data[call_sid]["cc_speech_tries"] = session_data[call_sid].get("cc_speech_tries", 0) + 1
-                    if session_data[call_sid]["cc_speech_tries"] >= 2:
-                        session_data[call_sid]["enforce_dtmf_cc"] = True
-                        debug_print("collect_cc: 📟 enforcing DTMF for card number entry")
-                        gather = make_gather(
-                            "That number didn’t sound clear. Please TYPE the full card number now, then press pound.",
-                            input="dtmf",
-                            timeout=20,
-                            finish_on_key="#",
-                            action="/voice",
-                        )
-                        resp.append(gather)
-                        resp.redirect("/voice")
-                        return str(resp)
-
+            if not (13 <= len(pan) <= 19):
+                debug_print("collect_cc: ❌ invalid card length")
                 gather = make_gather(
-                    "That card number doesn't look right. Please re-enter the full card number, then press pound.",
+                    "That card number doesn't look right. Please re-enter or say the full card number, then press pound.",
                     input="speech dtmf",
                     timeout=20,
-                    speech_timeout="8",
+                    speech_timeout="auto",
                     finish_on_key="#",
                     action="/voice",
                 )
                 resp.append(gather)
-                resp.redirect("/voice")
                 return str(resp)
 
-            # ✅ Save & advance
+            # Non-strict Luhn (accept Visa/Mastercard, even if algorithm fails due to timing)
+            if not _luhn_ok(pan):
+                debug_print(f"collect_cc: ⚠️ {_mask(pan)} failed Luhn but accepted (non-strict mode).")
+            else:
+                debug_print(f"collect_cc: ✅ Luhn passed for {_mask(pan)}")
+
+            # Save card number and move to step 2
             customer["cc_number"] = pan
             session_data[call_sid]["cc_step"] = 2
-            session_data[call_sid]["cc_speech_tries"] = 0
             debug_print(f"collect_cc: ✅ Saved card number '{_mask(pan)}' → step 2 (Expiration)")
+
+            # Redirect to /voice → move to next step immediately (no waiting)
             resp.redirect("/voice")
             return str(resp)
 
@@ -5013,21 +5017,48 @@ def voice():
         # Step 2: Expiration (MMYY/MMYYYY)
         # -------------------------------
         if cc_step == 2:
-            session_data[call_sid]["no_input_expected"] = True  # DTMF-only preferred
+            session_data[call_sid]["no_input_expected"] = True
             digits = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=True)
             debug_print(f"collect_cc: Step 2 digits='{digits}'")
 
+            # --------------------------------------------------------------------------
+            # If the normalized digits string for the expiration date is not length 4 or 6,
+            # we consider the caller's input incomplete or malformed and re-prompt.
+            # Acceptable formats we expect are:
+            #   - 4 digits:  MMYY   (e.g. "0927" -> September 2027)
+            #   - 6 digits:  MMYYYY (e.g. "092027" -> September 2027)
+            # Anything else (e.g. 3 digits, 5 digits, letters only, empty) is treated as invalid.
             if len(digits) not in (4, 6):
+                # Build a <Gather> instruction for Twilio:
+                #  - The spoken prompt tells the caller how to give the expiration (examples).
+                #  - input="speech dtmf" lets the caller either *speak* the date or *type* it on the keypad.
+                #  - timeout=10 means Twilio will wait up to 10 seconds for user input before the gather times out.
+                #  - finish_on_key="#" allows the caller to press the pound key to immediately finish typing
+                #    instead of waiting for the timeout or for num_digits to be reached.
+                #  - action="/voice" tells Twilio to POST the results of this gather back to your /voice
+                #    webhook when the gather completes (either by #, by the timeout, or by speech result).
                 gather = make_gather(
-                    "Please enter expiration as two digits for month and two digits for year, for example 0 9 2 7, then press pound.",
-                    input="dtmf",
-                    timeout=8,               # ⏱ shorter wait
+                    "Please say or enter the expiration date as month and year, for example, zero nine two seven, then press pound.",
+                    input="speech dtmf",
+                    timeout=10,
                     finish_on_key="#",
                     action="/voice",
                 )
+
+                # Append the <Gather> to the TwiML response. This places the gather in the outgoing
+                # TwiML so Twilio will play the prompt and listen for input.
                 resp.append(gather)
-                resp.redirect("/voice")
+
+                # Return the TwiML (string form) immediately so Twilio receives the <Gather>.
+                # Important behavior:
+                #  - We do NOT call resp.redirect("/voice") here. Returning the TwiML with the <Gather>
+                #    causes Twilio to wait for the user's input and then POST back to the 'action' URL.
+                #  - After the user types/speaks and the gather finishes, Twilio will call your /voice
+                #    webhook again with request parameters such as 'Digits' (for DTMF) and/or
+                #    'SpeechResult' (for speech). Your handler should then re-enter this stage and
+                #    process the provided digits.
                 return str(resp)
+            # --------------------------------------------------------------------------
 
             try:
                 mm = int(digits[:2])
@@ -5046,13 +5077,12 @@ def voice():
                 debug_print(f"collect_cc: ❌ Expiration parse failed → {e}")
                 gather = make_gather(
                     "That doesn’t look valid. Please enter month and year as M M Y Y, then press pound.",
-                    input="dtmf",
+                    input="speech dtmf",
                     timeout=8,
                     finish_on_key="#",
                     action="/voice",
                 )
                 resp.append(gather)
-                resp.redirect("/voice")
                 return str(resp)
 
             # Advance immediately
@@ -5070,14 +5100,13 @@ def voice():
 
             if not (3 <= len(digits) <= 4 and digits.isdigit()):
                 gather = make_gather(
-                    "Please enter the three or four digit security code, then press pound.",
-                    input="dtmf",
-                    timeout=6,              # ⏱ shorter wait
+                    "Please enter or say the three or four digit security code, then press pound.",
+                    input="speech dtmf",
+                    timeout=6,
                     finish_on_key="#",
                     action="/voice",
                 )
                 resp.append(gather)
-                resp.redirect("/voice")
                 return str(resp)
 
             customer["cc_cvv"] = digits
@@ -5103,18 +5132,6 @@ def voice():
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-    
     
 
 
