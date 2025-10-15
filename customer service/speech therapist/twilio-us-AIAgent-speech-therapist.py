@@ -5764,34 +5764,34 @@ def voice():
 
 
     elif stage == "book_appt_confirm":
-        # ----------------------------------------------------------------------
-        # 💬 Stage: book_appt_confirm
-        #
-        # BEHAVIOR SUMMARY:
-        #
-        #   🆕 NEW CUSTOMER:
-        #       • Triggered when session_data[call_sid]["customer_status"] == "new".
-        #       • Calls only insert_customer() to save basic customer info.
-        #       • Does NOT create a Google Calendar event or confirm appointment.
-        #       • Plays message:
-        #           "Thank you. You need to verify your information with the clinic
-        #            before booking an appointment."
-        #       • Ends the call immediately afterward.
-        #
-        #   👤 CURRENT CUSTOMER:
-        #       • Triggered when session_data[call_sid]["customer_status"] == "current".
-        #       • Proceeds with the full appointment confirmation flow:
-        #           1. Validate slot availability (is_time_slot_available()).
-        #           2. Insert or update customer record via insert_customer().
-        #           3. Create Google Calendar event for the selected doctor.
-        #           4. Persist appointment locally using confirm_appointment_for_dr_name().
-        #           5. Send SMS confirmation to the caller.
-        #       • Ends the call with a “Your appointment has been booked” message.
-        #
-        # NOTE:
-        #   - Assumes both phone_e164 and customer_dob are always available in session.
-        #   - No fallback gathers for missing data.
-        # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 💬 Stage: book_appt_confirm
+    #
+    # BEHAVIOR SUMMARY:
+    #
+    #   🆕 NEW CUSTOMER:
+    #       • Triggered when session_data[call_sid]["customer_status"] == "new".
+    #       • Does NOT require a doctor or appointment time.
+    #       • Calls only insert_customer() to store the record.
+    #       • Plays a polite message:
+    #           "Thank you. You need to verify your information with the clinic
+    #            before booking an appointment."
+    #       • Ends the call immediately afterward.
+    #
+    #   👤 CURRENT CUSTOMER:
+    #       • Triggered when session_data[call_sid]["customer_status"] == "current".
+    #       • Follows full appointment confirmation logic:
+    #           1. Validate slot availability (is_time_slot_available()).
+    #           2. Insert/update customer record via insert_customer().
+    #           3. Create Google Calendar event for the selected doctor.
+    #           4. Persist the appointment locally using confirm_appointment_for_dr_name().
+    #           5. Send SMS confirmation to the caller.
+    #       • Ends the call with “Your appointment has been booked” message.
+    #
+    # NOTE:
+    #   - Assumes both phone_e164 and customer_dob exist in session_data.
+    #   - No fallback gathers for missing data.
+    # ----------------------------------------------------------------------
         t_stage_start = _time_mod.perf_counter()
         debug_print("book_appt_confirm: 📍 Stage entered")
 
@@ -5803,8 +5803,55 @@ def voice():
         debug_print(f"book_appt_confirm: 🧾 customer_status={customer_status}")
 
         # ----------------------------------------------------------------------
-        # 🧩 Doctor Information
+        # 🧩 Customer Info
         # ----------------------------------------------------------------------
+        customer         = sd.get("customer", {}) or {}
+        first_name       = (customer.get("first_name") or "").strip()
+        last_name        = (customer.get("last_name")  or "").strip()
+        customer_address = (customer.get("address")    or "").strip()
+        customer_dob     = (customer.get("dob")        or "").strip()
+        phone_e164       = (customer.get("phone_e164") or "").strip()
+
+        # ----------------------------------------------------------------------
+        # 🆕 NEW CUSTOMER FLOW (no appointment / no doctor)
+        # ----------------------------------------------------------------------
+        if customer_status == "new":
+            debug_print("book_appt_confirm: 🆕 new customer → skipping doctor & appointment flow")
+
+            try:
+                inserted_ok = insert_customer(
+                    phone=phone_e164, dob=customer_dob,
+                    first_name=first_name, last_name=last_name, address=customer_address,
+                    cc_name=(customer.get("cc_name") or f"{first_name} {last_name}"),
+                    cc_number=(customer.get("cc_number") or ""),
+                    cc_exp=(customer.get("cc_exp") or ""),
+                    cc_cvv=(customer.get("cc_cvv") or ""),
+                    customer_status="new",
+                )
+                debug_print(f"book_appt_confirm: ✅ insert_customer (new) → {inserted_ok}")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ❌ insert_customer failed for new customer → {e}")
+
+            msg = (
+                f"Thank you {first_name or 'there'}. "
+                "You need to verify your information with the clinic before scheduling an appointment. "
+                "Please contact the clinic to complete your registration. Goodbye!"
+            )
+            resp.say(gpt_speak(msg), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            debug_print(
+                f"book_appt_confirm: 🆕 new customer flow completed in "
+                f"{_time_mod.perf_counter() - t_stage_start:.3f}s"
+            )
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # 👤 CURRENT CUSTOMER FLOW (full booking)
+        # ----------------------------------------------------------------------
+        debug_print("book_appt_confirm: 👤 current customer flow continues")
+
+        # STEP 1: Doctor Info
         doctor_id = sd.get("doctor_id")
         if not doctor_id:
             debug_print("book_appt_confirm: ❌ missing doctor_id → choose_doctor")
@@ -5814,15 +5861,14 @@ def voice():
 
         doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
 
-        # ----------------------------------------------------------------------
-        # 🧩 Appointment Information
-        # ----------------------------------------------------------------------
+        # STEP 2: Appointment Info
         appt = sd.get("appointment_time", {}) or {}
         appointment_start = appt.get("start")
         appointment_end   = appt.get("end")
 
         if not appointment_start:
-            resp.say(gpt_speak("Appointment time is missing. Goodbye!"), VOICE)
+            debug_print("book_appt_confirm: ❌ appointment_start missing for current customer")
+            resp.say(gpt_speak("Sorry, appointment time is missing. Please try again."), VOICE)
             resp.hangup()
             return str(resp)
 
@@ -5865,56 +5911,7 @@ def voice():
                 resp.hangup()
                 return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🧩 Customer Information (assumes phone and DOB exist)
-        # ----------------------------------------------------------------------
-        customer         = sd.get("customer", {}) or {}
-        first_name       = (customer.get("first_name") or "").strip()
-        last_name        = (customer.get("last_name")  or "").strip()
-        customer_address = (customer.get("address")    or "").strip()
-        customer_dob     = (customer.get("dob")        or "").strip()
-        phone_e164       = (customer.get("phone_e164") or "").strip()
-
-        # ----------------------------------------------------------------------
-        # 🆕 NEW CUSTOMER FLOW
-        # ----------------------------------------------------------------------
-        if customer_status == "new":
-            debug_print("book_appt_confirm: 🆕 new customer flow triggered")
-
-            try:
-                inserted_ok = insert_customer(
-                    phone=phone_e164, dob=customer_dob,
-                    first_name=first_name, last_name=last_name, address=customer_address,
-                    cc_name=(customer.get("cc_name") or f"{first_name} {last_name}"),
-                    cc_number=(customer.get("cc_number") or ""),
-                    cc_exp=(customer.get("cc_exp") or ""),
-                    cc_cvv=(customer.get("cc_cvv") or ""),
-                    customer_status="new",
-                )
-                debug_print(f"book_appt_confirm: ✅ insert_customer (new) → {inserted_ok}")
-            except Exception as e:
-                debug_print(f"book_appt_confirm: ❌ insert_customer failed for new customer → {e}")
-
-            msg = (
-                "Thank you for providing your information. "
-                "You need to verify your details with the clinic before scheduling an appointment. "
-                "Please contact the clinic to complete your registration. Goodbye!"
-            )
-            resp.say(gpt_speak(msg), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            debug_print(
-                f"book_appt_confirm: 🆕 new customer flow completed in "
-                f"{_time_mod.perf_counter() - t_stage_start:.3f}s"
-            )
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # 👤 CURRENT CUSTOMER FLOW
-        # ----------------------------------------------------------------------
-        debug_print("book_appt_confirm: 👤 current customer flow continues")
-
-        # STEP 1: Check slot availability
+        # STEP 3: Slot Availability
         try:
             slot_ok = is_time_slot_available(doctor_id, appointment_start, appointment_end, creds)
         except Exception as e:
@@ -5927,7 +5924,7 @@ def voice():
             resp.append(make_gather("Sorry, that slot was just taken. Please choose another time."))
             return str(resp)
 
-        # STEP 2: Insert or update customer
+        # STEP 4: Insert or update customer
         try:
             inserted_ok = insert_customer(
                 phone=phone_e164, dob=customer_dob,
@@ -5942,7 +5939,7 @@ def voice():
         except Exception as e:
             debug_print(f"book_appt_confirm: ❌ insert_customer failed → {e}")
 
-        # STEP 3: Create Google Calendar event
+        # STEP 5: Create Google Calendar event
         google_event_id = sd.get("google_event_id", "")
         if not google_event_id:
             try:
@@ -5972,7 +5969,7 @@ def voice():
                 resp.append(make_gather("Sorry, I couldn't confirm that slot. Please say another time."))
                 return str(resp)
 
-        # STEP 4: Persist locally via confirm_appointment_for_dr_name()
+        # STEP 6: Persist locally
         try:
             local_date_str = dt_local.strftime("%Y-%m-%d")
             local_time_disp = dt_local.strftime("%I:%M %p").lstrip("0")
@@ -5994,7 +5991,7 @@ def voice():
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ local persist failed → {e}")
 
-        # STEP 5: Voice + SMS confirmation
+        # STEP 7: Voice + SMS confirmation
         msg = f"Your appointment with {doctor_name} has been booked"
         if formatted_time:
             msg += f" on {formatted_time}"
@@ -6016,6 +6013,9 @@ def voice():
         session_data.pop(call_sid, None)
         debug_print(f"book_appt_confirm: ✅ total runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
         return str(resp)
+
+
+
 
 
 
