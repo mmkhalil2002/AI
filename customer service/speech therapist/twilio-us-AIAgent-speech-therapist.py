@@ -4362,7 +4362,7 @@ def voice():
                 return str(resp)
 
             gather = make_gather(
-                "I didn’t hear your first name. Please say your first name in English letters. "
+                "I didn’t hear your first name. Please say your first name. "
                 "You can also type it and press pound.",
                 input="speech dtmf",
                 language="en-US",
@@ -4456,7 +4456,7 @@ def voice():
 
                     gather = make_gather(
                         "I couldn’t match that keypad entry to a name. "
-                        "Please say your first name in English letters, or type it again and press pound.",
+                        "Please say your first name, or type it again and press pound.",
                         input="speech dtmf",
                         language="en-US",
                         hints=FOREIGN_NAME_HINTS,
@@ -4476,37 +4476,320 @@ def voice():
                 debug_print(f"collect_first_name: 🧮 non-T9 keypad → '{first_name}'")
 
         else:
-            # Speech path: clean punctuation/fillers, keep one token as first name
+            # ------------------------------------------------------------------
+            # 🗣 Speech Input Path
+            # ------------------------------------------------------------------
+            # This branch executes when:
+            #   - The caller *did not* provide keypad (DTMF) input.
+            #   - Twilio's Speech-to-Text (STT) engine transcribed the caller’s voice.
+            #
+            # For example:
+            #   User presses nothing on the phone but says "My name is Mohamed."
+            #   → Twilio posts SpeechResult="My name is Mohamed" to /voice
+            #   → dtmf_digits == ""  → this 'else' branch runs.
+            #
+            # Goal:
+            #   Extract a clean first name string from the caller’s spoken input.
+
+            # ---------------------------------------------------------------
+            # 🧹 1. Remove punctuation and extra spaces
+            # ---------------------------------------------------------------
+            # ----------------------------------------------------------------------
+            # 🧠 str.maketrans('', '', string.punctuation)
+            # ----------------------------------------------------------------------
+            # The 'str.maketrans()' function builds a translation table that defines
+            # how characters in a string should be transformed (replaced or removed)
+            # when passed to 'translate()'.
+            #
+            # General syntax:
+            #     str.maketrans(from_chars, to_chars, delete_chars)
+            #
+            # ✅ Example 1 — Character Replacement:
+            #   If we want to replace characters individually, we supply
+            #   'from_chars' and 'to_chars' with the same length.
+            #
+            #   Example:
+            #       table = str.maketrans("abc", "xyz")
+            #       "abc cab".translate(table)
+            #   → Output: "xyz zxy"
+            #
+            #   Explanation:
+            #       'a' → 'x'
+            #       'b' → 'y'
+            #       'c' → 'z'
+            #   So "abc cab" becomes "xyz zxy".
+            #
+            # ------------------------------------------------------------
+            # 🧹 Example 2 — Character Deletion (our case)
+            # ------------------------------------------------------------
+            #   The third argument 'delete_chars' defines characters to remove entirely.
+            #   They are *not replaced* with anything — they are just erased.
+            #
+            #   Example:
+            #       table = str.maketrans('', '', '!?')
+            #       "Hello! How are you?".translate(table)
+            #   → Output: "Hello How are you"
+            #
+            #   Explanation:
+            #       - The characters '!' and '?' are in the delete list.
+            #       - Every '!' and '?' found in the text is completely removed.
+            #       - Other characters stay untouched.
+            #
+            #   Now applying this concept:
+            #       str.maketrans('', '', string.punctuation)
+            #   means:
+            #       "Delete all punctuation marks defined in string.punctuation"
+            #       → !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
+            #
+            #   Example:
+            #       raw_speech = "My name is Mohamed!"
+            #       cleaned = raw_speech.translate(str.maketrans('', '', string.punctuation))
+            #   → Output: "My name is Mohamed"
+            #
+            #   Another example:
+            #       raw_speech = "Hello, world! I'm here."
+            #       cleaned = raw_speech.translate(str.maketrans('', '', string.punctuation))
+            #   → Output: "Hello world Im here"
+            #
+            #   Note that the apostrophe in “I’m” is deleted too, resulting in “Im”.
+            #
+            # ------------------------------------------------------------
+            # 🚿 .strip() → Final Cleanup
+            # ------------------------------------------------------------
+            # After removing punctuation, '.strip()' trims leading and trailing spaces:
+            #     "  My name is Mohamed   " → "My name is Mohamed"
+            #
+            # ------------------------------------------------------------
+            # ✅ Combined Effect:
+            #   Input : "  Hello, my name is Mohamed!  "
+            #   Output: "Hello my name is Mohamed"
+            #
+            # This ensures:
+            #   • Punctuation marks are fully removed.
+            #   • Text is clean and consistent for further regex processing.
+            #   • Helps the next steps extract first name tokens correctly.
+
             cleaned = raw_speech.translate(str.maketrans('', '', string.punctuation)).strip()
+            
+            # ----------------------------------------------------------------------
+            # 🧽 STEP 2: Normalize whitespace — collapse multiple spaces into one
+            # ----------------------------------------------------------------------
+            # After punctuation is removed, some text might contain irregular spacing.
+            # For example, multiple spaces between words or before/after names.
+            #
+            # Example before cleanup:
+            #     cleaned = "My   name   is   Mohamed"
+            #
+            # The goal is to make the spacing consistent:
+            #     "My name is Mohamed"
+            #
+            # ------------------------------------------------------------
+            # 🔍 REGEX: r"\s+"
+            # ------------------------------------------------------------
+            # Let's break down this regular expression:
+            #
+            #   \s   → matches any whitespace character:
+            #           spaces, tabs (\t), newlines (\n), etc.
+            #
+            #   +    → quantifier meaning "one or more" of the preceding token.
+            #
+            # So together, "\s+" means:
+            #   "match any *sequence* of one or more whitespace characters"
+            #
+            # Examples of what "\s+" matches:
+            #   "   "          → three spaces
+            #   "\t\t"         → two tabs
+            #   " \t \n "      → a mix of spaces, tabs, or newlines
+            #
+            # ------------------------------------------------------------
+            # 🔧 _re.sub(r"\s+", " ", cleaned)
+            # ------------------------------------------------------------
+            # 're.sub()' replaces all matches of the pattern with a single space " ".
+            #
+            # Example:
+            #     Input : "My   name    is\tMohamed"
+            #     Output: "My name is Mohamed"
+            #
+            # Internally:
+            #   - Finds "   "  → replaces with " "
+            #   - Finds "\t"   → replaces with " "
+            #   - Repeats until all groups of spaces/tabs/newlines are replaced.
+            #
+            # ------------------------------------------------------------
+            # 🧾 Practical Example:
+            #   raw_speech = "  My   name   is   Mohamed  "
+            #   cleaned = "  My   name   is   Mohamed  "
+            #   cleaned = _re.sub(r"\s+", " ", cleaned)
+            # → " My name is Mohamed "
+            #
+            # Then, later we use .strip() again if we want to remove the single
+            # leading/trailing spaces, resulting in → "My name is Mohamed".
+            #
+            # ------------------------------------------------------------
+            # ✅ Purpose:
+            #   - Keeps spacing consistent before tokenizing.
+            #   - Prevents empty tokens or mismatched name extraction.
+            #   - Makes "split()" behavior predictable in the next step.
+
+
             cleaned = _re.sub(r"\s+", " ", cleaned)
+
+                    # ----------------------------------------------------------------------
+            # 🧠 STEP 3: Remove filler phrases like "my name is", "this is", "I'm"
+            # ----------------------------------------------------------------------
+            # In natural speech, callers often begin with introductions such as:
+            #   "My name is Mohamed"
+            #   "This is Sarah"
+            #   "I am John"
+            #   "It's Ahmed"
+            #
+            # These introductory phrases are not part of the *actual name*,
+            # so we remove them before extracting the first word as the name.
+            #
+            # ------------------------------------------------------------
+            # 🔍 REGEX: r"\b(?:my name is|this is|i am|i'm|it is|it's)\b\s*"
+            # ------------------------------------------------------------
+            # Let’s break this pattern down piece by piece:
+            #
+            #   \b
+            #     → "Word boundary" — ensures the phrase starts and ends cleanly.
+            #       Example: Matches "my name is" in "my name is Mohamed"
+            #       but NOT in "dummy name issue" (where "name is" appears inside words).
+            #
+            #   (?: ... )
+            #     → "Non-capturing group" — groups several options together
+            #       but does not store them for later backreference.
+            #       Inside, we have the possible starter phrases.
+            #
+            #   my name is | this is | i am | i'm | it is | it's
+            #     → The '|' character means "OR" — so the regex will match
+            #       *any* of these exact lowercase phrases.
+            #
+            #   \b
+            #     → Another word boundary to ensure the phrase ends cleanly.
+            #
+            #   \s*
+            #     → Zero or more whitespace characters (spaces, tabs, etc.)
+            #       that may follow the phrase before the person’s actual name.
+            #
+            # ------------------------------------------------------------
+            # 🧾 Example Matches:
+            # ------------------------------------------------------------
+            #   "my name is Mohamed"   → matches "my name is "
+            #   "this is Ahmed"        → matches "this is "
+            #   "i am Sara"            → matches "i am "
+            #   "I'm Youssef"          → matches "I'm "
+            #   "it is Fatma"          → matches "it is "
+            #   "it's Rania"           → matches "it's "
+            #
+            # ------------------------------------------------------------
+            # 🧼 _re.sub(..., "", cleaned, flags=_re.IGNORECASE)
+            # ------------------------------------------------------------
+            # We call 're.sub()' to replace all occurrences of these phrases
+            # (regardless of capitalization) with an empty string "".
+            #
+            # The 'flags=_re.IGNORECASE' part allows case-insensitive matching:
+            #   - "My Name Is", "MY NAME IS", "my name is" → all match.
+            #
+            # ------------------------------------------------------------
+            # 🎯 Example Transformations:
+            # ------------------------------------------------------------
+            #   Input : "My name is Mohamed"
+            #   Output: "Mohamed"
+            #
+            #   Input : "This is Sarah"
+            #   Output: "Sarah"
+            #
+            #   Input : "I’m John"
+            #   Output: "John"
+            #
+            #   Input : "It’s Ahmed"
+            #   Output: "Ahmed"
+            #
+            # ------------------------------------------------------------
+            # ✅ Purpose:
+            #   - Cleans out polite or redundant introduction phrases.
+            #   - Helps isolate the *actual* first name token later.
+            #   - Works for speech recognition transcripts that include filler words.
+            #
+            # ------------------------------------------------------------
+            # ⚙️ Combined Example (Steps 1–3):
+            #   raw_speech = "Hello! My name is   Mohamed."
+            #   Step 1 → remove punctuation  → "Hello My name is   Mohamed"
+            #   Step 2 → normalize spaces   → "Hello My name is Mohamed"
+            #   Step 3 → remove intro phrase → "Hello Mohamed"
+            #
+            #   After tokenization, first_name = "Hello" (if that’s noise),
+            #   or we can later ignore it based on context.
+            #
+            # ------------------------------------------------------------
+            # 🧩 Implementation:
             cleaned = _re.sub(
                 r"\b(?:my name is|this is|i am|i'm|it is|it's)\b\s*",
                 "",
                 cleaned,
                 flags=_re.IGNORECASE,
             )
-            tokens = cleaned.split()
-            first_name = tokens[0] if tokens else ""
-            debug_print(f"collect_first_name: 🗣 derived first_name='{first_name}' from speech")
 
-        # -------------------------------
-        # 🌐 Validate: English letters only, reject Arabic script
-        # -------------------------------
+
+           
+            # ---------------------------------------------------------------
+            # ✂️ 3. Split and pick the first token
+            # ---------------------------------------------------------------
+            tokens = cleaned.split()
+            # Example:
+            #   "Khalil Mohamed" → ["Khalil", "Mohamed"]
+
+            first_name = tokens[0] if tokens else ""
+            # Picks the first word as the first name.
+            # Example:
+            #   tokens=["Khalil", "Mohamed"] → first_name="Khalil"
+            #
+            # If nothing is captured (tokens = []), 'first_name' becomes an empty string.
+
+            debug_print(f"collect_first_name: 🗣 derived first_name='{first_name}' from speech")
+            # Logs what name was detected, helpful for debugging and audit.
+
+        # ----------------------------------------------------------------------
+        # 🌐 4. Validation: Only English letters are allowed
+        # ----------------------------------------------------------------------
+        # We now check if the name looks valid. The rules are:
+        #   - Must contain English letters only (A-Z or a-z)
+        #   - Can contain apostrophes, hyphens, or spaces
+        #   - Must not contain Arabic script or foreign Unicode letters
+
         english_only_pattern = r"^[A-Za-z][A-Za-z'\-\s]{0,39}$"
         contains_foreign = bool(_re.search(r"[\u0600-\u06FF]", first_name))
+        # \u0600-\u06FF = Arabic Unicode range → detect Arabic names like "خليل"
 
         if not first_name or not _re.fullmatch(english_only_pattern, first_name) or contains_foreign:
+            # This block runs if:
+            #  - Caller said nothing (empty)
+            #  - Caller used Arabic letters
+            #  - Caller used invalid characters (numbers, symbols, etc.)
+            #
+            # Examples:
+            #   first_name = ""          → invalid (silence)
+            #   first_name = "خليل"      → invalid (Arabic)
+            #   first_name = "123John"   → invalid (numbers)
+
             r = sd.get("retry_first_name", 0) + 1
             sd["retry_first_name"] = r
             sd["stage"] = "collect_first_name"
             debug_print(f"collect_first_name: ❌ invalid/foreign-script '{first_name}' retry={r}/3")
 
+            # Give the caller up to 3 attempts.
             if r >= 3:
-                resp.say(gpt_speak("Sorry, I couldn’t capture your name in English letters. Please call again later."), VOICE)
+                # After 3 invalid attempts → polite exit
+                resp.say(
+                    gpt_speak("Sorry, I couldn’t capture your name in English letters. Please call again later."),
+                    VOICE
+                )
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
+            # Prompt the user again to re-enter/speak their name
             gather = make_gather(
                 "Please say your first name using English letters only. "
                 "You can also type it on the keypad and press pound.",
@@ -4520,22 +4803,23 @@ def voice():
                 action="/voice", method="POST",
             )
             resp.append(gather)
-            resp.redirect("/voice")
+            resp.redirect("/voice")  # Retry loop for silence or invalid input
             return str(resp)
 
-        # -------------------------------
-        # ✅ Save & Continue → last name
-        # -------------------------------
+        # ----------------------------------------------------------------------
+        # ✅ 5. Valid input: Save and continue to collect the last name
+        # ----------------------------------------------------------------------
         sd["customer"]["first_name"] = first_name
         sd["stage"] = "collect_last_name"
         sd.pop("retry_first_name", None)
         debug_print(f"collect_first_name: ✅ saved first_name='{first_name}' → next=collect_last_name")
 
+        # Next prompt: ask for last name
         gather = make_gather(
             f"Thank you {first_name}. Now, what is your last name?",
             input="speech dtmf",
             language="en-US",
-            hints=FOREIGN_NAME_HINTS,   # reuse hints; helps ASR for common family names too
+            hints=FOREIGN_NAME_HINTS,   # help recognize family names like 'Ng', 'Lopez', 'Al-Sayed'
             timeout=6,
             speech_timeout="5",
             finish_on_key="#",
@@ -4543,7 +4827,7 @@ def voice():
             action="/voice", method="POST",
         )
         resp.append(gather)
-        resp.redirect("/voice")  # safety net for silence on last-name prompt
+        resp.redirect("/voice")  # If silent on last-name stage → re-prompt
         return str(resp)
 
 
