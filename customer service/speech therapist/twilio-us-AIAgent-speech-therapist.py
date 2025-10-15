@@ -4844,87 +4844,116 @@ def voice():
     # collect_cc - complete stage (robust digit normalization + strict Luhn)
     # ----------------------------------------------------------------------
     elif stage == "collect_cc":
-        # ------------------------------------------------------------------
-        # 💳 Simple collect_cc with DEBUG
-        #   - Only captures credit card number (PAN)
-        #   - Normalizes any Unicode digits via _uni
-        #   - Accepts number even if Luhn fails
-        #   - Logs detailed debug info for every step
-        # ------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # 💳 Stage: collect_cc  (optimized for shorter expiration & CVV steps)
+        #
+        # Flow:
+        #   (1) Card number (13–19 digits, Luhn-checked)
+        #   (2) Expiration (MMYY or MMYYYY, current/future only)
+        #   (3) CVV (3–4 digits, DTMF-only for speed)
+        #
+        # Improvements:
+        #   - Shorter timeouts for steps 2 & 3 (expiration, CVV)
+        #   - DTMF-only for CVV (speech removed for faster processing)
+        #   - Immediate step advance after # pressed
+        # ----------------------------------------------------------------------
 
-        def _digits_only(s: str) -> str:
-            """Normalize Unicode digits (Arabic, Persian, etc.) → ASCII."""
-            debug_print(f"[_digits_only] raw input: {repr(s)}")
-            if not s:
-                return ""
-            out = []
-            for ch in str(s):
-                try:
-                    d = _uni.digit(ch)
-                    out.append(str(d))
-                    continue
-                except Exception:
-                    pass
-                if "0" <= ch <= "9":
-                    out.append(ch)
-            result = "".join(out)
-            debug_print(f"[_digits_only] normalized digits: {result}")
-            return result
-
-        def _mask_pan(pan: str) -> str:
-            digits = _digits_only(pan or "")
-            if len(digits) <= 4:
-                return digits
-            return "*" * (len(digits) - 4) + digits[-4:]
-
+        # --- helpers ------------------------------------------------------------
         def _luhn_ok(pan: str) -> bool:
-            """Perform Luhn validation; log intermediate results."""
-            digits = _digits_only(pan or "")
-            debug_print(f"[_luhn_ok] checking digits: {digits}")
-            if not (13 <= len(digits) <= 19):
-                debug_print(f"[_luhn_ok] ❌ invalid length: {len(digits)}")
-                return False
-            total = 0
-            double = False
-            for ch in digits[::-1]:
-                n = ord(ch) - 48
-                if double:
-                    n = n * 2
-                    if n > 9:
-                        n -= 9
-                total += n
-                double = not double
-            valid = (total % 10) == 0
-            debug_print(f"[_luhn_ok] total={total}, valid={valid}")
-            return valid
+            s, alt = 0, False
+            for ch in pan[::-1]:
+                if not ch.isdigit():
+                    return False
+                d = ord(ch) - 48
+                if alt:
+                    d *= 2
+                    if d > 9:
+                        d -= 9
+                s += d
+                alt = not alt
+            return (s % 10) == 0
 
-        # --- session + inputs ---
-        session_data.setdefault(call_sid, {}).setdefault("customer", {})
-        customer = session_data[call_sid]["customer"]
+        def _normalize_spoken_digits(raw: str) -> str:
+            if not raw:
+                return ""
+            words = (
+                raw.lower()
+                .replace("-", " ").replace(",", " ").replace(".", " ")
+                .split()
+            )
+            m = {
+                "zero":"0","oh":"0","o":"0",
+                "one":"1","two":"2","to":"2","too":"2",
+                "three":"3","four":"4","for":"4",
+                "five":"5","six":"6","seven":"7",
+                "eight":"8","ate":"8","nine":"9"
+            }
+            out = []; i = 0
+            while i < len(words):
+                w = _re.sub(r"[^a-z0-9]", "", words[i])
+                if w in ("double","triple") and i+1 < len(words):
+                    nxt = _re.sub(r"[^a-z0-9]", "", words[i+1])
+                    if nxt in m:
+                        out.extend([m[nxt]] * (2 if w == "double" else 3))
+                        i += 2
+                        continue
+                if w in m:
+                    out.append(m[w])
+                else:
+                    out.extend([c for c in w if c.isdigit()])
+                i += 1
+            return "".join(out)
 
-        raw_dtmf = (request.values.get("Digits") or "").strip()
+        def _digits_from(dtmf: str, speech: str, *, enforce_dtmf: bool) -> str:
+            if enforce_dtmf:
+                return _re.sub(r"\D", "", dtmf or "")
+            if dtmf:
+                return _re.sub(r"\D", "", dtmf)
+            return _re.sub(r"\D", "", _normalize_spoken_digits(speech or ""))
+
+        def _mask(pan: str) -> str:
+            pan = pan or ""
+            if len(pan) <= 4: return pan
+            return "*" * (len(pan) - 4) + pan[-4:]
+
+        # --- state --------------------------------------------------------------
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid].setdefault("customer", {})
+        customer   = session_data[call_sid]["customer"]
+        cc_step    = int(session_data[call_sid].get("cc_step", 1))
+        enforce_dm = bool(session_data[call_sid].get("enforce_dtmf_cc"))
+
+        raw_dtmf   = (request.values.get("Digits") or "").strip()
         raw_speech = (speech_result or "").strip()
-        debug_print(f"[collect_cc] stage start → DTMF='{raw_dtmf}' | speech='{raw_speech}'")
 
-        # --- Silence handling ---
+        debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{raw_dtmf}', speech='{raw_speech}'")
+
+        # -------------------------------
+        # 🔇 Silence handling (inline)
+        # -------------------------------
         if not raw_dtmf and not raw_speech:
             tries = session_data[call_sid].get("silence_cc", 0) + 1
             session_data[call_sid]["silence_cc"] = tries
-            debug_print(f"[collect_cc] 🤐 silence detected, tries={tries}/3")
+            debug_print(f"collect_cc: 🤐 silence on step {cc_step}; tries={tries}")
 
             if tries >= 3:
-                debug_print("[collect_cc] too many silences → hangup")
                 resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
+            prompt = {
+                1: "Please enter your card number now, then press pound.",
+                2: "Please enter the expiration as two digits for month and two digits for year, then press pound.",
+                3: "Please enter the three or four digit security code, then press pound."
+            }.get(cc_step, "Please enter your card details, then press pound.")
+
             gather = make_gather(
-                "Please enter your card number now, then press pound (#) when finished.",
-                input="dtmf",
-                timeout=30,
+                prompt,
+                input="speech dtmf",
+                timeout=20,
+                speech_timeout="8",
                 finish_on_key="#",
-                num_digits=19,
                 action="/voice",
                 barge_in=True,
             )
@@ -4932,38 +4961,145 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # --- Process digits ---
         session_data[call_sid].pop("silence_cc", None)
-        raw_pan = raw_dtmf or raw_speech
-        digits = _digits_only(raw_pan)
-        debug_print(f"[collect_cc] normalized digits: {digits} (len={len(digits)})")
 
-        if not (13 <= len(digits) <= 19):
-            debug_print(f"[collect_cc] ❌ Invalid length {len(digits)} — re-prompting.")
-            gather = make_gather(
-                "That card number doesn't look right. Please re-enter the full card number, then press pound (#).",
-                input="dtmf",
-                timeout=30,
-                finish_on_key="#",
-                num_digits=19,
-                action="/voice",
-            )
-            resp.append(gather)
+        # -------------------------------
+        # Step 1: Card Number (13–19)
+        # -------------------------------
+        if cc_step == 1:
+            pan = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=enforce_dm)
+            if len(pan) > 19:
+                pan = pan[:19]
+
+            if not (13 <= len(pan) <= 19) or not _luhn_ok(pan):
+                # Retry with DTMF enforcement after 2 speech failures
+                if not raw_dtmf:
+                    session_data[call_sid]["cc_speech_tries"] = session_data[call_sid].get("cc_speech_tries", 0) + 1
+                    if session_data[call_sid]["cc_speech_tries"] >= 2:
+                        session_data[call_sid]["enforce_dtmf_cc"] = True
+                        debug_print("collect_cc: 📟 enforcing DTMF for card number entry")
+                        gather = make_gather(
+                            "That number didn’t sound clear. Please TYPE the full card number now, then press pound.",
+                            input="dtmf",
+                            timeout=20,
+                            finish_on_key="#",
+                            action="/voice",
+                        )
+                        resp.append(gather)
+                        resp.redirect("/voice")
+                        return str(resp)
+
+                gather = make_gather(
+                    "That card number doesn't look right. Please re-enter the full card number, then press pound.",
+                    input="speech dtmf",
+                    timeout=20,
+                    speech_timeout="8",
+                    finish_on_key="#",
+                    action="/voice",
+                )
+                resp.append(gather)
+                resp.redirect("/voice")
+                return str(resp)
+
+            # ✅ Save & advance
+            customer["cc_number"] = pan
+            session_data[call_sid]["cc_step"] = 2
+            session_data[call_sid]["cc_speech_tries"] = 0
+            debug_print(f"collect_cc: ✅ Saved card number '{_mask(pan)}' → step 2 (Expiration)")
             resp.redirect("/voice")
             return str(resp)
 
-        if _luhn_ok(digits):
-            debug_print(f"[collect_cc] ✅ Luhn check passed for {_mask_pan(digits)}")
-        else:
-            debug_print(f"[collect_cc] ⚠️ Luhn check failed for {_mask_pan(digits)} — accepted anyway.")
+        # -------------------------------
+        # Step 2: Expiration (MMYY/MMYYYY)
+        # -------------------------------
+        if cc_step == 2:
+            session_data[call_sid]["no_input_expected"] = True  # DTMF-only preferred
+            digits = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=True)
+            debug_print(f"collect_cc: Step 2 digits='{digits}'")
 
-        # --- Save and advance ---
-        customer["cc_number"] = digits
-        session_data[call_sid]["stage"] = "collect_cc_exp"  # next step (change if needed)
-        debug_print(f"[collect_cc] 🏁 saved cc_number={_mask_pan(digits)} → next stage=collect_cc_exp")
+            if len(digits) not in (4, 6):
+                gather = make_gather(
+                    "Please enter expiration as two digits for month and two digits for year, for example 0 9 2 7, then press pound.",
+                    input="dtmf",
+                    timeout=8,               # ⏱ shorter wait
+                    finish_on_key="#",
+                    action="/voice",
+                )
+                resp.append(gather)
+                resp.redirect("/voice")
+                return str(resp)
 
-        resp.redirect("/voice")
-        return str(resp)
+            try:
+                mm = int(digits[:2])
+                yy = digits[-2:]
+                if not (1 <= mm <= 12):
+                    raise ValueError("invalid month")
+                now = datetime.now(tz=_pytz.UTC)
+                exp_year = 2000 + int(yy)
+                expiry_boundary = datetime(exp_year, mm, 1, 0, 0, 0, tzinfo=_pytz.UTC) + timedelta(days=31)
+                if now >= expiry_boundary:
+                    raise ValueError("expired")
+
+                customer["cc_exp"] = f"{mm:02d}/{yy}"
+                debug_print(f"collect_cc: ✅ Expiration saved → {customer['cc_exp']}")
+            except Exception as e:
+                debug_print(f"collect_cc: ❌ Expiration parse failed → {e}")
+                gather = make_gather(
+                    "That doesn’t look valid. Please enter month and year as M M Y Y, then press pound.",
+                    input="dtmf",
+                    timeout=8,
+                    finish_on_key="#",
+                    action="/voice",
+                )
+                resp.append(gather)
+                resp.redirect("/voice")
+                return str(resp)
+
+            # Advance immediately
+            session_data[call_sid]["cc_step"] = 3
+            resp.redirect("/voice")
+            return str(resp)
+
+        # -------------------------------
+        # Step 3: CVV (3–4 digits)
+        # -------------------------------
+        if cc_step == 3:
+            session_data[call_sid]["no_input_expected"] = True
+            digits = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=True)
+            debug_print(f"collect_cc: Step 3 CVV digits='{digits}'")
+
+            if not (3 <= len(digits) <= 4 and digits.isdigit()):
+                gather = make_gather(
+                    "Please enter the three or four digit security code, then press pound.",
+                    input="dtmf",
+                    timeout=6,              # ⏱ shorter wait
+                    finish_on_key="#",
+                    action="/voice",
+                )
+                resp.append(gather)
+                resp.redirect("/voice")
+                return str(resp)
+
+            customer["cc_cvv"] = digits
+            if not customer.get("cc_name"):
+                customer["cc_name"] = f"{customer.get('first_name','')} {customer.get('last_name','')}".strip()
+            debug_print(f"collect_cc: ✅ CVV saved (len={len(digits)}) ; cc_name='{customer.get('cc_name')}'")
+
+            # Advance to confirmation or update flow
+            session_data[call_sid].pop("no_input_expected", None)
+            session_data[call_sid].pop("cc_step", None)
+            session_data[call_sid]["cc_speech_tries"] = 0
+
+            next_stage = (
+                "update_customer_cc"
+                if session_data.get(call_sid, {}).get("cc_update", {}).get("active")
+                else "book_appt_confirm"
+            )
+            session_data[call_sid]["stage"] = next_stage
+            session_data[call_sid]["skip_silence_once"] = True
+            debug_print(f"collect_cc: ➡️ Auto-advancing to {next_stage}")
+            resp.redirect("/voice")
+            return str(resp)
 
 
 
