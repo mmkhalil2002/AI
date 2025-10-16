@@ -4319,9 +4319,9 @@ def voice():
         # ----------------------------------------------------------------------
         
 
+       
         sd = session_data.setdefault(call_sid, {})
         sd.setdefault("customer", {})
-
         raw_speech = (speech_result or "").strip()
         raw_dtmf   = (request.values.get("Digits") or "").strip()
         debug_print(f"collect_first_name: speech='{raw_speech}', dtmf='{raw_dtmf}'")
@@ -4329,16 +4329,11 @@ def voice():
         # ----------------------------------------------------------------------
         # ⏹️ FIX: Skip false silence if the user pressed only '#'
         # ----------------------------------------------------------------------
-        # Problem:
-        #   When a user types digits and ends with '#', Twilio sometimes sends
-        #   a separate webhook where Digits == '#' and SpeechResult == ''.
-        #   This is falsely interpreted as “silence”.
-        #
-        # Solution:
-        #   Detect this early and skip the silence-handling branch.
-        if raw_dtmf == "#":
-            debug_print("collect_first_name: ⏹️ DTMF '#' received alone — skipping false silence")
+        if speech_result == "" and request.values.get("Digits") == "#":
+            debug_print("collect_first_name: ⏹️ Raw DTMF '#' received alone — skipping false silence (via raw)")
             return str(resp)
+
+        # silence handling...
 
 
         # -- small helpers (local to this stage) --------------------------------
