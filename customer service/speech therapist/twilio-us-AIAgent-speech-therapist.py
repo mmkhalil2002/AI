@@ -5304,25 +5304,33 @@ def voice():
 
 
 
-
+    # ===== collect_address (stage) =====
     elif stage == "collect_address":
-        # ----------------------------------------------------------------------
-        # 📬 Stage: collect_address
-        # Purpose:
-        #   - Capture full street address via speech (and optionally DTMF chunks).
-        #   - Normalize punctuation/whitespace.
-        #   - Store into session_data[call_sid]["customer"]["address"].
-        #   - Advance → collect_cc.
+        # ---------------------------------------------------------------
+        # 🏠 Stage: collect_address
+        # Goal:
+        #   - Capture the caller's address from speech.
+        #   - Normalize whitespace & punctuation (common STT artifacts).
+        #   - Handle silence with separate retry counter (no premature hangups).
+        #   - Store under session_data[call_sid]["customer"]["address"].
+        #   - Advance to collect_cc with a clear prompt.
         # Notes:
-        #   - Make sure we ALWAYS return TwiML: return str(resp)
-        #   - Use resp.redirect("/voice") (TwiML) not Flask redirect()
-        # ----------------------------------------------------------------------
+        #   - Uses `_re` (import re as _re) to avoid UnboundLocalError.
+        #   - Keeps flow consistent by redirecting back to /voice after gather.
+        # ---------------------------------------------------------------
 
-        raw_addr = (speech_result or "").strip()
-        debug_print(f"collect_address: 📬 Collected address (raw): {raw_addr}")
+        session_data.setdefault(call_sid, {}).setdefault("customer", {})
 
-        # 🔇 Silence handling (3 tries then hang up)
-        if not raw_addr:
+        # Safely pull raw text
+        try:
+            raw = (speech_result or request.values.get("SpeechResult") or "").strip()
+        except Exception:
+            raw = (speech_result or "").strip()
+
+        debug_print(f"collect_address: 📬 Collected address (raw): {raw}")
+
+        # 🔇 Silent-mode handling: nothing heard → ask again (up to 3 times)
+        if not raw:
             tries = session_data[call_sid].get("silence_address", 0) + 1
             session_data[call_sid]["silence_address"] = tries
             debug_print(f"collect_address: 🤐 silence; tries={tries}")
@@ -5332,51 +5340,87 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            gather = make_gather("Sorry, I didn’t hear your address. Please say your full street address, city, and ZIP.")
+            prompt = (
+                "I didn't catch the address. Please say your street address, city, and ZIP. "
+                "For example, '118 Briar Oak, Murphy, Texas 75094'."
+            )
+            gather = make_gather(prompt)
             resp.append(gather)
-            resp.redirect("/voice")
+            # redirect so Twilio posts back after the gather
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
             return str(resp)
 
-        # 🧽 Normalize punctuation/whitespace
-        try:
-            #import re as _re
-            addr_norm = raw_addr
-            # collapse multiple spaces
-            addr_norm = _re.sub(r"\s+", " ", addr_norm)
-            # normalize punctuation spacing (keep commas and periods if they’re spoken)
-            addr_norm = addr_norm.strip()
-            debug_print(f"collect_address: 🧽 Normalized → '{addr_norm}'")
-        except Exception as e:
-            debug_print(f"collect_address: ⚠️ normalize error → {e}")
-            addr_norm = raw_addr
+        # We heard something → clear silence counter
+        session_data[call_sid].pop("silence_address", None)
 
-        # ✅ Save to session
-        session_data.setdefault(call_sid, {}).setdefault("customer", {})
-        session_data[call_sid]["customer"]["address"] = addr_norm
-        session_data[call_sid].pop("silence_address", None)  # reset silence counter
+        # ---------- Normalize ----------
+        addr = raw
+
+        # 1) Collapse multiple spaces
+        addr = _re.sub(r"\s+", " ", addr)
+
+        # 2) Normalize spacing around commas, hashes, and periods
+        #    "Murphy , Texas . 75094" → "Murphy, Texas. 75094"
+        addr = _re.sub(r"\s*([,#\.])\s*", r"\1 ", addr)
+
+        # 3) Remove repeated punctuation like ".." or ",," → single instance
+        addr = _re.sub(r"\.{2,}", ".", addr)
+        addr = _re.sub(r",\s*,+", ", ", addr)
+
+        # 4) Trim stray punctuation/spaces at the edges
+        addr = addr.strip(" .,")
+        # 5) Collapse any reintroduced doubles
+        addr = _re.sub(r"\s+", " ", addr).strip()
+
+        debug_print(f"collect_address: 🧽 Normalized → '{addr}'")
+
+        # ---------- Light validation ----------
+        # Must contain at least one letter; and be reasonably long
+        # (We do NOT require digits because some addresses are like "PO Box Two")
+        if (not addr) or (_re.search(r"[A-Za-z]", addr) is None) or (len(addr) < 6):
+            r = session_data[call_sid].get("retry_address", 0) + 1
+            session_data[call_sid]["retry_address"] = r
+            debug_print(f"collect_address: ❌ looks invalid/too short → retry={r}")
+
+            if r >= 3:
+                resp.say(gpt_speak("Sorry, I couldn’t capture your address. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            prompt = (
+                "Please repeat your full mailing address — street, city, state, and ZIP. "
+                "For example, '118 Briar Oak, Murphy, Texas 75094'."
+            )
+            gather = make_gather(prompt)
+            resp.append(gather)
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
+            return str(resp)
+
+        # ---------- Persist ----------
+        session_data[call_sid]["customer"]["address"] = addr
+        # Reset retry counter on success
+        session_data[call_sid].pop("retry_address", None)
         debug_print("collect_address: ✅ Saved address to session")
 
-        # ➡️ Advance to CC collection
+        # ---------- Advance to next stage ----------
         session_data[call_sid]["stage"] = "collect_cc"
-        session_data[call_sid]["cc_step"] = 1  # ensure we begin at step 1
-
-        # Prompt for card number (DTMF preferred, speech allowed)
-        prompt_cc = "Thank you. Now, please enter your card number, then press pound."
-        gather = make_gather(
-            prompt_cc,
-            hints="zero one two three four five six seven eight nine",
-            input="speech dtmf",
-            timeout=25,
-            speech_timeout="10",
-            finish_on_key="#",
-            action="/voice",
-            barge_in=True,
-        )
+        gather = make_gather("Thank you. Now, please enter your card number, then press pound.")
         resp.append(gather)
-        # IMPORTANT: TwiML redirect, then return TwiML
-        resp.redirect("/voice")
+        try:
+            from flask import url_for
+            resp.redirect(url_for("voice"))
+        except Exception:
+            resp.redirect("/voice")
         return str(resp)
-
 
 
 
