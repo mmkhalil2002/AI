@@ -2936,9 +2936,32 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # ==========================================================================
-        # 🔁 RESCHEDULE FLOW — BRANCH TO ask_time_date
-        # ==========================================================================
+            # ==========================================================================
+            # 🔁 RESCHEDULE FLOW — BRANCH TO ask_time_date
+            # ==========================================================================
+            # If the user has just canceled an appointment and indicated they want to
+            # reschedule immediately, we skip the remaining stages (e.g. collect_dob, etc.)
+            # and jump directly to asking for the new appointment date and time.
+            #
+            # HOW THIS WORKS:
+            #  - Earlier in the flow, when the customer cancels an appointment, we set:
+            #       sd["reschedule_after_cancel"] = True
+            #  - When that flag exists, we come here instead of going to collect_dob.
+            #  - We then prompt the user for a new appointment time.
+            #
+            # Example Interaction:
+            #   System: “Thanks. Please say the new appointment date and time, for example,
+            #            'October 12 at 9 A M'.”
+            #   Caller: “October 18 at 4 PM.”
+            #       → Control moves to stage ask_time_date, which validates and books the slot.
+            #
+            # DESIGN NOTES:
+            #  • Name/phone are already saved, so no need to re-collect them.
+            #  • We use make_gather() for uniform speech+DTMF handling.
+            #  • We append a trailing resp.redirect("/voice") to force a new Twilio webhook
+            #    even if the caller stays silent (Twilio’s <Gather> does not re-POST on silence).
+            # ==========================================================================
+            # 🔁 RESCHEDULE FLOW — BRANCH TO ask_time_date
         if sd.get("reschedule_after_cancel"):
             sd["stage"] = "ask_time_date"
             g = make_gather(
