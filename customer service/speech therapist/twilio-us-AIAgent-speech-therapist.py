@@ -3685,19 +3685,19 @@ def voice():
         #
         # FLOW
         #   1️⃣ Ask user to enter or say their 6-digit PIN (DTMF or speech).
-        #   2️⃣ Compare against stored PIN in customers.json using get_pin_number().
+        #   2️⃣ Compare against stored PIN using get_pin_number().
         #   3️⃣ If correct → branch based on origin_stage:
-        #         - booking   → ask_time_date
-        #         - cancel    → cancel_appt_get_phone_number
-        #         - update_cc → collect_cc
-        #         - otherwise → main menu or polite exit
-        #   4️⃣ If incorrect → instruct caller to contact the clinic.
+        #         - "book"       → ask_time_date
+        #         - "cancel"     → cancel_appt_get_time_date
+        #         - "update_cc"  → collect_cc
+        #         - otherwise    → intro (main menu)
+        #   4️⃣ If incorrect → allow up to 3 retries before terminating politely.
         #
-        # IMPLEMENTATION NOTES
-        #   • Handles silence locally (3 retries).
-        #   • finish_on_key="#" allows faster keypad entry.
-        #   • Automatically cleans input to digits only.
-        #   • origin_stage must be set in session before this stage.
+        # FEATURES
+        #   ✅ Handles silence locally (3 retries, then hang up).
+        #   ✅ Tracks invalid PIN attempts (3 max, then advise to contact clinic).
+        #   ✅ Supports both DTMF and spoken digits.
+        #   ✅ Respects origin_stage for dynamic branching.
         # ----------------------------------------------------------------------
 
         debug_print("collect_pin_number: 📍 Stage entered")
@@ -3718,14 +3718,21 @@ def voice():
         raw_speech = (speech_result or "").strip()
         debug_print(f"collect_pin_number: 🔢 DTMF='{raw_dtmf}' 🗣 speech='{raw_speech}'")
 
-        # --- Handle silence ---------------------------------------------------
+        # ======================================================================
+        # 🕳️ SILENCE HANDLING
+        # ======================================================================
         if not raw_dtmf and not raw_speech:
             tries = sd.get("silence_pin", 0) + 1
             sd["silence_pin"] = tries
             debug_print(f"collect_pin_number: 🤐 silence tries={tries}/3")
 
             if tries >= 3:
-                resp.say(gpt_speak("I’m still not hearing anything. Please call the clinic for assistance."), VOICE)
+                resp.say(
+                    gpt_speak(
+                        "I’m still not hearing anything. Please call the clinic for assistance."
+                    ),
+                    VOICE,
+                )
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
@@ -3737,34 +3744,58 @@ def voice():
             g = make_gather(
                 prompt,
                 input="speech dtmf",
-                timeout=5,
+                timeout=6,
                 speech_timeout="auto",
                 barge_in=True,
                 finish_on_key="#",
+                language="en-US",
                 action="/voice",
             )
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
 
+        # Reset silence counter once valid input received
         sd.pop("silence_pin", None)
 
-        # --- Normalize and parse PIN -----------------------------------------
+        # ======================================================================
+        # 🔢 PIN PARSING
+        # ======================================================================
         digits = _re.sub(r"\D", "", raw_dtmf or raw_speech)
         debug_print(f"collect_pin_number: normalized digits='{digits}'")
 
-        # --- Validate input length -------------------------------------------
         if len(digits) != 6:
             debug_print("collect_pin_number: ⚠️ invalid PIN length")
-            resp.say(
-                gpt_speak("That doesn’t seem like a valid six digit PIN. Please call the clinic to verify your account."),
-                VOICE
+            sd["pin_attempts"] = sd.get("pin_attempts", 0) + 1
+            if sd["pin_attempts"] >= 3:
+                resp.say(
+                    gpt_speak(
+                        "That doesn’t seem like a valid six digit PIN. "
+                        "Please contact the clinic to verify or reset your PIN number. Goodbye."
+                    ),
+                    VOICE,
+                )
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            g = make_gather(
+                "That doesn’t seem like a valid six digit PIN. Please try again now.",
+                input="speech dtmf",
+                timeout=6,
+                speech_timeout="auto",
+                barge_in=True,
+                finish_on_key="#",
+                language="en-US",
+                action="/voice",
             )
-            resp.hangup()
-            session_data.pop(call_sid, None)
+            resp.append(g)
+            resp.redirect("/voice")
             return str(resp)
 
-        # --- Retrieve stored PIN ---------------------------------------------
+        # ======================================================================
+        # 🧩 PIN VALIDATION
+        # ======================================================================
         try:
             stored_pin = get_pin_number(phone_e164, dob)
             debug_print(f"collect_pin_number: 🔍 stored_pin={stored_pin} for {phone_e164}|{dob}")
@@ -3772,11 +3803,14 @@ def voice():
             debug_print(f"collect_pin_number: ⚠️ error retrieving stored PIN → {e}")
             stored_pin = None
 
-        # --- Compare PINs ----------------------------------------------------
-        if stored_pin is not None and int(digits) == int(stored_pin):
+        # ======================================================================
+        # ✅ SUCCESS CASE — Correct PIN
+        # ======================================================================
+        if stored_pin is not None and digits == str(stored_pin).zfill(6):
             debug_print(f"collect_pin_number: ✅ PIN verified successfully (origin={origin_stage})")
 
-            # ---------------- Branch based on origin -------------------------
+            sd.pop("pin_attempts", None)  # reset attempts after success
+
             if origin_stage == "book":
                 next_stage = "ask_time_date"
                 msg = "Thank you. Your PIN has been verified. Let's continue with your appointment booking."
@@ -3792,40 +3826,51 @@ def voice():
 
             sd["stage"] = next_stage
             sd["skip_silence_once"] = True
+
             resp.say(gpt_speak(msg), VOICE)
-
-            # Prompt for next action
-            if next_stage == "ask_time_date":
-                PROMPT_APPT_DATE_TIME = (
-                    "Please say the appointment date and time, for example, 'October 12 at 9 A M'. "
-                    "Or enter two digits for month, two for day, two for hour, and two for minutes, "
-                    "then say A for A M or P for P M, then press pound."
-                )
-                g = make_gather(
-                    PROMPT_APPT_DATE_TIME,
-                    input="speech dtmf",
-                    timeout=4,
-                    speech_timeout="auto",
-                    barge_in=True,
-                    finish_on_key="#",
-                )
-                resp.append(g)
-                resp.redirect("/voice")
-            else:
-                resp.redirect("/voice")
-
+            resp.redirect("/voice")
             return str(resp)
 
-        # --- Invalid PIN -----------------------------------------------------
-        debug_print(f"collect_pin_number: ❌ invalid PIN entered ({digits}) vs stored ({stored_pin})")
+        # ======================================================================
+        # ❌ FAILURE CASE — Wrong PIN
+        # ======================================================================
+        sd["pin_attempts"] = sd.get("pin_attempts", 0) + 1
+        tries = sd["pin_attempts"]
+        debug_print(f"collect_pin_number: ❌ invalid PIN ({digits}) vs stored ({stored_pin}) (try {tries}/3)")
+
+        if tries < 3:
+            # Allow retry
+            retry_msg = (
+                "That PIN number is incorrect. Please try again now. "
+                "Enter your six digit PIN followed by the pound key."
+            )
+            g = make_gather(
+                retry_msg,
+                input="speech dtmf",
+                timeout=6,
+                speech_timeout="auto",
+                barge_in=True,
+                finish_on_key="#",
+                language="en-US",
+                action="/voice",
+            )
+            resp.append(g)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # 🚫 Max retries reached → terminate
+        # ----------------------------------------------------------------------
         msg = (
-            "The PIN number you entered is invalid. "
-            "For your security, please call the clinic to verify your information. Goodbye!"
+            "You have entered an incorrect PIN too many times. "
+            "Please contact the clinic to verify your information or to change your PIN number. Goodbye!"
         )
         resp.say(gpt_speak(msg), VOICE)
         resp.hangup()
         session_data.pop(call_sid, None)
         return str(resp)
+
+
 
 
 
