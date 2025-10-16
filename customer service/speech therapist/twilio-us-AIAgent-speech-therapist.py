@@ -2883,43 +2883,24 @@ def voice():
     
 
 
-
     elif stage == "book_appointment":
         # ----------------------------------------------------------------------
         # 📍 Booking flow: ask caller to name or select a doctor.
         # Accepts both speech and single-digit DTMF input.
-        # Supports English voice input.
-        #
-        # 👂 SILENCE HANDLING
-        # We rely on a trailing resp.redirect("/voice") AFTER each <Gather>.
-        # If the caller is silent and the <Gather> times out without input,
-        # Twilio executes the <Redirect> → posts NEW webhook to /voice.
-        # This re-enters the same stage, allowing retries and counting silence.
-        #
-        # 🔖 ORIGIN TAGGING
-        # When entering the booking flow, we tag this branch with:
-        #     session_data[call_sid]["origin_stage"] = "book"
-        # This ensures that later stages (like collect_pin_number)
-        # know the call originated from the booking process.
         # ----------------------------------------------------------------------
 
         session_data.setdefault(call_sid, {}).setdefault("retry_booking", 0)
-        session_data[call_sid]["origin_stage"] = "book"   # ✅ Mark booking as origin
+        session_data[call_sid]["origin_stage"] = "book"  # ✅ Mark booking as origin
 
         _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
-
-        # ------------------- Inputs -------------------
-        dtmf_digits  = (request.values.get("Digits") or "").strip()
-        spoken_text  = (speech_result or "").strip().lower()
+        dtmf_digits = (request.values.get("Digits") or "").strip()
+        spoken_text = (speech_result or "").strip().lower()
         spoken_clean = spoken_text.translate(str.maketrans('', '', _PUNCT)).strip()
-
         print(f"📻 booking :speech_result: {spoken_clean} DTMF='{dtmf_digits}'")
 
         matched_id = None
 
-        # ------------------------------------------------------------------
-        # 🔢 Path 1: DTMF selection via doctor_dtmf_map
-        # ------------------------------------------------------------------
+        # -------------------- 🔢 DTMF Matching --------------------
         if dtmf_digits and "doctor_dtmf_map" in session_data[call_sid]:
             doctor_map = session_data[call_sid]["doctor_dtmf_map"]
             chosen_name = doctor_map.get(dtmf_digits)
@@ -2930,42 +2911,47 @@ def voice():
                         print(f"✅ DTMF matched doctor: {friendly}")
                         break
 
-        # ------------------------------------------------------------------
-        # 🎙️ Path 2: Speech-based matching (English only)
-        # ------------------------------------------------------------------
+        # -------------------- 🎙️ Speech Matching --------------------
         if matched_id is None:
             junk_inputs = {
                 "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
                 "yo", "test", "1", "yes", "no", "i know", "huh", "what", "okay", "ok",
                 "bye", "goodbye", ""
             }
+
             if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
                 print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting")
                 doctor_list_str = ", ".join(googleid_dr_name_map.values())
-                gather = make_gather(
-                    "Please say the name of the doctor you'd like to book with.",
+
+                g = Gather(
                     input="speech dtmf",
-                    language="en-US",  # ✅ English (United States)
+                    language="en-US",
                     hints=f"{doctor_list_str}, {FOREIGN_NAME_HINTS}",
                     num_digits=1,
                     timeout=6,
-                    speech_timeout="5",
+                    speech_timeout="auto",
                     barge_in=True,
+                    action="/voice",
+                    method="POST"
                 )
-                resp.append(gather)
-                # SAFETY NET: ensures a new webhook to /voice even if silent
+                g.say(
+                    "Please say the name of the doctor you'd like to book with. "
+                    "You can also press the number on your keypad.",
+                    voice=VOICE
+                )
+                resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # 🔍 Partial or fuzzy token-based match
+            # 🔍 Fuzzy Match
             partial_matches = []
             spoken_tokens = set(spoken_clean.split())
             for doc_id, friendly in googleid_dr_name_map.items():
                 friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
                 friendly_tokens = set(friendly_clean.split())
-                if (spoken_clean in friendly_clean
-                    or friendly_clean in spoken_clean
-                    or (spoken_tokens & friendly_tokens)):
+                if (spoken_clean in friendly_clean or
+                    friendly_clean in spoken_clean or
+                    (spoken_tokens & friendly_tokens)):
                     partial_matches.append((doc_id, friendly))
 
             if len(partial_matches) == 1:
@@ -2975,9 +2961,7 @@ def voice():
                 print(f"🔍 Multiple matches: {[name for _, name in partial_matches]}")
                 matched_id = partial_matches[0][0]
 
-        # ------------------------------------------------------------------
-        # ❌ Retry if still no match
-        # ------------------------------------------------------------------
+        # -------------------- ❌ Retry on Failure --------------------
         if matched_id is None:
             session_data[call_sid]["retry_booking"] += 1
             retries = session_data[call_sid]["retry_booking"]
@@ -2989,59 +2973,57 @@ def voice():
                         "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
                         "Please call us again later."
                     ),
-                    VOICE,
+                    VOICE
                 )
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
             doctor_list_str = ", ".join(googleid_dr_name_map.values())
-            retry_prompt = (
-                f"I couldn't match that to a doctor. "
-                f"Available doctors are: {doctor_list_str}. "
-                "Please say the doctor's name or press the number."
-            )
-            gather = make_gather(
-                retry_prompt,
+            g = Gather(
                 input="speech dtmf",
-                language="en-US",  # ✅ English language
+                language="en-US",
                 hints=f"{doctor_list_str}, {FOREIGN_NAME_HINTS}",
                 num_digits=1,
                 timeout=6,
-                speech_timeout="5",
+                speech_timeout="auto",
                 barge_in=True,
+                action="/voice",
+                method="POST"
             )
-            resp.append(gather)
-            # SAFETY NET for silence → new /voice webhook
+            g.say(
+                f"I couldn't match that to a doctor. "
+                f"Available doctors are: {doctor_list_str}. "
+                "Please say the doctor's name or press the number.",
+                voice=VOICE
+            )
+            resp.append(g)
             resp.redirect("/voice")
             return str(resp)
 
-        # ------------------------------------------------------------------
-        # ✅ Success → store doctor & move forward
-        # ------------------------------------------------------------------
+        # -------------------- ✅ Success — Store and Prompt Next --------------------
         session_data[call_sid]["doctor_id"] = matched_id
         session_data[call_sid]["stage"] = "collect_phone"
-
         friendly_name = googleid_dr_name_map[matched_id]
-        phone_prompt = (
-            f"Great, we'll book with {friendly_name}. "
-            "Please say or enter your phone number including area code."
-        )
 
-        gather = make_gather(
-            phone_prompt,
+        g = Gather(
             input="speech dtmf",
-            language="en-US",  # ✅ English (US)
+            language="en-US",
             num_digits=10,
             timeout=8,
-            speech_timeout="6",
+            speech_timeout="auto",
             barge_in=True,
+            action="/voice",
+            method="POST"
         )
-        resp.append(gather)
-        # CRITICAL: Redirect safety net → guarantees new /voice webhook
+        g.say(
+            f"Great, we'll book with {friendly_name}. "
+            "Please say or enter your phone number, including area code, then press pound.",
+            voice=VOICE
+        )
+        resp.append(g)
         resp.redirect("/voice")
         return str(resp)
-
 
 
 
@@ -3171,7 +3153,9 @@ def voice():
 
         # ---------------- Proceed to next stage ----------------
         sd["stage"] = "collect_first_name"
+        prompt = "tell me your first name"
         g = Gather(
+            prompt,
             input="speech dtmf",
             timeout=5,
             speech_timeout="auto",
@@ -4261,14 +4245,14 @@ def voice():
                 prompt,
                 input="speech dtmf",
                 timeout=6,
-                speech_timeout="5",
+                speech_timeout="auto",
                 barge_in=True,
                 finish_on_key="#",
                 action="/voice", method="POST",
             )
             resp.append(g)
             # Safety net so we re-enter /voice even if the caller stays silent
-            resp.redirect("/voice")
+            #resp.redirect("/voice")
             return str(resp)
 
         # Otherwise we’re going to book_appt_confirm; redirect to continue flow
@@ -4554,7 +4538,7 @@ def voice():
                 language="en-US",
                 hints=FOREIGN_NAME_HINTS,  # helps speech ASR
                 timeout=6,
-                speech_timeout="5",
+                speech_timeout="auto",
                 finish_on_key="#",
                 barge_in=True,
                 action="/voice", method="POST",
@@ -4647,7 +4631,7 @@ def voice():
                         language="en-US",
                         hints=FOREIGN_NAME_HINTS,
                         timeout=6,
-                        speech_timeout="5",
+                        speech_timeout="auto",
                         finish_on_key="#",
                         barge_in=True,
                         action="/voice", method="POST",
