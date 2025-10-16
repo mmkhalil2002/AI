@@ -2966,7 +2966,7 @@ def voice():
             sd["stage"] = "ask_time_date"
 
             g = make_gather(
-                "Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 A M'.",
+                prompt="Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 A M'.",
                 input="speech dtmf",
                 timeout=5,
                 speech_timeout="auto",
