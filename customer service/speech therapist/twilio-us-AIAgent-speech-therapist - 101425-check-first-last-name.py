@@ -2768,14 +2768,18 @@ def voice():
 
 
 
-
     elif stage == "collect_phone":
         # ==========================================================================
         # 📞 Stage: collect_phone — capture customer phone number via speech/DTMF.
         #
-        # FULL COMMENTS EXPLAINED ABOVE IN YOUR ORIGINAL EXAMPLE
+        # DESIGN INTENT:
+        #   - Accept phone via speech (e.g., "469 463 3276") or DTMF (e.g., 4694633276#).
+        #   - Normalize to E.164 (e.g., "+14694633276").
+        #   - Validate length/format (US = 10 digits).
+        #   - Handle up to 3 invalid retries and 3 silent timeouts.
+        #   - Mirror phone into booking and cancellation contexts.
         # ==========================================================================
-
+        
         debug_print("[collect_phone] 📍 entered")
 
         # Ensure session buckets exist
@@ -2803,12 +2807,9 @@ def voice():
             debug_print(f"[collect_phone] 🤐 no input (tries={tries}/3)")
 
             if tries < 3:
-                prompt = (
-                    "I didn’t hear your phone number. "
-                    "Please say or enter your 10-digit number, then press pound."
-                )
                 g = make_gather(
-                    prompt,
+                    prompt="I didn’t hear your phone number. "
+                        "Please say or enter your 10-digit number, then press pound.",
                     input="speech dtmf",
                     timeout=4,
                     speech_timeout="auto",
@@ -2897,12 +2898,9 @@ def voice():
             debug_print(f"[collect_phone] ❌ invalid number (retry {r}/3) input='{raw_digits}'")
 
             if r < 3:
-                prompt = (
-                    "That doesn’t sound complete. "
-                    "Please say or enter your 10-digit phone number including area code, then press pound."
-                )
                 g = make_gather(
-                    prompt,
+                    prompt="That doesn’t sound complete. "
+                        "Please say or enter your 10-digit phone number including area code, then press pound.",
                     input="speech dtmf",
                     timeout=5,
                     speech_timeout="auto",
@@ -2941,32 +2939,11 @@ def voice():
         # ==========================================================================
         # 🔁 RESCHEDULE FLOW — BRANCH TO ask_time_date
         # ==========================================================================
-        # If the user has just canceled an appointment and indicated they want to
-        # reschedule immediately, we skip the remaining stages (e.g. collect_dob, etc.)
-        # and jump directly to asking for the new appointment date and time.
-        #
-        # → This flag `reschedule_after_cancel` is set in earlier cancellation logic.
-        # → We use make_gather to prompt the user for the new date/time (with voice or DTMF).
-        # → We include a trailing <Redirect>/voice to ensure that even if the user stays silent,
-        #    Twilio still POSTs to /voice and the stage can retry accordingly.
-        #
-        # Example dialog:
-        #   System: "Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 A M'."
-        #   Caller: "October 18 at 4 PM"
-        #       → moves to stage ask_time_date and handles accordingly.
-        #
-        # Key Notes:
-        #   • No need to re-collect name or phone — already stored.
-        #   • Bypasses intro, intent, and identification stages.
-        #   • Prompt matches the expected input format of ask_time_date stage.
-        #   • Safe fallback if silent: redirect ensures retry rather than hangup.
-        # ==========================================================================
-
         if sd.get("reschedule_after_cancel"):
             sd["stage"] = "ask_time_date"
-
             g = make_gather(
-                prompt="Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 A M'.",
+                prompt="Thanks. Please say the new appointment date and time, "
+                    "for example, 'October 12 at 9 A M'.",
                 input="speech dtmf",
                 timeout=5,
                 speech_timeout="auto",
@@ -2974,23 +2951,15 @@ def voice():
                 finish_on_key="#"
             )
             resp.append(g)
-
-            # Redirect ensures that if the caller remains silent, Twilio re-posts to /voice
-            # and the stage logic can re-run (similar to other gather-safety patterns)
             resp.redirect("/voice")
-
             debug_print("[collect_phone] 🔁 reschedule → ask_time_date (via make_gather + redirect)")
             return str(resp)
-
-
-
-
 
         # 🗓️ Normal flow → ask DOB next
         sd["stage"] = "collect_dob"
         g = make_gather(
-            "Thanks. What’s your date of birth? You can say it, or enter two digits for month, "
-            "two for day, and four for year, then press pound.",
+            prompt="Thanks. What’s your date of birth? You can say it, or enter two digits for month, "
+                "two for day, and four for year, then press pound.",
             input="speech dtmf",
             timeout=5,
             speech_timeout="auto",
