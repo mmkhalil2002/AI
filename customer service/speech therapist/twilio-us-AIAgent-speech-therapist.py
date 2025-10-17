@@ -1212,8 +1212,10 @@ except NameError:  # minimal fallback so this module is self-contained
     def debug_print(*args, **kwargs):
         print(*args, **kwargs)
 
-# ---------- Init ----------
 
+
+
+# ---------- Init ----------
 def init_db() -> None:
     """
     Ensure appointment_data folder exists and customers.json is a dict file.
@@ -1226,6 +1228,7 @@ def init_db() -> None:
       - Never guess legacy 10-digit numbers.
       - Add customer_status field (default = "current").
       - Add pin_number field (6-digit integer; auto-generated if missing)
+      - Add insurance_name and insurance_member_id fields (empty string if missing)
     """
     os.makedirs(DB_FOLDER, exist_ok=True)
     if not os.path.exists(DB_FILE):
@@ -1275,22 +1278,31 @@ def init_db() -> None:
                 changed = True
 
             # ✅ Ensure customer_status always present (default = "current")
-            # Possible values: "current" or "new"
             if not rec.get("customer_status"):
                 rec["customer_status"] = "current"
                 changed = True
 
-            # ✅ Ensure pin_number always present (6-digit integer)
-            # Auto-generate a random 6-digit PIN if missing or invalid.
-            # Example: 483927
+            # ✅ Ensure pin_number (6-digit integer)
             pin_value = rec.get("pin_number")
             if not isinstance(pin_value, int) or pin_value < 100000 or pin_value > 999999:
                 rec["pin_number"] = random.randint(100000, 999999)
                 changed = True
 
-            rec["dob"] = _oneline(rec.get("dob", ""))
+            # ✅ Ensure insurance fields exist (empty string if missing)
+            # These fields are used to store customer insurance data.
+            # Example: insurance_name="Blue Cross Blue Shield", insurance_member_id="W123456789"
+            if "insurance_name" not in rec:
+                rec["insurance_name"] = ""
+                changed = True
+            if "insurance_member_id" not in rec:
+                rec["insurance_member_id"] = ""
+                changed = True
 
+            # ✅ Normalize DOB and ensure phone format
+            rec["dob"] = _oneline(rec.get("dob", ""))
             phone_e164 = _e164_or_empty(rec.get("phone_e164", ""))
+
+            # ✅ If E.164 not found, try adopting from old key
             if not phone_e164 and "|" in old_key:
                 left = old_key.split("|", 1)[0].strip()
                 left_e164 = _e164_or_empty(left)
@@ -1300,6 +1312,7 @@ def init_db() -> None:
                     adopted_from_key += 1
                     changed = True
 
+            # ✅ Construct final key based on (phone_e164|dob)
             final_key = old_key
             if phone_e164:
                 try:
@@ -1307,6 +1320,7 @@ def init_db() -> None:
                 except Exception:
                     final_key = old_key
 
+            # ✅ Update record in new_data
             if final_key != old_key:
                 if final_key not in new_data:
                     new_data[final_key] = rec
@@ -1338,6 +1352,7 @@ def init_db() -> None:
     except Exception as e:
         debug_print(f"init_db: ⚠️ migration skipped due to error: {e}")
         return
+
 
 
 
@@ -1533,6 +1548,8 @@ def _save_customers(data: Dict[str, Dict[str, Any]]) -> None:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+
+
 def insert_customer(
     phone: str,
     dob: str,
@@ -1545,6 +1562,8 @@ def insert_customer(
     cc_cvv: str,
     customer_status: str = "current",
     pin_number: int = 0,
+    insurance_name: str = "",
+    insurance_member_id: str = "",
 ) -> bool:
     """
     Insert or update a customer in customers.json (single pretty JSON dict).
@@ -1556,6 +1575,7 @@ def insert_customer(
       ✅ Strict E.164 enforcement (no legacy 10-digit fallback).
       ✅ Adds 'customer_status' field (default = "current", or explicitly set to "new").
       ✅ Adds 'pin_number' field (6-digit integer; default = 0 if not provided).
+      ✅ Adds 'insurance_name' and 'insurance_member_id' fields (default = "").
       ✅ Preserves timestamps and existing customer data.
     """
     # ----------------------------------------------------------------------
@@ -1578,6 +1598,8 @@ def insert_customer(
     cc_number  = _oneline(cc_number)
     cc_exp     = _oneline(cc_exp)
     cc_cvv     = _oneline(cc_cvv)
+    insurance_name = _oneline(insurance_name)
+    insurance_member_id = _oneline(insurance_member_id)
 
     # ----------------------------------------------------------------------
     # 🧩 Step 3: Load + prepare customer data
@@ -1610,12 +1632,17 @@ def insert_customer(
             "cc_number": cc_number or existing.get("cc_number", ""),
             "cc_exp": cc_exp or existing.get("cc_exp", ""),
             "cc_cvv": cc_cvv or existing.get("cc_cvv", ""),
+            "insurance_name": insurance_name or existing.get("insurance_name", ""),
+            "insurance_member_id": insurance_member_id or existing.get("insurance_member_id", ""),
             "last_seen_at": now,
             "customer_status": customer_status or "current",  # ✅ override if specified
             "pin_number": new_pin,
         })
         _save_customers(data)
-        debug_print(f"insert_customer: 🟡 Updated existing record for {key} (status={customer_status}, pin={new_pin})")
+        debug_print(
+            f"insert_customer: 🟡 Updated existing record for {key} "
+            f"(status={customer_status}, pin={new_pin}, insurance='{insurance_name}')"
+        )
         return False
 
     # ----------------------------------------------------------------------
@@ -1637,17 +1664,20 @@ def insert_customer(
         "cc_number": cc_number,
         "cc_exp": cc_exp,
         "cc_cvv": cc_cvv,
+        "insurance_name": insurance_name or "",
+        "insurance_member_id": insurance_member_id or "",
         "created_at": now,
         "last_seen_at": now,
         "customer_status": customer_status or "current",  # ✅ input-controlled value
         "pin_number": pin_number,  # ✅ always stored as integer
     }
+
     data[key] = rec
     _save_customers(data)
 
     debug_print(
         f"insert_customer: ✅ Added {customer_status.upper()} customer {first_name} {last_name} "
-        f"({phone_e164}|{dob_iso}) @ {now} (PIN={pin_number})"
+        f"({phone_e164}|{dob_iso}) @ {now} (PIN={pin_number}, insurance='{insurance_name}')"
     )
     return True
 
@@ -1709,6 +1739,100 @@ def normalize_phone_e164(raw: str, country: str = "US") -> str:
     # Unknown country → fail closed
     return ""
 
+
+
+# ======================================================================
+# 🏥 Insurance Field Utilities
+# ----------------------------------------------------------------------
+# These helper functions update or retrieve insurance_name and
+# insurance_member_id for a given (phone_e164, dob) customer record.
+# They strictly enforce E.164 normalization and preserve all existing data.
+# ======================================================================
+
+def update_insurance_name(phone: str, dob: str, new_name: str) -> bool:
+    """
+    Update the insurance_name field for an existing customer.
+
+    Returns:
+        True  → if the insurance_name was successfully updated.
+        False → if the record was not found or invalid input.
+    """
+    init_db()
+    phone_e164 = normalize_phone_e164(phone, globals().get("COUNTRY", "US"))
+    if not phone_e164:
+        debug_print(f"update_insurance_name: invalid phone '{phone}'")
+        return False
+
+    key = _key(phone_e164, dob.strip())
+    data = _load_customers()
+
+    if key not in data:
+        debug_print(f"update_insurance_name: ❌ record not found for {key}")
+        return False
+
+    data[key]["insurance_name"] = _oneline(new_name)
+    data[key]["last_seen_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _save_customers(data)
+    debug_print(f"update_insurance_name: ✅ updated to '{new_name}' for {key}")
+    return True
+
+
+def get_insurance_name(phone: str, dob: str) -> str:
+    """
+    Retrieve the insurance_name for a customer (default = '').
+    Returns empty string if record not found.
+    """
+    init_db()
+    phone_e164 = normalize_phone_e164(phone, globals().get("COUNTRY", "US"))
+    if not phone_e164:
+        return ""
+    key = _key(phone_e164, dob.strip())
+    data = _load_customers()
+    rec = data.get(key, {})
+    return rec.get("insurance_name", "")
+
+
+def update_insurance_member_id(phone: str, dob: str, new_id: str) -> bool:
+    """
+    Update the insurance_member_id field for an existing customer.
+
+    Returns:
+        True  → if the insurance_member_id was successfully updated.
+        False → if the record was not found or invalid input.
+    """
+    init_db()
+    phone_e164 = normalize_phone_e164(phone, globals().get("COUNTRY", "US"))
+    if not phone_e164:
+        debug_print(f"update_insurance_member_id: invalid phone '{phone}'")
+        return False
+
+    key = _key(phone_e164, dob.strip())
+    data = _load_customers()
+
+    if key not in data:
+        debug_print(f"update_insurance_member_id: ❌ record not found for {key}")
+        return False
+
+    data[key]["insurance_member_id"] = _oneline(new_id)
+    data[key]["last_seen_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _save_customers(data)
+    debug_print(f"update_insurance_member_id: ✅ updated to '{new_id}' for {key}")
+    return True
+
+
+def get_insurance_member_id(phone: str, dob: str) -> str:
+    """
+    Retrieve the insurance_member_id for a customer (default = '').
+    Returns empty string if record not found.
+    """
+    init_db()
+    phone_e164 = normalize_phone_e164(phone, globals().get("COUNTRY", "US"))
+    if not phone_e164:
+        return ""
+    key = _key(phone_e164, dob.strip())
+    data = _load_customers()
+    rec = data.get(key, {})
+    return rec.get("insurance_member_id", "")
 
 
 def update_customer_status(
@@ -3532,6 +3656,103 @@ def voice():
         return str(resp)
 
 
+    elif stage == "collect_insurance_information":
+        # ----------------------------------------------------------------------
+        # 🏥 Stage: collect_insurance_information
+        # ----------------------------------------------------------------------
+        # 🎯 Goal:
+        #   - Capture both:
+        #       1️⃣ insurance_name        → e.g., "Blue Cross Blue Shield"
+        #       2️⃣ insurance_member_id   → e.g., "W123456789"
+        #   - Update both fields in customers.json using helper functions.
+        #   - Handle both voice and keypad input.
+        #   - Handle silent input locally (retry up to 3x).
+        #   - Continue → collect_first_name after completion.
+        # ----------------------------------------------------------------------
+
+        session_data.setdefault(call_sid, {})
+        customer = session_data[call_sid].setdefault("customer", {})
+        raw_speech = (speech_result or "").strip()
+        raw_dtmf = (request.values.get("Digits") or "").strip()
+        debug_print(f"[collect_insurance_information] speech='{raw_speech}', dtmf='{raw_dtmf}'")
+
+        # 🔇 Handle silence locally
+        silent_tries = session_data[call_sid].get("insurance_silence_retries", 0)
+        if not raw_speech and not raw_dtmf:
+            silent_tries += 1
+            session_data[call_sid]["insurance_silence_retries"] = silent_tries
+            if silent_tries < 3:
+                prompt = (
+                    "I didn’t catch that. Please say your insurance company name, "
+                    "for example 'Blue Cross Blue Shield'."
+                )
+                g = make_gather(prompt, input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True)
+                resp.append(g)
+                return str(resp)
+            else:
+                resp.say(
+                    "No input detected multiple times. Please call back later to update your insurance.",
+                    VOICE
+                )
+                session_data[call_sid]["insurance_silence_retries"] = 0
+                return str(resp)
+
+        # 🎤 Step 1: Capture insurance company name
+        if "insurance_name" not in customer or not customer["insurance_name"]:
+            insurance_name = raw_speech or raw_dtmf
+            customer["insurance_name"] = insurance_name
+            debug_print(f"[collect_insurance_information] Captured insurance_name='{insurance_name}'")
+
+            prompt = (
+                f"Thank you. You said {insurance_name}. "
+                "Now please say or enter your insurance member ID, for example 'W123456789'."
+            )
+            g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True)
+            resp.append(g)
+            return str(resp)
+
+        # 🎤 Step 2: Capture insurance member ID
+        if "insurance_member_id" not in customer or not customer["insurance_member_id"]:
+            insurance_member_id = raw_speech or raw_dtmf
+            customer["insurance_member_id"] = insurance_member_id
+            debug_print(f"[collect_insurance_information] Captured insurance_member_id='{insurance_member_id}'")
+
+            # ✅ Retrieve required identifiers
+            phone = customer.get("phone_e164") or session_data[call_sid].get("from_e164", "")
+            dob = customer.get("dob", "unknown")
+
+            # ✅ Persist updates using helper functions
+            success_name = update_insurance_name(phone, dob, customer["insurance_name"])
+            success_id = update_insurance_member_id(phone, dob, insurance_member_id)
+
+            if success_name and success_id:
+                resp.say(
+                    gpt_speak(
+                        f"Your insurance information has been updated. "
+                        f"Company: {customer['insurance_name']}, Member ID: {insurance_member_id}. Thank you."
+                    ),
+                    VOICE,
+                )
+            else:
+                resp.say(
+                    gpt_speak(
+                        "Sorry, there was a problem updating your insurance details. "
+                        "Please try again later."
+                    ),
+                    VOICE,
+                )
+
+            # ✅ Move to collect_first_name after insurance info
+            session_data[call_sid]["insurance_silence_retries"] = 0
+            session_data[call_sid]["stage"] = "collect_first_name"
+            prompt = "Now, please tell me your first name."
+            g = make_gather(prompt, input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True)
+            resp.append(g)
+            return str(resp)
+
+
+
+
 
 
 
@@ -3619,7 +3840,7 @@ def voice():
             # Not found → proceed to collect first name
             if not last_lookup_found:
                 debug_print("verify_customer_type: new customer not found → go to collect_first_name")
-                sd["stage"] = "collect_first_name"
+                sd["stage"] = "collect_insurance_information"
                 g = make_gather(
                     "Welcome! Please say your first name",
                     input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True, finish_on_key="#"
