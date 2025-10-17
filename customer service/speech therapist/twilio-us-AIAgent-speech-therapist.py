@@ -3289,7 +3289,10 @@ def voice():
         # ----------------------------------------------------------------------
         # 🗣️ Message constants for all voice prompts (centralized definitions)
         # ----------------------------------------------------------------------
-        MSG_FIRST_SILENT = "Please state your first name clearly."
+        MSG_FIRST_SILENT = (
+                            "Please say your date of birth, for example, 'December 3 1962'. "
+                            "You can also enter it using your keypad: 2 digits month, 2 digits day, and 4 digits year, then press pound."
+                            )
         MSG_REPEAT_DOB = (
             "I didn’t hear your date of birth. Please say it again, for example, 'July 3 1956'. "
             "Or you can enter it using your keypad, then press pound."
@@ -3297,11 +3300,11 @@ def voice():
         MSG_HANGUP_SILENT = "Sorry, I couldn’t get your date of birth. Please call again later."
         MSG_PARSE_FAIL = (
             "I didn’t catch your full birth date. Please say the complete date, for example, 'July 3 1956'. "
-            "You can also enter it using your keypad: month, day, and year, then press pound. Example: 07 03 1956#."
+            "You can also enter it using your keypad: 2 digits month, 2 digits day, and 4 digits year, then press pound."
         )
         MSG_INVALID_DOB = (
             "That doesn’t seem like a valid date of birth. "
-            "Please enter two digits for month, two for day, and four for year, then press pound. Example: 07 03 1956#."
+            "Please enter 2 digits for month, 2 for day, and 4 for year, then press #"
         )
         MSG_NOT_FOUND = (
             "We couldn’t find a record with that phone number and date of birth. "
