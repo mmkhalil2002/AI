@@ -3708,7 +3708,7 @@ def voice():
 
             prompt = (
                 f"Thank you. You said {insurance_name}. "
-                "Now please say or enter your insurance member ID, for example 'W123456789'."
+                "Now please say or enter your insurance member ID."
             )
             g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True)
             resp.append(g)
