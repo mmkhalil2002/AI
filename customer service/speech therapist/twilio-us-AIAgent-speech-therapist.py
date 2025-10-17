@@ -2616,18 +2616,13 @@ def voice():
     
 
 
+
     elif stage == "intent":
         # ----------------------------------------------------------------------
         # 🎯 STAGE: intent — Detect caller's intent (via speech or keypad)
-        #
-        # PURPOSE:
-        #   - Determine what the caller wants: book, cancel, reschedule, update, etc.
-        #   - Accepts BOTH speech (Twilio SpeechResult) and DTMF keypad input.
         # ----------------------------------------------------------------------
 
-        # ----------------------------------------------------------------------
-        # 💬 Local message constants
-        # ----------------------------------------------------------------------
+        # ---------------------- Message constants -----------------------------
         MAIN_MENU_PROMPT = (
             "Thank you for calling Epic Therapist. "
             "Please choose one of the following options. "
@@ -2668,45 +2663,28 @@ def voice():
             "Please call the clinic for assistance."
         )
 
-        # ----------------------------------------------------------------------
-        # 🧠 Input extraction
-        # ----------------------------------------------------------------------
+        # ---------------------- Input extraction -----------------------------
         lower = (speech_result or "").lower().strip()
         debug_print(f"📢 intent :speech_result: {lower}")
         debug_print(f"📞 intent :dtmf_digits: {dtmf_digits}")
 
-        # ----------------------------------------------------------------------
-        # 🩵 Handle polite / empty / meaningless responses
-        # ----------------------------------------------------------------------
+        # ---------------------- Empty / polite case --------------------------
         polite_or_empty = not lower or lower in {
-            "thank you", "thanks", "thankyou", "ok", "okay",
-            "goodbye", "bye", "no", "nothing", "that's it",
-            "that’s it", "that’s all", "that is all"
+            "thank you", "thanks", "ok", "okay", "goodbye", "bye",
+            "nothing", "that's it", "that’s it", "that’s all"
         }
-
         if polite_or_empty:
-            debug_print(f"[intent] 🙏 polite or empty response ('{lower}') — re-prompt menu")
+            debug_print("[intent] 🙏 polite or empty response — re-prompt menu")
             g = Gather(
-                input="speech dtmf",           # Accept both speech and keypad
-                timeout=6,                     # Wait 6 seconds for response
-                speech_timeout="auto",         # Auto-end on speech pause
-                barge_in=True,                 # Allow interruption
-                finish_on_key="#",             # '#' ends DTMF input early
-                num_digits=1,                  # Expect single digit 1–7
-                action="/voice", method="POST",
-                language="en-US"
+                input="speech dtmf", timeout=6, speech_timeout="auto",
+                barge_in=True, finish_on_key="#", num_digits=1,
+                action="/voice", method="POST", language="en-US"
             )
             g.say(gpt_speak(MAIN_MENU_PROMPT), VOICE)
             resp.append(g)
-            resp.redirect("/voice")
-            return str(resp)
+            return str(resp)   # ✅ no redirect
 
-        # ----------------------------------------------------------------------
-        # 🔢 DTMF (Keypad) detection
-        #
-        # Example:
-        #   Pressing “1” → dtmf_digits="1" → goes to booking flow
-        # ----------------------------------------------------------------------
+        # ---------------------- DTMF & speech mapping ------------------------
         choice = None
         if dtmf_digits and len(dtmf_digits) == 1 and dtmf_digits in "1234567":
             choice = dtmf_digits
@@ -2715,192 +2693,115 @@ def voice():
             choice = lower
             debug_print(f"[intent] 💬 spoken numeric intent → {choice}")
 
-        # ----------------------------------------------------------------------
-        # 🗣️ Voice-based keyword detection
-        #
-        # Twilio’s SpeechResult is free text. We check for common intent words.
-        # ----------------------------------------------------------------------
-        if any(word in lower for word in ["book", "appointment", "schedule", "make appointment"]):
+        # ---------------------- Keyword mapping ------------------------------
+        if any(w in lower for w in ["book", "appointment", "schedule"]):
             choice = "1"
-        elif any(word in lower for word in ["cancel", "delete", "remove", "call off"]):
+        elif any(w in lower for w in ["cancel", "delete", "remove"]):
             choice = "2"
-        elif any(word in lower for word in ["reschedule", "change", "move", "shift", "different time"]):
+        elif any(w in lower for w in ["reschedule", "change", "move"]):
             choice = "3"
-        elif any(word in lower for word in ["credit", "card", "payment", "update card"]):
+        elif any(w in lower for w in ["credit", "card", "payment"]):
             choice = "4"
-        elif any(word in lower for word in ["pin", "password", "update pin", "change pin", "pin number"]):
+        elif any(w in lower for w in ["pin", "password", "pin number"]):
             choice = "5"
-        elif any(word in lower for word in ["insurance", "health", "medical", "health card"]):
+        elif any(w in lower for w in ["insurance", "health", "medical"]):
             choice = "6"
-        elif any(word in lower for word in ["voicemail", "message", "leave a message", "record message"]):
+        elif any(w in lower for w in ["voicemail", "message", "record"]):
             choice = "7"
 
-        # ----------------------------------------------------------------------
-        # ✅ Routing based on detected choice
-        #
-        # DTMF and voice inputs share the same menu routing.
-        # ----------------------------------------------------------------------
-        if choice:
-            # 1️⃣ Book Appointment
-            if choice == "1":
-                debug_print("intent:📅 → booking")
-                session_data.setdefault(call_sid, {})
-                session_data[call_sid].update({
-                    "stage": "book_appointment",
-                    "booking": {},
-                    "retry_booking": 0,
-                    "retry_time": 0
-                })
+        # ---------------------- Routing -------------------------------------
+        if choice == "1":
+            # ✅ Booking
+            debug_print("intent:📅 → booking")
+            session_data.setdefault(call_sid, {}).update({
+                "stage": "book_appointment",
+                "booking": {},
+                "retry_booking": 0
+            })
+            doctor_names = list(googleid_dr_name_map.values())
+            dtmf_map = {str(i): n for i, n in enumerate(doctor_names, 1)}
+            session_data[call_sid]["doctor_dtmf_map"] = dtmf_map
+            doctor_list = ", ".join([f"{n} (press {i})" for i, n in enumerate(doctor_names, 1)])
+            prompt = f"Great! Let's schedule your appointment. Doctors available: {doctor_list}."
+            g = Gather(input="speech dtmf", timeout=6, num_digits=1,
+                    action="/voice", method="POST", language="en-US")
+            g.say(gpt_speak(prompt), VOICE)
+            resp.append(g)
+            return str(resp)   # ✅ no redirect
 
-                # Create list of doctors and DTMF map
-                doctor_names = list(googleid_dr_name_map.values())
-                dtmf_map = {str(i): name for i, name in enumerate(doctor_names, start=1)}
-                session_data[call_sid]["doctor_dtmf_map"] = dtmf_map
-                doctor_list = ", ".join([f"{name} (press {i})" for i, name in enumerate(doctor_names, start=1)])
+        elif choice == "2":
+            # ✅ Cancel
+            debug_print("intent:❌ → cancel appointment")
+            session_data[call_sid] = {"stage": "cancel_appointment", "cancel": {}}
+            doctor_names = list(googleid_dr_name_map.values())
+            dtmf_map = {str(i): n for i, n in enumerate(doctor_names, 1)}
+            session_data[call_sid]["doctor_dtmf_map"] = dtmf_map
+            doctor_list = ", ".join([f"{n} (press {i})" for i, n in enumerate(doctor_names, 1)])
+            prompt = f"Sure, I can help you cancel your appointment. Doctors: {doctor_list}."
+            g = Gather(input="speech dtmf", timeout=6, num_digits=1,
+                    action="/voice", method="POST", language="en-US")
+            g.say(gpt_speak(prompt), VOICE)
+            resp.append(g)
+            return str(resp)
 
-                # Prompt user to choose a doctor
-                prompt = (
-                    f"Great! Let's schedule your appointment. "
-                    f"Available doctors are: {doctor_list}. "
-                    "Please say the doctor's name or press the number."
-                )
-                g = Gather(
-                    input="speech dtmf",
-                    timeout=6,
-                    speech_timeout="auto",
-                    barge_in=True,
-                    finish_on_key="#",
-                    num_digits=1,
-                    action="/voice", method="POST",
-                    language="en-US"
-                )
-                g.say(gpt_speak(prompt), VOICE)
-                resp.append(g)
-                resp.redirect("/voice")
-                return str(resp)
+        elif choice == "3":
+            # ✅ Reschedule
+            debug_print("intent:🔁 → reschedule")
+            session_data[call_sid] = {
+                "stage": "cancel_appointment",
+                "cancel": {},
+                "reschedule_after_cancel": True
+            }
+            resp.say(gpt_speak("Let's reschedule your appointment."), VOICE)
+            return str(resp)
 
-            # 2️⃣ Cancel Appointment
-            if choice == "2":
-                debug_print("intent:❌ → cancel appointment")
-                session_data[call_sid] = {"stage": "cancel_appointment", "cancel": {}}
-                doctor_names = list(googleid_dr_name_map.values())
-                dtmf_map = {str(i): name for i, name in enumerate(doctor_names, start=1)}
-                session_data[call_sid]["doctor_dtmf_map"] = dtmf_map
-                doctor_list = ", ".join([f"{name} (press {i})" for i, name in enumerate(doctor_names, start=1)])
-                prompt = (
-                    f"Sure, I can help you cancel your appointment. "
-                    f"Available doctors are: {doctor_list}. "
-                    "Please say the doctor's name or press the number."
-                )
-                g = Gather(
-                    input="speech dtmf", timeout=6, speech_timeout="auto",
-                    barge_in=True, finish_on_key="#", num_digits=1,
-                    action="/voice", method="POST", language="en-US"
-                )
-                g.say(gpt_speak(prompt), VOICE)
-                resp.append(g)
-                resp.redirect("/voice")
-                return str(resp)
+        elif choice == "4":
+            # ✅ Update credit card
+            debug_print("intent:💳 → update credit card")
+            session_data.setdefault(call_sid, {})["stage"] = "update_cc"
+            resp.say(gpt_speak(UPDATE_CC_PLACEHOLDER_MSG), VOICE)
+            return str(resp)
 
-            # 3️⃣ Reschedule Appointment
-            if choice == "3":
-                debug_print("intent:🔁 → reschedule")
-                session_data[call_sid] = {
-                    "stage": "cancel_appointment",
-                    "cancel": {},
-                    "reschedule_after_cancel": True
-                }
-                doctor_names = list(googleid_dr_name_map.values())
-                dtmf_map = {str(i): name for i, name in enumerate(doctor_names, start=1)}
-                session_data[call_sid]["doctor_dtmf_map"] = dtmf_map
-                doctor_list = ", ".join([f"{name} (press {i})" for i, name in enumerate(doctor_names, start=1)])
-                prompt = (
-                    f"Let's reschedule your appointment. First, we'll cancel your current one. "
-                    f"Available doctors are: {doctor_list}. "
-                    "Please say the doctor's name or press the number."
-                )
-                g = Gather(
-                    input="speech dtmf", timeout=6, speech_timeout="auto",
-                    barge_in=True, finish_on_key="#", num_digits=1,
-                    action="/voice", method="POST", language="en-US"
-                )
-                g.say(gpt_speak(prompt), VOICE)
-                resp.append(g)
-                resp.redirect("/voice")
-                return str(resp)
+        elif choice == "5":
+            # ✅ Update PIN
+            debug_print("intent:🔢 → update PIN")
+            session_data.setdefault(call_sid, {})["stage"] = "update_pin"
+            resp.say(gpt_speak(UPDATE_PIN_PLACEHOLDER_MSG), VOICE)
+            resp.say(gpt_speak("Returning to the main menu."), VOICE)
+            g = Gather(input="speech dtmf", timeout=6, num_digits=1,
+                    action="/voice", method="POST", language="en-US")
+            g.say(gpt_speak(MAIN_MENU_PROMPT), VOICE)
+            resp.append(g)
+            return str(resp)
 
-            # 4️⃣ Update Credit Card
-            if choice == "4":
-                debug_print("intent:💳 → update credit card")
-                session_data.setdefault(call_sid, {})
-                session_data[call_sid].update({
-                    "stage": "update_cc",
-                    "cc_update": {"active": True}
-                })
-                resp.say(gpt_speak(UPDATE_CC_PLACEHOLDER_MSG), VOICE)
-                resp.redirect("/voice")
-                return str(resp)
+        elif choice == "6":
+            # ✅ Update insurance
+            debug_print("intent:🏥 → update insurance")
+            session_data.setdefault(call_sid, {})["stage"] = "update_insurance"
+            resp.say(gpt_speak(UPDATE_INSURANCE_PLACEHOLDER_MSG), VOICE)
+            resp.say(gpt_speak("Returning to the main menu."), VOICE)
+            g = Gather(input="speech dtmf", timeout=6, num_digits=1,
+                    action="/voice", method="POST", language="en-US")
+            g.say(gpt_speak(MAIN_MENU_PROMPT), VOICE)
+            resp.append(g)
+            return str(resp)
 
-            # 5️⃣ Update PIN Number
-            if choice == "5":
-                debug_print("intent:🔢 → update PIN")
-                session_data.setdefault(call_sid, {})
-                session_data[call_sid]["stage"] = "update_pin"
-                resp.say(gpt_speak(UPDATE_PIN_PLACEHOLDER_MSG), VOICE)
-                g = Gather(
-                    input="speech dtmf", timeout=6, speech_timeout="auto",
-                    barge_in=True, finish_on_key="#", num_digits=1,
-                    action="/voice", method="POST", language="en-US"
-                )
-                g.say(gpt_speak(MAIN_MENU_PROMPT), VOICE)
-                resp.append(g)
-                resp.redirect("/voice")
-                return str(resp)
+        elif choice == "7":
+            # ✅ Voicemail
+            debug_print("intent:📩 → voicemail")
+            session_data.setdefault(call_sid, {})["stage"] = "voicemail"
+            resp.say(gpt_speak("Please leave your name, phone number, and message after the beep."), VOICE)
+            resp.record(max_length=MAX_RECORD_TIME, action="/voice",
+                        transcribe=True, transcribe_callback="/transcription")
+            return str(resp)
 
-            # 6️⃣ Update Health Insurance
-            if choice == "6":
-                debug_print("intent:🏥 → update insurance")
-                session_data.setdefault(call_sid, {})
-                session_data[call_sid]["stage"] = "update_insurance"
-                resp.say(gpt_speak(UPDATE_INSURANCE_PLACEHOLDER_MSG), VOICE)
-                g = Gather(
-                    input="speech dtmf", timeout=6, speech_timeout="auto",
-                    barge_in=True, finish_on_key="#", num_digits=1,
-                    action="/voice", method="POST", language="en-US"
-                )
-                g.say(gpt_speak(MAIN_MENU_PROMPT), VOICE)
-                resp.append(g)
-                resp.redirect("/voice")
-                return str(resp)
-
-            # 7️⃣ Voicemail
-            if choice == "7":
-                debug_print("intent:📩 → voicemail")
-                session_data.setdefault(call_sid, {})
-                session_data[call_sid]["stage"] = "voicemail"
-                resp.say(gpt_speak("Please leave your name, phone number, and message after the beep."), VOICE)
-                resp.record(
-                    max_length=MAX_RECORD_TIME,
-                    action="/voice",
-                    transcribe=True,
-                    transcribe_callback="/transcription"
-                )
-                return str(resp)
-
-        # ----------------------------------------------------------------------
-        # 🚫 Fallback — Unrecognized input: repeat menu
-        # ----------------------------------------------------------------------
-        debug_print(f"intent:⚠️ unrecognized '{lower}' — repeating main menu")
-        g = Gather(
-            input="speech dtmf", timeout=6, speech_timeout="auto",
-            barge_in=True, finish_on_key="#", num_digits=1,
-            action="/voice", method="POST", language="en-US"
-        )
+        # ---------------------- Fallback ------------------------------------
+        debug_print(f"intent:⚠️ unrecognized '{lower}' — repeating menu")
+        g = Gather(input="speech dtmf", timeout=6, num_digits=1,
+                action="/voice", method="POST", language="en-US")
         g.say(gpt_speak(REPEAT_MENU_PROMPT), VOICE)
         resp.append(g)
-        resp.redirect("/voice")
         return str(resp)
-
 
 
 
