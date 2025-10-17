@@ -3041,148 +3041,47 @@ def voice():
         return str(resp)
     
 
-
     elif stage == "book_appointment":
         # ----------------------------------------------------------------------
-        # 📍 Booking flow: ask caller to name or select a doctor.
-        # Accepts both speech and single-digit DTMF input.
+        # 📅 Stage: book_appointment
         # ----------------------------------------------------------------------
+        # 🎯 Purpose:
+        #   - Entry point for appointment booking.
+        #   - Immediately routes to collect_phone to capture caller’s phone number.
+        # ----------------------------------------------------------------------
+        debug_print("book_appointment: entered → redirecting to collect_phone")
 
-        session_data.setdefault(call_sid, {}).setdefault("retry_booking", 0)
-        session_data[call_sid]["origin_stage"] = "book"  # ✅ Mark booking as origin
+        sd = session_data.setdefault(call_sid, {})
+        sd["stage"] = "collect_phone"
+        sd["retry_booking"] = 0
+        sd["origin_stage"] = "book"
 
-        _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
-        dtmf_digits = (request.values.get("Digits") or "").strip()
-        spoken_text = (speech_result or "").strip().lower()
-        spoken_clean = spoken_text.translate(str.maketrans('', '', _PUNCT)).strip()
-        print(f"📻 booking :speech_result: {spoken_clean} DTMF='{dtmf_digits}'")
+        # ✅ Optional: store available doctors in session (for later use)
+        doctor_names = list(googleid_dr_name_map.values())
+        dtmf_map = {str(i): name for i, name in enumerate(doctor_names, start=1)}
+        sd["doctor_dtmf_map"] = dtmf_map
 
-        matched_id = None
+        # ----------------------------------------------------------------------
+        # 📞 Prompt user for phone number
+        # ----------------------------------------------------------------------
+        prompt = (
+            "Let's get started with your booking. "
+            "Please say or enter your phone number, including the area code, then press pound."
+        )
 
-        # -------------------- 🔢 DTMF Matching --------------------
-        if dtmf_digits and "doctor_dtmf_map" in session_data[call_sid]:
-            doctor_map = session_data[call_sid]["doctor_dtmf_map"]
-            chosen_name = doctor_map.get(dtmf_digits)
-            if chosen_name:
-                for doc_id, friendly in googleid_dr_name_map.items():
-                    if friendly.lower() == chosen_name.lower():
-                        matched_id = doc_id
-                        print(f"✅ DTMF matched doctor: {friendly}")
-                        break
-
-        # -------------------- 🎙️ Speech Matching --------------------
-        if matched_id is None:
-            junk_inputs = {
-                "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
-                "yo", "test", "1", "yes", "no", "i know", "huh", "what", "okay", "ok",
-                "bye", "goodbye", ""
-            }
-
-            if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
-                print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting")
-                doctor_list_str = ", ".join(googleid_dr_name_map.values())
-
-                g = Gather(
-                    input="speech dtmf",
-                    language="en-US",
-                    hints=f"{doctor_list_str}, {FOREIGN_NAME_HINTS}",
-                    num_digits=1,
-                    timeout=6,
-                    speech_timeout="auto",
-                    barge_in=True,
-                    action="/voice",
-                    method="POST"
-                )
-                g.say(
-                    "Please say the name of the doctor you'd like to book with. "
-                    "You can also press the number on your keypad.",
-                    voice=VOICE
-                )
-                resp.append(g)
-                resp.redirect("/voice")
-                return str(resp)
-
-            # 🔍 Fuzzy Match
-            partial_matches = []
-            spoken_tokens = set(spoken_clean.split())
-            for doc_id, friendly in googleid_dr_name_map.items():
-                friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
-                friendly_tokens = set(friendly_clean.split())
-                if (spoken_clean in friendly_clean or
-                    friendly_clean in spoken_clean or
-                    (spoken_tokens & friendly_tokens)):
-                    partial_matches.append((doc_id, friendly))
-
-            if len(partial_matches) == 1:
-                matched_id = partial_matches[0][0]
-                print(f"✅ Partial match with: {partial_matches[0][1]}")
-            elif len(partial_matches) > 1:
-                print(f"🔍 Multiple matches: {[name for _, name in partial_matches]}")
-                matched_id = partial_matches[0][0]
-
-        # -------------------- ❌ Retry on Failure --------------------
-        if matched_id is None:
-            session_data[call_sid]["retry_booking"] += 1
-            retries = session_data[call_sid]["retry_booking"]
-            debug_print(f"❌ No doctor match for: '{spoken_clean or dtmf_digits}' retry={retries}")
-
-            if retries >= 3:
-                resp.say(
-                    gpt_speak(
-                        "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
-                        "Please call us again later."
-                    ),
-                    VOICE
-                )
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            doctor_list_str = ", ".join(googleid_dr_name_map.values())
-            g = Gather(
-                input="speech dtmf",
-                language="en-US",
-                hints=f"{doctor_list_str}, {FOREIGN_NAME_HINTS}",
-                num_digits=1,
-                timeout=6,
-                speech_timeout="auto",
-                barge_in=True,
-                action="/voice",
-                method="POST"
-            )
-            g.say(
-                f"I couldn't match that to a doctor. "
-                f"Available doctors are: {doctor_list_str}. "
-                "Please say the doctor's name or press the number.",
-                voice=VOICE
-            )
-            resp.append(g)
-            resp.redirect("/voice")
-            return str(resp)
-
-        # -------------------- ✅ Success — Store and Prompt Next --------------------
-        session_data[call_sid]["doctor_id"] = matched_id
-        session_data[call_sid]["stage"] = "collect_phone"
-        friendly_name = googleid_dr_name_map[matched_id]
-
-        g = Gather(
+        g = make_gather(
+            prompt,
             input="speech dtmf",
-            language="en-US",
-            num_digits=10,
             timeout=8,
             speech_timeout="auto",
             barge_in=True,
-            action="/voice",
-            method="POST"
-        )
-        g.say(
-            f"Great, we'll book with {friendly_name}. "
-            "Please say or enter your phone number, including area code, then press pound.",
-            voice=VOICE
+            finish_on_key="#",
+            num_digits=10
         )
         resp.append(g)
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
@@ -3659,6 +3558,10 @@ def voice():
 
 
 
+
+
+
+
     elif stage == "collect_insurance_information":
         # ----------------------------------------------------------------------
         # 🏥 Stage: collect_insurance_information
@@ -3918,6 +3821,11 @@ def voice():
         return str(resp)
 
 
+
+
+
+
+
     elif stage == "collect_pin_number":
         # ----------------------------------------------------------------------
         # 🔢 Stage: collect_pin_number
@@ -3929,7 +3837,7 @@ def voice():
         #   1️⃣ Ask user to enter or say their 6-digit PIN (DTMF or speech).
         #   2️⃣ Compare against stored PIN using get_pin_number().
         #   3️⃣ If correct → branch based on origin_stage:
-        #         - "book"       → ask_time_date
+        #         - "book"       → collect_dr_info ✅ (updated)
         #         - "cancel"     → cancel_appt_get_time_date
         #         - "update_cc"  → collect_cc
         #         - otherwise    → intro (main menu)
@@ -3937,9 +3845,8 @@ def voice():
         #
         # FEATURES
         #   ✅ Handles silence locally (3 retries, then hang up).
-        #   ✅ Tracks invalid PIN attempts (3 max, then advise to contact clinic).
-        #   ✅ Supports both DTMF and spoken digits.
-        #   ✅ Respects origin_stage for dynamic branching.
+        #   ✅ Tracks invalid PIN attempts (3 max).
+        #   ✅ Supports both DTMF and speech.
         # ----------------------------------------------------------------------
 
         debug_print("collect_pin_number: 📍 Stage entered")
@@ -3951,8 +3858,7 @@ def voice():
         # --- Retrieve key info ------------------------------------------------
         phone_e164 = (customer.get("phone_e164") or sd.get("phone_e164") or "").strip()
         dob = (customer.get("dob") or "").strip()
-        origin_stage = sd.get("origin_stage", "book")  # default to booking flow
-
+        origin_stage = sd.get("origin_stage", "book")  # default to booking
         debug_print(f"collect_pin_number: 🔎 origin_stage={origin_stage}")
 
         # --- Gather inputs ----------------------------------------------------
@@ -3970,9 +3876,7 @@ def voice():
 
             if tries >= 3:
                 resp.say(
-                    gpt_speak(
-                        "I’m still not hearing anything. Please call the clinic for assistance."
-                    ),
+                    gpt_speak("I’m still not hearing anything. Please call the clinic for assistance."),
                     VOICE,
                 )
                 resp.hangup()
@@ -4053,9 +3957,10 @@ def voice():
 
             sd.pop("pin_attempts", None)  # reset attempts after success
 
+            # ✅ Branch based on origin
             if origin_stage == "book":
-                next_stage = "ask_time_date"
-                msg = "Thank you. Your PIN has been verified. Let's continue with your appointment booking."
+                next_stage = "collect_dr_info"  # ⬅️ UPDATED
+                msg = "Thank you. Your PIN has been verified. Let's continue — please select your doctor."
             elif origin_stage == "cancel":
                 next_stage = "cancel_appt_get_time_date"
                 msg = "Thank you. PIN verified. Let's proceed to locate your appointment for cancellation."
@@ -4081,7 +3986,6 @@ def voice():
         debug_print(f"collect_pin_number: ❌ invalid PIN ({digits}) vs stored ({stored_pin}) (try {tries}/3)")
 
         if tries < 3:
-            # Allow retry
             retry_msg = (
                 "That PIN number is incorrect. Please try again now. "
                 "Enter your six digit PIN followed by the pound key."
@@ -4110,6 +4014,134 @@ def voice():
         resp.say(gpt_speak(msg), VOICE)
         resp.hangup()
         session_data.pop(call_sid, None)
+        return str(resp)
+
+
+    elif stage == "collect_dr_info":
+        # ----------------------------------------------------------------------
+        # 🩺 Stage: collect_dr_info
+        # ----------------------------------------------------------------------
+        # 🎯 Purpose:
+        #   - Capture doctor selection by speech or keypad.
+        #   - Supports fuzzy speech matching and retry.
+        #   - On success → move to ask_time_date (for appointment scheduling).
+        # ----------------------------------------------------------------------
+
+        session_data.setdefault(call_sid, {}).setdefault("retry_booking", 0)
+        session_data[call_sid]["origin_stage"] = "book"
+
+        _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
+        dtmf_digits = (request.values.get("Digits") or "").strip()
+        spoken_text = (speech_result or "").strip().lower()
+        spoken_clean = spoken_text.translate(str.maketrans('', '', _PUNCT)).strip()
+        print(f"[collect_dr_info] speech='{spoken_clean}' DTMF='{dtmf_digits}'")
+
+        matched_id = None
+
+        # -------------------- 🔢 DTMF Matching --------------------
+        if dtmf_digits and "doctor_dtmf_map" in session_data[call_sid]:
+            doctor_map = session_data[call_sid]["doctor_dtmf_map"]
+            chosen_name = doctor_map.get(dtmf_digits)
+            if chosen_name:
+                for doc_id, friendly in googleid_dr_name_map.items():
+                    if friendly.lower() == chosen_name.lower():
+                        matched_id = doc_id
+                        print(f"✅ DTMF matched doctor: {friendly}")
+                        break
+
+        # -------------------- 🎙️ Speech Matching --------------------
+        if matched_id is None:
+            junk_inputs = {
+                "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
+                "yo", "test", "1", "yes", "no", "i know", "huh", "what", "okay", "ok",
+                "bye", "goodbye", ""
+            }
+
+            if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
+                print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting")
+                doctor_list_str = ", ".join(googleid_dr_name_map.values())
+
+                g = make_gather(
+                    f"Please say the name of the doctor you'd like to book with, "
+                    f"or press the number on your keypad. Available doctors are: {doctor_list_str}.",
+                    input="speech dtmf",
+                    timeout=6,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    finish_on_key="#",
+                    num_digits=1
+                )
+                resp.append(g)
+                resp.redirect("/voice")
+                return str(resp)
+
+            # 🔍 Fuzzy Match
+            partial_matches = []
+            spoken_tokens = set(spoken_clean.split())
+            for doc_id, friendly in googleid_dr_name_map.items():
+                friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
+                friendly_tokens = set(friendly_clean.split())
+                if (spoken_clean in friendly_clean or
+                    friendly_clean in spoken_clean or
+                    (spoken_tokens & friendly_tokens)):
+                    partial_matches.append((doc_id, friendly))
+
+            if len(partial_matches) == 1:
+                matched_id = partial_matches[0][0]
+                print(f"✅ Partial match with: {partial_matches[0][1]}")
+            elif len(partial_matches) > 1:
+                print(f"🔍 Multiple matches: {[name for _, name in partial_matches]}")
+                matched_id = partial_matches[0][0]
+
+        # -------------------- ❌ Retry on Failure --------------------
+        if matched_id is None:
+            session_data[call_sid]["retry_booking"] += 1
+            retries = session_data[call_sid]["retry_booking"]
+            debug_print(f"❌ No doctor match for '{spoken_clean or dtmf_digits}' retry={retries}")
+
+            if retries >= 3:
+                resp.say(
+                    gpt_speak(
+                        "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
+                        "Please call us again later."
+                    ),
+                    VOICE
+                )
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            doctor_list_str = ", ".join(googleid_dr_name_map.values())
+            g = make_gather(
+                f"I couldn't match that to a doctor. Available doctors are: {doctor_list_str}. "
+                "Please say the doctor's name or press the number.",
+                input="speech dtmf",
+                timeout=6,
+                speech_timeout="auto",
+                barge_in=True,
+                finish_on_key="#",
+                num_digits=1
+            )
+            resp.append(g)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # -------------------- ✅ Success — Store and Move On --------------------
+        session_data[call_sid]["doctor_id"] = matched_id
+        friendly_name = googleid_dr_name_map[matched_id]
+        session_data[call_sid]["stage"] = "ask_time_date"
+
+        g = make_gather(
+            f"Great, your appointment will be with {friendly_name}. "
+            "Please say the appointment date and time, for example, 'October 8 at 9 30 A M'.",
+            input="speech dtmf",
+            timeout=8,
+            speech_timeout="auto",
+            barge_in=True,
+            finish_on_key='#'
+        )
+        resp.append(g)
+        resp.redirect("/voice")
         return str(resp)
 
 
