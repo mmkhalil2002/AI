@@ -3313,30 +3313,40 @@ def voice():
         speech_text = (speech_result or "").strip()
         debug_print(f"collect_dob: 🎙️ speech='{speech_text}', 🔢 dtmf='{dtmf_digits}'")
 
-        # ---------------- Silence handling ----------------
+        
+
         if not dtmf_digits and not speech_text:
             tries = sd.get("silence_dob", 0) + 1
             sd["silence_dob"] = tries
             debug_print(f"collect_dob: 🤐 silence tries={tries}/3")
+
+            # 🆕 Skip the FIRST silent webhook silently (Twilio hash/empty POST)
+            if tries == 1:
+                debug_print("collect_dob: ⚙️ skipping first silent webhook (likely from # press)")
+                return str(resp)  # do nothing, no message or re-prompt
 
             if tries < 3:
                 sd["stage"] = "collect_dob"
                 g = make_gather(
                     "I didn’t hear your date of birth. Please say it again, for example, 'July 3 1956'. "
                     "Or you can enter it using your keypad, then press pound.",
-                    input="speech dtmf", timeout=3, speech_timeout="auto",
-                    barge_in=True, finish_on_key="#"
+                    input="speech dtmf",
+                    timeout=3,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    finish_on_key="#",
                 )
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
 
+            # Third time → hang up politely
             resp.say(gpt_speak("Sorry, I couldn’t get your date of birth. Please call again later."), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
 
-        sd.pop("silence_dob", None)
+        
 
         # ---------------- Parse DOB ----------------
         dob_date = None
