@@ -2504,7 +2504,7 @@ def voice():
     # and skip stages that handle silence internally.
     skip_silence = (
         "intro",
-        "intent"
+        "intent",
         "collect_cc",
         "book_appt_confirm",
         # 🚫 NEW: skip cancel flow stages too
