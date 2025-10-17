@@ -3656,6 +3656,9 @@ def voice():
         return str(resp)
 
 
+
+
+
     elif stage == "collect_insurance_information":
         # ----------------------------------------------------------------------
         # 🏥 Stage: collect_insurance_information
@@ -3757,7 +3760,6 @@ def voice():
 
 
     # ----------------------------------------------------------------------
-    # 🧩 NEW: Verify customer type (after DOB mismatch)
     elif stage == "verify_customer_type":
         # ----------------------------------------------------------------------
         # 🧭 Stage: verify_customer_type
@@ -3837,13 +3839,18 @@ def voice():
             sd["customer_status"] = "new"
             debug_print("verify_customer_type: 🆕 customer_status='new' stored in session")
 
-            # Not found → proceed to collect first name
+            # Not found → proceed to collect insurance info (before names)
             if not last_lookup_found:
-                debug_print("verify_customer_type: new customer not found → go to collect_first_name")
+                debug_print("verify_customer_type: new customer not found → go to collect_insurance_information")
                 sd["stage"] = "collect_insurance_information"
                 g = make_gather(
-                    "Welcome! Please say your first name",
-                    input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True, finish_on_key="#"
+                    "Welcome! Let's start by collecting your insurance information. "
+                    "Please say your insurance company name, for example, 'Blue Cross Blue Shield'.",
+                    input="speech dtmf",
+                    timeout=6,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    finish_on_key="#"
                 )
                 resp.append(g)
                 resp.redirect("/voice")
