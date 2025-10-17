@@ -2665,7 +2665,7 @@ def voice():
                 print("📅 DTMF=1 → booking")
                 session_data.setdefault(call_sid, {})
                 session_data[call_sid].update({
-                    "stage": "booking",
+                    "stage": "book_appointment",
                     "booking": {},
                     "retry_booking": 0,
                     "retry_time": 0
