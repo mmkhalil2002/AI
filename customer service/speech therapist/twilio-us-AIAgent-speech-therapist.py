@@ -5481,6 +5481,9 @@ def voice():
 
 
 
+
+
+
     elif stage == "collect_last_name":
         # ----------------------------------------------------------------------
         # 🎯 Goal:
@@ -5496,7 +5499,7 @@ def voice():
         sd.setdefault("customer", {})
 
         raw_speech = (speech_result or "").strip()
-        raw_dtmf   = (request.values.get("Digits") or "").strip()
+        raw_dtmf = (request.values.get("Digits") or "").strip()
         debug_print(f"collect_last_name: speech='{raw_speech}', dtmf='{raw_dtmf}'")
 
         # -------------------------------
@@ -5515,17 +5518,25 @@ def voice():
                 return str(resp)
 
             # 🔁 Re-prompt if silent (up to 3 times)
-            gather = make_gather(
-                "I didn’t hear your last name. Please say your last name in English letters. "
-                "You can also type it on the keypad and press pound.",
+            gather = Gather(
                 input="speech dtmf",
                 language="en-US",
                 hints=FOREIGN_NAME_HINTS,
-                timeout=6,
-                speech_timeout="5",
+                speech_model="phone_call",  # ✅ Optimized for telephony
+                timeout=8,                  # ⏳ Slightly longer to let user think
+                speech_timeout="auto",      # ✅ Keeps listening until silence
                 finish_on_key="#",
                 barge_in=True,
-                action="/voice", method="POST",
+                action="/voice",
+                method="POST",
+            )
+            # 👂 Include SSML pause and explicit examples to bias recognition
+            gather.say(
+                gpt_speak(
+                    "Please say your last name now. <break time='400ms'/> "
+                    "You can also type it using your keypad and press pound."
+                ),
+                VOICE,
             )
             resp.append(gather)
             resp.redirect("/voice")
@@ -5555,10 +5566,7 @@ def voice():
             return "".join(s)
 
         def _best_name_from_t9(digits: str, hints_csv: str) -> str:
-            """
-            Try to resolve a T9 digit string to a name using FOREIGN_NAMES_HINTS.
-            Returns best candidate or "" if none.
-            """
+            """Try to resolve a T9 digit string to a name using FOREIGN_NAMES_HINTS."""
             if not digits:
                 return ""
             items = [x.strip() for x in hints_csv.split(",") if x.strip() and x.strip()[0].isalpha()]
@@ -5592,7 +5600,7 @@ def voice():
                     last_name = try_name
                     debug_print(f"collect_last_name: 🔤 T9 matched → '{last_name}'")
                 else:
-                    first_letter = {"2":"A","3":"D","4":"G","5":"J","6":"M","7":"P","8":"T","9":"W"}
+                    first_letter = {"2": "A", "3": "D", "4": "G", "5": "J", "6": "M", "7": "P", "8": "T", "9": "W"}
                     last_name = "".join(first_letter[ch] for ch in d)
                     debug_print(f"collect_last_name: 🧩 T9 fallback guess → '{last_name}'")
             else:
@@ -5601,18 +5609,15 @@ def voice():
                 debug_print(f"collect_last_name: 🔖 placeholder from keypad → '{last_name}'")
 
         else:
-            # 🗣️ Speech path
-            #import string
-            # Allow ' and - (e.g., O'Neil, Smith-Jones)
+            # 🗣️ Speech path (improved)
             _PUNCT = """!"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"""
             punct_keep = "'-"
             _punct_to_remove = "".join(ch for ch in _PUNCT if ch not in punct_keep)
 
-            # Remove unwanted punctuation, normalize spaces
             cleaned = raw_speech.translate(str.maketrans('', '', _punct_to_remove)).strip()
             cleaned = _re.sub(r"\s+", " ", cleaned)
 
-            # 🔍 Drop filler phrases (e.g., “my last name is”, “surname is”, “you can also”)
+            # 🔍 Drop filler phrases
             cleaned = _re.sub(
                 r"\b(?:my last name is|family name is|last name|surname is|this is|i am|i'm|it's|you can also|say|press)\b\s*",
                 "",
@@ -5620,7 +5625,6 @@ def voice():
                 flags=_re.IGNORECASE,
             )
 
-            # Split into tokens and filter out common prompt echo words
             tokens = cleaned.split()
             fillers = {"you", "can", "also", "say", "press", "the", "button", "to", "type"}
             valid_tokens = [t for t in tokens if t.isalpha() and t.lower() not in fillers]
@@ -5653,17 +5657,25 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            gather = make_gather(
-                "Please say your last name using English letters only. "
-                "You can also type it on the keypad using T9 and press pound.",
+            gather = Gather(
                 input="speech dtmf",
                 language="en-US",
                 hints=FOREIGN_NAME_HINTS,
-                timeout=6,
-                speech_timeout="5",
+                speech_model="phone_call",
+                timeout=8,
+                speech_timeout="auto",
                 finish_on_key="#",
                 barge_in=True,
-                action="/voice", method="POST",
+                action="/voice",
+                method="POST",
+            )
+            gather.say(
+                gpt_speak(
+                    "I didn’t get that clearly. <break time='300ms'/> "
+                    "Please say your last name. "
+                    "For example, say Khalil, Ahmed, or Johnson."
+                ),
+                VOICE,
             )
             resp.append(gather)
             resp.redirect("/voice")
@@ -5683,11 +5695,12 @@ def voice():
             input="speech dtmf",
             language="en-US",
             hints="118 Briar Oak Murphy Texas 75094",
-            timeout=7,
-            speech_timeout="5",
+            timeout=8,
+            speech_timeout="auto",
             finish_on_key="#",
             barge_in=True,
-            action="/voice", method="POST",
+            action="/voice",
+            method="POST",
         )
         resp.append(gather)
         resp.redirect("/voice")
