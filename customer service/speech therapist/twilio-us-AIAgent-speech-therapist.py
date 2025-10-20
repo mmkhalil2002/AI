@@ -3794,6 +3794,7 @@ def voice():
 
 
 
+
     elif stage == "verify_customer_type":
         # ----------------------------------------------------------------------
         # 🧭 Stage: verify_customer_type
