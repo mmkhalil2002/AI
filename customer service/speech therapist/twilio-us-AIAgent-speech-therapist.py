@@ -5496,7 +5496,6 @@ def voice():
 
 
 
-
     elif stage == "collect_last_name":
         # ----------------------------------------------------------------------
         # 🎯 Goal:
@@ -5530,6 +5529,7 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
+            # 🔁 Re-prompt if silent (up to 3 times)
             gather = make_gather(
                 "I didn’t hear your last name. Please say your last name in English letters. "
                 "You can also type it on the keypad and press pound.",
@@ -5543,7 +5543,7 @@ def voice():
                 action="/voice", method="POST",
             )
             resp.append(gather)
-            resp.redirect("/voice")  # safety net if still silent
+            resp.redirect("/voice")
             return str(resp)
 
         # ✅ Some input → clear silence counter
@@ -5576,20 +5576,13 @@ def voice():
             """
             if not digits:
                 return ""
-            # Build candidate pool from hints
             items = [x.strip() for x in hints_csv.split(",") if x.strip() and x.strip()[0].isalpha()]
-            # Exact signature matches first
-            exact = []
-            for nm in items:
-                if _t9_signature(nm) == digits:
-                    exact.append(nm)
+            exact = [nm for nm in items if _t9_signature(nm) == digits]
             if len(exact) == 1:
                 return exact[0]
             if len(exact) > 1:
-                # Prefer longer (more specific), then alphabetically
                 exact.sort(key=lambda n: (-len(n), n))
                 return exact[0]
-            # No exact: allow startswith (user truncated) or digits contain the shorter signature
             partial = []
             for nm in items:
                 sig = _t9_signature(nm)
@@ -5604,18 +5597,16 @@ def voice():
         # 🧾 Parse & Clean
         # -------------------------------
         if raw_dtmf:
-            # Remove non-digits; accept with or without trailing '#'
+            # 🧭 DTMF path: digits → map to letters using T9 or fallback
             d = _re.sub(r"\D", "", raw_dtmf)
             debug_print(f"collect_last_name: 📟 DTMF cleaned='{d}'")
             last_name = ""
             if d and all(ch in "23456789" for ch in d):
-                # Try to map via hints
-                try_name = _best_name_from_t9(d, FOREIGN_NAMES_HINTS)
+                try_name = _best_name_from_t9(d, FOREIGN_NAME_HINTS)
                 if try_name:
                     last_name = try_name
                     debug_print(f"collect_last_name: 🔤 T9 matched → '{last_name}'")
                 else:
-                    # Fallback: pick first letter option per digit to form a readable token
                     first_letter = {"2":"A","3":"D","4":"G","5":"J","6":"M","7":"P","8":"T","9":"W"}
                     last_name = "".join(first_letter[ch] for ch in d)
                     debug_print(f"collect_last_name: 🧩 T9 fallback guess → '{last_name}'")
@@ -5623,27 +5614,40 @@ def voice():
                 trailing = d[-3:] if d else ""
                 last_name = f"Family{trailing}" if trailing else "Unknown"
                 debug_print(f"collect_last_name: 🔖 placeholder from keypad → '{last_name}'")
+
         else:
-            # Speech path
-            # Define punctuation set locally (no imports)
+            # 🗣️ Speech path
+            import re, string
+            # Allow ' and - (e.g., O'Neil, Smith-Jones)
             _PUNCT = """!"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"""
             punct_keep = "'-"
-            # Build a string of punctuation to remove (exclude allowed keepers)
             _punct_to_remove = "".join(ch for ch in _PUNCT if ch not in punct_keep)
 
+            # Remove unwanted punctuation, normalize spaces
             cleaned = raw_speech.translate(str.maketrans('', '', _punct_to_remove)).strip()
-            cleaned = _re.sub(r"\s+", " ", cleaned)
+            cleaned = re.sub(r"\s+", " ", cleaned)
 
-            # Drop fillers
-            cleaned = _re.sub(
-                r"\b(?:my last name is|family name is|last name|surname is|this is|i am|i'm|it's)\b\s*",
+            # 🔍 Drop filler phrases (e.g., “my last name is”, “surname is”, “you can also”)
+            cleaned = re.sub(
+                r"\b(?:my last name is|family name is|last name|surname is|this is|i am|i'm|it's|you can also|say|press)\b\s*",
                 "",
                 cleaned,
-                flags=_re.IGNORECASE,
+                flags=re.IGNORECASE,
             )
 
+            # Split into tokens and filter out common prompt echo words
             tokens = cleaned.split()
-            last_name = tokens[0] if tokens else ""
+            fillers = {"you", "can", "also", "say", "press", "the", "button", "to", "type"}
+            valid_tokens = [t for t in tokens if t.isalpha() and t.lower() not in fillers]
+
+            # ✅ Choose first valid token; fallback to regex if none
+            if valid_tokens:
+                last_name = valid_tokens[0].capitalize()
+            else:
+                m = re.search(r"[A-Za-z]+", cleaned)
+                last_name = m.group(0).capitalize() if m else ""
+
+            debug_print(f"collect_last_name: 🧹 cleaned='{cleaned}', chosen='{last_name}'")
 
         # -------------------------------
         # 🌐 Validate: English letters only
@@ -5652,6 +5656,7 @@ def voice():
         contains_foreign_block = bool(_re.search(r"[\u0600-\u06FF]", last_name))
 
         if (not last_name) or (not _re.fullmatch(english_only_pattern, last_name)) or contains_foreign_block:
+            # 🔁 Invalid → retry up to 3 times
             r = sd.get("retry_last_name", 0) + 1
             sd["retry_last_name"] = r
             sd["stage"] = "collect_last_name"
