@@ -84,6 +84,7 @@ import threading
 import traceback
 import dateutil.parser as dp
 import string, unicodedata as _uni
+import random  # local import for clarity
 
 
 
@@ -1278,7 +1279,7 @@ def init_db() -> None:
         return s if _is_e164(s) else ""
 
     try:
-        import random  # local import for clarity
+        #import random  # local import for clarity
         new_data = {}
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1666,7 +1667,7 @@ def insert_customer(
     # 🧩 Step 5: Insert new customer record
     # ----------------------------------------------------------------------
     # ✅ Generate random 6-digit PIN if not provided or invalid
-    import random
+    #import random
     if not isinstance(pin_number, int) or pin_number < 100000 or pin_number > 999999:
         pin_number = random.randint(100000, 999999)
 
@@ -5617,7 +5618,7 @@ def voice():
 
         else:
             # 🗣️ Speech path
-            import re, string
+            #import re, string
             # Allow ' and - (e.g., O'Neil, Smith-Jones)
             _PUNCT = """!"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"""
             punct_keep = "'-"
