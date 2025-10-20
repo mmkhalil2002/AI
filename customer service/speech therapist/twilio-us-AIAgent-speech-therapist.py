@@ -290,7 +290,7 @@ LUNCH_BREAK_END = time(
 # By default → 6 major US insurance companies
 # ----------------------------------------------------------------------
 
-INSURANCE_COMPANIES = [
+INSURANCE_COMPANIES_LIST = [
     name.strip() for name in os.getenv(
         "INSURANCE_COMPANIES",
         "Blue Cross Blue Shield,Aetna,Cigna,United Healthcare,Humana,Kaiser Permanente"
