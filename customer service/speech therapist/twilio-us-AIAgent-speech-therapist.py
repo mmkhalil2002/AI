@@ -3653,7 +3653,7 @@ def voice():
                         "You can include both letters and numbers, then press pound when done.",
                         input="speech dtmf",
                         language="en-US",
-                        timeout=10,
+                        timeout=5,
                         speech_timeout="auto",
                         finish_on_key="#",
                         barge_in=True,
