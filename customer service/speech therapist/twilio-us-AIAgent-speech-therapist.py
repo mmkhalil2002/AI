@@ -1,4 +1,4 @@
-# update  10/205 time_saved   PERFECT
+# update  10/205 time_saved  T
 #  
 # =========================
 # Standard library imports
@@ -2786,39 +2786,39 @@ def voice():
         if choice:
             # 1️⃣ Book Appointment
             # 1️⃣ Book Appointment
-        if choice == "1":
-            print("📅 DTMF=1 → booking (start with phone collection)")
-            session_data.setdefault(call_sid, {})
-            session_data[call_sid].update({
-                "stage": "collect_phone",     # start at phone number stage instead of doctor selection
-                "origin_stage": "book",       # mark origin for later (collect_pin_number, etc.)
-                "booking": {},
-                "retry_booking": 0,
-                "retry_time": 0
-            })
+            if choice == "1":
+                print("📅 DTMF=1 → booking (start with phone collection)")
+                session_data.setdefault(call_sid, {})
+                session_data[call_sid].update({
+                    "stage": "collect_phone",     # start at phone number stage instead of doctor selection
+                    "origin_stage": "book",       # mark origin for later (collect_pin_number, etc.)
+                    "booking": {},
+                    "retry_booking": 0,
+                    "retry_time": 0
+                })
 
-            # Friendly opening message for new or returning patients
-            prompt = (
-                "Please say or enter your ten-digit phone number, then press pound."
-            )
+                # Friendly opening message for new or returning patients
+                prompt = (
+                    "Please say or enter your ten-digit phone number, then press pound."
+                )
 
-            # Build <Gather> to capture phone number (DTMF or speech)
-            gather = Gather(
-                input="speech dtmf",
-                timeout=6,
-                speech_timeout="auto",
-                barge_in=True,
-                finish_on_key="#",
-                action="/voice",
-                method="POST",
-                language="en-US",
-            )
-            gather.say(gpt_speak(prompt), VOICE)
-            resp.append(gather)
+                # Build <Gather> to capture phone number (DTMF or speech)
+                gather = Gather(
+                    input="speech dtmf",
+                    timeout=6,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    finish_on_key="#",
+                    action="/voice",
+                    method="POST",
+                    language="en-US",
+                )
+                gather.say(gpt_speak(prompt), VOICE)
+                resp.append(gather)
 
-            # Safety redirect if user stays silent
-            resp.redirect("/voice")
-            return str(resp)
+                # Safety redirect if user stays silent
+                resp.redirect("/voice")
+                return str(resp)
 
 
             # 2️⃣ Cancel Appointment
