@@ -3598,12 +3598,12 @@ def voice():
         # 🏥 Stage: collect_insurance_information
         # ----------------------------------------------------------------------
         # 🎯 Goal:
-        #   - Step 1️⃣: Let caller select insurance company (DTMF only)
-        #   - Step 2️⃣: Capture insurance member ID (speech or DTMF)
-        #   - Allow optional '#' termination (e.g., "W276971797#")
-        #   - Store results in session_data["booking"]
-        #   - Silence handling identical to collect_dob
-        #   - Support >9 companies using 0–9, A–Z DTMF keys
+        #   - Step 1️⃣: Read insurance company options aloud → keypad-only selection.
+        #   - Step 2️⃣: Capture alphanumeric insurance member ID:
+        #       → Either spoken (e.g., “W two seven six nine seven one seven nine seven”)
+        #       → Or keypad entry (e.g., using T9 mapping or number equivalents).
+        #   - Store results under session_data["booking"] for use in book_appt_confirm.
+        #   - Silence handling identical to collect_dob.
         # ----------------------------------------------------------------------
 
         session_data.setdefault(call_sid, {})
@@ -3615,7 +3615,7 @@ def voice():
         debug_print(f"[collect_insurance_information] speech='{raw_speech}', dtmf='{raw_dtmf}'")
 
         # ----------------------------------------------------------------------
-        # 🔇 Handle silence (same as collect_dob)
+        # 🔇 Handle silence (same logic as collect_dob)
         # ----------------------------------------------------------------------
         if not raw_speech and not raw_dtmf:
             tries = sd.get("insurance_silence_retries", 0) + 1
@@ -3623,7 +3623,7 @@ def voice():
             debug_print(f"[collect_insurance_information] 🤐 silence tries={tries}/3")
 
             if tries < 3:
-                key_labels = []
+                spoken_options = []
                 for i, name in enumerate(INSURANCE_COMPANIES):
                     if i < 9:
                         key = str(i + 1)
@@ -3631,17 +3631,17 @@ def voice():
                         key = "0"
                     else:
                         key = chr(ord("A") + (i - 10))
-                    key_labels.append(f"Press {key} for {name}")
-                options_text = ". ".join(key_labels)
+                    spoken_options.append(f"{name}, press {key}")
+                options_text = "; ".join(spoken_options)
 
                 prompt = (
                     "I didn’t hear your selection. "
-                    f"Please choose your insurance company using the keypad. {options_text}."
+                    f"Please choose your insurance company. {options_text}."
                 )
                 g = make_gather(
                     prompt,
                     input="dtmf",
-                    timeout=6,
+                    timeout=8,
                     num_digits=1,
                     barge_in=True,
                     action="/voice",
@@ -3663,10 +3663,12 @@ def voice():
         sd.pop("insurance_silence_retries", None)
 
         # ----------------------------------------------------------------------
-        # Step 1️⃣: Insurance company selection (DTMF only)
+        # Step 1️⃣: Select insurance company (DTMF only)
         # ----------------------------------------------------------------------
         if "insurance_name" not in booking or not booking["insurance_name"]:
             keypad_map = {}
+            spoken_lines = []
+
             for i, name in enumerate(INSURANCE_COMPANIES):
                 if i < 9:
                     key = str(i + 1)
@@ -3675,22 +3677,17 @@ def voice():
                 else:
                     key = chr(ord("A") + (i - 10))
                 keypad_map[key] = name
+                spoken_lines.append(f"{name}, press {key}")
 
-            debug_print(f"[collect_insurance_information] keypad_map={keypad_map}")
-
-            if raw_dtmf in keypad_map:
-                booking["insurance_name"] = keypad_map[raw_dtmf]
-                debug_print(f"[collect_insurance_information] ✅ Captured insurance_name='{booking['insurance_name']}'")
-            else:
-                key_labels = [f"Press {k} for {v}" for k, v in keypad_map.items()]
+            if not raw_dtmf:
                 prompt = (
-                    "That doesn’t match any available company. "
-                    f"Please choose using your keypad. {', '.join(key_labels)}."
+                    "Please select your insurance company using your keypad. "
+                    + "; ".join(spoken_lines)
                 )
                 g = make_gather(
                     prompt,
                     input="dtmf",
-                    timeout=6,
+                    timeout=8,
                     num_digits=1,
                     barge_in=True,
                     action="/voice",
@@ -3701,18 +3698,42 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
-            # Ask for member ID
+            if raw_dtmf in keypad_map:
+                booking["insurance_name"] = keypad_map[raw_dtmf]
+                debug_print(f"[collect_insurance_information] ✅ Selected insurance='{booking['insurance_name']}'")
+            else:
+                prompt = (
+                    "That doesn’t match any available company. "
+                    "Please try again. " + "; ".join(spoken_lines)
+                )
+                g = make_gather(
+                    prompt,
+                    input="dtmf",
+                    timeout=8,
+                    num_digits=1,
+                    barge_in=True,
+                    action="/voice",
+                    method="POST",
+                    language="en-US"
+                )
+                resp.append(g)
+                resp.redirect("/voice")
+                return str(resp)
+
+            # Move to member ID
             prompt = (
                 f"Thank you. You selected {booking['insurance_name']}. "
-                "Now please say or enter your insurance member ID, followed by the pound key if you wish."
+                "Now please say or enter your insurance member ID. "
+                "You can include both letters and numbers, for example 'AET nine eight seven six five four three'. "
+                "You can also enter it using your keypad and press pound when done."
             )
             g = make_gather(
                 prompt,
-                input="speech dtmf",  # ✅ both voice & keypad
-                timeout=8,
+                input="speech dtmf",  # ✅ allows mixed speech or DTMF
+                timeout=10,
                 speech_timeout="auto",
                 barge_in=True,
-                finish_on_key="#",    # ✅ optional termination
+                finish_on_key="#",  # optional
                 action="/voice",
                 method="POST",
                 language="en-US"
@@ -3722,17 +3743,19 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # Step 2️⃣: Capture insurance member ID
+        # Step 2️⃣: Capture insurance member ID (Alphanumeric)
         # ----------------------------------------------------------------------
         if "insurance_member_id" not in booking or not booking["insurance_member_id"]:
             member_id = (raw_speech or raw_dtmf).strip().upper()
-            member_id = member_id.replace(" ", "").replace(".", "").replace(",", "")
-            member_id = member_id.rstrip("#")  # ✅ strip trailing # if pressed
-            booking["insurance_member_id"] = member_id
+            # Normalize: remove filler words, punctuation, spaces, and trailing #
+            member_id = re.sub(r"[^A-Z0-9]", "", member_id)
+            member_id = member_id.rstrip("#")
 
+            # Example: “AET nine eight seven six” → “AET9876”
+            booking["insurance_member_id"] = member_id
             debug_print(f"[collect_insurance_information] ✅ Captured insurance_member_id='{member_id}'")
 
-            # Move to next step
+            # Move to next stage
             sd["insurance_silence_retries"] = 0
             sd["stage"] = "collect_first_name"
 
@@ -3749,9 +3772,9 @@ def voice():
             )
             resp.append(g)
             resp.redirect("/voice")
-
             debug_print("[collect_insurance_information] ➡️ next stage → collect_first_name")
             return str(resp)
+
 
 
 
