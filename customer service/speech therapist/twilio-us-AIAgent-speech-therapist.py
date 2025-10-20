@@ -3602,99 +3602,97 @@ def voice():
 
         sd = session_data.setdefault(call_sid, {})
         customer = sd.setdefault("customer", {})
-        insurance_step = sd.get("insurance_step", "company")
+        booking  = sd.setdefault("booking", {})
+        ins      = booking.setdefault("pending_insurance", {})  # <-- stash here
+        step     = sd.get("insurance_step", "company")
 
         raw_speech = (speech_result or "").strip()
-        raw_dtmf = (request.values.get("Digits") or "").strip()
-        debug_print(f"[collect_insurance_information] step={insurance_step}, speech='{raw_speech}', dtmf='{raw_dtmf}'")
+        raw_dtmf   = (request.values.get("Digits") or "").strip()
+        debug_print(f"[collect_insurance_information] step={step}, speech='{raw_speech}', dtmf='{raw_dtmf}'")
 
-        # Load insurance companies
+        # Load selectable companies from env (same format as your other globals)
         INSURANCE_COMPANIES_LIST = [
-            n.strip() for n in os.getenv(
+            name.strip() for name in os.getenv(
                 "INSURANCE_COMPANIES",
                 "Blue Cross Blue Shield,Aetna,Cigna,United Healthcare,Humana,Kaiser Permanente"
-            ).split(",") if n.strip()
+            ).split(",") if name.strip()
         ]
         keypad_map = {str(i + 1): name for i, name in enumerate(INSURANCE_COMPANIES_LIST)}
 
-        # ------------------------------------------------------------------
-        # STEP 1️⃣ — Fast keypad-based company selection
-        # ------------------------------------------------------------------
-        if insurance_step == "company":
+        # -------------------- STEP 1: company (DTMF-only for instant response) --------------------
+        if step == "company":
             if not raw_dtmf:
                 tries = sd.get("insurance_company_silence", 0) + 1
                 sd["insurance_company_silence"] = tries
-                debug_print(f"[collect_insurance_information] 🤐 silence company={tries}/3")
+                debug_print(f"[collect_insurance_information] 🤐 company silence tries={tries}/3")
 
                 if tries >= 3:
-                    resp.say(gpt_speak("Sorry, I didn’t hear any response. Please call again later."), VOICE)
+                    resp.say(gpt_speak("Sorry, I didn’t hear a selection. Please call again later."), VOICE)
                     resp.hangup()
                     session_data.pop(call_sid, None)
                     return str(resp)
 
-                prompt = (
-                    "Please select your insurance company using your keypad. "
-                    + " ".join([f"Press {i+1} for {name}." for i, name in enumerate(INSURANCE_COMPANIES_LIST)])
+                # Speak the options clearly, then gather DTMF only (no delay)
+                speak_menu = " ".join([f"Press {i+1} for {name}." for i, name in enumerate(INSURANCE_COMPANIES_LIST)])
+                resp.say(gpt_speak("Please select your insurance company using your keypad. " + speak_menu), VOICE)
+
+                g = make_gather(
+                    "Please press a number now.",
+                    input="dtmf", timeout=8, num_digits=1, barge_in=True
                 )
-                # 👉 use DTMF-only for instant response
-                g = make_gather(prompt, input="dtmf", timeout=6, num_digits=1, barge_in=True)
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
 
             if raw_dtmf in keypad_map:
-                insurance_name = keypad_map[raw_dtmf]
-                customer["insurance_name"] = insurance_name
+                ins_name = keypad_map[raw_dtmf]
+                ins["company"] = ins_name
                 sd["insurance_step"] = "id"
-                debug_print(f"[collect_insurance_information] ✅ Selected company='{insurance_name}' via DTMF {raw_dtmf}")
+                debug_print(f"[collect_insurance_information] ✅ Selected insurance_name='{ins_name}'")
 
-                resp.say(
-                    gpt_speak(
-                        f"Thank you. You selected {insurance_name}. "
-                        "Now please say or enter your insurance member ID. "
-                        "You can include both letters and numbers, then press pound when done."
-                    ),
-                    VOICE,
-                )
+                # Prompt for member ID (speech + DTMF, allow # to finish)
+                resp.say(gpt_speak(
+                    f"Thank you. You selected {ins_name}. "
+                    "Now please say or enter your insurance member ID. "
+                    "You can include both letters and numbers, then press pound when done."
+                ), VOICE)
+
                 g = make_gather(
                     "Please say or enter your insurance member ID now.",
                     input="speech dtmf",
-                    timeout=15,  # ⏳ longer listening
+                    timeout=15,
                     speech_timeout="auto",
                     barge_in=True,
-                    finish_on_key="#",
+                    finish_on_key="#"
                 )
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # invalid key
+            # Invalid key → re-prompt the same menu
             resp.say(gpt_speak("Invalid selection. Please try again."), VOICE)
-            sd["insurance_step"] = "company"
-            g = make_gather(
-                "Press 1 for Blue Cross Blue Shield, 2 for Aetna, 3 for Cigna, 4 for United Healthcare, 5 for Humana, 6 for Kaiser Permanente.",
-                input="dtmf", timeout=6, num_digits=1, barge_in=True
-            )
+            menu = " ".join([f"Press {i+1} for {name}." for i, name in enumerate(INSURANCE_COMPANIES_LIST)])
+            g = make_gather("Please select now. " + menu, input="dtmf", timeout=8, num_digits=1, barge_in=True)
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
 
-        # ------------------------------------------------------------------
-        # STEP 2️⃣ — Capture member ID (speech + DTMF)
-        # ------------------------------------------------------------------
-        if insurance_step == "id":
+        # -------------------- STEP 2: member ID (speech + DTMF) --------------------
+        if step == "id":
             if not raw_speech and not raw_dtmf:
                 tries = sd.get("insurance_id_silence", 0) + 1
                 sd["insurance_id_silence"] = tries
-                debug_print(f"[collect_insurance_information] 🤐 silence on ID={tries}/3")
+                debug_print(f"[collect_insurance_information] 🤐 id silence tries={tries}/3")
 
                 if tries < 3:
-                    prompt = (
-                        "I didn’t hear your insurance member ID. "
-                        "Please say or enter it now. You can include both letters and numbers, then press pound."
+                    g = make_gather(
+                        "I didn’t hear your insurance member ID. Please say or enter it now, then press pound.",
+                        input="speech dtmf",
+                        timeout=15,
+                        speech_timeout="auto",
+                        barge_in=True,
+                        finish_on_key="#"
                     )
-                    g = make_gather(prompt, input="speech dtmf", timeout=15, speech_timeout="auto",
-                                    barge_in=True, finish_on_key="#")
                     resp.append(g)
                     resp.redirect("/voice")
                     return str(resp)
@@ -3704,17 +3702,21 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            insurance_member_id = (raw_speech or raw_dtmf).strip().upper()
-            if len(insurance_member_id) < 3:  # too short, like "W."
-                short_try = sd.get("insurance_id_short", 0) + 1
-                sd["insurance_id_short"] = short_try
-                debug_print(f"[collect_insurance_information] ⚠️ too short ID={insurance_member_id}, tries={short_try}/3")
+            # Accept mixed letters/digits from speech, or digits/# from DTMF
+            member_id = (raw_speech or raw_dtmf).strip().upper()
+            if len(member_id) < 3:
+                short = sd.get("insurance_id_short", 0) + 1
+                sd["insurance_id_short"] = short
+                debug_print(f"[collect_insurance_information] ⚠️ ID too short ('{member_id}') tries={short}/3")
 
-                if short_try < 3:
+                if short < 3:
                     g = make_gather(
                         "I only heard part of your insurance ID. Please say or enter it again, then press pound.",
-                        input="speech dtmf", timeout=15, speech_timeout="auto",
-                        barge_in=True, finish_on_key="#"
+                        input="speech dtmf",
+                        timeout=15,
+                        speech_timeout="auto",
+                        barge_in=True,
+                        finish_on_key="#"
                     )
                     resp.append(g)
                     resp.redirect("/voice")
@@ -3725,35 +3727,27 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # ✅ Valid input
-            customer["insurance_member_id"] = insurance_member_id
-            debug_print(f"[collect_insurance_information] ✅ Captured insurance_member_id='{insurance_member_id}'")
+            # ✅ Stash in session; DB write happens later in book_appt_confirm
+            ins["member_id"] = member_id
+            customer["insurance_name"] = ins.get("company", "")
+            customer["insurance_member_id"] = member_id
+            debug_print(f"[collect_insurance_information] ✅ Captured insurance_member_id='{member_id}' (session only)")
 
-            # Persist
-            phone = customer.get("phone_e164") or sd.get("from_e164", "")
-            dob = customer.get("dob", "unknown")
-            try:
-                success_name = update_insurance_name(phone, dob, customer.get("insurance_name", ""))
-                success_id = update_insurance_member_id(phone, dob, insurance_member_id)
-            except Exception as e:
-                debug_print(f"[collect_insurance_information] ⚠️ DB update failed → {e}")
-                success_name = success_id = False
-
-            if success_name and success_id:
-                msg = f"Thank you. Your insurance information has been updated. Company: {customer['insurance_name']}, Member ID: {insurance_member_id}."
-            else:
-                msg = "Sorry, there was a problem saving your insurance details."
-
-            resp.say(gpt_speak(msg), VOICE)
-
-            # Proceed
-            sd["stage"] = "collect_first_name"
+            # Move on to first name (as before)
             sd["insurance_step"] = "done"
-            g = make_gather("Now, please tell me your first name.", input="speech dtmf",
-                            timeout=6, speech_timeout="auto", barge_in=True, finish_on_key="#")
+            sd["stage"] = "collect_first_name"
+            g = make_gather(
+                "Thank you. Now, please tell me your first name.",
+                input="speech dtmf",
+                timeout=6,
+                speech_timeout="auto",
+                barge_in=True,
+                finish_on_key="#"
+            )
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
+
 
 
 
