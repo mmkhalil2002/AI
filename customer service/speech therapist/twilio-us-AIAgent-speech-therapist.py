@@ -3686,6 +3686,19 @@ def voice():
             )
             g = make_gather(
                 prompt,
+                input="speech dtmf",
+                timeout=10,
+                speech_timeout="auto",
+                barge_in=True,
+                finish_on_key="#",
+                action="/voice",
+                method="POST",
+                language="en-US",
+            )
+            resp.append(g)
+            resp.redirect("/voice")
+            return str(resp)
+
 
 
 
