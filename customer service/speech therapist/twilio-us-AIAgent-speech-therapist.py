@@ -5496,210 +5496,47 @@ def voice():
 
 
 
+    elif stage == "collect_last_name":
+        # ----------------------------------------------------------------------
+        # 🎯 Goal:
+        #   - Capture LAST name via speech or keypad (DTMF).
+        #   - Robust local silence handling (up to 3 retries; uses <Gather>+<Redirect>).
+        #   - Accept English-letter names (romanized) incl. hyphen/apostrophe.
+        #   - DTMF: support T9 entry (e.g., 542545# → "Khalil") by matching against
+        #     FOREIGN_NAMES_HINTS. If there’s no good match, fall back to a readable guess.
+        #   - Save → session_data[call_sid]["customer"]["last_name"].
+        #   - Next → collect_address.
+        # ----------------------------------------------------------------------
+        sd = session_data.setdefault(call_sid, {})
+        sd.setdefault("customer", {})
 
-        elif stage == "collect_last_name":
-            # ----------------------------------------------------------------------
-            # 🎯 Goal:
-            #   - Capture LAST name via speech or keypad (DTMF).
-            #   - Robust local silence handling (up to 3 retries; uses <Gather>+<Redirect>).
-            #   - Accept English-letter names (romanized) incl. hyphen/apostrophe.
-            #   - DTMF: support T9 entry (e.g., 542545# → "Khalil") by matching against
-            #     FOREIGN_NAMES_HINTS. If there’s no good match, fall back to a readable guess.
-            #   - Save → session_data[call_sid]["customer"]["last_name"].
-            #   - Next → collect_address.
-            # ----------------------------------------------------------------------
-            sd = session_data.setdefault(call_sid, {})
-            sd.setdefault("customer", {})
+        raw_speech = (speech_result or "").strip()
+        raw_dtmf   = (request.values.get("Digits") or "").strip()
+        debug_print(f"collect_last_name: speech='{raw_speech}', dtmf='{raw_dtmf}'")
 
-            raw_speech = (speech_result or "").strip()
-            raw_dtmf   = (request.values.get("Digits") or "").strip()
-            debug_print(f"collect_last_name: speech='{raw_speech}', dtmf='{raw_dtmf}'")
+        # -------------------------------
+        # 🔇 Silence handling (local)
+        # -------------------------------
+        if not raw_speech and not raw_dtmf:
+            tries = sd.get("silence_last_name", 0) + 1
+            sd["silence_last_name"] = tries
+            sd["stage"] = "collect_last_name"
+            debug_print(f"collect_last_name: 🤐 silence; tries={tries}/3")
 
-            # -------------------------------
-            # 🔇 Silence handling (local)
-            # -------------------------------
-            if not raw_speech and not raw_dtmf:
-                tries = sd.get("silence_last_name", 0) + 1
-                sd["silence_last_name"] = tries
-                sd["stage"] = "collect_last_name"
-                debug_print(f"collect_last_name: 🤐 silence; tries={tries}/3")
-
-                if tries >= 3:
-                    resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
-                    resp.hangup()
-                    session_data.pop(call_sid, None)
-                    return str(resp)
-
-                # 🔁 Re-prompt if silent (up to 3 times)
-                gather = make_gather(
-                    "I didn’t hear your last name. Please say your last name in English letters. "
-                    "You can also type it on the keypad and press pound.",
-                    input="speech dtmf",
-                    language="en-US",
-                    hints=FOREIGN_NAME_HINTS,
-                    timeout=6,
-                    speech_timeout="5",
-                    finish_on_key="#",
-                    barge_in=True,
-                    action="/voice", method="POST",
-                )
-                resp.append(gather)
-                resp.redirect("/voice")
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
                 return str(resp)
 
-            # ✅ Some input → clear silence counter
-            sd.pop("silence_last_name", None)
-
-            # -------------------------------
-            # 🔢 T9 helpers (for DTMF names)
-            # -------------------------------
-            _T9 = {
-                "2": "ABC", "3": "DEF", "4": "GHI", "5": "JKL",
-                "6": "MNO", "7": "PQRS", "8": "TUV", "9": "WXYZ"
-            }
-
-            def _t9_signature(name: str) -> str:
-                """Convert a romanized name to its T9 digit signature (letters only)."""
-                s = []
-                up = name.upper()
-                for ch in up:
-                    if "A" <= ch <= "Z":
-                        for d, letters in _T9.items():
-                            if ch in letters:
-                                s.append(d)
-                                break
-                return "".join(s)
-
-            def _best_name_from_t9(digits: str, hints_csv: str) -> str:
-                """
-                Try to resolve a T9 digit string to a name using FOREIGN_NAMES_HINTS.
-                Returns best candidate or "" if none.
-                """
-                if not digits:
-                    return ""
-                items = [x.strip() for x in hints_csv.split(",") if x.strip() and x.strip()[0].isalpha()]
-                exact = [nm for nm in items if _t9_signature(nm) == digits]
-                if len(exact) == 1:
-                    return exact[0]
-                if len(exact) > 1:
-                    exact.sort(key=lambda n: (-len(n), n))
-                    return exact[0]
-                partial = []
-                for nm in items:
-                    sig = _t9_signature(nm)
-                    if sig.startswith(digits) or digits.startswith(sig):
-                        partial.append((nm, sig))
-                if partial:
-                    partial.sort(key=lambda t: (abs(len(t[1]) - len(digits)), -len(t[0]), t[0]))
-                    return partial[0][0]
-                return ""
-
-            # -------------------------------
-            # 🧾 Parse & Clean
-            # -------------------------------
-            if raw_dtmf:
-                # 🧭 DTMF path: digits → map to letters using T9 or fallback
-                d = _re.sub(r"\D", "", raw_dtmf)
-                debug_print(f"collect_last_name: 📟 DTMF cleaned='{d}'")
-                last_name = ""
-                if d and all(ch in "23456789" for ch in d):
-                    try_name = _best_name_from_t9(d, FOREIGN_NAME_HINTS)
-                    if try_name:
-                        last_name = try_name
-                        debug_print(f"collect_last_name: 🔤 T9 matched → '{last_name}'")
-                    else:
-                        first_letter = {"2":"A","3":"D","4":"G","5":"J","6":"M","7":"P","8":"T","9":"W"}
-                        last_name = "".join(first_letter[ch] for ch in d)
-                        debug_print(f"collect_last_name: 🧩 T9 fallback guess → '{last_name}'")
-                else:
-                    trailing = d[-3:] if d else ""
-                    last_name = f"Family{trailing}" if trailing else "Unknown"
-                    debug_print(f"collect_last_name: 🔖 placeholder from keypad → '{last_name}'")
-
-            else:
-                # 🗣️ Speech path
-                import string
-                # Allow ' and - (e.g., O'Neil, Smith-Jones)
-                _PUNCT = """!"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"""
-                punct_keep = "'-"
-                _punct_to_remove = "".join(ch for ch in _PUNCT if ch not in punct_keep)
-
-                # Remove unwanted punctuation, normalize spaces
-                cleaned = raw_speech.translate(str.maketrans('', '', _punct_to_remove)).strip()
-                cleaned = _re.sub(r"\s+", " ", cleaned)
-
-                # 🔍 Drop filler phrases (e.g., “my last name is”, “surname is”, “you can also”)
-                cleaned = _re.sub(
-                    r"\b(?:my last name is|family name is|last name|surname is|this is|i am|i'm|it's|you can also|say|press)\b\s*",
-                    "",
-                    cleaned,
-                    flags=_re.IGNORECASE,
-                )
-
-                # Split into tokens and filter out common prompt echo words
-                tokens = cleaned.split()
-                fillers = {"you", "can", "also", "say", "press", "the", "button", "to", "type"}
-                valid_tokens = [t for t in tokens if t.isalpha() and t.lower() not in fillers]
-
-                # ✅ Choose first valid token; fallback to regex if none
-                if valid_tokens:
-                    last_name = valid_tokens[0].capitalize()
-                else:
-                    m = _re.search(r"[A-Za-z]+", cleaned)
-                    last_name = m.group(0).capitalize() if m else ""
-
-                debug_print(f"collect_last_name: 🧹 cleaned='{cleaned}', chosen='{last_name}'")
-
-            # -------------------------------
-            # 🌐 Validate: English letters only
-            # -------------------------------
-            english_only_pattern = r"^[A-Za-z][A-Za-z'\-\s]{0,59}$"
-            contains_foreign_block = bool(_re.search(r"[\u0600-\u06FF]", last_name))
-
-            if (not last_name) or (not _re.fullmatch(english_only_pattern, last_name)) or contains_foreign_block:
-                # 🔁 Invalid → retry up to 3 times
-                r = sd.get("retry_last_name", 0) + 1
-                sd["retry_last_name"] = r
-                sd["stage"] = "collect_last_name"
-                debug_print(f"collect_last_name: ❌ invalid name '{last_name}' retry={r}/3")
-
-                if r >= 3:
-                    resp.say(gpt_speak("Sorry, I couldn’t capture your last name in English letters. Please call again later."), VOICE)
-                    resp.hangup()
-                    session_data.pop(call_sid, None)
-                    return str(resp)
-
-                gather = make_gather(
-                    "Please say your last name using English letters only. "
-                    "You can also type it on the keypad using T9 and press pound.",
-                    input="speech dtmf",
-                    language="en-US",
-                    hints=FOREIGN_NAME_HINTS,
-                    timeout=6,
-                    speech_timeout="5",
-                    finish_on_key="#",
-                    barge_in=True,
-                    action="/voice", method="POST",
-                )
-                resp.append(gather)
-                resp.redirect("/voice")
-                return str(resp)
-
-            # -------------------------------
-            # ✅ Save & Advance
-            # -------------------------------
-            sd["customer"]["last_name"] = last_name
-            sd["stage"] = "collect_address"
-            sd.pop("retry_last_name", None)
-            debug_print(f"collect_last_name: ✅ saved last_name='{last_name}' → next=collect_address")
-
+            # 🔁 Re-prompt if silent (up to 3 times)
             gather = make_gather(
-                f"Thank you {sd['customer'].get('first_name','')} {last_name}. "
-                "Please tell me your full address.",
+                "I didn’t hear your last name. Please say your last name in English letters. "
+                "You can also type it on the keypad and press pound.",
                 input="speech dtmf",
                 language="en-US",
-                hints="118 Briar Oak Murphy Texas 75094",
-                timeout=7,
+                hints=FOREIGN_NAME_HINTS,
+                timeout=6,
                 speech_timeout="5",
                 finish_on_key="#",
                 barge_in=True,
@@ -5708,6 +5545,168 @@ def voice():
             resp.append(gather)
             resp.redirect("/voice")
             return str(resp)
+
+        # ✅ Some input → clear silence counter
+        sd.pop("silence_last_name", None)
+
+        # -------------------------------
+        # 🔢 T9 helpers (for DTMF names)
+        # -------------------------------
+        _T9 = {
+            "2": "ABC", "3": "DEF", "4": "GHI", "5": "JKL",
+            "6": "MNO", "7": "PQRS", "8": "TUV", "9": "WXYZ"
+        }
+
+        def _t9_signature(name: str) -> str:
+            """Convert a romanized name to its T9 digit signature (letters only)."""
+            s = []
+            up = name.upper()
+            for ch in up:
+                if "A" <= ch <= "Z":
+                    for d, letters in _T9.items():
+                        if ch in letters:
+                            s.append(d)
+                            break
+            return "".join(s)
+
+        def _best_name_from_t9(digits: str, hints_csv: str) -> str:
+            """
+            Try to resolve a T9 digit string to a name using FOREIGN_NAMES_HINTS.
+            Returns best candidate or "" if none.
+            """
+            if not digits:
+                return ""
+            items = [x.strip() for x in hints_csv.split(",") if x.strip() and x.strip()[0].isalpha()]
+            exact = [nm for nm in items if _t9_signature(nm) == digits]
+            if len(exact) == 1:
+                return exact[0]
+            if len(exact) > 1:
+                exact.sort(key=lambda n: (-len(n), n))
+                return exact[0]
+            partial = []
+            for nm in items:
+                sig = _t9_signature(nm)
+                if sig.startswith(digits) or digits.startswith(sig):
+                    partial.append((nm, sig))
+            if partial:
+                partial.sort(key=lambda t: (abs(len(t[1]) - len(digits)), -len(t[0]), t[0]))
+                return partial[0][0]
+            return ""
+
+        # -------------------------------
+        # 🧾 Parse & Clean
+        # -------------------------------
+        if raw_dtmf:
+            # 🧭 DTMF path: digits → map to letters using T9 or fallback
+            d = _re.sub(r"\D", "", raw_dtmf)
+            debug_print(f"collect_last_name: 📟 DTMF cleaned='{d}'")
+            last_name = ""
+            if d and all(ch in "23456789" for ch in d):
+                try_name = _best_name_from_t9(d, FOREIGN_NAME_HINTS)
+                if try_name:
+                    last_name = try_name
+                    debug_print(f"collect_last_name: 🔤 T9 matched → '{last_name}'")
+                else:
+                    first_letter = {"2":"A","3":"D","4":"G","5":"J","6":"M","7":"P","8":"T","9":"W"}
+                    last_name = "".join(first_letter[ch] for ch in d)
+                    debug_print(f"collect_last_name: 🧩 T9 fallback guess → '{last_name}'")
+            else:
+                trailing = d[-3:] if d else ""
+                last_name = f"Family{trailing}" if trailing else "Unknown"
+                debug_print(f"collect_last_name: 🔖 placeholder from keypad → '{last_name}'")
+
+        else:
+            # 🗣️ Speech path
+            #import string
+            # Allow ' and - (e.g., O'Neil, Smith-Jones)
+            _PUNCT = """!"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"""
+            punct_keep = "'-"
+            _punct_to_remove = "".join(ch for ch in _PUNCT if ch not in punct_keep)
+
+            # Remove unwanted punctuation, normalize spaces
+            cleaned = raw_speech.translate(str.maketrans('', '', _punct_to_remove)).strip()
+            cleaned = _re.sub(r"\s+", " ", cleaned)
+
+            # 🔍 Drop filler phrases (e.g., “my last name is”, “surname is”, “you can also”)
+            cleaned = _re.sub(
+                r"\b(?:my last name is|family name is|last name|surname is|this is|i am|i'm|it's|you can also|say|press)\b\s*",
+                "",
+                cleaned,
+                flags=_re.IGNORECASE,
+            )
+
+            # Split into tokens and filter out common prompt echo words
+            tokens = cleaned.split()
+            fillers = {"you", "can", "also", "say", "press", "the", "button", "to", "type"}
+            valid_tokens = [t for t in tokens if t.isalpha() and t.lower() not in fillers]
+
+            # ✅ Choose first valid token; fallback to regex if none
+            if valid_tokens:
+                last_name = valid_tokens[0].capitalize()
+            else:
+                m = _re.search(r"[A-Za-z]+", cleaned)
+                last_name = m.group(0).capitalize() if m else ""
+
+            debug_print(f"collect_last_name: 🧹 cleaned='{cleaned}', chosen='{last_name}'")
+
+        # -------------------------------
+        # 🌐 Validate: English letters only
+        # -------------------------------
+        english_only_pattern = r"^[A-Za-z][A-Za-z'\-\s]{0,59}$"
+        contains_foreign_block = bool(_re.search(r"[\u0600-\u06FF]", last_name))
+
+        if (not last_name) or (not _re.fullmatch(english_only_pattern, last_name)) or contains_foreign_block:
+            # 🔁 Invalid → retry up to 3 times
+            r = sd.get("retry_last_name", 0) + 1
+            sd["retry_last_name"] = r
+            sd["stage"] = "collect_last_name"
+            debug_print(f"collect_last_name: ❌ invalid name '{last_name}' retry={r}/3")
+
+            if r >= 3:
+                resp.say(gpt_speak("Sorry, I couldn’t capture your last name in English letters. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            gather = make_gather(
+                "Please say your last name using English letters only. "
+                "You can also type it on the keypad using T9 and press pound.",
+                input="speech dtmf",
+                language="en-US",
+                hints=FOREIGN_NAME_HINTS,
+                timeout=6,
+                speech_timeout="5",
+                finish_on_key="#",
+                barge_in=True,
+                action="/voice", method="POST",
+            )
+            resp.append(gather)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # -------------------------------
+        # ✅ Save & Advance
+        # -------------------------------
+        sd["customer"]["last_name"] = last_name
+        sd["stage"] = "collect_address"
+        sd.pop("retry_last_name", None)
+        debug_print(f"collect_last_name: ✅ saved last_name='{last_name}' → next=collect_address")
+
+        gather = make_gather(
+            f"Thank you {sd['customer'].get('first_name','')} {last_name}. "
+            "Please tell me your full address.",
+            input="speech dtmf",
+            language="en-US",
+            hints="118 Briar Oak Murphy Texas 75094",
+            timeout=7,
+            speech_timeout="5",
+            finish_on_key="#",
+            barge_in=True,
+            action="/voice", method="POST",
+        )
+        resp.append(gather)
+        resp.redirect("/voice")
+        return str(resp)
 
 
 
