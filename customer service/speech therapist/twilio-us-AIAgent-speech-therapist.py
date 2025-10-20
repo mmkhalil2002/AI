@@ -3696,7 +3696,7 @@ def voice():
                 g = make_gather(
                     "Please say or enter your insurance member ID now.",
                     input="speech dtmf",
-                    timeout=10,
+                    timeout=20,
                     speech_timeout="auto",
                     finish_on_key="#",
                     barge_in=True,
