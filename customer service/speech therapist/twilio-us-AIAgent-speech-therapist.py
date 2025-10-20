@@ -3750,24 +3750,9 @@ def voice():
 
 
 
-    # ----------------------------------------------------------------------
     elif stage == "verify_customer_type":
         # ----------------------------------------------------------------------
         # 🧭 Stage: verify_customer_type
-        # Purpose:
-        #   - Handle branching when a phone+dob lookup didn't find a customer.
-        #   - Behavior depends on CREATE_NEW_CUSTOMER flag.
-        #       * If False → hang up with message.
-        #       * If True  → allow caller to choose: 1=new, 2=existing.
-        #
-        # Inputs:
-        #   - DTMF (1=new, 2=existing)
-        #   - Local silence handling and retries.
-        #
-        # Session Data:
-        #   - last_customer_found (bool)
-        #   - customer_status ("new" | "current")
-        #   - silence_verify_type, retry_verify_type counters
         # ----------------------------------------------------------------------
         debug_print("verify_customer_type: 📍 Stage entered")
 
@@ -3775,13 +3760,12 @@ def voice():
         last_lookup_found = sd.get("last_customer_found", False)
         allow_new = bool(globals().get("CREATE_NEW_CUSTOMER", False))
 
-        # Pull current DTMF input
         dtmf_digits = (request.values.get("Digits") or "").strip()
         debug_print(
             f"verify_customer_type: received DTMF='{dtmf_digits}', allow_new={allow_new}, found={last_lookup_found}"
         )
 
-        # If new creation not allowed
+        # 🔒 New creation disabled
         if not last_lookup_found and not allow_new:
             debug_print("verify_customer_type: not found & CREATE_NEW_CUSTOMER=False → hang up")
             resp.say(
@@ -3819,35 +3803,22 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # Clear silence counter once input received
         sd.pop("silence_verify_type", None)
 
         # -------------------------------
         # 🧭 Branch on DTMF choice
         # -------------------------------
         if dtmf_digits == "1":
-            # 1 → "New customer"
             sd["customer_status"] = "new"
             debug_print("verify_customer_type: 🆕 customer_status='new' stored in session")
 
-            # Not found → proceed to collect insurance info (before names)
+            # ✅ Just set the stage — don’t say anything yet
             if not last_lookup_found:
-                debug_print("verify_customer_type: new customer not found → go to collect_insurance_information")
+                debug_print("verify_customer_type: new customer not found → jump to collect_insurance_information")
                 sd["stage"] = "collect_insurance_information"
-                g = make_gather(
-                    "Welcome! Let's start by collecting your insurance information. "
-                    "Please say your insurance company name, for example, 'Blue Cross Blue Shield'.",
-                    input="speech dtmf",
-                    timeout=6,
-                    speech_timeout="auto",
-                    barge_in=True,
-                    finish_on_key="#"
-                )
-                resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # Found but pressed 1 (odd case)
             else:
                 debug_print("verify_customer_type: found=True but pressed 1=new → continue to scheduling")
                 sd["stage"] = "ask_time_date"
@@ -3860,7 +3831,6 @@ def voice():
                 return str(resp)
 
         elif dtmf_digits == "2":
-            # 2 → "Existing customer"
             sd["customer_status"] = "current"
             debug_print("verify_customer_type: 👤 customer_status='current' stored in session")
 
@@ -3907,6 +3877,7 @@ def voice():
         resp.append(g)
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
