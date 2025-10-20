@@ -5534,6 +5534,7 @@ def voice():
             gather.say(
                 gpt_speak(
                     "Please say your last name now. <break time='400ms'/> "
+
                     "You can also type it using your keypad and press pound."
                 ),
                 VOICE,
