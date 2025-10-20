@@ -3626,9 +3626,9 @@ def voice():
                         "I didn’t hear your insurance company. Please choose using your keypad. "
                         + " ".join([f"Press {i+1} for {name}." for i, name in enumerate(INSURANCE_COMPANIES[:9])])
                     )
-                    if len(INSURANCE_COMPANIES) > 9:
+                    if len(INSURANCE_COMPANIES_LIST) > 9:
                         prompt += " " + " ".join(
-                            [f"Press {chr(65 + i - 9)} for {INSURANCE_COMPANIES[i]}" for i in range(9, len(INSURANCE_COMPANIES))]
+                            [f"Press {chr(65 + i - 9)} for {INSURANCE_COMPANIES_LIST[i]}" for i in range(9, len(INSURANCE_COMPANIES_LIST))]
                         )
                     g = make_gather(prompt, input="dtmf", timeout=5, barge_in=True, num_digits=1)
                     resp.append(g)
