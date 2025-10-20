@@ -1,4 +1,4 @@
-# update  10/17/25 time_saved  10:59 PERFECT
+# update  10/205 time_saved   PERFECT
 #  
 # =========================
 # Standard library imports
@@ -2785,26 +2785,41 @@ def voice():
         # ----------------------------------------------------------------------
         if choice:
             # 1️⃣ Book Appointment
-            if choice == "1":
-                print("📅 DTMF=1 → booking")
-                session_data.setdefault(call_sid, {})
-                session_data[call_sid].update({
-                    "stage": "book_appointment",
-                    "booking": {},
-                    "retry_booking": 0,
-                    "retry_time": 0
-                })
-                doctor_names = list(googleid_dr_name_map.values())
-                dtmf_map = {str(i): name for i, name in enumerate(doctor_names, start=1)}
-                session_data[call_sid]["doctor_dtmf_map"] = dtmf_map
-                doctor_list_with_keys = ", ".join([f"{name} (press {i})" for i, name in enumerate(doctor_names, start=1)])
-                prompt = (
-                    f"Great! Let's schedule your appointment. Available doctors are: {doctor_list_with_keys}. "
-                    "Please say the doctor's name or press the number."
-                )
-                gather = make_gather(prompt, hints=", ".join(doctor_names), num_digits=1)
-                resp.append(gather)
-                return str(resp)
+            # 1️⃣ Book Appointment
+        if choice == "1":
+            print("📅 DTMF=1 → booking (start with phone collection)")
+            session_data.setdefault(call_sid, {})
+            session_data[call_sid].update({
+                "stage": "collect_phone",     # start at phone number stage instead of doctor selection
+                "origin_stage": "book",       # mark origin for later (collect_pin_number, etc.)
+                "booking": {},
+                "retry_booking": 0,
+                "retry_time": 0
+            })
+
+            # Friendly opening message for new or returning patients
+            prompt = (
+                "Please say or enter your ten-digit phone number, then press pound."
+            )
+
+            # Build <Gather> to capture phone number (DTMF or speech)
+            gather = Gather(
+                input="speech dtmf",
+                timeout=6,
+                speech_timeout="auto",
+                barge_in=True,
+                finish_on_key="#",
+                action="/voice",
+                method="POST",
+                language="en-US",
+            )
+            gather.say(gpt_speak(prompt), VOICE)
+            resp.append(gather)
+
+            # Safety redirect if user stays silent
+            resp.redirect("/voice")
+            return str(resp)
+
 
             # 2️⃣ Cancel Appointment
             if choice == "2":
