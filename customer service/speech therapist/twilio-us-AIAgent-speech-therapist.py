@@ -5714,124 +5714,160 @@ def voice():
 
 
 
-    # ===== collect_address (stage) =====
-    elif stage == "collect_address":
-        # ---------------------------------------------------------------
-        # 🏠 Stage: collect_address
+    elif stage == "collect_dr_info":
+        # ----------------------------------------------------------------------
+        # 🩺 Stage: collect_dr_info
         # Goal:
-        #   - Capture the caller's address from speech.
-        #   - Normalize whitespace & punctuation (common STT artifacts).
-        #   - Handle silence with separate retry counter (no premature hangups).
-        #   - Store under session_data[call_sid]["customer"]["address"].
-        #   - Advance to collect_cc with a clear prompt.
-        # Notes:
-        #   - Uses `_re` (import re as _re) to avoid UnboundLocalError.
-        #   - Keeps flow consistent by redirecting back to /voice after gather.
-        #   - SSML `<break time='400ms'/>` means “pause 0.4 seconds” before continuing speech.
-        # ---------------------------------------------------------------
+        #   - Let the caller choose a doctor either by voice or keypad (DTMF).
+        #   - Read the list of available doctors aloud with corresponding numbers.
+        #   - Accept speech input matching a doctor’s name OR DTMF 1..N.
+        #   - Handle silence (3 retries) before hangup.
+        #   - Store → session_data[call_sid]["doctor_id"].
+        #   - Advance → ask_time_date.
+        # ----------------------------------------------------------------------
+        debug_print("collect_dr_info: 📍 Stage entered")
 
-        session_data.setdefault(call_sid, {}).setdefault("customer", {})
+        sd = session_data.setdefault(call_sid, {})
+        doctors_map = globals().get("googleid_dr_name_map", {})
 
-        # Safely pull raw text
-        try:
-            raw = (speech_result or request.values.get("SpeechResult") or "").strip()
-        except Exception:
-            raw = (speech_result or "").strip()
+        if not doctors_map:
+            debug_print("collect_dr_info: ⚠️ No doctors available.")
+            resp.say(gpt_speak("Sorry, there are no doctors available at the moment."), VOICE)
+            resp.hangup()
+            return str(resp)
 
-        debug_print(f"collect_address: 📬 Collected address (raw): {raw}")
+        # Convert to a numbered list
+        doctor_list = list(doctors_map.items())  # (calendar_id, doctor_name)
+        numbered_doctors = [(str(i + 1), name, did) for i, (did, name) in enumerate(doctor_list)]
 
-        # 🔇 Silent-mode handling: nothing heard → ask again (up to 3 times)
-        if not raw:
-            tries = session_data[call_sid].get("silence_address", 0) + 1
-            session_data[call_sid]["silence_address"] = tries
-            debug_print(f"collect_address: 🤐 silence; tries={tries}")
+        # Check for silence or input
+        raw_speech = (speech_result or "").strip()
+        raw_dtmf = (request.values.get("Digits") or "").strip()
+        debug_print(f"collect_dr_info: speech='{raw_speech}', dtmf='{raw_dtmf}'")
+
+        # --------------------------
+        # Handle silence case
+        # --------------------------
+        if not raw_speech and not raw_dtmf:
+            tries = sd.get("silence_dr_info", 0) + 1
+            sd["silence_dr_info"] = tries
+            debug_print(f"collect_dr_info: 🤐 silence; tries={tries}/3")
+
             if tries >= 3:
                 resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            prompt = (
-                "I didn't catch the address. Please say your street address, city, and ZIP. "
-                "For example, '118 Briar Oak, Murphy, Texas 75094'."
+            # Re-list doctors each time it reprompts
+            doctor_prompt_lines = [
+                f"Press {num} for {name}."
+                for num, name, _ in numbered_doctors
+            ]
+            doctor_prompt = (
+                "Please select your doctor. "
+                + " ".join(doctor_prompt_lines)
+                + " You can also say the doctor’s name."
             )
-            gather = make_gather(prompt)
+
+            gather = Gather(
+                input="speech dtmf",
+                language="en-US",
+                speech_model="phone_call",
+                timeout=8,
+                speech_timeout="auto",
+                finish_on_key="#",
+                barge_in=True,
+                action="/voice",
+                method="POST",
+            )
+            gather.say(gpt_speak(doctor_prompt), VOICE)
             resp.append(gather)
-            # redirect so Twilio posts back after the gather
-            try:
-                from flask import url_for
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
+            resp.redirect("/voice")
             return str(resp)
 
-        # We heard something → clear silence counter
-        session_data[call_sid].pop("silence_address", None)
+        # ✅ Got input → clear silence counter
+        sd.pop("silence_dr_info", None)
 
-        # ---------- Normalize ----------
-        addr = raw
+        # --------------------------
+        # Handle DTMF input
+        # --------------------------
+        selected_doctor = None
+        if raw_dtmf and raw_dtmf in [num for num, _, _ in numbered_doctors]:
+            num = raw_dtmf
+            selected_doctor = [did for n, _, did in numbered_doctors if n == num][0]
+            selected_name = [name for n, name, _ in numbered_doctors if n == num][0]
+            debug_print(f"collect_dr_info: ✅ Selected doctor '{selected_name}' via keypad ({num})")
 
-        # 1) Collapse multiple spaces
-        addr = _re.sub(r"\s+", " ", addr)
+        # --------------------------
+        # Handle speech input
+        # --------------------------
+        elif raw_speech:
+            spoken = raw_speech.lower()
+            matched = None
+            for did, name in doctors_map.items():
+                if name.lower() in spoken:
+                    matched = (did, name)
+                    break
+            if matched:
+                selected_doctor = matched[0]
+                selected_name = matched[1]
+                debug_print(f"collect_dr_info: ✅ Selected doctor '{selected_name}' via speech match.")
+            else:
+                debug_print(f"collect_dr_info: ❌ No match for spoken='{spoken}'")
 
-        # 2) Normalize spacing around commas, hashes, and periods
-        addr = _re.sub(r"\s*([,#\.])\s*", r"\1 ", addr)
-
-        # 3) Remove repeated punctuation like ".." or ",,"
-        addr = _re.sub(r"\.{2,}", ".", addr)
-        addr = _re.sub(r",\s*,+", ", ", addr)
-
-        # 4) Trim stray punctuation/spaces at the edges
-        addr = addr.strip(" .,")
-        # 5) Collapse any reintroduced doubles
-        addr = _re.sub(r"\s+", " ", addr).strip()
-
-        debug_print(f"collect_address: 🧽 Normalized → '{addr}'")
-
-        # ---------- Light validation ----------
-        if (not addr) or (_re.search(r"[A-Za-z]", addr) is None) or (len(addr) < 6):
-            r = session_data[call_sid].get("retry_address", 0) + 1
-            session_data[call_sid]["retry_address"] = r
-            debug_print(f"collect_address: ❌ looks invalid/too short → retry={r}")
-
-            if r >= 3:
-                resp.say(gpt_speak("Sorry, I couldn’t capture your address. Please call again later."), VOICE)
+        # --------------------------
+        # If still not matched → re-prompt
+        # --------------------------
+        if not selected_doctor:
+            tries = sd.get("retry_dr_info", 0) + 1
+            sd["retry_dr_info"] = tries
+            if tries >= 3:
+                resp.say(gpt_speak("Sorry, I couldn’t understand your doctor selection. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            prompt = (
-                "Please repeat your full mailing address — street, city, state, and ZIP. "
-                "For example, '118 Briar Oak, Murphy, Texas 75094'."
+            doctor_prompt_lines = [
+                f"Press {num} for {name}."
+                for num, name, _ in numbered_doctors
+            ]
+            doctor_prompt = (
+                "I didn’t catch that. "
+                + " ".join(doctor_prompt_lines)
+                + " You can also say the doctor’s name."
             )
-            gather = make_gather(prompt)
+            gather = Gather(
+                input="speech dtmf",
+                language="en-US",
+                speech_model="phone_call",
+                timeout=8,
+                speech_timeout="auto",
+                finish_on_key="#",
+                barge_in=True,
+                action="/voice",
+                method="POST",
+            )
+            gather.say(gpt_speak(doctor_prompt), VOICE)
             resp.append(gather)
-            try:
-                from flask import url_for
-                resp.redirect(url_for("voice"))
-            except Exception:
-                resp.redirect("/voice")
+            resp.redirect("/voice")
             return str(resp)
 
-        # ---------- Persist ----------
-        session_data[call_sid]["customer"]["address"] = addr
-        # Reset retry counter on success
-        session_data[call_sid].pop("retry_address", None)
-        debug_print("collect_address: ✅ Saved address to session")
+        # --------------------------
+        # ✅ Save selection
+        # --------------------------
+        sd["doctor_id"] = selected_doctor
+        sd["doctor_name"] = selected_name
+        debug_print(f"collect_dr_info: 🏥 Stored doctor_id={selected_doctor} ({selected_name})")
 
-        # 🗣️ Speak back the address that Twilio heard (for confirmation)
-        resp.say(gpt_speak(f"I heard your address as: {addr}.  Thank you."), VOICE)
-
-        # ---------- Advance to next stage ----------
-        session_data[call_sid]["stage"] = "collect_cc"
-        gather = make_gather("Now, please enter your card number, then press pound.")
+        # Confirm and advance
+        resp.say(gpt_speak(f"You selected {selected_name}. Thank you."), VOICE)
+        sd["stage"] = "ask_time_date"
+        gather = make_gather("Now, please say your preferred appointment day and time.")
         resp.append(gather)
-        try:
-            from flask import url_for
-            resp.redirect(url_for("voice"))
-        except Exception:
-            resp.redirect("/voice")
+        resp.redirect("/voice")
         return str(resp)
+
 
 
 
