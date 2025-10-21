@@ -4316,25 +4316,7 @@ def voice():
             return str(resp)
         calendar_id = doctor_id
 
-        # ----------------------------------------------------------------------
-        # 🔧 Load Google Calendar credentials globally
-        # ----------------------------------------------------------------------
-        creds = globals().get("GOOGLE_CREDS", None)
-        if not creds:
-            try:
-                from google.oauth2 import service_account
-                GOOGLE_CREDS_PATH = globals().get("GOOGLE_CREDS_PATH", "credentials.json")
-                creds = service_account.Credentials.from_service_account_file(
-                    GOOGLE_CREDS_PATH,
-                    scopes=["https://www.googleapis.com/auth/calendar"]
-                )
-                globals()["GOOGLE_CREDS"] = creds
-                debug_print(f"[ask_time_date] ✅ Loaded Google credentials from {GOOGLE_CREDS_PATH}")
-            except Exception as e:
-                debug_print(f"[ask_time_date] ⚠️ Failed to load Google credentials → {e}")
-                resp.say(gpt_speak("Sorry, the calendar service is temporarily unavailable. Please try again later."), VOICE)
-                resp.hangup()
-                return str(resp)
+        
 
         # ----------------------------------------------------------------------
         # 🧩 Rest of your logic stays unchanged below...
@@ -6577,7 +6559,6 @@ def voice():
         try:
             start_iso = dt_utc.isoformat()
             end_iso   = dt_end.isoformat()
-            creds     = globals().get("GOOGLE_CREDS", None)
             calendar_id = session_data[call_sid].get("doctor_id")  # ensure valid calendar id
 
             is_available = is_time_slot_available(calendar_id, start_iso, end_iso, creds)
