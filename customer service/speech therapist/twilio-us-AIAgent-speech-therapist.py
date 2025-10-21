@@ -4081,32 +4081,63 @@ def voice():
         # 🩺 Stage: collect_dr_info
         # ----------------------------------------------------------------------
         # 🎯 Purpose:
-        #   - Capture doctor selection by speech or keypad.
-        #   - Supports fuzzy speech matching and retry.
+        #   - Read out a numbered list of doctors ("Press 1 for Dr. Smith").
+        #   - Capture doctor selection by speech or keypad (DTMF).
+        #   - Supports partial/fuzzy speech match and retries.
         #   - On success → move to ask_time_date (for appointment scheduling).
         # ----------------------------------------------------------------------
 
         session_data.setdefault(call_sid, {}).setdefault("retry_booking", 0)
         session_data[call_sid]["origin_stage"] = "book"
 
+        # Clean punctuation from speech input
         _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
         dtmf_digits = (request.values.get("Digits") or "").strip()
         spoken_text = (speech_result or "").strip().lower()
         spoken_clean = spoken_text.translate(str.maketrans('', '', _PUNCT)).strip()
         print(f"[collect_dr_info] speech='{spoken_clean}' DTMF='{dtmf_digits}'")
 
+        # Build the doctor keypad map on the first entry
+        if "doctor_dtmf_map" not in session_data[call_sid]:
+            doctor_dtmf_map = {}
+            prompt_lines = []
+            for i, (doc_id, friendly) in enumerate(googleid_dr_name_map.items(), start=1):
+                doctor_dtmf_map[str(i)] = friendly
+                prompt_lines.append(f"Press {i} for {friendly}.")
+            session_data[call_sid]["doctor_dtmf_map"] = doctor_dtmf_map
+
+            # 🗣️ Speak list of doctors
+            doctor_prompt = (
+                "Please choose your doctor. "
+                + " ".join(prompt_lines)
+                + " You can also say the doctor's name."
+            )
+
+            g = make_gather(
+                doctor_prompt,
+                input="speech dtmf",
+                timeout=10,
+                speech_timeout="auto",
+                barge_in=True,
+                finish_on_key="#",
+                num_digits=1
+            )
+            resp.append(g)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # Retrieve the map for later selections
+        doctor_map = session_data[call_sid]["doctor_dtmf_map"]
         matched_id = None
 
         # -------------------- 🔢 DTMF Matching --------------------
-        if dtmf_digits and "doctor_dtmf_map" in session_data[call_sid]:
-            doctor_map = session_data[call_sid]["doctor_dtmf_map"]
-            chosen_name = doctor_map.get(dtmf_digits)
-            if chosen_name:
-                for doc_id, friendly in googleid_dr_name_map.items():
-                    if friendly.lower() == chosen_name.lower():
-                        matched_id = doc_id
-                        print(f"✅ DTMF matched doctor: {friendly}")
-                        break
+        if dtmf_digits and dtmf_digits in doctor_map:
+            chosen_name = doctor_map[dtmf_digits]
+            for doc_id, friendly in googleid_dr_name_map.items():
+                if friendly.lower() == chosen_name.lower():
+                    matched_id = doc_id
+                    print(f"✅ DTMF matched doctor: {friendly}")
+                    break
 
         # -------------------- 🎙️ Speech Matching --------------------
         if matched_id is None:
@@ -4118,13 +4149,18 @@ def voice():
 
             if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
                 print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting")
-                doctor_list_str = ", ".join(googleid_dr_name_map.values())
+
+                prompt_lines = [f"Press {k} for {v}." for k, v in doctor_map.items()]
+                doctor_prompt = (
+                    "Please say the name of the doctor you'd like to book with, "
+                    "or press the number on your keypad. "
+                    + " ".join(prompt_lines)
+                )
 
                 g = make_gather(
-                    f"Please say the name of the doctor you'd like to book with, "
-                    f"or press the number on your keypad. Available doctors are: {doctor_list_str}.",
+                    doctor_prompt,
                     input="speech dtmf",
-                    timeout=6,
+                    timeout=8,
                     speech_timeout="auto",
                     barge_in=True,
                     finish_on_key="#",
@@ -4134,7 +4170,7 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
-            # 🔍 Fuzzy Match
+            # 🔍 Fuzzy match by partial name
             partial_matches = []
             spoken_tokens = set(spoken_clean.split())
             for doc_id, friendly in googleid_dr_name_map.items():
@@ -4170,12 +4206,17 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            doctor_list_str = ", ".join(googleid_dr_name_map.values())
+            prompt_lines = [f"Press {k} for {v}." for k, v in doctor_map.items()]
+            doctor_prompt = (
+                "I couldn't match that to a doctor. "
+                + " ".join(prompt_lines)
+                + " You can also say the doctor's name."
+            )
+
             g = make_gather(
-                f"I couldn't match that to a doctor. Available doctors are: {doctor_list_str}. "
-                "Please say the doctor's name or press the number.",
+                doctor_prompt,
                 input="speech dtmf",
-                timeout=6,
+                timeout=8,
                 speech_timeout="auto",
                 barge_in=True,
                 finish_on_key="#",
@@ -4194,7 +4235,7 @@ def voice():
             f"Great, your appointment will be with {friendly_name}. "
             "Please say the appointment date and time, for example, 'October 8 at 9 30 A M'.",
             input="speech dtmf",
-            timeout=8,
+            timeout=10,
             speech_timeout="auto",
             barge_in=True,
             finish_on_key='#'
