@@ -6632,77 +6632,42 @@ def voice():
 
 
     elif stage == "cancel_appt_get_dob":
-        # ----------------------------------------------------------------------
-        # 🎂 Stage: cancel_appt_get_dob
-        #
-        # PURPOSE:
-        #   • Capture and validate the customer's date of birth (DOB) via speech or DTMF.
-        #   • Store DOB under session_data["customer"]["dob"] and ["cancel"]["dob"].
-        #   • Then branch to collect_pin_number (for verification) instead of time/date.
-        #
-        # FIXES:
-        #   ✅ Uses make_gather() helper (like phone number stage) for consistent timing.
-        #   ✅ Twilio now waits for full MMDDYYYY entry before webhook.
-        #   ✅ Supports typing during OR after prompt.
-        #   ✅ Removed barge_in=True race condition.
-        #   ✅ Removed from skip_silence list so silence logic won’t interfere.
-        # ----------------------------------------------------------------------
-
         debug_print("cancel_appt_get_dob: 📍 Stage entered")
 
-        # ----------------------------------------------------------------------
-        # 🧩 Initialize / Session Setup
-        # ----------------------------------------------------------------------
         session_data.setdefault(call_sid, {}).setdefault("customer", {})
         session_data[call_sid].setdefault("cancel", {})
-        session_data[call_sid]["origin_stage"] = "cancel"
 
         DOB_PROMPT = (
-            "Please say your birth date — for example, July third nineteen fifty six. "
-            "Or type two digits for month, two digits for day, and four digits for year, then press pound."
+            "Please say your birth date, for example July third nineteen fifty six, "
+            "or type 2 digits for month 2 digits for day and 4 digits for year, then press pound."
         )
 
-        # ----------------------------------------------------------------------
-        # 🎧 Capture Input
-        # ----------------------------------------------------------------------
+        # --- Inputs ---
         dtmf_digits = (request.values.get("Digits") or "").strip()
         speech_text = (speech_result or "").strip()
         debug_print(f"cancel_appt_get_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
 
-        # ----------------------------------------------------------------------
-        # 🔇 Silence / No Input Handling
-        # ----------------------------------------------------------------------
+        # --- Silent ---
         if not dtmf_digits and not speech_text:
             tries = session_data[call_sid].get("silence_cancel_dob", 0) + 1
             session_data[call_sid]["silence_cancel_dob"] = tries
-
             if tries >= 3:
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.say("I’m still not hearing anything. Please call again later.", VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
-
-            # Use make_gather for consistent behavior
-            prompt = (
-                "I didn’t hear your birth date. "
-                "Please say it or type two digits for month, two digits for day, and four digits for year, then press pound."
-            )
-            resp.append(make_gather(prompt, input="speech dtmf", num_digits=8, timeout=15, finish_on_key="#"))
-            resp.redirect("/voice")
+            resp.append(make_gather(DOB_PROMPT))
             return str(resp)
 
-        # ✅ Clear silence retry counter
         session_data[call_sid].pop("silence_cancel_dob", None)
 
-        # ----------------------------------------------------------------------
-        # 🧩 Parse DOB (DTMF or Speech)
-        # ----------------------------------------------------------------------
-        dt = None
+        # --- Parse DOB ---
         try:
+            import dateutil.parser as dp
+            dt = None
             if dtmf_digits:
-                clean = _re.sub(r"\D", "", dtmf_digits)
-                if len(clean) == 8:  # MMDDYYYY
-                    m, d, y = int(clean[0:2]), int(clean[2:4]), int(clean[4:8])
+                if len(dtmf_digits) == 8:  # MMDDYYYY
+                    m, d, y = int(dtmf_digits[0:2]), int(dtmf_digits[2:4]), int(dtmf_digits[4:8])
                     dt = datetime(y, m, d)
             if not dt and speech_text:
                 dt = dp.parse(speech_text, fuzzy=True)
@@ -6710,47 +6675,27 @@ def voice():
             debug_print(f"cancel_appt_get_dob: ❌ parse error {e}")
             dt = None
 
-        # ----------------------------------------------------------------------
-        # ❌ Retry on Invalid / Unparsed DOB
-        # ----------------------------------------------------------------------
         if not dt:
             retries = session_data[call_sid].get("retry_cancel_dob", 0) + 1
             session_data[call_sid]["retry_cancel_dob"] = retries
-
             if retries >= 3:
-                resp.say(gpt_speak("Sorry, I couldn’t understand your date of birth. Please call again later."), VOICE)
+                resp.say("Sorry, I couldn’t understand your date of birth. Please call again later.", VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
-
-            prompt = (
-                "Please repeat your birth date. "
-                "Say it or type two digits for month, two digits for day, and four digits for year, then press pound."
-            )
-            resp.append(make_gather(prompt, input="speech dtmf", num_digits=8, timeout=15, finish_on_key="#"))
-            resp.redirect("/voice")
+            resp.append(make_gather(DOB_PROMPT))
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # ✅ Store Parsed DOB
-        # ----------------------------------------------------------------------
+        # --- Store DOB ---
         iso_dob = dt.strftime("%Y-%m-%d")
         session_data[call_sid]["customer"]["dob"] = iso_dob
-        session_data[call_sid]["cancel"]["dob"] = iso_dob
+        session_data[call_sid]["cancel"]["dob"]   = iso_dob
         session_data[call_sid].pop("retry_cancel_dob", None)
         debug_print(f"cancel_appt_get_dob: ✅ Stored DOB → {iso_dob}")
 
-        # ----------------------------------------------------------------------
-        # 🔜 Next Stage → collect_pin_number
-        # ----------------------------------------------------------------------
-        session_data[call_sid]["stage"] = "collect_pin_number"
-
-        next_prompt = (
-            "Thank you. For security verification, please enter your six-digit PIN number followed by the pound key."
-        )
-        resp.append(make_gather(next_prompt, input="dtmf speech", num_digits=6, timeout=12, finish_on_key="#"))
-        resp.redirect("/voice")
-        debug_print("cancel_appt_get_dob: 🔀 Proceeding to collect_pin_number for verification")
+        # --- Next Stage ---
+        session_data[call_sid]["stage"] = "cancel_appt_get_time_date"
+        resp.append(make_gather("Thanks. Now, please tell me the date and time of the appointment you want to cancel. For example, say July 3rd at 9 AM."))
         return str(resp)
 
 
