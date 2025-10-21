@@ -5713,7 +5713,6 @@ def voice():
 
 
 
-
     elif stage == "collect_dr_info":
         # ----------------------------------------------------------------------
         # 🩺 Stage: collect_dr_info
@@ -5736,18 +5735,18 @@ def voice():
             resp.hangup()
             return str(resp)
 
-        # Convert to a numbered list
+        # Convert to a numbered list for easy mapping
         doctor_list = list(doctors_map.items())  # (calendar_id, doctor_name)
         numbered_doctors = [(str(i + 1), name, did) for i, (did, name) in enumerate(doctor_list)]
 
-        # Check for silence or input
+        # Get speech or keypad input
         raw_speech = (speech_result or "").strip()
-        raw_dtmf = (request.values.get("Digits") or "").strip()
+        raw_dtmf   = (request.values.get("Digits") or "").strip()
         debug_print(f"collect_dr_info: speech='{raw_speech}', dtmf='{raw_dtmf}'")
 
-        # --------------------------
-        # Handle silence case
-        # --------------------------
+        # ----------------------------------------------------------------------
+        # 🔇 Handle silence — first time, always read the list of doctors
+        # ----------------------------------------------------------------------
         if not raw_speech and not raw_dtmf:
             tries = sd.get("silence_dr_info", 0) + 1
             sd["silence_dr_info"] = tries
@@ -5759,114 +5758,142 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-list doctors each time it reprompts
-            doctor_prompt_lines = [
-                f"Press {num} for {name}."
-                for num, name, _ in numbered_doctors
-            ]
+            # Build spoken list of doctors
+            doctor_prompt_lines = [f"Press {num} for {name}." for num, name, _ in numbered_doctors]
             doctor_prompt = (
-                "Please select your doctor. "
+                f"We have {len(numbered_doctors)} doctors available. "
                 + " ".join(doctor_prompt_lines)
-                + " You can also say the doctor’s name."
+                + " You can also say the doctor's name."
             )
 
+            # Create a gather block that accepts both keypad & speech
             gather = Gather(
                 input="speech dtmf",
                 language="en-US",
                 speech_model="phone_call",
-                timeout=8,
-                speech_timeout="auto",
+                timeout=10,               # give time to think
+                speech_timeout="auto",    # dynamic pause detection
+                barge_in=True,            # allow pressing keys during prompt
                 finish_on_key="#",
-                barge_in=True,
                 action="/voice",
                 method="POST",
             )
             gather.say(gpt_speak(doctor_prompt), VOICE)
             resp.append(gather)
+            debug_print(f"collect_dr_info: 🗣️ Prompt → {doctor_prompt}")
+
             resp.redirect("/voice")
             return str(resp)
 
-        # ✅ Got input → clear silence counter
+        # ✅ Input received → clear silence counter
         sd.pop("silence_dr_info", None)
 
-        # --------------------------
-        # Handle DTMF input
-        # --------------------------
+        # ----------------------------------------------------------------------
+        # 🔢 Handle keypad (DTMF) input
+        # ----------------------------------------------------------------------
         selected_doctor = None
-        if raw_dtmf and raw_dtmf in [num for num, _, _ in numbered_doctors]:
-            num = raw_dtmf
-            selected_doctor = [did for n, _, did in numbered_doctors if n == num][0]
-            selected_name = [name for n, name, _ in numbered_doctors if n == num][0]
-            debug_print(f"collect_dr_info: ✅ Selected doctor '{selected_name}' via keypad ({num})")
+        selected_name   = None
 
-        # --------------------------
-        # Handle speech input
-        # --------------------------
+        if raw_dtmf:
+            raw_dtmf = raw_dtmf.strip("#*")  # clean any accidental trailing keys
+            debug_print(f"collect_dr_info: 📟 keypad input='{raw_dtmf}'")
+
+            # Check if pressed key corresponds to a listed doctor
+            for num, name, did in numbered_doctors:
+                if raw_dtmf == num:
+                    selected_doctor = did
+                    selected_name = name
+                    debug_print(f"collect_dr_info: ✅ Selected doctor '{selected_name}' via keypad ({num})")
+                    break
+
+        # ----------------------------------------------------------------------
+        # 🗣 Handle speech input
+        # ----------------------------------------------------------------------
         elif raw_speech:
             spoken = raw_speech.lower()
-            matched = None
+            debug_print(f"collect_dr_info: 🗣 recognized speech='{spoken}'")
+
+            # Try to match spoken name to available doctor
             for did, name in doctors_map.items():
                 if name.lower() in spoken:
-                    matched = (did, name)
+                    selected_doctor = did
+                    selected_name = name
+                    debug_print(f"collect_dr_info: ✅ Selected doctor '{selected_name}' via speech match.")
                     break
-            if matched:
-                selected_doctor = matched[0]
-                selected_name = matched[1]
-                debug_print(f"collect_dr_info: ✅ Selected doctor '{selected_name}' via speech match.")
-            else:
-                debug_print(f"collect_dr_info: ❌ No match for spoken='{spoken}'")
 
-        # --------------------------
-        # If still not matched → re-prompt
-        # --------------------------
+            # Fuzzy partial matching (if only a portion matches)
+            if not selected_doctor:
+                for did, name in doctors_map.items():
+                    if spoken in name.lower() or any(part in name.lower() for part in spoken.split()):
+                        selected_doctor = did
+                        selected_name = name
+                        debug_print(f"collect_dr_info: 🔍 Fuzzy matched doctor '{selected_name}'.")
+                        break
+
+        # ----------------------------------------------------------------------
+        # ❌ If still no valid match, re-prompt the user
+        # ----------------------------------------------------------------------
         if not selected_doctor:
             tries = sd.get("retry_dr_info", 0) + 1
             sd["retry_dr_info"] = tries
+            debug_print(f"collect_dr_info: ❌ invalid selection retry={tries}/3")
+
             if tries >= 3:
                 resp.say(gpt_speak("Sorry, I couldn’t understand your doctor selection. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            doctor_prompt_lines = [
-                f"Press {num} for {name}."
-                for num, name, _ in numbered_doctors
-            ]
+            # Re-speak the list
+            doctor_prompt_lines = [f"Press {num} for {name}." for num, name, _ in numbered_doctors]
             doctor_prompt = (
                 "I didn’t catch that. "
                 + " ".join(doctor_prompt_lines)
                 + " You can also say the doctor’s name."
             )
+
             gather = Gather(
                 input="speech dtmf",
                 language="en-US",
                 speech_model="phone_call",
-                timeout=8,
+                timeout=10,
                 speech_timeout="auto",
-                finish_on_key="#",
                 barge_in=True,
+                finish_on_key="#",
                 action="/voice",
                 method="POST",
             )
             gather.say(gpt_speak(doctor_prompt), VOICE)
             resp.append(gather)
+            debug_print(f"collect_dr_info: 🔁 Re-prompt → {doctor_prompt}")
+
             resp.redirect("/voice")
             return str(resp)
 
-        # --------------------------
-        # ✅ Save selection
-        # --------------------------
+        # ----------------------------------------------------------------------
+        # ✅ Save the doctor selection and advance
+        # ----------------------------------------------------------------------
         sd["doctor_id"] = selected_doctor
         sd["doctor_name"] = selected_name
         debug_print(f"collect_dr_info: 🏥 Stored doctor_id={selected_doctor} ({selected_name})")
 
-        # Confirm and advance
         resp.say(gpt_speak(f"You selected {selected_name}. Thank you."), VOICE)
+
+        # Move to the next stage: ask for date/time
         sd["stage"] = "ask_time_date"
-        gather = make_gather("Now, please say your preferred appointment day and time.")
+        gather = make_gather(
+            "Now, please say your preferred appointment day and time.",
+            input="speech dtmf",
+            timeout=10,
+            speech_timeout="auto",
+            barge_in=True,
+            finish_on_key="#",
+        )
         resp.append(gather)
         resp.redirect("/voice")
         return str(resp)
+
+
 
 
 
