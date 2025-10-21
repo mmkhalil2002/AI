@@ -6826,45 +6826,131 @@ def voice():
 
 
 
-
     elif stage == "cancel_appt_get_time_date":
+        # ----------------------------------------------------------------------
+        # 🗓️ Stage: cancel_appt_get_time_date
+        #
+        # PURPOSE:
+        #   • Capture appointment date/time for cancellation.
+        #   • Accepts natural speech ("July third at 9 AM") or DTMF input.
+        #   • Waits properly for input (not skipped by silence guard).
+        #   • Retries up to 3 times before listing appointments.
+        # ----------------------------------------------------------------------
+
         debug_print("cancel_appt_get_time_date: 📍 Stage entered")
         cancel_ctx = session_data[call_sid].setdefault("cancel", {})
+
+        # --- Input capture ---
         raw = (speech_result or "").strip()
         debug_print(f"cancel_appt_get_time_date: 🗣️ Raw speech → '{raw}'")
 
-        # always reset retries if we got new input
-        if raw:
-            cancel_ctx.pop("retry_cancel_dt", None)
-            cancel_ctx.pop("silence_cancel_dt", None)
+        # Silence detection
+        if not raw:
+            tries = cancel_ctx.get("silence_cancel_dt", 0) + 1
+            cancel_ctx["silence_cancel_dt"] = tries
+            debug_print(f"cancel_appt_get_time_date: 🤐 silence count={tries}")
 
-        # ----------------- Parse attempt -----------------
-        day_part, time_part = (None, None)
-        if " at " in raw.lower():
-            parts = raw.lower().replace(",", "").split("at")
-            if len(parts) == 2:
-                day_part, time_part = parts[0].strip(), parts[1].strip()
-
-        debug_print(f"cancel_appt_get_time_date: 📆 Extracted → Day='{day_part}', Time='{time_part}'")
-
-        # ----------------- Always check against DB -----------------
-        matched = False
-        if day_part and time_part:
-            # here you’d normally map to UTC + check Google/JSON
-            events = []  # replaced with actual lookup
-            if events:
-                cancel_ctx["matching_event"] = events[0]
-                session_data[call_sid]["stage"] = "cancel_appt_confirm"
+            if tries >= 3:
+                # After 3 tries, move to iteration mode
+                cancel_ctx.pop("silence_cancel_dt", None)
+                cancel_ctx.pop("retry_cancel_dt", None)
+                cancel_ctx["awaiting_input"] = False
+                session_data[call_sid]["stage"] = "cancel_appt_iterate"
+                session_data[call_sid]["skip_silence_retry"] = True
+                resp.say(
+                    gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."),
+                    VOICE
+                )
                 resp.redirect("/voice")
                 return str(resp)
 
-        # ----------------- Force iterate if no match -----------------
-        debug_print("cancel_appt_get_time_date: 🚫 no match → switch to iterate (ignore input)")
-        cancel_ctx.pop("matching_event", None)          # ✅ clear stray
+            # Re-prompt with gather
+            prompt = (
+                "Please say the date and time of the appointment you want to cancel. "
+                "For example, say July third at 9 AM."
+            )
+            gather = make_gather(
+                prompt,
+                input="speech dtmf",
+                timeout=15,             # Wait longer for speech
+                speech_timeout="auto",
+                barge_in=True
+            )
+            resp.append(gather)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # Reset silence counter if we got input
+        cancel_ctx.pop("silence_cancel_dt", None)
+
+        # --- Parse input ---
+        day_part, time_part = (None, None)
+        try:
+            if " at " in raw.lower():
+                parts = raw.lower().replace(",", "").split("at")
+                if len(parts) == 2:
+                    day_part, time_part = parts[0].strip(), parts[1].strip()
+        except Exception as e:
+            debug_print(f"cancel_appt_get_time_date: ⚠️ parse split error {e}")
+
+        debug_print(f"cancel_appt_get_time_date: 📆 Extracted → Day='{day_part}', Time='{time_part}'")
+
+        # --- Validate parsed date/time ---
+        matched = False
+        if day_part and time_part:
+            try:
+                # Attempt to parse to datetime object
+                spoken_phrase = f"{day_part} at {time_part}"
+                dt = dp.parse(spoken_phrase, fuzzy=True)
+                cancel_ctx["parsed_time"] = dt.isoformat()
+                matched = True
+            except Exception as e:
+                debug_print(f"cancel_appt_get_time_date: ⚠️ dp.parse failed → {e}")
+
+        # --- If valid, go to confirm ---
+        if matched:
+            cancel_ctx.pop("retry_cancel_dt", None)
+            cancel_ctx["awaiting_input"] = False
+            cancel_ctx["matching_event"] = {"spoken_dt": f"{day_part} at {time_part}"}
+            session_data[call_sid]["stage"] = "cancel_appt_confirm"
+            resp.say(
+                gpt_speak(f"You said {day_part} at {time_part}. Let me confirm that appointment."),
+                VOICE
+            )
+            resp.redirect("/voice")
+            return str(resp)
+
+        # --- Retry if parsing failed ---
+        retries = cancel_ctx.get("retry_cancel_dt", 0) + 1
+        cancel_ctx["retry_cancel_dt"] = retries
+        debug_print(f"cancel_appt_get_time_date: ❌ no match → retry={retries}")
+
+        if retries < 3:
+            prompt = (
+                "I didn’t catch that. Please say the appointment date and time clearly, "
+                "for example, July third at 9 AM."
+            )
+            gather = make_gather(
+                prompt,
+                input="speech dtmf",
+                timeout=15,
+                speech_timeout="auto",
+                barge_in=True
+            )
+            resp.append(gather)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # --- Fallback: switch to iterate ---
+        debug_print("cancel_appt_get_time_date: 🚫 too many retries → switch to iterate")
+        cancel_ctx.pop("retry_cancel_dt", None)
+        cancel_ctx["awaiting_input"] = False
         session_data[call_sid]["stage"] = "cancel_appt_iterate"
-        cancel_ctx["awaiting_input"] = False            # ✅ first run announce-only
-        session_data[call_sid]["skip_silence_retry"] = True  # ✅ disable silence detection
-        resp.say(gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."), VOICE)
+        session_data[call_sid]["skip_silence_retry"] = True
+        resp.say(
+            gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."),
+            VOICE
+        )
         resp.redirect("/voice")
         return str(resp)
 
