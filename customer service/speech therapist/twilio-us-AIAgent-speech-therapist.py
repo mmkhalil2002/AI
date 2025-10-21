@@ -6631,6 +6631,8 @@ def voice():
 
 
 
+
+
     elif stage == "cancel_appt_get_dob":
         # ----------------------------------------------------------------------
         # 🎂 Stage: cancel_appt_get_dob
@@ -6643,7 +6645,7 @@ def voice():
         # FEATURES:
         #   ✅ Handles speech (e.g., “July third nineteen fifty six”)
         #   ✅ Handles DTMF (e.g., 07031956#)
-        #   ✅ No external parse_dob_input() dependency
+        #   ✅ Uses _re (regex alias)
         #   ✅ Full retry and silence logic
         # ----------------------------------------------------------------------
 
@@ -6699,9 +6701,14 @@ def voice():
         dt = None
         try:
             if dtmf_digits:
-                clean = re.sub(r"\D", "", dtmf_digits)
+                clean = _re.sub(r"\D", "", dtmf_digits)
                 debug_print(f"cancel_appt_get_dob: 🧮 cleaned DTMF='{clean}'")
                 if len(clean) == 8:
+                    m, d, y = int(clean[0:2]), int(clean[2:4]), int(clean[4:8])
+                    dt = datetime(y, m, d)
+                elif len(clean) == 7:
+                    # 👇 Auto-pad single-digit month to 8 digits (e.g. 7031956 → 07031956)
+                    clean = clean.zfill(8)
                     m, d, y = int(clean[0:2]), int(clean[2:4]), int(clean[4:8])
                     dt = datetime(y, m, d)
                 else:
@@ -6812,6 +6819,7 @@ def voice():
         resp.redirect("/voice")
         debug_print("cancel_appt_get_dob: 🔀 Proceeding to collect_pin_number for verification")
         return str(resp)
+
 
 
 
