@@ -6638,14 +6638,13 @@ def voice():
         # PURPOSE:
         #   • Capture and validate the customer's date of birth (DOB) via speech or DTMF.
         #   • Store DOB under session_data["customer"]["dob"] and ["cancel"]["dob"].
-        #   • Does NOT handle or require phone number collection.
-        #   • Proceeds directly to collect_pin_number after successful validation.
+        #   • Proceeds directly to collect_pin_number after success.
         #
-        # BEHAVIOR:
-        #   - Accepts spoken DOB (e.g., "July third nineteen fifty six") or
-        #     numeric input (e.g., 07031956#).
-        #   - Handles silence and retry gracefully (up to 3 attempts).
-        #   - Uses num_digits=8 and finish_on_key="#" to capture full DOB.
+        # FEATURES:
+        #   ✅ Handles speech (e.g., “July third nineteen fifty six”)
+        #   ✅ Handles DTMF (e.g., 07031956#)
+        #   ✅ No external parse_dob_input() dependency
+        #   ✅ Full retry and silence logic
         # ----------------------------------------------------------------------
 
         debug_print("cancel_appt_get_dob: 📍 Stage entered")
@@ -6659,7 +6658,6 @@ def voice():
         except Exception:
             dtmf_digits = ""
         speech_text = (speech_result or "").strip()
-
         debug_print(f"cancel_appt_get_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
 
         # ------------------------------------------------------------------
@@ -6692,13 +6690,31 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # Clear silence counter if input received
+        # Clear silence counter
         session_data[call_sid].pop("silence_cancel_dob", None)
 
         # ------------------------------------------------------------------
-        # 🧩 Parse DOB from Input
+        # 🧩 Inline DOB Parsing Logic
         # ------------------------------------------------------------------
-        dt = parse_dob_input(speech_text, dtmf_digits)  # returns datetime or None
+        dt = None
+        try:
+            if dtmf_digits:
+                clean = re.sub(r"\D", "", dtmf_digits)
+                debug_print(f"cancel_appt_get_dob: 🧮 cleaned DTMF='{clean}'")
+                if len(clean) == 8:
+                    m, d, y = int(clean[0:2]), int(clean[2:4]), int(clean[4:8])
+                    dt = datetime(y, m, d)
+                else:
+                    debug_print(f"cancel_appt_get_dob: ⚠️ DTMF not 8 digits → {clean}")
+            if not dt and speech_text:
+                dt = dp.parse(speech_text, fuzzy=True)
+        except Exception as e:
+            debug_print(f"cancel_appt_get_dob: ❌ parse error {e}")
+            dt = None
+
+        # ------------------------------------------------------------------
+        # ❌ Invalid or Unparsed DOB → Retry
+        # ------------------------------------------------------------------
         if not dt:
             retries = session_data[call_sid].get("retry_cancel_dob", 0) + 1
             session_data[call_sid]["retry_cancel_dob"] = retries
@@ -6729,9 +6745,8 @@ def voice():
         # 🧮 Validate DOB range
         # ------------------------------------------------------------------
         try:
-            _Date = globals().get("_date", date)
-            today = _Date.today()
-            min_date = _Date(1900, 1, 1)
+            today = date.today()
+            min_date = date(1900, 1, 1)
             dob_date = dt.date()
             if not (min_date <= dob_date <= today):
                 retries = session_data[call_sid].get("retry_cancel_dob", 0) + 1
@@ -6759,7 +6774,6 @@ def voice():
                 resp.append(gather)
                 resp.redirect("/voice")
                 return str(resp)
-
         except Exception as e:
             debug_print(f"cancel_appt_get_dob: ⚠️ Validation error → {e}")
             gather = make_gather(
@@ -6798,7 +6812,6 @@ def voice():
         resp.redirect("/voice")
         debug_print("cancel_appt_get_dob: 🔀 Proceeding to collect_pin_number for verification")
         return str(resp)
-
 
 
 
