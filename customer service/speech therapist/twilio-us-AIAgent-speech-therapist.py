@@ -6695,7 +6695,7 @@ def voice():
         try:
             dt = None
             if dtmf_digits:
-                clean = re.sub(r"\D", "", dtmf_digits)
+                clean = _re.sub(r"\D", "", dtmf_digits)
                 if len(clean) == 8:  # MMDDYYYY
                     m, d, y = int(clean[0:2]), int(clean[2:4]), int(clean[4:8])
                     dt = datetime(y, m, d)
