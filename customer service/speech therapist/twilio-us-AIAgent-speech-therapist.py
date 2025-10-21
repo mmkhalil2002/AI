@@ -6865,20 +6865,21 @@ def voice():
                 return str(resp)
 
             # Re-prompt with gather
-            prompt = (
-                "Please say the date and time of the appointment you want to cancel. "
-                "For example, say July third at 9 AM."
-            )
+           
+            resp.pause(length=1)  # ensure Twilio starts listening after TTS finishes
             gather = make_gather(
-                prompt,
+                "Please say the date and time of the appointment you want to cancel. "
+                "For example, say July third at 9 AM.",
                 input="speech dtmf",
-                timeout=15,             # Wait longer for speech
+                timeout=15,
                 speech_timeout="auto",
-                barge_in=True
+                finish_on_key="#",
+                barge_in=True,
             )
             resp.append(gather)
             resp.redirect("/voice")
-            return str(resp)
+
+            
 
         # Reset silence counter if we got input
         cancel_ctx.pop("silence_cancel_dt", None)
