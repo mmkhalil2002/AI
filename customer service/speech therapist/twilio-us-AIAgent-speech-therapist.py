@@ -6825,15 +6825,14 @@ def voice():
 
 
 
-
     elif stage == "cancel_appt_get_time_date":
         # ----------------------------------------------------------------------
         # 🗓️ Stage: cancel_appt_get_time_date
         #
         # PURPOSE:
         #   • Capture the appointment date/time the caller wants to cancel.
-        #   • Accepts natural speech (e.g., "July third at 9 AM") or DTMF input.
-        #   • Waits properly for user response (local silence handling).
+        #   • Accepts natural speech (e.g., “October 21 at 3:30 PM”).
+        #   • Handles silence locally (no premature timeout).
         #   • Verifies slot existence via is_time_slot_available().
         #   • If slot not found → go to cancel_appt_iterate.
         #   • If found → go to cancel_appt_confirm.
@@ -6867,11 +6866,11 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
-            # re-prompt user
+            # re-prompt user clearly
             resp.pause(length=1)
             gather = make_gather(
                 "Please say the date and time of the appointment you want to cancel. "
-                "For example, say July third at 9 AM.",
+                "For example, say October twenty-first at 3:30 PM.",
                 input="speech dtmf",
                 timeout=25,
                 speech_timeout="auto",
@@ -6882,7 +6881,7 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # ✅ reset silence counter if any input detected
+        # ✅ reset silence counter when user spoke
         cancel_ctx.pop("silence_cancel_dt", None)
 
         # ----------------------------------------------------------------------
@@ -6900,16 +6899,40 @@ def voice():
 
         debug_print(f"cancel_appt_get_time_date: 📆 Extracted → Day='{day_part}', Time='{time_part}'")
 
-        if not (day_part and time_part):
+        # ----------------------------------------------------------------------
+        # 🕐 Parse as datetime
+        # ----------------------------------------------------------------------
+        matched = False
+        dt_utc, dt_end, spoken_phrase = (None, None, None)
+        try:
+            if day_part and time_part:
+                # 🩹 Fix Twilio STT typo like “3d” → “3rd”
+                day_part_fixed = _re.sub(r"\b(\d{1,2})d\b", r"\1rd", day_part, flags=_re.IGNORECASE)
+                spoken_phrase = f"{day_part_fixed} at {time_part}"
+
+                tz_name = globals().get("CLINIC_TZ", "America/Chicago")
+                tz = _pytz.timezone(tz_name)
+                dt_local = dp.parse(spoken_phrase, fuzzy=True, default=datetime.now(tz))
+                dt_utc = dt_local.astimezone(_pytz.UTC)
+                dt_end = dt_utc + timedelta(minutes=30)
+                matched = True
+                debug_print(f"cancel_appt_get_time_date: ✅ Parsed datetime → {dt_utc.isoformat()}")
+        except Exception as e:
+            debug_print(f"cancel_appt_get_time_date: ⚠️ dp.parse failed → {e}")
+
+        # ----------------------------------------------------------------------
+        # ❌ Parsing failed → Retry up to 3 times
+        # ----------------------------------------------------------------------
+        if not matched:
             retries = cancel_ctx.get("retry_cancel_dt", 0) + 1
             cancel_ctx["retry_cancel_dt"] = retries
-            debug_print(f"cancel_appt_get_time_date: ❌ no valid structure → retry={retries}")
+            debug_print(f"cancel_appt_get_time_date: ❌ parse failed → retry={retries}")
 
             if retries < 3:
                 resp.pause(length=1)
                 gather = make_gather(
                     "I didn’t catch that. Please say the appointment date and time clearly, "
-                    "for example, July third at 9 AM.",
+                    "for example, October twenty-first at 3:30 PM.",
                     input="speech dtmf",
                     timeout=20,
                     speech_timeout="auto",
@@ -6920,69 +6943,34 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
-            # 3 failed attempts → iterate
+            # too many retries → iterate
             debug_print("cancel_appt_get_time_date: 🚫 too many retries → iterate")
             cancel_ctx.pop("retry_cancel_dt", None)
             cancel_ctx["awaiting_input"] = False
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
+            session_data[call_sid]["skip_silence_retry"] = True
             resp.say(gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."), VOICE)
             resp.redirect("/voice")
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🕐 Try parsing as datetime
-        # ----------------------------------------------------------------------
-        matched = False
-        try:
-            # fix Twilio STT typo like "3d" → "3rd"
-            day_part_fixed = _re.sub(r"\b(\d{1,2})d\b", r"\1rd", day_part, flags=_re.IGNORECASE)
-            spoken_phrase = f"{day_part_fixed} at {time_part}"
-
-            tz_name = globals().get("CLINIC_TZ", "America/Chicago")
-            tz = _pytz.timezone(tz_name)
-            dt_local = dp.parse(spoken_phrase, fuzzy=True, default=datetime.now(tz))
-            dt_utc = dt_local.astimezone(_pytz.UTC)
-            dt_end = dt_utc + timedelta(minutes=30)
-            matched = True
-        except Exception as e:
-            debug_print(f"cancel_appt_get_time_date: ⚠️ dp.parse failed → {e}")
-
-        if not matched:
-            # could not parse → retry
-            retries = cancel_ctx.get("retry_cancel_dt", 0) + 1
-            cancel_ctx["retry_cancel_dt"] = retries
-            if retries < 3:
-                resp.pause(length=1)
-                gather = make_gather(
-                    "Sorry, I didn’t get that. Please say the date and time clearly — for example, July third at 9 AM.",
-                    input="speech dtmf",
-                    timeout=20,
-                    speech_timeout="auto",
-                    barge_in=True,
-                )
-                resp.append(gather)
-                resp.redirect("/voice")
-                return str(resp)
-
-            # fallback
-            session_data[call_sid]["stage"] = "cancel_appt_iterate"
-            resp.say(
-                gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."),
-                VOICE,
-            )
-            resp.redirect("/voice")
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # 🧠 Check appointment availability via helper
+        # 🧠 Check slot availability
         # ----------------------------------------------------------------------
         try:
-            is_available = is_time_slot_available(dt_utc)
-            debug_print(f"cancel_appt_get_time_date: 🧩 is_time_slot_available({dt_utc}) → {is_available}")
+            start_iso = dt_utc.isoformat()
+            end_iso   = dt_end.isoformat()
+            creds     = globals().get("GOOGLE_CREDS", None)
+            doctor    = session_data[call_sid].get("cancel", {}).get("doctor_name")
+
+            is_available = is_time_slot_available(start_iso, end_iso, creds, doctor_name=doctor)
+            debug_print(f"cancel_appt_get_time_date: 🧩 is_time_slot_available({start_iso}, {end_iso}) → {is_available}")
         except Exception as e:
             debug_print(f"cancel_appt_get_time_date: ⚠️ slot check failed → {e}")
             is_available = False
 
+        # ----------------------------------------------------------------------
+        # 🚫 If slot NOT found → switch to iterate
+        # ----------------------------------------------------------------------
         if not is_available:
             debug_print("cancel_appt_get_time_date: 🚫 Slot not found → switching to iterate")
             cancel_ctx["awaiting_input"] = False
@@ -6992,12 +6980,12 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ Slot found → Proceed to confirmation
+        # ✅ Slot FOUND → Proceed to confirmation
         # ----------------------------------------------------------------------
         cancel_ctx["matching_event"] = {
             "spoken_dt": spoken_phrase,
-            "start": dt_utc.isoformat(),
-            "end": dt_end.isoformat(),
+            "start": start_iso,
+            "end": end_iso,
         }
         cancel_ctx.pop("retry_cancel_dt", None)
         cancel_ctx["awaiting_input"] = False
@@ -7009,7 +6997,6 @@ def voice():
         )
         resp.redirect("/voice")
         return str(resp)
-
 
 
 
