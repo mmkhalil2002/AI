@@ -6871,7 +6871,7 @@ def voice():
                 "Please say the date and time of the appointment you want to cancel. "
                 "For example, say July third at 9 AM.",
                 input="speech dtmf",
-                timeout=15,
+                timeout=25,
                 speech_timeout="auto",
                 finish_on_key="#",
                 barge_in=True,
