@@ -6822,7 +6822,6 @@ def voice():
 
 
 
-
     elif stage == "cancel_appt_get_time_date":
         # ----------------------------------------------------------------------
         # 🗓️ Stage: cancel_appt_get_time_date
@@ -6832,7 +6831,7 @@ def voice():
         #   • Accepts natural speech (e.g., “October 21 at 3:30 PM”).
         #   • Handles silence locally (3 retries).
         #   • Calls is_time_slot_available(calendar_id, start_iso, end_iso, creds).
-        #   • If slot busy → go to cancel_appt_confirm.
+        #   • If slot busy (exists) → go to cancel_appt_confirm.
         #   • If slot not found → go to cancel_appt_iterate.
         # ----------------------------------------------------------------------
 
@@ -6856,10 +6855,7 @@ def voice():
                 cancel_ctx["awaiting_input"] = False
                 session_data[call_sid]["stage"] = "cancel_appt_iterate"
                 session_data[call_sid]["skip_silence_retry"] = True
-                resp.say(
-                    gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."),
-                    VOICE,
-                )
+                resp.say(gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."), VOICE)
                 resp.redirect("/voice")
                 return str(resp)
 
@@ -6901,8 +6897,7 @@ def voice():
         dt_utc, dt_end, spoken_phrase = (None, None, None)
         try:
             if day_part and time_part:
-                # Fix Twilio STT quirks like “3d” → “3rd”
-                day_part_fixed = _re.sub(r"\b(\d{1,2})d\b", r"\1rd", day_part, flags=_re.IGNORECASE)
+                day_part_fixed = _re.sub(r"\\b(\\d{1,2})d\\b", r"\\1rd", day_part, flags=_re.IGNORECASE)
                 spoken_phrase = f"{day_part_fixed} at {time_part}"
 
                 tz_name = globals().get("CLINIC_TZ", "America/Chicago")
@@ -6953,7 +6948,7 @@ def voice():
         try:
             start_iso = dt_utc.isoformat()
             end_iso   = dt_end.isoformat()
-            calendar_id = session_data[call_sid].get("doctor_id")  # ensure valid calendar id
+            calendar_id = session_data[call_sid].get("doctor_id")
 
             is_available = is_time_slot_available(calendar_id, start_iso, end_iso, creds)
             debug_print(
@@ -6986,12 +6981,10 @@ def voice():
         cancel_ctx["awaiting_input"] = False
         session_data[call_sid]["stage"] = "cancel_appt_confirm"
 
-        resp.say(
-            gpt_speak(f"You said {day_part} at {time_part}. Let me confirm that appointment."),
-            VOICE,
-        )
+        resp.say(gpt_speak(f"You said {day_part} at {time_part}. Let me confirm that appointment."), VOICE)
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
