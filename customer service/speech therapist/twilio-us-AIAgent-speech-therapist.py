@@ -2658,6 +2658,7 @@ def voice():
         "collect_last_name",
          "collect_insurance_information", 
          "collect_dr_info",
+         "cancel_appt_get_time_date" ,
     )
     debug_print(f"[voice] 🔇 skip_silence={skip_silence}")
 
