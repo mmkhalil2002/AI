@@ -5820,7 +5820,7 @@ def voice():
         debug_print("collect_address: ✅ Saved address to session")
 
         # 🗣️ Speak back the address that Twilio heard (for confirmation)
-        resp.say(gpt_speak(f"I heard your address as: {addr}. <break time='400ms'/> Thank you."), VOICE)
+        resp.say(gpt_speak(f"I heard your address as: {addr}.  Thank you."), VOICE)
 
         # ---------- Advance to next stage ----------
         session_data[call_sid]["stage"] = "collect_cc"
