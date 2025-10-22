@@ -7065,7 +7065,7 @@ def voice():
         candidates = []
         for event in events:
             desc = (event.get("description") or "").lower()
-            normalized_desc = re.sub(r"[^0-9a-z]+", "", desc)
+            normalized_desc = _re.sub(r"[^0-9a-z]+", "", desc)
             if phone_e164 in normalized_desc and (not dob or dob.replace("-", "") in normalized_desc):
                 start_iso = event["start"].get("dateTime") or event["start"].get("date")
                 end_iso = event["end"].get("dateTime") or event["end"].get("date")
@@ -7188,6 +7188,7 @@ def voice():
                     f"{_time_mod.perf_counter() - t_stage_start:.3f}s")
         debug_print(f"cancel_appt_iterate: ✅ total runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
         return str(resp)
+
 
 
 
