@@ -7005,11 +7005,13 @@ def voice():
 
 
 
+
     elif stage == "cancel_appt_iterate":
         # ----------------------------------------------------------------------
         # 🗂️ Stage: cancel_appt_iterate
-        #  • Lets caller cancel appointments by voice or DTMF.
-        #  • Uses Google Calendar only for listing upcoming booked slots.
+        #  • Lists and cancels appointments directly from Google Calendar.
+        #  • Uses phone number and DOB inside event description for matching.
+        #  • Prints all event details for debugging and normalization validation.
         # ----------------------------------------------------------------------
 
         t_stage_start = _time_mod.perf_counter()
@@ -7036,7 +7038,7 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 📅 Fetch all future events (next 30 days)
+        # 📅 Fetch upcoming events (next 30 days) from Google Calendar
         # ----------------------------------------------------------------------
         now = _dt.utcnow().isoformat() + "Z"
         time_max = (_dt.utcnow() + timedelta(days=30)).isoformat() + "Z"
@@ -7060,49 +7062,66 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Filter events by caller phone + DOB inside description
+        # 🧩 Filter events by phone + DOB inside description
         # ----------------------------------------------------------------------
         candidates = []
         for event in events:
             desc = (event.get("description") or "").lower()
             normalized_desc = _re.sub(r"[^0-9a-z]+", "", desc)
-            if phone_e164 in normalized_desc and (not dob or dob.replace("-", "") in normalized_desc):
-                start_iso = event["start"].get("dateTime") or event["start"].get("date")
-                end_iso = event["end"].get("dateTime") or event["end"].get("date")
 
-                # Normalize start/end (ensure timezone-aware)
-                start_iso = start_iso.replace("Z", "+00:00") if "Z" in start_iso else start_iso
-                end_iso = end_iso.replace("Z", "+00:00") if "Z" in end_iso else end_iso
+            # Normalize phone & DOB for consistent comparison
+            normalized_phone = _re.sub(r"[^0-9a-z]+", "", phone_e164)
+            normalized_dob = _re.sub(r"[^0-9a-z]+", "", dob.replace("-", "").replace("/", ""))
 
-                # Check busy status via Google Calendar free/busy API
-                try:
-                    busy = not is_time_slot_available(cal_id, start_iso, end_iso, creds)
-                except Exception as e:
-                    debug_print(f"cancel_appt_iterate: ⚠️ Slot availability check failed → {e}")
-                    busy = True  # assume busy if check fails
+            phone_match = normalized_phone in normalized_desc
+            dob_match = (not dob) or (normalized_dob in normalized_desc)
 
-                if busy:
-                    try:
-                        friendly = _dt.fromisoformat(start_iso).strftime("%A, %B %d at %I:%M %p")
-                    except Exception:
-                        friendly = start_iso
-                    candidates.append({
-                        "doctor_name": doctor,
-                        "calendar_id": cal_id,
-                        "start_utc": start_iso,
-                        "end_utc": end_iso,
-                        "friendly": friendly,
-                        "phone_e164": phone_e164,
-                        "dob": dob,
-                        "event_id": event.get("id"),
-                    })
+            # 🧾 Print details for *every* event for clarity
+            debug_print("------------------------------------------------")
+            debug_print(f"📅 Event summary: {event.get('summary')}")
+            debug_print(f"🕓 Start: {event['start'].get('dateTime') or event['start'].get('date')}")
+            debug_print(f"🕓 End: {event['end'].get('dateTime') or event['end'].get('date')}")
+            debug_print(f"📝 Description (raw): {desc}")
+            debug_print(f"🔢 Normalized desc: {normalized_desc}")
+            debug_print(f"📞 Phone to match: {normalized_phone} → Match={phone_match}")
+            debug_print(f"🎂 DOB to match: {normalized_dob} → Match={dob_match}")
+
+            if not (phone_match and dob_match):
+                debug_print("🚫 Event filtered out (phone/DOB mismatch)")
+                continue
+            else:
+                debug_print("✅ Event PASSED filtering")
+
+            # Normalize time formats
+            start_iso = event["start"].get("dateTime") or event["start"].get("date")
+            end_iso = event["end"].get("dateTime") or event["end"].get("date")
+            start_iso = start_iso.replace("Z", "+00:00") if "Z" in start_iso else start_iso
+            end_iso = end_iso.replace("Z", "+00:00") if "Z" in end_iso else end_iso
+
+            try:
+                friendly = _dt.fromisoformat(start_iso).strftime("%A, %B %d at %I:%M %p")
+            except Exception:
+                friendly = start_iso
+
+            candidates.append({
+                "doctor_name": doctor,
+                "calendar_id": cal_id,
+                "start_utc": start_iso,
+                "end_utc": end_iso,
+                "friendly": friendly,
+                "phone_e164": phone_e164,
+                "dob": dob,
+                "event_id": event.get("id"),
+            })
+            debug_print(f"🧩 Added candidate → {friendly}")
+            debug_print("------------------------------------------------")
 
         cancel_ctx["candidates"] = candidates
         cancel_ctx["iter_index"] = 0
         debug_print(f"cancel_appt_iterate: ✅ built {len(candidates)} candidate(s) from Google Calendar")
 
         # ----------------------------------------------------------------------
-        # 🚫 No matching appointments
+        # 🚫 If no appointments found
         # ----------------------------------------------------------------------
         if not candidates:
             resp.say("There are no upcoming appointments to cancel.", VOICE)
@@ -7111,7 +7130,7 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧾 Handle input (voice or keypad)
+        # 🧾 Handle user input (voice or keypad)
         # ----------------------------------------------------------------------
         try:
             dtmf = (request.values.get("Digits") or "").strip()
@@ -7188,6 +7207,7 @@ def voice():
                     f"{_time_mod.perf_counter() - t_stage_start:.3f}s")
         debug_print(f"cancel_appt_iterate: ✅ total runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
         return str(resp)
+
 
 
 
