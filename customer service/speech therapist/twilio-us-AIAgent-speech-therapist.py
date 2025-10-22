@@ -7009,9 +7009,9 @@ def voice():
     elif stage == "cancel_appt_iterate":
         # ----------------------------------------------------------------------
         # 🗂️ Stage: cancel_appt_iterate
-        #  • Lists and cancels appointments directly from Google Calendar.
-        #  • Uses phone number and DOB inside event description for matching.
-        #  • Logs every event, including phone/DOB extracted from Google.
+        #  • Lists appointments directly from Google Calendar.
+        #  • Works even if the event description does not contain DOB/phone.
+        #  • Prints all found details (for debugging and visibility).
         # ----------------------------------------------------------------------
 
         t_stage_start = _time_mod.perf_counter()
@@ -7038,7 +7038,7 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 📅 Fetch upcoming events (next 30 days) from Google Calendar
+        # 📅 Fetch upcoming events (next 30 days)
         # ----------------------------------------------------------------------
         now = _dt.utcnow().isoformat() + "Z"
         time_max = (_dt.utcnow() + timedelta(days=30)).isoformat() + "Z"
@@ -7057,19 +7057,18 @@ def voice():
             debug_print(f"cancel_appt_iterate: 📆 Found {len(events)} future events for {doctor}")
         except Exception as e:
             debug_print(f"cancel_appt_iterate: ❌ Google Calendar query failed → {e}")
-            resp.say("Sorry, I cannot access the calendar at the moment.", VOICE)
+            resp.say("Sorry, I cannot access the calendar right now.", VOICE)
             resp.hangup()
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Filter events by caller phone + DOB inside description
+        # 🧩 Match logic (lenient)
         # ----------------------------------------------------------------------
         candidates = []
         for event in events:
-            desc = (event.get("description") or "").lower()
+            desc = (event.get("description") or "").lower().strip()
             normalized_desc = _re.sub(r"[^0-9a-z]+", "", desc)
 
-            # Extract any numeric sequences that look like phones or DOBs
             found_phones = _re.findall(r"\b\d{7,15}\b", desc)
             found_dobs = _re.findall(r"\b\d{2,4}[-/]\d{1,2}[-/]\d{2,4}\b", desc)
             debug_print(f"📞 Found phone(s) in Google event: {found_phones}")
@@ -7082,18 +7081,17 @@ def voice():
             phone_match = normalized_phone in normalized_desc
             dob_match   = (not dob) or (normalized_dob in normalized_desc)
 
-            # If description is blank → treat as match (so user still sees it)
-            if not desc.strip():
+            # If description empty or no data in it → automatically include
+            if not desc or (not found_phones and not found_dobs):
+                debug_print("⚙️ No phone/DOB info in description → auto-including this event")
                 phone_match = True
                 dob_match = True
 
-            # 🧾 Print debug info for each event
             debug_print("------------------------------------------------")
             debug_print(f"📅 Event summary: {event.get('summary')}")
             debug_print(f"🕓 Start: {event['start'].get('dateTime') or event['start'].get('date')}")
             debug_print(f"🕓 End:   {event['end'].get('dateTime') or event['end'].get('date')}")
             debug_print(f"📝 Description (raw): {desc}")
-            debug_print(f"🔢 Normalized desc: {normalized_desc}")
             debug_print(f"📞 Phone to match: {normalized_phone} → Match={phone_match}")
             debug_print(f"🎂 DOB to match: {normalized_dob} → Match={dob_match}")
 
@@ -7102,7 +7100,7 @@ def voice():
                 continue
             debug_print("✅ Event PASSED filtering")
 
-            # Normalize start/end (ensure timezone-aware)
+            # Normalize timestamps
             start_iso = event["start"].get("dateTime") or event["start"].get("date")
             end_iso = event["end"].get("dateTime") or event["end"].get("date")
             start_iso = start_iso.replace("Z", "+00:00") if "Z" in start_iso else start_iso
@@ -7140,7 +7138,7 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧾 Handle user input (voice or keypad)
+        # 🧾 Handle input (voice or keypad)
         # ----------------------------------------------------------------------
         try:
             dtmf = (request.values.get("Digits") or "").strip()
@@ -7217,6 +7215,7 @@ def voice():
                     f"{_time_mod.perf_counter() - t_stage_start:.3f}s")
         debug_print(f"cancel_appt_iterate: ✅ total runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
         return str(resp)
+
 
 
 
