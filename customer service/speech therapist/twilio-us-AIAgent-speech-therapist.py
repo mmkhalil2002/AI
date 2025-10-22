@@ -7011,7 +7011,7 @@ def voice():
         # 🗂️ Stage: cancel_appt_iterate
         #  • Lists and cancels appointments directly from Google Calendar.
         #  • Uses phone number and DOB inside event description for matching.
-        #  • Prints all event details for debugging and normalization validation.
+        #  • Logs every event, including phone/DOB extracted from Google.
         # ----------------------------------------------------------------------
 
         t_stage_start = _time_mod.perf_counter()
@@ -7062,25 +7062,36 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Filter events by phone + DOB inside description
+        # 🧩 Filter events by caller phone + DOB inside description
         # ----------------------------------------------------------------------
         candidates = []
         for event in events:
             desc = (event.get("description") or "").lower()
             normalized_desc = _re.sub(r"[^0-9a-z]+", "", desc)
 
+            # Extract any numeric sequences that look like phones or DOBs
+            found_phones = _re.findall(r"\b\d{7,15}\b", desc)
+            found_dobs = _re.findall(r"\b\d{2,4}[-/]\d{1,2}[-/]\d{2,4}\b", desc)
+            debug_print(f"📞 Found phone(s) in Google event: {found_phones}")
+            debug_print(f"🎂 Found DOB(s) in Google event: {found_dobs}")
+
             # Normalize phone & DOB for consistent comparison
             normalized_phone = _re.sub(r"[^0-9a-z]+", "", phone_e164)
             normalized_dob = _re.sub(r"[^0-9a-z]+", "", dob.replace("-", "").replace("/", ""))
 
             phone_match = normalized_phone in normalized_desc
-            dob_match = (not dob) or (normalized_dob in normalized_desc)
+            dob_match   = (not dob) or (normalized_dob in normalized_desc)
 
-            # 🧾 Print details for *every* event for clarity
+            # If description is blank → treat as match (so user still sees it)
+            if not desc.strip():
+                phone_match = True
+                dob_match = True
+
+            # 🧾 Print debug info for each event
             debug_print("------------------------------------------------")
             debug_print(f"📅 Event summary: {event.get('summary')}")
             debug_print(f"🕓 Start: {event['start'].get('dateTime') or event['start'].get('date')}")
-            debug_print(f"🕓 End: {event['end'].get('dateTime') or event['end'].get('date')}")
+            debug_print(f"🕓 End:   {event['end'].get('dateTime') or event['end'].get('date')}")
             debug_print(f"📝 Description (raw): {desc}")
             debug_print(f"🔢 Normalized desc: {normalized_desc}")
             debug_print(f"📞 Phone to match: {normalized_phone} → Match={phone_match}")
@@ -7089,10 +7100,9 @@ def voice():
             if not (phone_match and dob_match):
                 debug_print("🚫 Event filtered out (phone/DOB mismatch)")
                 continue
-            else:
-                debug_print("✅ Event PASSED filtering")
+            debug_print("✅ Event PASSED filtering")
 
-            # Normalize time formats
+            # Normalize start/end (ensure timezone-aware)
             start_iso = event["start"].get("dateTime") or event["start"].get("date")
             end_iso = event["end"].get("dateTime") or event["end"].get("date")
             start_iso = start_iso.replace("Z", "+00:00") if "Z" in start_iso else start_iso
@@ -7207,9 +7217,6 @@ def voice():
                     f"{_time_mod.perf_counter() - t_stage_start:.3f}s")
         debug_print(f"cancel_appt_iterate: ✅ total runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
         return str(resp)
-
-
-
 
 
 
