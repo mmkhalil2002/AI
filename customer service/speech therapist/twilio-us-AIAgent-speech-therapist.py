@@ -7231,14 +7231,12 @@ def voice():
         #   NEW CUSTOMER:
         #       • Inserts record (including insurance info)
         #       • Instructs caller to verify info with clinic
-        #       • Ends call politely
         #
         #   CURRENT CUSTOMER:
         #       • Confirms appointment slot
-        #       • Creates Google Calendar entry
-        #       • Persists locally (via book_appointment_for_dr_name)
+        #       • Creates Google Calendar entry (with full metadata)
+        #       • Persists locally via book_appointment_for_dr_name()
         #       • Sends SMS confirmation
-        #
         # ----------------------------------------------------------------------
         t_stage_start = _time_mod.perf_counter()
         debug_print("book_appt_confirm: 📍 Stage entered")
@@ -7259,10 +7257,8 @@ def voice():
         customer_address = (customer.get("address")    or "").strip()
         customer_dob     = (customer.get("dob")        or "").strip()
         phone_e164       = (customer.get("phone_e164") or "").strip()
-
-        # 🏥 Insurance Info
-        insurance_name        = (customer.get("insurance_name") or "").strip()
-        insurance_member_id   = (customer.get("insurance_member_id") or "").strip()
+        insurance_name   = (customer.get("insurance_name") or "").strip()
+        insurance_member_id = (customer.get("insurance_member_id") or "").strip()
 
         # ----------------------------------------------------------------------
         # 🆕 NEW CUSTOMER FLOW
@@ -7277,10 +7273,10 @@ def voice():
                     first_name=first_name,
                     last_name=last_name,
                     address=customer_address,
-                    cc_name=(customer.get("cc_name") or f"{first_name} {last_name}"),
-                    cc_number=(customer.get("cc_number") or ""),
-                    cc_exp=(customer.get("cc_exp") or ""),
-                    cc_cvv=(customer.get("cc_cvv") or ""),
+                    cc_name=f"{first_name} {last_name}",
+                    cc_number="",
+                    cc_exp="",
+                    cc_cvv="",
                     insurance_name=insurance_name,
                     insurance_member_id=insurance_member_id,
                     customer_status="new",
@@ -7298,11 +7294,10 @@ def voice():
             resp.say(gpt_speak(msg), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
-            debug_print(f"book_appt_confirm: 🆕 new customer flow done in {_time_mod.perf_counter() - t_stage_start:.3f}s")
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 👤 CURRENT CUSTOMER FLOW (appointment confirmation)
+        # 👤 CURRENT CUSTOMER FLOW
         # ----------------------------------------------------------------------
         debug_print("book_appt_confirm: 👤 current customer flow continues")
 
@@ -7371,7 +7366,7 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 💾 Insert or Update Customer with Insurance Info
+        # 💾 Insert or Update Customer Locally
         # ----------------------------------------------------------------------
         try:
             inserted_ok = insert_customer(
@@ -7380,10 +7375,10 @@ def voice():
                 first_name=first_name,
                 last_name=last_name,
                 address=customer_address,
-                cc_name=(customer.get("cc_name") or f"{first_name} {last_name}"),
-                cc_number=(customer.get("cc_number") or ""),
-                cc_exp=(customer.get("cc_exp") or ""),
-                cc_cvv=(customer.get("cc_cvv") or ""),
+                cc_name=f"{first_name} {last_name}",
+                cc_number="",
+                cc_exp="",
+                cc_cvv="",
                 insurance_name=insurance_name,
                 insurance_member_id=insurance_member_id,
                 customer_status="current",
@@ -7394,32 +7389,59 @@ def voice():
             debug_print(f"book_appt_confirm: ❌ insert_customer failed → {e}")
 
         # ----------------------------------------------------------------------
-        # 📅 Create Google Calendar Event
+        # 📅 Create Google Calendar Event with Full Metadata
         # ----------------------------------------------------------------------
         google_event_id = sd.get("google_event_id", "")
         if not google_event_id:
             try:
                 service = build("calendar", "v3", credentials=creds)
+
+                desc_lines = [
+                    f"Clinic appointment for {first_name} {last_name or ''}.",
+                    f"Phone: {phone_e164}",
+                    f"DOB: {customer_dob}",
+                    f"Address: {customer_address}",
+                ]
+                if insurance_name:
+                    desc_lines.append(f"Insurance: {insurance_name}")
+                if insurance_member_id:
+                    desc_lines.append(f"Member ID: {insurance_member_id}")
+
+                description_text = "\n".join(desc_lines).strip()
+
                 event_body = {
                     "summary": f"Appointment: {doctor_name}",
-                    "description": f"Clinic appointment for {first_name} {last_name or ''}.",
+                    "description": description_text,
                     "start": {"dateTime": appointment_start, "timeZone": "UTC"},
                     "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
                     "extendedProperties": {
                         "private": {
                             "patient_name": f"{first_name} {last_name or ''}",
+                            "first_name": first_name,
+                            "last_name": last_name,
                             "phone_e164": phone_e164,
                             "dob": customer_dob,
+                            "address": customer_address,
                             "insurance_name": insurance_name,
                             "insurance_member_id": insurance_member_id,
                             "call_sid": call_sid,
                         }
                     },
                 }
-                ev = service.events().insert(calendarId=doctor_id, body=event_body, sendUpdates="none").execute()
+
+                ev = service.events().insert(
+                    calendarId=doctor_id,
+                    body=event_body,
+                    sendUpdates="none"
+                ).execute()
+
                 google_event_id = ev.get("id", "")
                 session_data[call_sid]["google_event_id"] = google_event_id
+
                 debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id}")
+                debug_print("book_appt_confirm: 📝 Event description content:")
+                debug_print(description_text)
+
             except Exception as e:
                 debug_print(f"book_appt_confirm: ❌ Google insert failed → {e}")
                 session_data[call_sid]["stage"] = "ask_time_date"
@@ -7427,11 +7449,10 @@ def voice():
                 return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🗂️ Append appointment to local doctor file using helper function
+        # 🗂️ Log Appointment Locally
         # ----------------------------------------------------------------------
         try:
             full_name = f"{first_name} {last_name}".strip()
-
             book_appointment_for_dr_name(
                 doctor_name=doctor_name,
                 phone=phone_e164,
@@ -7472,6 +7493,7 @@ def voice():
         session_data.pop(call_sid, None)
         debug_print(f"book_appt_confirm: ✅ completed in {_time_mod.perf_counter() - t_stage_start:.3f}s")
         return str(resp)
+
 
 
 
