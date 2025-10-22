@@ -7007,196 +7007,184 @@ def voice():
 
 
     elif stage == "cancel_appt_iterate":
-        # ----------------------------------------------------------------------
-        # 🗂️ Stage: cancel_appt_iterate
-        #  • Lets caller cancel appointments by voice or DTMF.
-        #  • Parallel slot checks + short timeouts for fast response.
-        # ----------------------------------------------------------------------
+            # ----------------------------------------------------------------------
+            # 🗂️ Stage: cancel_appt_iterate
+            #  • Lets caller cancel appointments by voice or DTMF.
+            #  • Parallel slot checks + short timeouts for fast response.
+            # ----------------------------------------------------------------------
 
-        t_stage_start = _time_mod.perf_counter()
-        debug_print("cancel_appt_iterate: 📍 Stage entered")
+            t_stage_start = _time_mod.perf_counter()
+            debug_print("cancel_appt_iterate: 📍 Stage entered")
 
-        cancel_ctx = session_data[call_sid].setdefault("cancel", {})
-        doctor = (cancel_ctx.get("doctor") or "").strip()
-        phone_e164 = (cancel_ctx.get("phone_e164") or "").replace("+", "").lstrip("0")
-        dob = (cancel_ctx.get("dob") or "").strip()
-        debug_print(f"cancel_appt_iterate: inputs → doctor='{doctor}', phone='{phone_e164}', dob='{dob}'")
+            cancel_ctx = session_data[call_sid].setdefault("cancel", {})
+            doctor = (cancel_ctx.get("doctor") or "").strip()
+            phone_e164 = (cancel_ctx.get("phone_e164") or "").replace("+", "").lstrip("0")
+            dob = (cancel_ctx.get("dob") or "").strip()
+            debug_print(f"cancel_appt_iterate: inputs → doctor='{doctor}', phone='{phone_e164}', dob='{dob}'")
 
-        # ----------------------------------------------------------------------
-        # 🔍 Query Google Calendar directly for upcoming appointments
-        # ----------------------------------------------------------------------
-        try:
-            service = build("calendar", "v3", credentials=creds)
-        except Exception as e:
-            debug_print(f"cancel_appt_iterate: ❌ Failed to build Google service → {e}")
-            resp.say("Sorry, I cannot reach the calendar service right now.", VOICE)
-            resp.hangup()
-            return str(resp)
+            candidates = cancel_ctx.get("candidates")
 
-        # Identify doctor’s calendar ID
-        cal_id = None
-        for cid, friendly in googleid_dr_name_map.items():
-            if friendly.lower() == doctor.lower():
-                cal_id = cid
-                break
-
-        if not cal_id:
-            resp.say("Sorry, I could not locate the doctor's calendar. Please try again later.", VOICE)
-            resp.hangup()
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # 📅 Fetch all upcoming events from Google Calendar (next 14 days)
-        # ----------------------------------------------------------------------
-        now = _dt.utcnow().isoformat() + "Z"
-        time_max = (_dt.utcnow() + timedelta(days=14)).isoformat() + "Z"
-
-        try:
-            events_result = service.events().list(
-                calendarId=cal_id,
-                timeMin=now,
-                timeMax=time_max,
-                maxResults=50,
-                singleEvents=True,
-                orderBy="startTime"
-            ).execute()
-            events = events_result.get("items", [])
-            debug_print(f"cancel_appt_iterate: 📆 Found {len(events)} future events for {doctor}")
-        except Exception as e:
-            debug_print(f"cancel_appt_iterate: ❌ Google Calendar query failed → {e}")
-            resp.say("Sorry, I cannot access the calendar at the moment.", VOICE)
-            resp.hangup()
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # 🧩 Filter events for this caller (phone + dob)
-        # ----------------------------------------------------------------------
-        candidates = []
-        for event in events:
-            desc = (event.get("description") or "").lower()
-            if phone_e164 in desc and (not dob or dob in desc):
-                start_iso = event["start"].get("dateTime") or event["start"].get("date")
-                end_iso = event["end"].get("dateTime") or event["end"].get("date")
-
-                # Verify slot busy directly via Google Calendar
+            # ----------------------------------------------------------------------
+            # 🧩 Build candidates (parallelized for large clinics)
+            # ----------------------------------------------------------------------
+            t_build_start = _time_mod.perf_counter()
+            if not candidates:
+                path = f"{DB_FOLDER}/{doctor.lower().replace(' ', '_')}.json"
                 try:
-                    busy = not is_time_slot_available(cal_id, start_iso, end_iso, creds)
+                    with open(path, "r") as f:
+                        appts = json.load(f)
                 except Exception as e:
-                    debug_print(f"cancel_appt_iterate: ⚠️ slot check failed → {e}")
-                    busy = False
+                    debug_print(f"cancel_appt_iterate: ⚠️ could not load {path} → {e}")
+                    appts = []
 
-                # Add candidate only if busy (reserved)
-                if busy:
-                    try:
-                        friendly = _dt.fromisoformat(start_iso.replace("Z", "+00:00")).strftime(
-                            "%A, %B %d at %I:%M %p"
-                        )
-                    except Exception:
-                        friendly = start_iso
-                    candidates.append({
-                        "doctor_name": doctor,
-                        "calendar_id": cal_id,
-                        "start_utc": start_iso,
-                        "end_utc": end_iso,
-                        "friendly": friendly,
-                        "phone_e164": phone_e164,
-                        "dob": dob,
-                        "event_id": event.get("id"),
-                    })
+                def valid_appt(appt):
+                    appt_phone = (appt.get("phone") or "").replace("+", "").lstrip("0")
+                    appt_dob = (appt.get("dob") or "").strip()
+                    return appt_phone == phone_e164 and (not dob or appt_dob == dob)
 
-        cancel_ctx["candidates"] = candidates
-        cancel_ctx["iter_index"] = 0
-        debug_print(f"cancel_appt_iterate: ✅ built {len(candidates)} candidate(s) from Google Calendar")
+                matching_appts = [a for a in appts if valid_appt(a)]
+                debug_print(f"cancel_appt_iterate: potential matches → {len(matching_appts)}")
 
-        if not candidates:
-            resp.say("There are no upcoming appointments to cancel.", VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            return str(resp)
+                candidates = []
+                if matching_appts:
+                    from concurrent.futures import ThreadPoolExecutor
 
-        # ----------------------------------------------------------------------
-        # 🧾 Handle input (voice or keypad)
-        # ----------------------------------------------------------------------
-        try:
-            dtmf = (request.values.get("Digits") or "").strip()
-        except Exception:
-            dtmf = ""
-        utter = (speech_result or "").strip().lower()
-        utter = _re.sub(r"[^a-z0-9]+", "", utter)
+                    def slot_check(appt):
+                        try:
+                            cal_id = None
+                            for cid, friendly in googleid_dr_name_map.items():
+                                if friendly.lower() == doctor.lower():
+                                    cal_id = cid
+                                    break
+                            if not cal_id or not appt.get("utc_start"):
+                                return None
+                            exists = not is_time_slot_available(cal_id, appt["utc_start"], appt["utc_end"], creds)
+                            return (cal_id, appt) if exists else None
+                        except Exception as e:
+                            debug_print(f"cancel_appt_iterate: ⚠️ slot check failed → {e}")
+                            return None
 
-        debug_print(f"cancel_appt_iterate: normalized utter='{utter}', dtmf='{dtmf}'")
+                    with ThreadPoolExecutor(max_workers=4) as ex:
+                        for result in ex.map(slot_check, matching_appts):
+                            if result:
+                                cal_id, appt = result
+                                candidates.append({
+                                    "doctor_name": doctor,
+                                    "calendar_id": cal_id,
+                                    "start_utc": appt.get("utc_start"),
+                                    "end_utc": appt.get("utc_end"),
+                                    "friendly": appt.get("friendly_local"),
+                                    "phone_e164": phone_e164,
+                                    "dob": dob,
+                                })
 
-        YES = {"yes", "yeah", "yep", "confirm", "correct"}
-        NO  = {"no", "nope", "next"}
+                cancel_ctx["candidates"] = candidates
+                cancel_ctx["iter_index"] = 0
+                debug_print(f"cancel_appt_iterate: ✅ built {len(candidates)} candidate(s) "
+                            f"in {_time_mod.perf_counter() - t_build_start:.3f}s")
 
-        idx = int(cancel_ctx.get("iter_index", 0))
-        total = len(cancel_ctx["candidates"])
+                if not candidates:
+                    # No appointments found
+                    if session_data.get(call_sid, {}).get("reschedule_after_cancel"):
+                        debug_print("cancel_appt_iterate: 🔁 no appts → switch to booking")
+                        session_data[call_sid]["stage"] = "ask_time_date"
+                        session_data[call_sid]["reschedule_after_cancel"] = False
+                        resp.append(make_gather(
+                            "I couldn’t find any appointments to cancel. Let’s make a new one. "
+                            "Please say the date and time, for example, 'October 12th at 9 a.m.'"
+                        ))
+                        resp.redirect("/voice")
+                        return str(resp)
 
-        if idx >= total:
-            resp.say("That was the last appointment. Goodbye.", VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            return str(resp)
+                    resp.say(gpt_speak("There are no upcoming appointments to cancel."), VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    return str(resp)
 
-        cand = cancel_ctx["candidates"][idx]
+                resp.say(f"I found {len(candidates)} upcoming appointments.", VOICE)
 
-        # ----------------------------------------------------------------------
-        # ✅ YES → cancel
-        # ----------------------------------------------------------------------
-        if utter in YES or dtmf == "1":
-            debug_print(f"cancel_appt_iterate: ✅ YES user confirmed candidate #{idx+1}/{total}")
-            cancel_ctx["matching_event"] = cand
-            session_data[call_sid]["stage"] = "cancel_appt_confirm"
-            handoff_t = _time_mod.perf_counter()
-            resp.redirect("/voice")
-            debug_print(f"cancel_appt_iterate: 🚀 handoff in {_time_mod.perf_counter() - handoff_t:.3f}s")
-            debug_print(f"cancel_appt_iterate: ⏱️ total stage time {_time_mod.perf_counter() - t_stage_start:.3f}s")
-            return str(resp)
+            # ----------------------------------------------------------------------
+            # 🧾 Handle input (voice or keypad)
+            # ----------------------------------------------------------------------
+            try:
+                dtmf = (request.values.get("Digits") or "").strip()
+            except Exception:
+                dtmf = ""
+            utter = (speech_result or "").strip().lower()
+            utter = _re.sub(r"[^a-z0-9]+", "", utter)
 
-        # ----------------------------------------------------------------------
-        # ↪️ NO → next appointment
-        # ----------------------------------------------------------------------
-        if utter in NO or dtmf == "2":
-            debug_print(f"cancel_appt_iterate: ↪️ NO user skipped candidate #{idx+1}/{total}")
-            idx += 1
-            cancel_ctx["iter_index"] = idx
+            debug_print(f"cancel_appt_iterate: normalized utter='{utter}', dtmf='{dtmf}' "
+                        f"(input parse took {_time_mod.perf_counter() - t_build_start:.3f}s)")
+
+            YES = {"yes", "yeah", "yep", "confirm", "correct"}
+            NO  = {"no", "nope", "next"}
+
+            idx = int(cancel_ctx.get("iter_index", 0))
+            total = len(cancel_ctx["candidates"])
+
             if idx >= total:
                 resp.say("That was the last appointment. Goodbye.", VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
+
             cand = cancel_ctx["candidates"][idx]
 
-        # ----------------------------------------------------------------------
-        # 🗣️ Present current candidate (short timeouts)
-        # ----------------------------------------------------------------------
-        debug_print(f"cancel_appt_iterate: 🗣️ presenting candidate #{idx+1}/{total}")
-        say_line = (
-            f"Appointment with {cand['doctor_name']} on {cand['friendly']}. "
-            "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."
-        )
+            # ----------------------------------------------------------------------
+            # ✅ YES → cancel
+            # ----------------------------------------------------------------------
+            if utter in YES or dtmf == "1":
+                debug_print(f"cancel_appt_iterate: ✅ YES user confirmed candidate #{idx+1}/{total}")
+                cancel_ctx["matching_event"] = cand
+                session_data[call_sid]["stage"] = "cancel_appt_confirm"
+                handoff_t = _time_mod.perf_counter()
+                resp.redirect("/voice")
+                debug_print(f"cancel_appt_iterate: 🚀 handoff in "
+                            f"{_time_mod.perf_counter() - handoff_t:.3f}s")
+                debug_print(f"cancel_appt_iterate: ⏱️ total stage time "
+                            f"{_time_mod.perf_counter() - t_stage_start:.3f}s")
+                return str(resp)
 
-        # ⚡ Optimized Gather — short timeouts = faster Twilio POST
-        gather = make_gather(
-            say_line,
-            hints="yes no one two",
-            input="speech dtmf",
-            timeout=3,             # was 20
-            speech_timeout="auto", # was 8
-            finish_on_key="#",
-            action="/voice",
-            barge_in=True,
-        )
-        resp.append(gather)
+            # ----------------------------------------------------------------------
+            # ↪️ NO → next appointment
+            # ----------------------------------------------------------------------
+            if utter in NO or dtmf == "2":
+                debug_print(f"cancel_appt_iterate: ↪️ NO user skipped candidate #{idx+1}/{total}")
+                idx += 1
+                cancel_ctx["iter_index"] = idx
+                if idx >= total:
+                    resp.say("That was the last appointment. Goodbye.", VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    return str(resp)
+                cand = cancel_ctx["candidates"][idx]
 
-        debug_print(f"cancel_appt_iterate: 🗣️ candidate presentation built in "
-                    f"{_time_mod.perf_counter() - t_stage_start:.3f}s")
-        debug_print(f"cancel_appt_iterate: ✅ total runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
-        return str(resp)
+            # ----------------------------------------------------------------------
+            # 🗣️ Present current candidate (short timeouts)
+            # ----------------------------------------------------------------------
+            debug_print(f"cancel_appt_iterate: 🗣️ presenting candidate #{idx+1}/{total}")
+            say_line = (
+                f"Appointment with {cand['doctor_name']} on {cand['friendly']}. "
+                "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."
+            )
 
+            # ⚡ Optimized Gather — short timeouts = faster Twilio POST
+            gather = make_gather(
+                say_line,
+                hints="yes no one two",
+                input="speech dtmf",
+                timeout=3,            # was 20
+                speech_timeout="auto",# was 8
+                finish_on_key="#",
+                action="/voice",
+                barge_in=True,
+            )
+            resp.append(gather)
 
-
-
+            debug_print(f"cancel_appt_iterate: 🗣️ candidate presentation built in "
+                        f"{_time_mod.perf_counter() - t_stage_start:.3f}s")
+            debug_print(f"cancel_appt_iterate: ✅ total runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
+            return str(resp)
 
 
 
