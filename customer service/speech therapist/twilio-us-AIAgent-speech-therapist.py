@@ -7005,12 +7005,11 @@ def voice():
 
 
 
-
     elif stage == "cancel_appt_iterate":
         # ----------------------------------------------------------------------
         # 🗂️ Stage: cancel_appt_iterate
         #  • Lets caller cancel appointments by voice or DTMF.
-        #  • Parallel slot checks + short timeouts for fast response.
+        #  • Uses Google Calendar only for listing upcoming booked slots.
         # ----------------------------------------------------------------------
 
         t_stage_start = _time_mod.perf_counter()
@@ -7023,17 +7022,8 @@ def voice():
         debug_print(f"cancel_appt_iterate: inputs → doctor='{doctor}', phone='{phone_e164}', dob='{dob}'")
 
         # ----------------------------------------------------------------------
-        # 🔍 Query Google Calendar directly for upcoming appointments
+        # 🔍 Identify the doctor’s Google Calendar
         # ----------------------------------------------------------------------
-        try:
-            service = build("calendar", "v3", credentials=creds)
-        except Exception as e:
-            debug_print(f"cancel_appt_iterate: ❌ Failed to build Google service → {e}")
-            resp.say("Sorry, I cannot reach the calendar service right now.", VOICE)
-            resp.hangup()
-            return str(resp)
-
-        # Identify doctor’s calendar ID
         cal_id = None
         for cid, friendly in googleid_dr_name_map.items():
             if friendly.lower() == doctor.lower():
@@ -7046,12 +7036,13 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 📅 Fetch all upcoming events from Google Calendar (next 14 days)
+        # 📅 Fetch all future events (next 30 days)
         # ----------------------------------------------------------------------
         now = _dt.utcnow().isoformat() + "Z"
-        time_max = (_dt.utcnow() + timedelta(days=14)).isoformat() + "Z"
+        time_max = (_dt.utcnow() + timedelta(days=30)).isoformat() + "Z"
 
         try:
+            service = build("calendar", "v3", credentials=creds)
             events_result = service.events().list(
                 calendarId=cal_id,
                 timeMin=now,
@@ -7069,28 +7060,30 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Filter events for this caller (phone + dob)
+        # 🧩 Filter events by caller phone + DOB inside description
         # ----------------------------------------------------------------------
         candidates = []
         for event in events:
             desc = (event.get("description") or "").lower()
-            if phone_e164 in desc and (not dob or dob in desc):
+            normalized_desc = re.sub(r"[^0-9a-z]+", "", desc)
+            if phone_e164 in normalized_desc and (not dob or dob.replace("-", "") in normalized_desc):
                 start_iso = event["start"].get("dateTime") or event["start"].get("date")
                 end_iso = event["end"].get("dateTime") or event["end"].get("date")
 
-                # Verify slot busy directly via Google Calendar
+                # Normalize start/end (ensure timezone-aware)
+                start_iso = start_iso.replace("Z", "+00:00") if "Z" in start_iso else start_iso
+                end_iso = end_iso.replace("Z", "+00:00") if "Z" in end_iso else end_iso
+
+                # Check busy status via Google Calendar free/busy API
                 try:
                     busy = not is_time_slot_available(cal_id, start_iso, end_iso, creds)
                 except Exception as e:
-                    debug_print(f"cancel_appt_iterate: ⚠️ slot check failed → {e}")
-                    busy = False
+                    debug_print(f"cancel_appt_iterate: ⚠️ Slot availability check failed → {e}")
+                    busy = True  # assume busy if check fails
 
-                # Add candidate only if busy (reserved)
                 if busy:
                     try:
-                        friendly = _dt.fromisoformat(start_iso.replace("Z", "+00:00")).strftime(
-                            "%A, %B %d at %I:%M %p"
-                        )
+                        friendly = _dt.fromisoformat(start_iso).strftime("%A, %B %d at %I:%M %p")
                     except Exception:
                         friendly = start_iso
                     candidates.append({
@@ -7108,6 +7101,9 @@ def voice():
         cancel_ctx["iter_index"] = 0
         debug_print(f"cancel_appt_iterate: ✅ built {len(candidates)} candidate(s) from Google Calendar")
 
+        # ----------------------------------------------------------------------
+        # 🚫 No matching appointments
+        # ----------------------------------------------------------------------
         if not candidates:
             resp.say("There are no upcoming appointments to cancel.", VOICE)
             resp.hangup()
@@ -7176,13 +7172,12 @@ def voice():
             "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."
         )
 
-        # ⚡ Optimized Gather — short timeouts = faster Twilio POST
         gather = make_gather(
             say_line,
             hints="yes no one two",
             input="speech dtmf",
-            timeout=3,             # was 20
-            speech_timeout="auto", # was 8
+            timeout=3,
+            speech_timeout="auto",
             finish_on_key="#",
             action="/voice",
             barge_in=True,
