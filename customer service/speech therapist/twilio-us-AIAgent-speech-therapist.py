@@ -7489,9 +7489,13 @@ def voice():
     
     elif stage == "cancel_appt_confirm":
         # ----------------------------------------------------------------------
-        # 🧩 Stage: cancel_appt_confirm (asynchronous deletion, no confirmation)
+        # 🧩 Stage: cancel_appt_confirm
+        # PURPOSE:
+        #   - Cancel the matching appointment asynchronously.
+        #   - Deletes from both Google Calendar and local JSON via
+        #     cancel_appointment_for_dr_name().
+        #   - Supports reschedule-after-cancel flow.
         # ----------------------------------------------------------------------
-       
         t0 = _time_mod.perf_counter()
         debug_print("cancel_appt_confirm: 📍 Stage entered")
 
@@ -7499,6 +7503,9 @@ def voice():
         cand = cancel_ctx.get("matching_event")
         reschedule_flag = session_data.get(call_sid, {}).get("reschedule_after_cancel", False)
 
+        # ----------------------------------------------------------------------
+        # 🚫 Safety: no candidate (invalid or expired)
+        # ----------------------------------------------------------------------
         if not cand:
             debug_print("cancel_appt_confirm: ⚠️ No candidate found in session.")
             resp.say(gpt_speak("Sorry, I couldn’t find that appointment to cancel."), VOICE)
@@ -7526,7 +7533,7 @@ def voice():
         debug_print(f"cancel_appt_confirm: 🔎 Checking slot {start_utc} → {end_utc} on {calendar_id}")
 
         # ----------------------------------------------------------------------
-        # Slot check
+        # Slot check (determine if it’s still occupied)
         # ----------------------------------------------------------------------
         try:
             slot_free = is_time_slot_available(calendar_id, start_utc, end_utc, creds)
@@ -7543,6 +7550,7 @@ def voice():
             def _async_delete():
                 t_del_start = _time_mod.perf_counter()
                 try:
+                    # 1️⃣ Delete from Google Calendar
                     service = build("calendar", "v3", credentials=creds)
                     events = service.events().list(
                         calendarId=calendar_id,
@@ -7554,23 +7562,27 @@ def voice():
                     for ev in events.get("items", []):
                         try:
                             service.events().delete(calendarId=calendar_id, eventId=ev["id"]).execute()
-                            debug_print(f"cancel_appt_confirm.async: 🗑️ deleted Google event {ev['id']}")
+                            debug_print(f"cancel_appt_confirm.async: 🗑️ Deleted Google event {ev['id']}")
                         except Exception as e2:
-                            debug_print(f"cancel_appt_confirm.async: ⚠️ failed to delete event {ev.get('id')} → {e2}")
+                            debug_print(f"cancel_appt_confirm.async: ⚠️ Google event delete failed → {e2}")
 
-                    # ---- Delete from local JSON ----
-                    path = f"{DB_FOLDER}/{doctor_name.lower().replace(' ', '_')}.json"
+                    # 2️⃣ Delete from local JSON using your helper
                     try:
-                        with open(path, "r") as f:
-                            appts = json.load(f)
-                        appts = [a for a in appts if not (
-                            a.get("utc_start") == start_utc and a.get("utc_end") == end_utc
-                        )]
-                        with open(path, "w") as f:
-                            json.dump(appts, f, indent=2)
-                        debug_print("cancel_appt_confirm.async: 🗑️ deleted from doctor JSON")
-                    except Exception as e:
-                        debug_print(f"cancel_appt_confirm.async: ⚠️ JSON cleanup failed → {e}")
+                        phone_e164 = cancel_ctx.get("phone_e164", "")
+                        dob        = cancel_ctx.get("dob", "")
+                        deleted_local = cancel_appointment_for_dr_name(
+                            doctor_name=doctor_name,
+                            phone=phone_e164,
+                            dob=dob,
+                            utc_start=start_utc,
+                            default_country="US",
+                        )
+                        debug_print(
+                            f"cancel_appt_confirm.async: {'✅ Deleted locally' if deleted_local else '⚠️ No local match'} "
+                            f"for {doctor_name} ({phone_e164}, {dob}, {start_utc})"
+                        )
+                    except Exception as e3:
+                        debug_print(f"cancel_appt_confirm.async: ⚠️ JSON cleanup failed → {e3}")
 
                 except Exception as e:
                     debug_print(f"cancel_appt_confirm.async: ❌ async delete error → {e}")
@@ -7594,14 +7606,14 @@ def voice():
             resp.say(gpt_speak("Sorry, I couldn’t find that appointment to cancel."), VOICE)
 
         # ----------------------------------------------------------------------
-        # 🔁 Reschedule flow continuation
+        # 🔁 Optional: reschedule flow continuation
         # ----------------------------------------------------------------------
         if reschedule_flag:
             debug_print("cancel_appt_confirm: 🔄 Detected reschedule flow → proceed to ask_time_date")
             session_data[call_sid]["stage"] = "ask_time_date"
             session_data[call_sid]["reschedule_after_cancel"] = False
 
-            # Reuse phone/DOB if available
+            # Reuse existing customer info
             cust = session_data[call_sid].setdefault("customer", {})
             cancel_info = session_data[call_sid].get("cancel", {})
             if cancel_info.get("phone_e164"):
@@ -7624,7 +7636,6 @@ def voice():
         session_data.pop(call_sid, None)
         debug_print(f"cancel_appt_confirm: ✅ total runtime {_time_mod.perf_counter() - t0:.3f}s")
         return str(resp)
-
 
 
 
