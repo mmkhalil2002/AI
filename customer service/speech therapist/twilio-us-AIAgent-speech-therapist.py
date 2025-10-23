@@ -3075,8 +3075,7 @@ def voice():
 
 
 
-
-        """
+    """
     # What happens in this stage:
     # The caller calls the clinic.
     # Twilio sends a webhook to your /voice endpoint.
@@ -3084,24 +3083,27 @@ def voice():
     # You ask: “Would you like to book an appointment or leave a message?”
     # The system listens for speech and sends the result back to the same endpoint (/voice) using a POST request.
     # The session progresses from "intro" to "intent" for next steps.
-    # If this is the start of the call, begin with the "intro" stage
+    # If this is the start of the call, begin with the "intro" stage.
     """
     if stage == "intro":
-        global session_data
-
-        # Safely initialize or update the current call’s session data.
-        # This ensures that if other keys (like phone, country, etc.) already exist,
-        # they are NOT overwritten by a new dictionary.
+        # ----------------------------------------------------------------------
+        # 🧠 Initialize or update the session for this call
+        # ----------------------------------------------------------------------
+        # Ensures the session dict exists and preserves any previous values
+        # (like phone, country, doctor_name) without overwriting them.
         sd = session_data.setdefault(call_sid, {})
         sd["stage"] = "intent"
 
-        # Debugging information to verify session continuity
-        debug_print(f"[intro] ▶️ New or returning call {call_sid}")
-        debug_print(f"[intro] 🧭 Setting next stage → intent")
+        # ----------------------------------------------------------------------
+        # 🩺 Debug info to trace continuity between Twilio POSTs
+        # ----------------------------------------------------------------------
+        debug_print(f"[intro] ▶️ New or returning call SID → {call_sid}")
+        debug_print(f"[intro] 🧭 Next stage set to 'intent'")
         debug_print(f"[intro] Current session keys → {list(sd.keys())}")
 
-        # Define a friendly prompt to ask the customer what they want to do
-        # ✨ Updated prompt to support both voice and keypad selection (DTMF 1..5)
+        # ----------------------------------------------------------------------
+        # 🎙️ Voice prompt
+        # ----------------------------------------------------------------------
         prompt = (
             "Thank you for calling EPIC therapist. "
             "Say 'book appointment' or press 1. "
@@ -3111,11 +3113,10 @@ def voice():
             "Say 'leave voicemail' or press 5."
         )
 
-        # Create a <Gather> TwiML block using our helper that:
-        # - Speaks the prompt with GPT voice
-        # - Listens for the caller’s voice input *and* allows one DTMF digit
-        # - If silence / no input, re-prompts with 'I can't hear you...'
-        # - Sends the speech/DTMF result to /voice for further processing
+        # Build a Twilio <Gather> block:
+        # - Speaks the message using Polly voice
+        # - Accepts speech or keypad (DTMF)
+        # - Automatically posts back to /voice
         gather = make_gather(
             prompt,
             hints="book,cancel,change,reschedule,update,voicemail",
@@ -3123,24 +3124,18 @@ def voice():
         )
 
         """
-        Speaks the message inside <Say>
-        Listens for the caller’s voice input for SPEECH_INPUT_DURATION seconds
-        Sends the speech result to /voice for further handling
-
+        Twilio will receive this as:
         <Response>
-            <Gather ...>  <!-- created via make_gather(...) -->
+            <Gather input="speech dtmf" numDigits="1" ...>
                 <Say>Thank you for calling EPIC therapist...</Say>
             </Gather>
         </Response>
         """
 
-        # Append the <Gather> block to the overall TwiML response
+        # Append the Gather block to the TwiML response
         resp.append(gather)
 
-        # Persist session data immediately — ensures state survives Twilio reloads
-        save_session(call_sid)
-
-        # Return the XML response as a string (TwiML) to Twilio to speak it to the caller
+        # ✅ Return TwiML back to Twilio
         return str(resp)
 
 
@@ -3148,7 +3143,7 @@ def voice():
 
     
     elif stage == "intent":
-        global session_data
+      
         # ----------------------------------------------------------------------
         # 🎯 Intent detection stage: figure out what the caller wants:
         #   1. Book an appointment
