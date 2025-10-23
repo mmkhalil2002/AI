@@ -2889,6 +2889,15 @@ def voice():
     # Extract the unique call ID (SID) from the request parameters to track the session
     call_sid = request.values.get("CallSid", "")
     debug_print(f"[voice] CallSid={call_sid}")
+    
+    # ✅ NEW: Reload session data from disk before touching session_data
+    load_session(call_sid)
+    debug_print(f"voice: 🔁 Loaded session for {call_sid}: keys={list(session_data.get(call_sid, {}).keys())}")
+    
+    # 🧠 Debug print what was loaded
+    sd = session_data.get(call_sid, {})
+    debug_print(f"voice: 🔁 Loaded session for {call_sid}: keys={list(sd.keys())}")
+    debug_print(f"voice : 🩺 doctor_name loaded → {sd.get('doctor_name')}")
 
     # Retrieve the customer's speech input (transcribed by Twilio's Speech-to-Text)
     speech_result = (request.values.get("SpeechResult") or "").strip()
@@ -4679,7 +4688,7 @@ def voice():
             sd["stage"] = "choose_doctor"
             doctor_list = ", ".join(googleid_dr_name_map.values())
             resp.append(make_gather("Which doctor would you like to see?", hints=doctor_list))
-            #save_session(call_sid)
+            save_session(call_sid)
             return str(resp)
 
         raw_speech = (speech_result or "").strip()
@@ -4739,7 +4748,7 @@ def voice():
                 resp.redirect("/voice")
                 debug_print("[ask_time_date] 🔁 past-time → redirect /voice (fallback)")
             sd["stage"] = "ask_time_date"
-            #save_session(call_sid)
+            save_session(call_sid)
             return str(resp)
 
         # ------------------------------------------------------------------
@@ -4781,7 +4790,7 @@ def voice():
                 resp.redirect("/voice")
                 debug_print("[ask_time_date] 🔁 unavailable → redirect /voice (fallback)")
             sd["stage"] = "ask_time_date"
-            #save_session(call_sid)
+            save_session(call_sid)
             return str(resp)
 
         # ------------------------------------------------------------------
@@ -4822,7 +4831,7 @@ def voice():
             except Exception:
                 resp.redirect("/voice")
                 debug_print("[ask_time_date] 🔁 continue flow (ID collection) → redirect /voice (fallback)")
-            #save_session(call_sid)
+            save_session(call_sid)
             return str(resp)
 
         # ------------------------------------------------------------------
@@ -4851,11 +4860,11 @@ def voice():
             )
             resp.append(g)
             resp.redirect("/voice")
-            #save_session(call_sid)
+            save_session(call_sid)
             return str(resp)
 
         resp.redirect("/voice")
-        #save_session(call_sid)
+        save_session(call_sid)
         return str(resp)
 
 
@@ -6937,7 +6946,7 @@ def voice():
                 session_data[call_sid]["skip_silence_retry"] = True
                 resp.say(gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."), VOICE)
                 resp.redirect("/voice")
-                #save_session(call_sid)
+                save_session(call_sid)
                 return str(resp)
 
             resp.pause(length=1)
@@ -6952,7 +6961,7 @@ def voice():
             )
             resp.append(gather)
             resp.redirect("/voice")
-            #save_session(call_sid)
+            save_session(call_sid)
             return str(resp)
 
         cancel_ctx.pop("silence_cancel_dt", None)
@@ -7022,7 +7031,7 @@ def voice():
             session_data[call_sid]["skip_silence_retry"] = True
             resp.say(gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."), VOICE)
             resp.redirect("/voice")
-            #save_session(call_sid)
+            save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
@@ -7035,7 +7044,7 @@ def voice():
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             resp.say(gpt_speak("That appointment time has already passed. I’ll list your upcoming ones."), VOICE)
             resp.redirect("/voice")
-            #save_session(call_sid)
+            save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
@@ -7061,7 +7070,7 @@ def voice():
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             resp.say(gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."), VOICE)
             resp.redirect("/voice")
-            #save_session(call_sid)
+            save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
@@ -7078,7 +7087,7 @@ def voice():
 
         resp.say(gpt_speak(f"You said {day_part} at {time_part}. Let me confirm that appointment."), VOICE)
         resp.redirect("/voice")
-        #save_session(call_sid)
+        save_session(call_sid)
         return str(resp)
 
 
@@ -7122,13 +7131,13 @@ def voice():
             debug_print(f"cancel_appt_iterate: ❌ No appointment file found for doctor: {doctor}")
             resp.say(f"Sorry, I couldn’t find any appointments for {doctor}.", VOICE)
             resp.hangup()
-            #save_session(call_sid)
+            save_session(call_sid)
             return str(resp)
         except Exception as e:
             debug_print(f"cancel_appt_iterate: ⚠️ Error loading JSON file → {e}")
             resp.say("Sorry, there was a problem reading the appointment list.", VOICE)
             resp.hangup()
-            #save_session(call_sid)
+            save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
