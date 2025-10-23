@@ -7520,148 +7520,204 @@ def voice():
         # ======================================================================--------------------------------
 
     
-    elif stage == "cancel_appt_confirm":
-      
+    elif stage == "ask_time_date":
+        # ======================================================================
+        # 📅 Stage: ask_time_date
+        # ----------------------------------------------------------------------
+        # PURPOSE:
+        #   • Capture the appointment date and time.
+        #   • Validate AM/PM and ensure the time is in the future.
+        #   • Check availability using local JSON (no Google Calendar).
+        #   • If invalid/unavailable, offer up to 3 next available time slots.
+        # ======================================================================
 
-        t0 = _time_mod.perf_counter()
-        debug_print("cancel_appt_confirm: 📍 Stage entered")
-
-        # Retrieve cancel context and current candidate (from previous stage)
-        cancel_ctx = session_data[call_sid].get("cancel", {})
-        cand = cancel_ctx.get("matching_event")  # The appointment user just confirmed to cancel
-        reschedule_flag = session_data.get(call_sid, {}).get("reschedule_after_cancel", False)
+        debug_print(f"[ask_time_date] 🗣️ Received speech: {speech_result}")
 
         # ----------------------------------------------------------------------
-        # 🚫 Safety check — ensure we have a valid candidate
+        # 🕒 Clinic hours configuration
         # ----------------------------------------------------------------------
-        if not cand:
-            debug_print("cancel_appt_confirm: ⚠️ No candidate found in session (nothing to cancel).")
-            resp.say(gpt_speak("Sorry, I couldn’t find that appointment to cancel."), VOICE)
+        working_days  = globals().get("WORKING_DAYS", (0, 1, 2, 3, 4, 5))  # Monday–Saturday
+        working_start = globals().get("WORKING_HOURS_START", 8)
+        working_end   = globals().get("WORKING_HOURS_END", 17)
 
-            # If user was trying to reschedule, gracefully continue to time selection
-            if reschedule_flag:
-                session_data[call_sid]["stage"] = "ask_time_date"
-                session_data[call_sid]["reschedule_after_cancel"] = False
-                resp.append(make_gather(
-                    "Please say the new date and time for your appointment, for example, 'October 12th at 9 a.m.'"
-                ))
-                resp.redirect("/voice")
-                save_session(call_sid)
-                return str(resp)
+        DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        available_days = [DAY_NAMES[d] for d in working_days if 0 <= d < 7]
 
-            # Otherwise, end call politely
-            resp.hangup()
-            session_data.pop(call_sid, None)
+        def _fmt_hour(h: int) -> str:
+            if h == 0:  return "12:00 AM"
+            if h < 12:  return f"{h}:00 AM"
+            if h == 12: return "12:00 PM"
+            return f"{h-12}:00 PM"
+
+        days_str  = (", ".join(available_days[:-1]) + f", and {available_days[-1]}" if len(available_days) > 1
+                    else (available_days[0] if available_days else "weekdays"))
+        hours_str = f"{_fmt_hour(working_start)} and {_fmt_hour(working_end)}"
+
+        PROMPT_NEED_BOTH = (
+            "Say the date and time, like 'October 8 at 9 30 A M' or 'October 8 at 2 P M'. "
+            "Or enter two digits for month, two for day, two for hour, two for minutes, then say A or P."
+        )
+        PROMPT_PAST_TIME = "That time has already passed. Please choose a future time."
+        PROMPT_NEED_VALID_DAY = f"That day isn’t available. We’re open {days_str}, between {hours_str}."
+        PROMPT_NEED_AMPM = "Say A or P to indicate A M or P M."
+
+        # ----------------------------------------------------------------------
+        # 🧩 Session snapshot
+        # ----------------------------------------------------------------------
+        session_data.setdefault(call_sid, {})
+        sd = session_data[call_sid]
+        raw_speech = (speech_result or "").strip()
+        raw_dtmf   = (request.values.get("Digits") or "").strip()
+
+        bad_time_tries = sd.get("bad_time_tries", 0)
+        silence_alts   = sd.get("silence_alts", 0)
+        alts_prompt    = sd.get("alts_prompt", "")
+        pending_digits = sd.get("pending_dt_digits")
+
+        # ----------------------------------------------------------------------
+        # 🩺 Ensure doctor is already selected
+        # ----------------------------------------------------------------------
+        doctor_name = sd.get("doctor_name")
+        if not doctor_name:
+            # ✅ Prevent regressions: doctor_name should always be passed from cancel_appt_confirm or collect_dr_info
+            debug_print("[ask_time_date] ❌ doctor_name missing — fallback prompt to choose_doctor")
+            sd["stage"] = "collect_dr_info"
+            doctor_list = ", ".join(googleid_dr_name_map.values()) if "googleid_dr_name_map" in globals() else "Dr. Alfred Hitchcock, Dr. John Wayne"
+            resp.append(make_gather("Which doctor would you like to see?", hints=doctor_list))
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧾 Extract parameters from the confirmed candidate
-        # ----------------------------------------------------------------------
-        doctor_name = cand.get("doctor_name", "")
-        start_utc   = cand.get("start_utc", "")
-        end_utc     = cand.get("end_utc", "")
-        friendly    = cand.get("friendly", "")
-        phone_e164  = cand.get("phone_e164", "")
-        dob         = cand.get("dob", "")
-
-        debug_print(f"cancel_appt_confirm: 🩺 Doctor='{doctor_name}', Start='{start_utc}', End='{end_utc}'")
-
-        # ----------------------------------------------------------------------
-        # 📂 Identify doctor’s appointment file
-        # ----------------------------------------------------------------------
-        #   Each doctor has a JSON file under the "appointments" folder.
-        #   Example:  appointments/alfred_hitchcock.json
-        # ----------------------------------------------------------------------
-        safe_name = doctor_name.lower().replace(" ", "_")
-        doc_path = f"appointments/{safe_name}.json"
-
-        # ----------------------------------------------------------------------
-        # 🔍 Load all existing appointments from that file
+        # 🧠 Parse spoken date/time
         # ----------------------------------------------------------------------
         try:
-            with open(doc_path, "r", encoding="utf-8") as f:
-                appointments = json.load(f)
-            debug_print(f"cancel_appt_confirm: 📁 Loaded {len(appointments)} appointments from {doc_path}")
-        except FileNotFoundError:
-            debug_print(f"cancel_appt_confirm: ❌ Doctor JSON not found: {doc_path}")
-            resp.say(f"I couldn’t find any appointment records for {doctor_name}.", VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            save_session(call_sid)
-            return str(resp)
+            parsed = smart_parse_time(raw_speech)
+            appointment_start = parsed["start_iso"]
+            appointment_end = parsed["end_iso"]
         except Exception as e:
-            debug_print(f"cancel_appt_confirm: ⚠️ Error reading doctor JSON → {e}")
-            resp.say("Sorry, something went wrong while accessing the appointment list.", VOICE)
-            resp.hangup()
+            debug_print(f"[ask_time_date] ⚠️ smart_parse_time failed → {e}")
+            bad_time_tries += 1
+            sd["bad_time_tries"] = bad_time_tries
+            prompt = PROMPT_NEED_BOTH if bad_time_tries < 3 else "I couldn’t understand the date or time. Please try again later."
+            resp.append(make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True))
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Find matching appointment by start time, phone, and DOB
+        # ⏰ Validate time (must be in the future)
         # ----------------------------------------------------------------------
-        deleted = False
-        for appt in list(appointments):  # iterate over a copy to safely delete
-            appt_phone = _re.sub(r"\D", "", appt.get("phone_e164", ""))
-            cand_phone = _re.sub(r"\D", "", phone_e164)
-            appt_dob = (appt.get("dob", "") or "").strip()
-            start_match = appt.get("start_utc", "") == start_utc
-            phone_match = appt_phone == cand_phone
-            dob_match = not dob or appt_dob == dob
+        now_utc = _pytz.UTC.localize(_dt.utcnow())
+        start_dt = _dt.fromisoformat(appointment_start.replace("Z", "+00:00"))
+        if start_dt <= now_utc:
+            debug_print("[ask_time_date] ⏳ Time is in the past → suggesting alternatives")
+            alts = get_doctor_next_available_slots(doctor_name, from_start_iso=appointment_end, limit=3) or []
+            if alts:
+                options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
+                prompt = f"That time has already passed. Would you like {options}?"
+            else:
+                prompt = PROMPT_PAST_TIME
 
-            if start_match and phone_match and dob_match:
-                debug_print(f"cancel_appt_confirm: ✅ Found matching appointment → {appt}")
-                appointments.remove(appt)
-                deleted = True
-                break
-
-        # ----------------------------------------------------------------------
-        # 💾 Save updated appointment list back to JSON
-        # ----------------------------------------------------------------------
-        if deleted:
-            try:
-                with open(doc_path, "w", encoding="utf-8") as f:
-                    json.dump(appointments, f, indent=2)
-                debug_print(f"cancel_appt_confirm: 🗑️ Appointment successfully removed from {doc_path}")
-                resp.say(gpt_speak(f"Your appointment with {doctor_name} on {friendly} has been cancelled."), VOICE)
-            except Exception as e:
-                debug_print(f"cancel_appt_confirm: ⚠️ Could not update JSON file → {e}")
-                resp.say("Sorry, there was an error while removing your appointment.", VOICE)
-        else:
-            debug_print("cancel_appt_confirm: ❌ No matching record found in JSON (nothing removed).")
-            resp.say("Sorry, I couldn’t find that appointment to cancel.", VOICE)
-
-        # ----------------------------------------------------------------------
-        # 🔁 Optional reschedule flow
-        # ----------------------------------------------------------------------
-        if reschedule_flag:
-            debug_print("cancel_appt_confirm: 🔄 Reschedule-after-cancel detected → forwarding to ask_time_date")
-            session_data[call_sid]["stage"] = "ask_time_date"
-            session_data[call_sid]["reschedule_after_cancel"] = False
-
-            # Keep customer info intact so we can reuse it for the new booking
-            cust = session_data[call_sid].setdefault("customer", {})
-            if phone_e164:
-                cust["phone_e164"] = phone_e164
-            if dob:
-                cust["dob"] = dob
-
-            # Prompt for new date/time
-            resp.append(make_gather(
-                "Your previous appointment has been cancelled. "
-                "Please say the new date and time for your appointment, for example, 'October 12th at 9 a.m.'"
-            ))
+            sd["alts_prompt"] = prompt
+            sd["silence_alts"] = 0
+            g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True)
+            resp.append(g)
             resp.redirect("/voice")
-            debug_print(f"cancel_appt_confirm: ⏱️ total stage time {_time_mod.perf_counter() - t0:.3f}s")
+            sd["stage"] = "ask_time_date"
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ End of normal flow — hang up politely
+        # ✅ Check slot availability (local JSON only)
         # ----------------------------------------------------------------------
-        resp.hangup()
-        session_data.pop(call_sid, None)
-        debug_print(f"cancel_appt_confirm: ✅ total runtime {_time_mod.perf_counter() - t0:.3f}s")
+        try:
+            slot_available = is_doctor_slot_available(doctor_name, appointment_start, appointment_end)
+            debug_print(f"[ask_time_date] Availability → {slot_available}")
+        except Exception as e:
+            debug_print(f"[ask_time_date] ⚠️ Availability check error → {e}")
+            slot_available = False
+
+        if not slot_available:
+            debug_print("[ask_time_date] 🚫 Slot not available → suggesting next 3 slots")
+            alts = get_doctor_next_available_slots(doctor_name, from_start_iso=appointment_end, limit=3) or []
+            if alts:
+                options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
+                prompt = f"That time is not available. Would you like {options}?"
+            else:
+                prompt = "That time isn’t available. Please say another time with A or P."
+
+            sd["alts_prompt"]  = prompt
+            sd["silence_alts"] = 0
+            g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True)
+            resp.append(g)
+            resp.redirect("/voice")
+            sd["stage"] = "ask_time_date"
+            save_session(call_sid)
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # 🗓️ Save appointment time into session and continue
+        # ----------------------------------------------------------------------
+        sd.pop("alts_prompt", None)
+        sd["silence_alts"] = 0
+        sd.pop("pending_dt_digits", None)
+        sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
+
+        # Preserve context if rescheduling after cancel
+        if sd.get("reschedule_after_cancel", False):
+            cancel_info = sd.get("cancel", {})
+            cust = sd.setdefault("customer", {})
+            if cancel_info.get("phone_e164"):
+                cust["phone_e164"] = cancel_info["phone_e164"]
+            if cancel_info.get("dob"):
+                cust["dob"] = cancel_info["dob"]
+            sd["reschedule_after_cancel"] = False
+
+        # ----------------------------------------------------------------------
+        # 🧾 Ensure customer ID info is available before booking
+        # ----------------------------------------------------------------------
+        cust = sd.setdefault("customer", {})
+        phone_e164 = cust.get("phone_e164") or sd.get("phone_e164")
+        dob = cust.get("dob") or sd.get("dob")
+
+        if not phone_e164 or not dob:
+            sd["stage"] = "collect_phone" if not phone_e164 else "collect_dob"
+            prompt = (
+                "Please say your 10-digit phone number."
+                if not phone_e164 else
+                "Please say your date of birth, like 'July third 1990'."
+            )
+            g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True)
+            resp.append(g)
+            resp.redirect("/voice")
+            save_session(call_sid)
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # ✅ Transition to confirmation or new customer registration
+        # ----------------------------------------------------------------------
+        try:
+            found = customer_search(phone_number=phone_e164, dob=dob, default_country="US")
+            debug_print(f"[ask_time_date] 🔎 customer_search(phone={phone_e164}, dob={dob}) → {found}")
+        except Exception as e:
+            debug_print(f"[ask_time_date] ⚠️ customer_search error → {e}")
+            found = False
+
+        sd["stage"] = "book_appt_confirm" if found else "collect_first_name"
+        debug_print(f"[ask_time_date] 🎯 Next stage → {sd['stage']}")
+
+        if sd["stage"] == "collect_first_name":
+            prompt = "Please say your first name, or type it and press pound."
+            g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="5",
+                            barge_in=True, finish_on_key="#")
+            resp.append(g)
+            resp.redirect("/voice")
+            save_session(call_sid)
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # 🏁 Continue to confirmation
+        # ----------------------------------------------------------------------
+        resp.redirect("/voice")
         save_session(call_sid)
         return str(resp)
 
