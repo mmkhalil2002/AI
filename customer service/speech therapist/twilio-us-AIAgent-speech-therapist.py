@@ -3076,7 +3076,7 @@ def voice():
 
 
 
-    """
+        """
     # What happens in this stage:
     # The caller calls the clinic.
     # Twilio sends a webhook to your /voice endpoint.
@@ -3088,8 +3088,17 @@ def voice():
     """
     if stage == "intro":
         global session_data
-        # Save the current session state as moving to the next stage ("intent")
-        session_data[call_sid] = {"stage": "intent"}
+
+        # Safely initialize or update the current call’s session data.
+        # This ensures that if other keys (like phone, country, etc.) already exist,
+        # they are NOT overwritten by a new dictionary.
+        sd = session_data.setdefault(call_sid, {})
+        sd["stage"] = "intent"
+
+        # Debugging information to verify session continuity
+        debug_print(f"[intro] ▶️ New or returning call {call_sid}")
+        debug_print(f"[intro] 🧭 Setting next stage → intent")
+        debug_print(f"[intro] Current session keys → {list(sd.keys())}")
 
         # Define a friendly prompt to ask the customer what they want to do
         # ✨ Updated prompt to support both voice and keypad selection (DTMF 1..5)
@@ -3107,7 +3116,11 @@ def voice():
         # - Listens for the caller’s voice input *and* allows one DTMF digit
         # - If silence / no input, re-prompts with 'I can't hear you...'
         # - Sends the speech/DTMF result to /voice for further processing
-        gather = make_gather(prompt, hints="book,cancel,change,reschedule,update,voicemail", num_digits=1)
+        gather = make_gather(
+            prompt,
+            hints="book,cancel,change,reschedule,update,voicemail",
+            num_digits=1
+        )
 
         """
         Speaks the message inside <Say>
@@ -3115,18 +3128,20 @@ def voice():
         Sends the speech result to /voice for further handling
 
         <Response>
-        <Gather ...>  <!-- created via make_gather(...) -->
-            <Say>Thank you for calling EPIC therapist...</Say>
-        </Gather>
+            <Gather ...>  <!-- created via make_gather(...) -->
+                <Say>Thank you for calling EPIC therapist...</Say>
+            </Gather>
         </Response>
         """
 
         # Append the <Gather> block to the overall TwiML response
         resp.append(gather)
 
+        # Persist session data immediately — ensures state survives Twilio reloads
+        save_session(call_sid)
+
         # Return the XML response as a string (TwiML) to Twilio to speak it to the caller
         return str(resp)
-    
 
 
 
@@ -3494,6 +3509,7 @@ def voice():
 
     
     elif stage == "collect_phone":
+        global session_data
         # ======================================================================
         # 📞 Stage: collect_phone — capture customer phone number via speech/DTMF
         # ----------------------------------------------------------------------
@@ -3708,6 +3724,7 @@ def voice():
 
 
     elif stage == "collect_dob":
+        global session_data
         # ----------------------------------------------------------------------
         # 🎂 Stage: collect_dob — capture and validate date of birth
         # ----------------------------------------------------------------------
@@ -3901,6 +3918,7 @@ def voice():
 
 
     elif stage == "collect_insurance_information":
+        global session_data
         # ----------------------------------------------------------------------
         # 🏦 Stage: collect_insurance_information (optimized for fast DTMF)
         # ----------------------------------------------------------------------
@@ -4057,6 +4075,7 @@ def voice():
 
 
     elif stage == "verify_customer_type":
+        global session_data
         # ----------------------------------------------------------------------
         # 🧭 Stage: verify_customer_type
         # ----------------------------------------------------------------------
@@ -4192,6 +4211,7 @@ def voice():
 
 
     elif stage == "collect_pin_number":
+        global session_data
         # ----------------------------------------------------------------------
         # 🔢 Stage: collect_pin_number
         #
@@ -4383,6 +4403,7 @@ def voice():
 
 
     elif stage == "collect_dr_info":
+        global session_data
         # ----------------------------------------------------------------------
         # 🩺 Stage: collect_dr_info
         # ----------------------------------------------------------------------
