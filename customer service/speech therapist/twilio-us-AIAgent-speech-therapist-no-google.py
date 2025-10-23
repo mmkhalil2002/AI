@@ -7321,7 +7321,7 @@ def voice():
         # ----------------------------------------------------------------------
         # 🎯 Purpose:
         #   Final confirmation step for appointment or new customer record.
-        #   Logs all personal information inserted into Google Calendar.
+        #   Logs all personal information locally (JSON), no Google Calendar.
         # ----------------------------------------------------------------------
 
         t_stage_start = _time_mod.perf_counter()
@@ -7347,7 +7347,7 @@ def voice():
         insurance_member_id = (customer.get("insurance_member_id") or "").strip()
 
         debug_print("------------------------------------------------------")
-        debug_print("📋 Personal Information to Insert in Google Calendar:")
+        debug_print("📋 Personal Information to Record Locally:")
         debug_print(f"👤 Name: {first_name} {last_name}")
         debug_print(f"🏠 Address: {customer_address or '(none)'}")
         debug_print(f"🎂 DOB: {customer_dob or '(none)'}")
@@ -7360,7 +7360,7 @@ def voice():
         # 🆕 NEW CUSTOMER FLOW
         # ----------------------------------------------------------------------
         if customer_status == "new":
-            debug_print("book_appt_confirm: 🆕 new customer → skipping doctor & appointment flow")
+            debug_print("book_appt_confirm: 🆕 new customer → insert into customers.json")
             try:
                 inserted_ok = insert_customer(
                     phone=phone_e164,
@@ -7369,9 +7369,6 @@ def voice():
                     last_name=last_name,
                     address=customer_address,
                     cc_name=f"{first_name} {last_name}",
-                    cc_number="",
-                    cc_exp="",
-                    cc_cvv="",
                     insurance_name=insurance_name,
                     insurance_member_id=insurance_member_id,
                     customer_status="new",
@@ -7379,7 +7376,7 @@ def voice():
                 )
                 debug_print(f"book_appt_confirm: ✅ insert_customer (new) → {inserted_ok}")
             except Exception as e:
-                debug_print(f"book_appt_confirm: ❌ insert_customer failed for new customer → {e}")
+                debug_print(f"book_appt_confirm: ❌ insert_customer failed → {e}")
 
             msg = (
                 f"Thank you {first_name or 'there'}. "
@@ -7388,8 +7385,8 @@ def voice():
             )
             resp.say(gpt_speak(msg), VOICE)
             resp.hangup()
-            session_data.pop(call_sid, None)
             save_session(call_sid)
+            session_data.pop(call_sid, None)
             return str(resp)
 
         # ----------------------------------------------------------------------
@@ -7397,21 +7394,20 @@ def voice():
         # ----------------------------------------------------------------------
         debug_print("book_appt_confirm: 👤 current customer flow continues")
 
-        doctor_id = sd.get("doctor_id")
-        if not doctor_id:
-            debug_print("book_appt_confirm: ❌ missing doctor_id → choose_doctor")
-            session_data[call_sid]["stage"] = "choose_doctor"
+        doctor_name = sd.get("doctor_name")
+        if not doctor_name:
+            debug_print("book_appt_confirm: ❌ missing doctor_name → choose_doctor")
+            sd["stage"] = "choose_doctor"
             resp.append(make_gather("Which doctor would you like to see?"))
             save_session(call_sid)
             return str(resp)
 
-        doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
         appt = sd.get("appointment_time", {}) or {}
         appointment_start = appt.get("start")
         appointment_end = appt.get("end")
 
         if not appointment_start:
-            debug_print("book_appt_confirm: ❌ appointment_start missing for current customer")
+            debug_print("book_appt_confirm: ❌ appointment_start missing")
             resp.say(gpt_speak("Sorry, appointment time is missing. Please try again."), VOICE)
             resp.hangup()
             save_session(call_sid)
@@ -7421,11 +7417,7 @@ def voice():
         # 🕒 Convert UTC → Local timezone
         # ----------------------------------------------------------------------
         tz_name = globals().get("CLINIC_TZ", "America/Chicago")
-        try:
-            tz = _pytz.timezone(tz_name)
-        except Exception:
-            tz = _pytz.timezone("America/Chicago")
-
+        tz = _pytz.timezone(tz_name)
         try:
             dt_utc = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
             dt_local = dt_utc.astimezone(tz)
@@ -7439,91 +7431,24 @@ def voice():
 
         # Compute missing end time if needed
         if not appointment_end:
-            try:
-                dur = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
-                end_dt = dt_utc + timedelta(minutes=dur)
-                appointment_end = end_dt.astimezone(_pytz.UTC).isoformat()
-            except Exception as e:
-                debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
-                resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
-                resp.hangup()
-                save_session(call_sid)
-                return str(resp)
+            dur = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
+            end_dt = dt_utc + timedelta(minutes=dur)
+            appointment_end = end_dt.astimezone(_pytz.UTC).isoformat()
 
         # ----------------------------------------------------------------------
-        # ✅ Verify slot availability
+        # ✅ Verify slot availability (local JSON)
         # ----------------------------------------------------------------------
         try:
-            slot_ok = is_time_slot_available(doctor_id, appointment_start, appointment_end, creds)
+            slot_ok = is_doctor_slot_available(doctor_name, appointment_start, appointment_end)
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ slot check failed → {e}")
             slot_ok = False
 
         if not slot_ok:
-            session_data[call_sid]["stage"] = "ask_time_date"
+            sd["stage"] = "ask_time_date"
             resp.append(make_gather("Sorry, that slot was just taken. Please choose another time."))
             save_session(call_sid)
             return str(resp)
-
-        # ----------------------------------------------------------------------
-        # 📅 Create Google Calendar Event
-        # ----------------------------------------------------------------------
-        google_event_id = sd.get("google_event_id", "")
-        if not google_event_id:
-            try:
-                service = build("calendar", "v3", credentials=creds)
-
-                desc_lines = [
-                    f"Clinic appointment for {first_name} {last_name or ''}.",
-                    f"Phone: {phone_e164}",
-                    f"DOB: {customer_dob}",
-                    f"Address: {customer_address}",
-                    f"Insurance: {insurance_name}",
-                    f"Member ID: {insurance_member_id}",
-                ]
-                description_text = "\n".join(desc_lines).strip()
-
-                event_body = {
-                    "summary": f"Appointment: {doctor_name}",
-                    "description": description_text,
-                    "start": {"dateTime": appointment_start, "timeZone": "UTC"},
-                    "end": {"dateTime": appointment_end, "timeZone": "UTC"},
-                    "extendedProperties": {
-                        "private": {
-                            "patient_name": f"{first_name} {last_name or ''}",
-                            "first_name": first_name,
-                            "last_name": last_name,
-                            "phone_e164": phone_e164,
-                            "dob": customer_dob,
-                            "address": customer_address,
-                            "insurance_name": insurance_name,
-                            "insurance_member_id": insurance_member_id,
-                            "call_sid": call_sid,
-                        }
-                    },
-                }
-
-                ev = service.events().insert(
-                    calendarId=doctor_id, body=event_body, sendUpdates="none"
-                ).execute()
-                google_event_id = ev.get("id", "")
-                session_data[call_sid]["google_event_id"] = google_event_id
-
-                debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id}")
-                debug_print("book_appt_confirm: 🧾 Inserted Personal Info into Google Calendar:")
-                debug_print(f"👤 Name: {first_name} {last_name}")
-                debug_print(f"🏠 Address: {customer_address}")
-                debug_print(f"🎂 DOB: {customer_dob}")
-                debug_print(f"📞 Phone: {phone_e164}")
-                debug_print(f"🏥 Insurance Company: {insurance_name}")
-                debug_print(f"🆔 Insurance Member ID: {insurance_member_id}")
-
-            except Exception as e:
-                debug_print(f"book_appt_confirm: ❌ Google insert failed → {e}")
-                session_data[call_sid]["stage"] = "ask_time_date"
-                resp.append(make_gather("Sorry, I couldn't confirm that slot. Please say another time."))
-                save_session(call_sid)
-                return str(resp)
 
         # ----------------------------------------------------------------------
         # 🗂️ Log Appointment Locally
@@ -7535,17 +7460,16 @@ def voice():
                 phone=phone_e164,
                 utc_start=appointment_start,
                 utc_end=appointment_end,
-                calendar_id=doctor_id,
                 name=full_name,
                 dob=customer_dob,
                 address=customer_address,
-                event_id=google_event_id,
+                event_id="",  # no Google event
                 friendly_local=formatted_time,
                 debug=True,
             )
             debug_print(f"book_appt_confirm: ✅ Appointment logged locally for {doctor_name} at {formatted_time}")
         except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ failed to log appointment via book_appointment_for_dr_name → {e}")
+            debug_print(f"book_appt_confirm: ⚠️ failed to log appointment → {e}")
 
         # ----------------------------------------------------------------------
         # ✅ Confirm + SMS Notification
@@ -7567,62 +7491,15 @@ def voice():
         # ✅ Cleanup and hang up
         # ----------------------------------------------------------------------
         resp.hangup()
+        save_session(call_sid)
         session_data.pop(call_sid, None)
         debug_print(f"book_appt_confirm: ✅ completed in {_time_mod.perf_counter() - t_stage_start:.3f}s")
-        save_session(call_sid)
         return str(resp)
 
 
 
 
-
-
-
-
-
-
-        # ----------------------------------------------------------------------
-        # 📌 Stage: cancel_appt_confirm
-        #
-        # What this does now (updated):
-        #   • Always attempts LOCAL cancellation first via:
-        #       cancel_appointment_by_name(doctor_name, phone, dob, utc_start)
-        #     using doctor name + phone + DOB + exact UTC start time.
-        #   • If a Google Calendar ID is available, it ALSO tries to delete the
-        #     corresponding GCal event (best-effort; not required).
-        #   • Speaks a friendly, local-time confirmation when successfully cancelled.
-        #
-        # Inputs expected in session_data[call_sid]["cancel"]:
-        #   {
-        #     "phone":        str,   # REQUIRED earlier in the flow
-        #     "doctor":       str,   # friendly doctor name (used to locate local file)
-        #     "dob":          str,   # ISO 'YYYY-MM-DD' (already verified upstream)
-        #     "utc_start":    str,   # ISO UTC start of the appt (preferred)
-        #     "utc_end":      str,   # optional
-        #     "calendar_id":  str,   # optional; if given we attempt GCal delete too
-        #     "matching_event": {    # optional; set by cancel_appt_iterate
-        #         "doctor_name": str,
-        #         "start_utc":   str,
-        #         "end_utc":     str,
-        #         "friendly":    str,
-        #         "phone":       str,
-        #         "dob":         str
-        #     }
-        #   }
-        #
-        # Output:
-        #   • Speaks success or failure; optionally transitions to booking if
-        #     reschedule_after_cancel is set.
-        #
-        # Notes:
-        #   • This stage does NOT validate DOB/phone; that is done earlier.
-        #   • Calendar deletion is best-effort; local JSON removal is primary.
-        #  date 10/02/25
-        # ----------------------------------------------------------------------
-
-    
-    elif stage == "cancel_appt_confirm":
-        # ======================================================================
+  # ======================================================================
         # 🧩 Stage: cancel_appt_confirm
         # ----------------------------------------------------------------------
         # PURPOSE:
@@ -7640,7 +7517,11 @@ def voice():
         #   - Removes the corresponding appointment from JSON file.
         #   - Confirms to the caller via voice prompt.
         #   - Optionally advances to reschedule flow if requested.
-        # ======================================================================
+        # ======================================================================--------------------------------
+
+    
+    elif stage == "cancel_appt_confirm":
+      
 
         t0 = _time_mod.perf_counter()
         debug_print("cancel_appt_confirm: 📍 Stage entered")

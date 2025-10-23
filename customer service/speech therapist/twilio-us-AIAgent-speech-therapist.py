@@ -352,6 +352,49 @@ else:
     client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     print("📞 Using Twilio client")
 
+
+#################################################
+####  start save session information
+##################################################
+
+SESSION_DIR = "/tmp/twilio_sessions"
+os.makedirs(SESSION_DIR, exist_ok=True)
+
+def _session_path(call_sid: str) -> str:
+    """Return the session file path for a given call SID."""
+    safe_sid = call_sid.replace("/", "_").replace("\\", "_")
+    return os.path.join(SESSION_DIR, f"session_{safe_sid}.json")
+
+def load_session(call_sid: str) -> dict:
+    """Load session data from disk for this call, or return empty."""
+    path = _session_path(call_sid)
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            session_data[call_sid] = data
+            return data
+        except Exception as e:
+            print(f"⚠️ load_session error for {call_sid}: {e}")
+    session_data[call_sid] = {}
+    return session_data[call_sid]
+
+def save_session(call_sid: str):
+    """Persist current session_data[call_sid] safely to disk."""
+    if call_sid not in session_data:
+        return
+    path = _session_path(call_sid)
+    try:
+        with open(path, "w") as f:
+            json.dump(session_data[call_sid], f)
+    except Exception as e:
+        print(f"⚠️ save_session error for {call_sid}: {e}")
+
+##########################################################
+#  end of save seesion info
+#######################################################
+
+
 ## print debug
 
 
@@ -4580,8 +4623,14 @@ def voice():
      # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
         # ----------------------------------------------------------------------
-        # 📅 ASK_TIME_DATE — AM/PM (or A/P) required, repeats on silence, 3 wrongs → hangup
+        # 📅 ASK_TIME_DATE — Get appointment date/time (AM/PM required)
+        # PURPOSE:
+        #   • Parses spoken or keypad date/time input.
+        #   • Validates time window (future, working hours).
+        #   • Checks local JSON (doctor’s appointments) for availability.
+        #   • Suggests next available times if slot unavailable or past.
         # ----------------------------------------------------------------------
+
         debug_print(f"[ask_time_date] 🗣️ Received speech: {speech_result}")
 
         # -------------------------- Config / Text --------------------------
@@ -4598,8 +4647,11 @@ def voice():
             if h == 12: return "12:00 PM"
             return f"{h-12}:00 PM"
 
-        days_str  = (", ".join(available_days[:-1]) + f", and {available_days[-1]}" if len(available_days) > 1
-                    else (available_days[0] if available_days else "weekdays"))
+        days_str  = (
+            ", ".join(available_days[:-1]) + f", and {available_days[-1]}"
+            if len(available_days) > 1 else
+            (available_days[0] if available_days else "weekdays")
+        )
         hours_str = f"{_fmt_hour(working_start)} and {_fmt_hour(working_end)}"
 
         PROMPT_NEED_BOTH = (
@@ -4614,38 +4666,32 @@ def voice():
         session_data.setdefault(call_sid, {})
         sd = session_data[call_sid]
 
-        bad_time_tries = sd.get("bad_time_tries", 0)     # wrong-time attempts
-        silence_time   = sd.get("silence_time", 0)       # initial silence
-        silence_alts   = sd.get("silence_alts", 0)       # silence during alternatives
-        alts_prompt    = sd.get("alts_prompt", "")       # last alternatives prompt
-        pending_digits = sd.get("pending_dt_digits")     # awaiting explicit A/P after DTMF
+        bad_time_tries = sd.get("bad_time_tries", 0)
+        silence_time   = sd.get("silence_time", 0)
+        silence_alts   = sd.get("silence_alts", 0)
+        alts_prompt    = sd.get("alts_prompt", "")
+        pending_digits = sd.get("pending_dt_digits")
 
-        # doctor / calendar
-        doctor_id = sd.get("doctor_id")
-        if not doctor_id:
-            debug_print("[ask_time_date] ❌ no doctor selected → choose_doctor")
+        # doctor / name
+        doctor_name = sd.get("doctor_name")
+        if not doctor_name:
+            debug_print("[ask_time_date] ❌ No doctor selected → choose_doctor")
             sd["stage"] = "choose_doctor"
             doctor_list = ", ".join(googleid_dr_name_map.values())
             resp.append(make_gather("Which doctor would you like to see?", hints=doctor_list))
+            #save_session(call_sid)
             return str(resp)
-        calendar_id = doctor_id
 
-        # input snapshot
         raw_speech = (speech_result or "").strip()
         raw_dtmf   = (request.values.get("Digits") or "").strip()
 
         # ------------------------- AM/PM helpers ---------------------------
         def _extract_ampm(s: str) -> str:
-            """
-            Return 'am' or 'pm' if AM/PM (or single 'A'/'P') is explicitly present in s.
-            Accepts A, P, AM, PM (with optional dots/spaces).
-            """
-            if not s: return ""
+            if not s:
+                return ""
             t = s.lower().strip()
-            # normalize a.m./p.m.
             t = _re.sub(r"\ba\s*\.?\s*m\.?\b", "am", t)
             t = _re.sub(r"\bp\s*\.?\s*m\.?\b", "pm", t)
-            # whole-token AM/PM or bare A/P tokens
             if _re.search(r"\bam\b", t): return "am"
             if _re.search(r"\bpm\b", t): return "pm"
             if _re.search(r"(^|[\s,])a($|[\s,])", t): return "am"
@@ -4653,392 +4699,106 @@ def voice():
             return ""
 
         def _ensure_ampm_in_time(time_str: str, speech_src: str) -> Tuple[bool, str, str]:
-            """Ensure explicit A/P (or AM/PM). Returns (ok, time_with_ampm, reason)."""
             if not time_str:
                 return (False, "", "missing_parts")
             ampm = _extract_ampm(time_str) or _extract_ampm(speech_src)
             if not ampm:
                 return (False, "", "missing_ampm")
-            # strip any am/pm/a/p already attached, then re-attach normalized
             t = _re.sub(r"\s*\b(am|pm|a|p)\b", "", time_str.lower()).strip()
             return (True, f"{t} {ampm}", "")
 
-        # -------------------- Alternatives reactive repeat -----------------
-        if alts_prompt and not (raw_speech or raw_dtmf):
-            silence_alts += 1
-            sd["silence_alts"] = silence_alts
-            debug_print(f"[ask_time_date] 🤐 silence on alternatives → repeat {silence_alts}/3")
-
-            if silence_alts < 3:
-                g = make_gather(
-                    f"I didn’t hear you. {alts_prompt}",
-                    input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True,
-                    action="/voice", method="POST"
-                )
-                resp.append(g)
-                try:
-                    resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 alts repeat → redirect url_for('voice')")
-                except Exception:
-                    resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 alts repeat → redirect /voice (fallback)")
-                sd["stage"] = "ask_time_date"
-                return str(resp)
-            else:
-                debug_print("[ask_time_date] ❌ 3 silent repeats on alternatives → hangup")
-                resp.say(gpt_speak("I didn’t hear a response. Please call again later."), VOICE)
-                resp.hangup()
-                sd.pop("alts_prompt", None); sd.pop("silence_alts", None)
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-        if alts_prompt and (raw_speech or raw_dtmf):
-            debug_print("[ask_time_date] 🎧 input received after alternatives → clearing alt state")
-            sd["silence_alts"] = 0
-            sd["alts_prompt"]  = ""
-
-        # --------------------- Initial silence (pre-alts) -------------------
-        if not alts_prompt and not (raw_speech or raw_dtmf):
-            silence_time += 1
-            sd["silence_time"] = silence_time
-            debug_print(f"[ask_time_date] 🤐 initial silence (tries={silence_time})")
-
-            if silence_time < 3:
-                prompt = (
-                    "Say the date and time, like 'October 12 at 9 A M'. "
-                    "Or enter two digits for month, two for day, two for hour, two for minutes, then say A or P."
-                )
-                g = make_gather(prompt, input="speech dtmf", timeout=4, speech_timeout="auto", barge_in=True,
-                                action="/voice", method="POST")
-                resp.append(g)
-                try:
-                    resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 initial silence → redirect url_for('voice')")
-                except Exception:
-                    resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 initial silence → redirect /voice (fallback)")
-                sd["stage"] = "ask_time_date"
-                return str(resp)
-            else:
-                debug_print("[ask_time_date] ❌ initial silence maxed → hangup")
-                resp.say(gpt_speak("I'm sorry, I still didn't get your appointment time. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-        sd.pop("silence_time", None)  # input present
-
-        # ---------------------------- Speech split -------------------------
-        def _extract_day_time(s: str) -> Tuple[str, str]:
-            if not s: return ("", "")
-            t = s.lower()
-            t = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", t)
-            t = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", t)
-            t = _re.sub(r"\bat\s*[.,]?\s+", " at ", t)
-            t = _re.sub(r"[!?;]+", "", t)
-            t = _re.sub(r"\s+", " ", t).strip()
-            t = t.replace(" at noon", " at 12 pm").replace(" at midnight", " at 12 am")
-
-            # Primary: "DAY at TIME"
-            if " at " in t:
-                day, timep = t.split(" at ", 1)
-                return (day.strip().rstrip(","), timep.strip())
-
-            # Time digits anywhere → treat preceding as day
-            m = _re.search(r"\b(\d{1,2}(:\d{2})?)\b", t)
-            if m:
-                timep = m.group(1)
-                day = t[:m.start()].strip().rstrip(",")
-                return (day, timep)
-
-            # Date-only like "july 30th"
-            MONTHS = r"january|february|march|april|may|june|july|august|september|october|november|december"
-            date_only = _re.search(rf"\b({MONTHS})\s+\d{{1,2}}(?:st|nd|rd|th)?\b", t)
-            if date_only:
-                return (date_only.group(0), "")
-
-            # Fuzzy date detection fallback (no explicit time)
-            try:
-                _ = dtparser.parse(t, fuzzy=True, default=_dt(2000, 1, 1, 9, 0, 0))
-                return (t, "")
-            except Exception:
-                return ("", "")
-
-        partial_ctx = sd.setdefault("partial_datetime", {})
-        day_part, time_part = _extract_day_time(raw_speech)
-
-        # ---------------------- Partial capture flows ----------------------
-        if day_part and not time_part:
-            # Validate day-only not in the past (clinic TZ)
-            try:
-                tz_name  = globals().get("CLINIC_TZ", "America/Chicago")
-                tz_local = _pytz.timezone(tz_name)
-                today    = _date_local.today()
-                default_base = tz_local.localize(_dt(today.year, today.month, today.day, 9, 0, 0))
-                parsed_day   = dtparser.parse(day_part, default=default_base, fuzzy=True)
-                if not _re.search(r"\b\d{4}\b", day_part):
-                    parsed_day = parsed_day.replace(year=today.year)
-                local_day_date = parsed_day.astimezone(tz_local).date()
-
-                if local_day_date < today:
-                    debug_print(f"[ask_time_date] ⛔ day-only is past → '{day_part}'")
-                    # Offer alternatives starting now
-                    now_utc_iso = _pytz.UTC.localize(_dt.utcnow()).isoformat().replace("+00:00", "Z")
-                    alts = get_next_available_slots(calendar_id, creds, from_start_iso=now_utc_iso, limit=3) or []
-                    options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
-                    prompt = (f"That date has already passed. Would you like {options}?" if options
-                            else "That date has already passed. Please say a future date.")
-                    sd["alts_prompt"]  = prompt
-                    sd["silence_alts"] = 0
-                    sd["stage"]        = "ask_time_date"
-
-                    g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True,
-                                    action="/voice", method="POST")
-                    resp.append(g)
-                    try:
-                        resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 past day-only → redirect url_for('voice')")
-                    except Exception:
-                        resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 past day-only → redirect /voice (fallback)")
-                    return str(resp)
-
-            except Exception as e:
-                debug_print(f"[ask_time_date] ⚠️ day-only parse error → {e} (fallback to need-both)")
-
-            # Day is today or future → proceed with original partial flow
-            partial_ctx["day"] = day_part
-            debug_print(f"[ask_time_date] 🧭 stored partial day='{day_part}', prompting for time only")
-            g = make_gather(
-                f"Got it — {day_part}. What time? Say like '8 A M' or '3 30 P M'.",
-                input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True,
-                action="/voice", method="POST"
-            )
-            resp.append(g)
-            try:
-                resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 day-without-time → redirect url_for('voice')")
-            except Exception:
-                resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 day-without-time → redirect /voice (fallback)")
-            sd["stage"] = "ask_time_date"
-            return str(resp)
-
-        if time_part and not day_part and "day" in partial_ctx:
-            day_part = partial_ctx.pop("day")
-            debug_print(f"[ask_time_date] 🧩 combined remembered day='{day_part}' with new time='{time_part}'")
-
-        if day_part and time_part:
-            partial_ctx.clear()
-
-        # --------------------------- Slot builder --------------------------
-        def _build_slot(day_str: str, time_str_with_ampm: str) -> Tuple[str, str]:
-            tz_name  = globals().get("CLINIC_TZ", "America/Chicago")
-            tz_local = _pytz.timezone(tz_name)
-            dur      = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
-
-            combined     = f"{day_str} at {time_str_with_ampm}"
-            today        = _date_local.today()
-            default_base = tz_local.localize(_dt(today.year, today.month, today.day, 9, 0, 0))
-            parsed       = dtparser.parse(combined, default=default_base, fuzzy=True)
-
-            if parsed.tzinfo is None:
-                parsed = tz_local.localize(parsed)
-            else:
-                parsed = parsed.astimezone(tz_local)
-
-            if not _re.search(r"\b\d{4}\b", combined):
-                parsed = parsed.replace(year=today.year)
-
-            if parsed.weekday() not in working_days:
-                raise ValueError("invalid_weekday")
-
-            start_local = parsed
-            end_local   = start_local + timedelta(minutes=dur)
-            return (
-                start_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z"),
-                end_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z"),
-            )
-
-        # ------------------------- Parse / build slot ----------------------
-        appointment_start, appointment_end = None, None
-        try:
-            # Pending digits path (awaiting A/P or AM/PM in speech)
-            if pending_digits and raw_speech:
-                ampm = _extract_ampm(raw_speech)
-                if not ampm:
-                    g = make_gather(PROMPT_NEED_AMPM, input="speech", timeout=4, speech_timeout="auto", barge_in=True,
-                                    action="/voice", method="POST")
-                    resp.append(g)
-                    try:
-                        resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 awaiting A/P after digits → redirect url_for('voice')")
-                    except Exception:
-                        resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 awaiting A/P after digits → redirect /voice (fallback)")
-                    sd["stage"] = "ask_time_date"
-                    return str(resp)
-
-                today = _date_local.today()
-                mm, dd, hh, mn = int(pending_digits[0:2]), int(pending_digits[2:4]), int(pending_digits[4:6]), int(pending_digits[6:8])
-                day_str  = f"{today.year}-{mm:02d}-{dd:02d}"
-                time_str = f"{hh}:{mn:02d} {ampm}"
-                appointment_start, appointment_end = _build_slot(day_str, time_str)
-                sd.pop("pending_dt_digits", None)
-
-            elif raw_dtmf:
-                digits = _re.sub(r"\D", "", raw_dtmf)
-                debug_print(f"[ask_time_date] 📟 DTMF entered → {digits}")
-                today = _date_local.today()
-                if len(digits) >= 8:
-                    mm, dd, hh, mn = int(digits[0:2]), int(digits[2:4]), int(digits[4:6]), int(digits[6:8])
-                    day_str  = f"{today.year}-{mm:02d}-{dd:02d}"
-                    ampm = _extract_ampm(raw_speech)  # check if caller said A/P this turn
-                    if not ampm:
-                        sd["pending_dt_digits"] = digits[:8]
-                        g = make_gather(PROMPT_NEED_AMPM, input="speech", timeout=5, speech_timeout="auto", barge_in=True,
-                                        action="/voice", method="POST")
-                        resp.append(g)
-                        try:
-                            resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 digits w/o A/P → redirect url_for('voice')")
-                        except Exception:
-                            resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 digits w/o A/P → redirect /voice (fallback)")
-                        sd["stage"] = "ask_time_date"
-                        return str(resp)
-                    time_str = f"{hh}:{mn:02d} {ampm}"
-                    appointment_start, appointment_end = _build_slot(day_str, time_str)
-                else:
-                    raise ValueError("invalid_dtmf_format")
-
-            else:
-                if not day_part or not time_part:
-                    bad_time_tries += 1
-                    sd["bad_time_tries"] = bad_time_tries
-                    debug_print(f"[ask_time_date] ❌ missing parts → wrong-time tries={bad_time_tries}/3")
-                    if bad_time_tries >= 3:
-                        debug_print("[ask_time_date] ❌ missing parts maxed → hangup")
-                        resp.say(gpt_speak("I’m sorry, I’m still not getting a valid date and time. Please call again later."), VOICE)
-                        resp.hangup()
-                        session_data.pop(call_sid, None)
-                        return str(resp)
-                    g = make_gather(PROMPT_NEED_BOTH, input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True,
-                                    action="/voice", method="POST")
-                    resp.append(g)
-                    try:
-                        resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 missing parts → redirect url_for('voice')")
-                    except Exception:
-                        resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 missing parts → redirect /voice (fallback)")
-                    sd["stage"] = "ask_time_date"
-                    return str(resp)
-
-                ok, time_with_ampm, reason = _ensure_ampm_in_time(time_part, raw_speech)
-                if not ok:
-                    bad_time_tries += 1
-                    sd["bad_time_tries"] = bad_time_tries
-                    debug_print(f"[ask_time_date] ❌ AM/PM (A/P) missing → wrong-time tries={bad_time_tries}/3")
-                    if bad_time_tries >= 3:
-                        debug_print("[ask_time_date] ❌ AM/PM missing maxed → hangup")
-                        resp.say(gpt_speak("I’m sorry, I’m still not getting a valid date and time. Please call again later."), VOICE)
-                        resp.hangup()
-                        session_data.pop(call_sid, None)
-                        return str(resp)
-                    g = make_gather(
-                        "Say the time again and include A or P, like '9 A M' or '2 30 P M'.",
-                        input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True,
-                        action="/voice", method="POST"
-                    )
-                    resp.append(g)
-                    try:
-                        resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 missing A/P → redirect url_for('voice')")
-                    except Exception:
-                        resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 missing A/P → redirect /voice (fallback)")
-                    sd["stage"] = "ask_time_date"
-                    return str(resp)
-
-                appointment_start, appointment_end = _build_slot(day_part, time_with_ampm)
-
-            debug_print(f"[ask_time_date] ⏰ Built slot → Start={appointment_start}, End={appointment_end}")
-
-        except ValueError as e:
-            err = str(e)
-            bad_time_tries += 1
-            sd["bad_time_tries"] = bad_time_tries
-            debug_print(f"[ask_time_date] ❌ parse/build error='{err}' → wrong-time tries={bad_time_tries}/3")
-
-            if bad_time_tries >= 3:
-                debug_print("[ask_time_date] ❌ parse/build maxed → hangup")
-                resp.say(gpt_speak("I’m sorry, I’m still not getting a valid date and time. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            if "invalid_weekday" in err:
-                g = make_gather(PROMPT_NEED_VALID_DAY, input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True,
-                                action="/voice", method="POST")
-            else:
-                g = make_gather(PROMPT_NEED_BOTH, input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True,
-                                action="/voice", method="POST")
-            resp.append(g)
-            try:
-                resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 parse error branch → redirect url_for('voice')")
-            except Exception:
-                resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 parse error branch → redirect /voice (fallback)")
-            sd["stage"] = "ask_time_date"
-            return str(resp)
-
-        # Reset wrong-time counter once we have a valid slot
-        sd["bad_time_tries"] = 0
-
-        # ----------------------------- Past-time ---------------------------
+        # ------------------------------------------------------------------
+        # ⏰ Past-time Check (local)
+        # ------------------------------------------------------------------
         now_utc = _pytz.UTC.localize(_dt.utcnow())
         start_dt = _dt.fromisoformat(appointment_start.replace("Z", "+00:00"))
         if start_dt <= now_utc:
-            alts = get_next_available_slots(calendar_id, creds, from_start_iso=appointment_end, limit=3) or []
+            # 🟢 Use local JSON helpers
+            alts = get_doctor_next_available_slots(
+                doctor_name,
+                from_start_iso=appointment_end,
+                limit=3
+            ) or []
             options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
-            prompt  = (f"That time has already passed. Would you like {options}?"
-                    if options else PROMPT_PAST_TIME)
+            prompt  = (
+                f"That time has already passed. Would you like {options}?"
+                if options else PROMPT_PAST_TIME
+            )
 
             sd["alts_prompt"]  = prompt
             sd["silence_alts"] = 0
 
-            g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True,
+            g = make_gather(prompt, input="speech dtmf", timeout=6,
+                            speech_timeout="auto", barge_in=True,
                             action="/voice", method="POST")
             resp.append(g)
             try:
-                resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 past-time → redirect url_for('voice')")
+                resp.redirect(url_for("voice"))
+                debug_print("[ask_time_date] 🔁 past-time → redirect url_for('voice')")
             except Exception:
-                resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 past-time → redirect /voice (fallback)")
+                resp.redirect("/voice")
+                debug_print("[ask_time_date] 🔁 past-time → redirect /voice (fallback)")
             sd["stage"] = "ask_time_date"
+            #save_session(call_sid)
             return str(resp)
 
-        # ----------------------------- Availability ------------------------
+        # ------------------------------------------------------------------
+        # 🧠 Availability Check — Local JSON
+        # ------------------------------------------------------------------
         try:
-            slot_available = is_time_slot_available(calendar_id, appointment_start, appointment_end, creds)
+            slot_available = is_doctor_slot_available(
+                doctor_name,
+                appointment_start,
+                appointment_end
+            )
         except Exception as e:
             debug_print(f"[ask_time_date] ⚠️ Availability check error → {e}")
             slot_available = False
 
         if not slot_available:
-            alts = get_next_available_slots(calendar_id, creds, from_start_iso=appointment_end, limit=3) or []
+            alts = get_doctor_next_available_slots(
+                doctor_name,
+                from_start_iso=appointment_end,
+                limit=3
+            ) or []
             options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
-            prompt  = (f"That time is not available. Would you like {options}?"
-                    if options else "That time isn’t available. Please say another time with A or P.")
+            prompt  = (
+                f"That time is not available. Would you like {options}?"
+                if options else "That time isn’t available. Please say another time with A or P."
+            )
 
             sd["alts_prompt"]  = prompt
             sd["silence_alts"] = 0
 
-            g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True,
+            g = make_gather(prompt, input="speech dtmf", timeout=6,
+                            speech_timeout="auto", barge_in=True,
                             action="/voice", method="POST")
             resp.append(g)
             try:
-                resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 unavailable → redirect url_for('voice')")
+                resp.redirect(url_for("voice"))
+                debug_print("[ask_time_date] 🔁 unavailable → redirect url_for('voice')")
             except Exception:
-                resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 unavailable → redirect /voice (fallback)")
+                resp.redirect("/voice")
+                debug_print("[ask_time_date] 🔁 unavailable → redirect /voice (fallback)")
             sd["stage"] = "ask_time_date"
+            #save_session(call_sid)
             return str(resp)
 
-        # ------------------------------ Continue flow ----------------------
+        # ------------------------------------------------------------------
+        # ✅ Slot Available — Continue Booking
+        # ------------------------------------------------------------------
         sd.pop("alts_prompt", None)
         sd["silence_alts"] = 0
         sd.pop("pending_dt_digits", None)
-
         sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
 
         if sd.get("reschedule_after_cancel", False):
             cancel_info = sd.get("cancel", {})
             cust = sd.setdefault("customer", {})
-            if cancel_info.get("phone_e164"): cust["phone_e164"] = cancel_info["phone_e164"]
-            if cancel_info.get("dob"):        cust["dob"]        = cancel_info["dob"]
+            if cancel_info.get("phone_e164"):
+                cust["phone_e164"] = cancel_info["phone_e164"]
+            if cancel_info.get("dob"):
+                cust["dob"] = cancel_info["dob"]
             sd["reschedule_after_cancel"] = False
 
         cust = sd.setdefault("customer", {})
@@ -5047,22 +4807,27 @@ def voice():
 
         if not phone_e164 or not dob:
             sd["stage"] = "collect_phone" if not phone_e164 else "collect_dob"
-            prompt = ("Please say your 10-digit phone number."
-                    if not phone_e164 else
-                    "Please say your date of birth, like 'July third 1990'.")
-            g = make_gather(prompt, input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True,
+            prompt = (
+                "Please say your 10-digit phone number."
+                if not phone_e164 else
+                "Please say your date of birth, like 'July third 1990'."
+            )
+            g = make_gather(prompt, input="speech dtmf", timeout=5,
+                            speech_timeout="auto", barge_in=True,
                             action="/voice", method="POST")
             resp.append(g)
             try:
-                resp.redirect(url_for("voice")); debug_print("[ask_time_date] 🔁 continue flow (ID collection) → redirect url_for('voice')")
+                resp.redirect(url_for("voice"))
+                debug_print("[ask_time_date] 🔁 continue flow (ID collection) → redirect url_for('voice')")
             except Exception:
-                resp.redirect("/voice");         debug_print("[ask_time_date] 🔁 continue flow (ID collection) → redirect /voice (fallback)")
+                resp.redirect("/voice")
+                debug_print("[ask_time_date] 🔁 continue flow (ID collection) → redirect /voice (fallback)")
+            #save_session(call_sid)
             return str(resp)
 
         # ------------------------------------------------------------------
-        # 🛠️ FIX: define `found` safely in-scope, then set stage & prompt
+        # 🛠️ Proceed to Next Stage
         # ------------------------------------------------------------------
-        found = False
         try:
             found = customer_search(phone_number=phone_e164, dob=dob, default_country="US")
             debug_print(f"[ask_time_date] 🔎 customer_search(phone={phone_e164}, dob={dob}) → {found}")
@@ -5073,7 +4838,6 @@ def voice():
         sd["stage"] = "book_appt_confirm" if found else "collect_first_name"
         debug_print(f"[ask_time_date] 🎯 Next stage → {sd['stage']}")
 
-        # If we need the first name, prompt right now (speech or DTMF + #)
         if sd["stage"] == "collect_first_name":
             prompt = "Please say your first name, or type it and press pound."
             g = make_gather(
@@ -5086,12 +4850,12 @@ def voice():
                 action="/voice", method="POST",
             )
             resp.append(g)
-            # Safety net so we re-enter /voice even if the caller stays silent
             resp.redirect("/voice")
+            #save_session(call_sid)
             return str(resp)
 
-        # Otherwise we’re going to book_appt_confirm; redirect to continue flow
         resp.redirect("/voice")
+        #save_session(call_sid)
         return str(resp)
 
 
@@ -7173,7 +6937,7 @@ def voice():
                 session_data[call_sid]["skip_silence_retry"] = True
                 resp.say(gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."), VOICE)
                 resp.redirect("/voice")
-                save_session(call_sid)
+                #save_session(call_sid)
                 return str(resp)
 
             resp.pause(length=1)
@@ -7188,7 +6952,7 @@ def voice():
             )
             resp.append(gather)
             resp.redirect("/voice")
-            save_session(call_sid)
+            #save_session(call_sid)
             return str(resp)
 
         cancel_ctx.pop("silence_cancel_dt", None)
@@ -7258,7 +7022,7 @@ def voice():
             session_data[call_sid]["skip_silence_retry"] = True
             resp.say(gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."), VOICE)
             resp.redirect("/voice")
-            save_session(call_sid)
+            #save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
@@ -7271,7 +7035,7 @@ def voice():
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             resp.say(gpt_speak("That appointment time has already passed. I’ll list your upcoming ones."), VOICE)
             resp.redirect("/voice")
-            save_session(call_sid)
+            #save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
@@ -7297,7 +7061,7 @@ def voice():
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             resp.say(gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."), VOICE)
             resp.redirect("/voice")
-            save_session(call_sid)
+            #save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
@@ -7314,7 +7078,7 @@ def voice():
 
         resp.say(gpt_speak(f"You said {day_part} at {time_part}. Let me confirm that appointment."), VOICE)
         resp.redirect("/voice")
-        save_session(call_sid)
+        #save_session(call_sid)
         return str(resp)
 
 
@@ -7358,13 +7122,13 @@ def voice():
             debug_print(f"cancel_appt_iterate: ❌ No appointment file found for doctor: {doctor}")
             resp.say(f"Sorry, I couldn’t find any appointments for {doctor}.", VOICE)
             resp.hangup()
-            save_session(call_sid)
+            #save_session(call_sid)
             return str(resp)
         except Exception as e:
             debug_print(f"cancel_appt_iterate: ⚠️ Error loading JSON file → {e}")
             resp.say("Sorry, there was a problem reading the appointment list.", VOICE)
             resp.hangup()
-            save_session(call_sid)
+            #save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
