@@ -3704,19 +3704,58 @@ def voice():
 
 
 
-
     elif stage == "collect_dob":
         # ----------------------------------------------------------------------
         # 🎂 Stage: collect_dob — capture and validate date of birth
         # ----------------------------------------------------------------------
         t_stage_start = _time_mod.perf_counter()
         debug_print(f"[collect_dob] 📍 Stage entered at {_time_mod.strftime('%H:%M:%S')}")
+
+        # ----------------------------------------------------------------------
+        # 🛡️ Session protection — ensure dictionary exists
+        # ----------------------------------------------------------------------
+        if "session_data" not in globals():
+            debug_print("[collect_dob] ⚠️ session_data missing globally — recreating empty dict")
+            session_data = {}
+
+        if call_sid not in session_data:
+            debug_print(f"[collect_dob] ⚠️ No existing session for {call_sid} — initializing new one")
+            session_data[call_sid] = {"stage": "collect_dob"}
+
         sd = session_data.setdefault(call_sid, {})
         sd.setdefault("customer", {})
         sd.setdefault("cancel", {})
+
         debug_print(f"[collect_dob] session keys before: {list(sd.keys())}")
         debug_print(f"[collect_dob] 🔎 doctor_name check → {sd.get('doctor_name')}")
 
+        # ----------------------------------------------------------------------
+        # 📢 Define message constants (including missing MSG_PIN_PROMPT)
+        # ----------------------------------------------------------------------
+        MSG_PARSE_FAIL = (
+            "I didn’t catch your full birth date. Please say it again, for example, 'July 3 1956'. "
+            "You can also enter it using your keypad: 2 digits for month, 2 for day, and 4 for year, then press pound."
+        )
+        MSG_INVALID_DOB = (
+            "That doesn’t seem like a valid date of birth. "
+            "Please enter 2 digits for month, 2 for day, and 4 for year, then press #."
+        )
+        MSG_NOT_FOUND = (
+            "We couldn’t find a record with that phone number and date of birth. "
+            "If you are a new customer, press 1. If you are an existing customer, press 2."
+        )
+        MSG_NEW_CUSTOMER = (
+            "We found your record, but your registration with the clinic is not complete. "
+            "Please contact the clinic to finish your registration before booking an appointment. Goodbye!"
+        )
+        MSG_PIN_PROMPT = (
+            "Thank you. For security verification, please enter your six digit PIN number now, "
+            "followed by the pound key. If you prefer, you can also say each digit slowly."
+        )
+
+        # ----------------------------------------------------------------------
+        # 🎧 Capture inputs
+        # ----------------------------------------------------------------------
         try:
             dtmf_digits = (request.values.get("Digits") or "").strip()
         except Exception:
@@ -3724,15 +3763,19 @@ def voice():
         speech_text = (speech_result or "").strip()
         debug_print(f"[collect_dob] 🎙️ speech='{speech_text}', 🔢 dtmf='{dtmf_digits}'")
 
+        # ----------------------------------------------------------------------
         # 🔇 Silence handling
+        # ----------------------------------------------------------------------
         if not dtmf_digits and not speech_text:
             tries = sd.get("silence_dob", 0) + 1
             sd["silence_dob"] = tries
             debug_print(f"[collect_dob] 🤐 silence tries={tries}/3")
 
             if tries < 3:
-                prompt = "Please say your date of birth, for example, 'July 3 1956'. " \
-                        "Or enter two digits for month, two for day, and four for year, then press pound."
+                prompt = (
+                    "Please say your date of birth, for example, 'July 3 1956'. "
+                    "Or enter two digits for month, two for day, and four for year, then press pound."
+                )
                 g = make_gather(prompt, input="speech dtmf", timeout=3,
                                 speech_timeout="auto", barge_in=True, finish_on_key="#")
                 resp.append(g)
@@ -3749,7 +3792,9 @@ def voice():
 
         sd.pop("silence_dob", None)
 
+        # ----------------------------------------------------------------------
         # 🧩 Parse DOB
+        # ----------------------------------------------------------------------
         dob_date = None
         if dtmf_digits:
             d = _re.sub(r"\D", "", dtmf_digits)
@@ -3780,7 +3825,9 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
+        # ----------------------------------------------------------------------
         # ⚙️ Validate DOB
+        # ----------------------------------------------------------------------
         try:
             today = _date_local.today()
             if not dob_date or dob_date < date(1900, 1, 1) or dob_date > today:
@@ -3799,7 +3846,9 @@ def voice():
         sd["cancel"]["dob"] = iso_dob
         debug_print(f"[collect_dob] ✅ Stored DOB → {iso_dob}")
 
+        # ----------------------------------------------------------------------
         # 🔍 Lookup customer
+        # ----------------------------------------------------------------------
         phone_e164 = sd["customer"].get("phone_e164") or sd.get("phone_e164")
         found, customer_status = False, "unknown"
 
@@ -3815,7 +3864,9 @@ def voice():
         else:
             debug_print("[collect_dob] ⚠️ phone_e164 missing before lookup")
 
+        # ----------------------------------------------------------------------
         # 🔀 Branching
+        # ----------------------------------------------------------------------
         if not found:
             sd["stage"] = "verify_customer_type"
             g = make_gather(MSG_NOT_FOUND, input="dtmf", timeout=3, barge_in=True, finish_on_key="#")
@@ -3841,7 +3892,6 @@ def voice():
         resp.redirect("/voice")
         debug_print(f"[collect_dob] ✅ proceed → collect_pin_number (doctor_name={sd.get('doctor_name')})")
         return str(resp)
-
 
 
 
@@ -4529,7 +4579,43 @@ def voice():
 
         debug_print(f"[ask_time_date] 🗣️ Received speech: {speech_result}")
 
-        # -------------------------- Config / Text --------------------------
+        # ----------------------------------------------------------------------
+        # 🛡️ Session Protection & Debug Info
+        # ----------------------------------------------------------------------
+        # Ensure the global session_data dictionary and this call_sid exist
+        if "session_data" not in globals():
+            debug_print("[ask_time_date] ⚠️ session_data missing globally — recreating empty dict")
+            session_data = {}
+
+        if call_sid not in session_data:
+            debug_print(f"[ask_time_date] ⚠️ No existing session for {call_sid} — initializing new one")
+            session_data[call_sid] = {"stage": "ask_time_date"}
+
+        sd = session_data.setdefault(call_sid, {})
+
+        # 🔍 Print summary of what is currently in session (for diagnostics)
+        debug_print(f"[ask_time_date] 📦 session keys → {list(sd.keys())}")
+
+        # Log important fields if they exist
+        if "doctor_name" in sd:
+            debug_print(f"[ask_time_date] 🩺 doctor_name → {sd.get('doctor_name')}")
+        else:
+            debug_print("[ask_time_date] ⚠️ doctor_name missing from session")
+
+        if "customer" in sd:
+            cust = sd.get("customer", {})
+            debug_print(f"[ask_time_date] 👤 customer info → phone={cust.get('phone_e164')} dob={cust.get('dob')}")
+        else:
+            debug_print("[ask_time_date] ⚠️ customer info missing from session")
+
+        if "booking" in sd:
+            debug_print(f"[ask_time_date] 📚 booking keys → {list(sd['booking'].keys())}")
+        else:
+            debug_print("[ask_time_date] ⚠️ booking info missing from session")
+
+        # ----------------------------------------------------------------------
+        # 🕓 Config / Text constants
+        # ----------------------------------------------------------------------
         working_days  = globals().get("WORKING_DAYS", (0, 1, 2, 3, 4, 5))
         working_start = globals().get("WORKING_HOURS_START", 8)
         working_end   = globals().get("WORKING_HOURS_END", 17)
@@ -4543,7 +4629,7 @@ def voice():
             if h == 12: return "12:00 PM"
             return f"{h-12}:00 PM"
 
-        days_str  = (
+        days_str = (
             ", ".join(available_days[:-1]) + f", and {available_days[-1]}"
             if len(available_days) > 1 else
             (available_days[0] if available_days else "weekdays")
@@ -4558,17 +4644,16 @@ def voice():
         PROMPT_NEED_VALID_DAY = f"That day isn’t available. We’re open {days_str}, between {hours_str}."
         PROMPT_NEED_AMPM = "Say A or P to indicate A M or P M."
 
-        # ----------------------------- Session -----------------------------
-        session_data.setdefault(call_sid, {})
-        sd = session_data[call_sid]
-
+        # ----------------------------------------------------------------------
+        # 🔄 Load key session variables
+        # ----------------------------------------------------------------------
         bad_time_tries = sd.get("bad_time_tries", 0)
         silence_time   = sd.get("silence_time", 0)
         silence_alts   = sd.get("silence_alts", 0)
         alts_prompt    = sd.get("alts_prompt", "")
         pending_digits = sd.get("pending_dt_digits")
 
-        # doctor / name
+        # Doctor name is critical for all slot checks
         doctor_name = sd.get("doctor_name")
         if not doctor_name:
             debug_print("[ask_time_date] ❌ No doctor selected → choose_doctor")
@@ -4581,7 +4666,9 @@ def voice():
         raw_speech = (speech_result or "").strip()
         raw_dtmf   = (request.values.get("Digits") or "").strip()
 
-        # ------------------------- AM/PM helpers ---------------------------
+        # ----------------------------------------------------------------------
+        # 🕑 AM/PM Helpers
+        # ----------------------------------------------------------------------
         def _extract_ampm(s: str) -> str:
             if not s:
                 return ""
@@ -4603,27 +4690,22 @@ def voice():
             t = _re.sub(r"\s*\b(am|pm|a|p)\b", "", time_str.lower()).strip()
             return (True, f"{t} {ampm}", "")
 
-        # ------------------------------------------------------------------
+        # ----------------------------------------------------------------------
         # ⏰ Past-time Check (local)
-        # ------------------------------------------------------------------
+        # ----------------------------------------------------------------------
         now_utc = _pytz.UTC.localize(_dt.utcnow())
         start_dt = _dt.fromisoformat(appointment_start.replace("Z", "+00:00"))
         if start_dt <= now_utc:
-            # 🟢 Use local JSON helpers
             alts = get_doctor_next_available_slots(
-                doctor_name,
-                from_start_iso=appointment_end,
-                limit=3
+                doctor_name, from_start_iso=appointment_end, limit=3
             ) or []
             options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
             prompt  = (
                 f"That time has already passed. Would you like {options}?"
                 if options else PROMPT_PAST_TIME
             )
-
             sd["alts_prompt"]  = prompt
             sd["silence_alts"] = 0
-
             g = make_gather(prompt, input="speech dtmf", timeout=6,
                             speech_timeout="auto", barge_in=True,
                             action="/voice", method="POST")
@@ -4638,14 +4720,12 @@ def voice():
             save_session(call_sid)
             return str(resp)
 
-        # ------------------------------------------------------------------
+        # ----------------------------------------------------------------------
         # 🧠 Availability Check — Local JSON
-        # ------------------------------------------------------------------
+        # ----------------------------------------------------------------------
         try:
             slot_available = is_doctor_slot_available(
-                doctor_name,
-                appointment_start,
-                appointment_end
+                doctor_name, appointment_start, appointment_end
             )
         except Exception as e:
             debug_print(f"[ask_time_date] ⚠️ Availability check error → {e}")
@@ -4653,19 +4733,15 @@ def voice():
 
         if not slot_available:
             alts = get_doctor_next_available_slots(
-                doctor_name,
-                from_start_iso=appointment_end,
-                limit=3
+                doctor_name, from_start_iso=appointment_end, limit=3
             ) or []
             options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
             prompt  = (
                 f"That time is not available. Would you like {options}?"
                 if options else "That time isn’t available. Please say another time with A or P."
             )
-
             sd["alts_prompt"]  = prompt
             sd["silence_alts"] = 0
-
             g = make_gather(prompt, input="speech dtmf", timeout=6,
                             speech_timeout="auto", barge_in=True,
                             action="/voice", method="POST")
@@ -4680,14 +4756,15 @@ def voice():
             save_session(call_sid)
             return str(resp)
 
-        # ------------------------------------------------------------------
+        # ----------------------------------------------------------------------
         # ✅ Slot Available — Continue Booking
-        # ------------------------------------------------------------------
+        # ----------------------------------------------------------------------
         sd.pop("alts_prompt", None)
         sd["silence_alts"] = 0
         sd.pop("pending_dt_digits", None)
         sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
 
+        # Handle reschedule context safely
         if sd.get("reschedule_after_cancel", False):
             cancel_info = sd.get("cancel", {})
             cust = sd.setdefault("customer", {})
@@ -4721,9 +4798,9 @@ def voice():
             save_session(call_sid)
             return str(resp)
 
-        # ------------------------------------------------------------------
+        # ----------------------------------------------------------------------
         # 🛠️ Proceed to Next Stage
-        # ------------------------------------------------------------------
+        # ----------------------------------------------------------------------
         try:
             found = customer_search(phone_number=phone_e164, dob=dob, default_country="US")
             debug_print(f"[ask_time_date] 🔎 customer_search(phone={phone_e164}, dob={dob}) → {found}")
@@ -4753,7 +4830,6 @@ def voice():
         resp.redirect("/voice")
         save_session(call_sid)
         return str(resp)
-
 
 
 
