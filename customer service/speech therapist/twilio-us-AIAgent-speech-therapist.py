@@ -2891,10 +2891,12 @@ def voice():
     debug_print(f"[voice] CallSid={call_sid}")
     
     # ✅ NEW: Reload session data from disk before touching session_data
+    """
     load_session(call_sid)
     debug_print(f"voice: 🔁 Loaded session for {call_sid}: keys={list(session_data.get(call_sid, {}).keys())}")
     
     # 🧠 Debug print what was loaded
+    """
     sd = session_data.get(call_sid, {})
     debug_print(f"voice: 🔁 Loaded session for {call_sid}: keys={list(sd.keys())}")
     debug_print(f"voice : 🩺 doctor_name loaded → {sd.get('doctor_name')}")
