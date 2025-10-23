@@ -2882,6 +2882,7 @@ def safe_twiml_route(func):
 @app.route("/voice/", methods=["POST"])  # Accepts trailing slash
 @safe_twiml_route
 def voice():
+    global session_data
     # Create a new TwiML VoiceResponse object to build the voice reply to the caller
     resp = VoiceResponse()
     debug_print("[voice] ▶ enter voice()")
@@ -3086,7 +3087,7 @@ def voice():
     # If this is the start of the call, begin with the "intro" stage
     """
     if stage == "intro":
-
+        global session_data
         # Save the current session state as moving to the next stage ("intent")
         session_data[call_sid] = {"stage": "intent"}
 
@@ -3131,6 +3132,7 @@ def voice():
 
     
     elif stage == "intent":
+        global session_data
         # ----------------------------------------------------------------------
         # 🎯 Intent detection stage: figure out what the caller wants:
         #   1. Book an appointment
@@ -3328,6 +3330,7 @@ def voice():
 
 
     elif stage == "update_cc":
+        global session_data
         # Delegate to collect_phone by switching stage, then re-entering /voice
         # Redundant explicit set for clarity (this stage routes to collect_phone).
         session_data.setdefault(call_sid, {})
