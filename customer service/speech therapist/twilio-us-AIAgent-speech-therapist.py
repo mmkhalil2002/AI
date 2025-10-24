@@ -2883,35 +2883,36 @@ def safe_twiml_route(func):
 @safe_twiml_route
 def voice():
     global session_data
-    # Create a new TwiML VoiceResponse object to build the voice reply to the caller
+    # ----------------------------------------------------------------------
+    # 🎙️ Twilio Voice Entry Point
+    # ----------------------------------------------------------------------
     resp = VoiceResponse()
     debug_print("[voice] ▶ enter voice()")
 
-    # Extract the unique call ID (SID) from the request parameters to track the session
+    # ----------------------------------------------------------------------
+    # 🆔 Extract Call SID & Initialize Session
+    # ----------------------------------------------------------------------
     call_sid = request.values.get("CallSid", "")
     debug_print(f"[voice] CallSid={call_sid}")
-    
-    # ✅ NEW: Reload session data from disk before touching session_data
-    """
-    load_session(call_sid)
-    debug_print(f"voice: 🔁 Loaded session for {call_sid}: keys={list(session_data.get(call_sid, {}).keys())}")
-    
-    # 🧠 Debug print what was loaded
-    """
+
+    # Load or access session
     sd = session_data.get(call_sid, {})
     debug_print(f"voice: 🔁 Loaded session for {call_sid}: keys={list(sd.keys())}")
     debug_print(f"voice : 🩺 doctor_name loaded → {sd.get('doctor_name')}")
 
-    # Retrieve the customer's speech input (transcribed by Twilio's Speech-to-Text)
+    # ----------------------------------------------------------------------
+    # 🗣️ Retrieve Inputs
+    # ----------------------------------------------------------------------
     speech_result = (request.values.get("SpeechResult") or "").strip()
-    # Also grab any keypad input (DTMF) Twilio might have sent with the same webhook
     try:
         dtmf_digits = (request.values.get("Digits") or "").strip()
     except Exception:
         dtmf_digits = ""
     debug_print(f"[voice] inputs → speech='{speech_result}' dtmf='{dtmf_digits}'")
 
-    # NEW: Seed per-call country once, using caller number if present; fallback to global COUNTRY
+    # ----------------------------------------------------------------------
+    # 🌍 Country / Caller Initialization
+    # ----------------------------------------------------------------------
     session_data.setdefault(call_sid, {})
     if "country" not in session_data[call_sid]:
         from_number = (request.values.get("From") or "").strip()
@@ -2925,7 +2926,7 @@ def voice():
     else:
         debug_print(f"[voice] 🌐 country exists → {session_data[call_sid].get('country')}")
 
-    # (optional) keep the raw caller E.164 for later use
+    # Store E.164 caller number
     from_number = (request.values.get("From") or "").strip()
     if from_number.startswith("+"):
         session_data[call_sid]["from_e164"] = from_number
@@ -2933,25 +2934,22 @@ def voice():
 
     print(f"📢 voice :speech_result: {speech_result}")
 
-    # Determine the current interaction stage (default to "intro" if not previously set)
+    # ----------------------------------------------------------------------
+    # 🎯 Determine Current Stage
+    # ----------------------------------------------------------------------
     stage = session_data.get(call_sid, {}).get("stage", "intro")
     debug_print(f"[voice] 🎯 stage='{stage}'")
 
     # ----------------------------------------------------------------------
-    # 🔇 CENTRAL SILENCE GUARD
-    # If we didn't hear *anything* (no speech, no DTMF), re-prompt with
-    # stage-appropriate text. We skip stages that already have their own
-    # robust silence handling (e.g., collect_cc).
+    # 🔇 SILENCE GUARD PROMPTS
     # ----------------------------------------------------------------------
     def _silence_prompt_for_stage(st: str) -> Tuple[str, str]:
         """Return (prompt, hints) best suited for the current stage."""
         debug_print(f"[voice] 🔇 selecting silence prompt for stage='{st}'")
-        # Default: generic prompt, no hints
         hints = ""
+
         if st in ("intro", "intent"):
-            # ✨ Updated to advertise both voice and keypad (DTMF 1..5)
             hints = "book,cancel,change,reschedule,update,update card,voicemail,leave message"
-            debug_print("[voice] 🔇 using intro/intent silence prompt")
             return (
                 "I didn’t hear anything. Say 'book appointment' or press 1. "
                 "Say 'cancel appointment' or press 2. "
@@ -2960,79 +2958,95 @@ def voice():
                 "Say 'leave voicemail' or press 5.",
                 hints
             )
+
         if st == "book_appointment":
-            doctor_list = ", ".join(googleid_dr_name_map.values())
+            # 🩺 Use local doctor names instead of Google map
+            doctor_list = ", ".join(
+                doctor_names.values() if isinstance(doctor_names, dict) else doctor_names
+            )
             hints = doctor_list
-            debug_print("[voice] 🔇 using booking silence prompt")
             return ("Please say the name of the doctor you'd like to book with.", hints)
+
         if st == "collect_phone":
             hints = "zero one two three four five six seven eight nine double triple"
-            debug_print("[voice] 🔇 using collect_phone silence prompt")
             return ("Please say or enter your ten digit phone number including area code.", hints)
-        if st == "collect_dob":
-            debug_print("[voice] 🔇 using collect_dob silence prompt")
-            return ("Please say your birth date, for example 'July third 1990'. Or type 2 digits for Month 2 digits for Day 4 digits for year then press pound.", hints)
-        if st == "ask_time_date":
-            debug_print("[voice] 🔇 using ask_time_date silence prompt")
-            return ("Please say the appointment time, for example, 'August 15th at 5 AM'. "
-                        "Or enter two digits for month, two for day, two for hour, and two for minutes, then enter  A for AM or P for PM. then press #", hints)
 
-            debug_print("[voice] 🔇 using collect_first_name silence prompt")
+        if st == "collect_dob":
+            return (
+                "Please say your birth date, for example 'July third 1990'. "
+                "Or type 2 digits for Month, 2 digits for Day, and 4 digits for Year, then press pound.",
+                hints
+            )
+
+        if st == "ask_time_date":
+            return (
+                "Please say the appointment time, for example, 'August fifteenth at 5 AM'. "
+                "Or enter two digits for month, two for day, two for hour, and two for minutes, "
+                "then say A for AM or P for PM, then press #.",
+                hints
+            )
+
+        if st == "collect_first_name":
             return ("Please say your first name.", hints)
+
         if st == "collect_last_name":
-            debug_print("[voice] 🔇 using collect_last_name silence prompt")
             return ("Please say your last name.", hints)
+
         if st == "collect_address":
-            debug_print("[voice] 🔇 using collect_address silence prompt")
-            return ("Please say your street address, city, and ZIP. For example, '118 Briar Oak, Murphy, Texas 75094'.", hints)
+            return (
+                "Please say your street address, city, and ZIP. For example, "
+                "'118 Briar Oak, Murphy, Texas 75094'.",
+                hints
+            )
+
         if st == "cancel_appointment":
-            doctor_list = ", ".join(googleid_dr_name_map.values())
+            doctor_list = ", ".join(
+                doctor_names.values() if isinstance(doctor_names, dict) else doctor_names
+            )
             hints = doctor_list
-            debug_print("[voice] 🔇 using cancel_appointment silence prompt")
             return ("Please say the name of the doctor whose appointment you want to cancel.", hints)
+
         if st in ("cancel_appt_by_phone_number",):
             hints = "zero one two three four five six seven eight nine double triple"
-            debug_print("[voice] 🔇 using cancel_appt_by_phone_number silence prompt")
             return ("Please say the phone number used when booking, including area code.", hints)
+
         if st in ("cancel_appt_by_time_date", "cancel_appt_by_date_time"):
-            debug_print("[voice] 🔇 using cancel_appt_by_time_date silence prompt")
             return ("Please say the date and time of the appointment you want to cancel, for example, 'July third at nine AM'.", hints)
+
         if st == "cancel_appt_get_dob":
-            debug_print("[voice] 🔇 using cancel_appt_get_dob silence prompt")
-            return ("Please say your birth date, for example 'July third nineteen fifty six'. Or type 2 digits for month 2 digits for day and 4 digis for year then press pound.", hints)
+            return ("Please say your birth date, for example 'July third nineteen fifty six'. "
+                    "Or type 2 digits for month 2 digits for day and 4 digits for year then press pound.", hints)
+
         if st == "voicemail":
-            debug_print("[voice] 🔇 using voicemail silence prompt")
             return ("Please leave your name, phone number, and message after the beep.", hints)
 
-        # Fallback generic
-        debug_print("[voice] 🔇 using generic silence prompt")
+        # Default fallback
         return ("Sorry, I didn’t hear anything. Please say that again.", hints)
 
     # ----------------------------------------------------------------------
-    # Silence handling guard
+    # 🔇 SILENCE HANDLER
     # ----------------------------------------------------------------------
-    # Only run the guard outside of the very first greeting (intro),
-    # and skip stages that handle silence internally.
     skip_silence = (
         "intro",
-       # "intent",
         "collect_cc",
         "book_appt_confirm",
-        # 🚫 NEW: skip cancel flow stages too
         "cancel_appt_iterate",
         "collect_phone",
         "cancel_appt_confirm",
         "collect_dob",
         "collect_first_name",
         "collect_last_name",
-         "collect_insurance_information", 
-         "collect_dr_info",
-         "cancel_appt_get_time_date" ,
+        "collect_insurance_information",
+        "collect_dr_info",
+        "cancel_appt_get_time_date",
     )
     debug_print(f"[voice] 🔇 skip_silence={skip_silence}")
 
     if stage not in skip_silence:
-        debug_print(f"[voice] 🔇 evaluating silence guard at stage='{stage}' (speech_empty={not bool(speech_result)} dtmf_empty={not bool(dtmf_digits)})")
+        debug_print(
+            f"[voice] 🔇 evaluating silence guard at stage='{stage}' "
+            f"(speech_empty={not bool(speech_result)} dtmf_empty={not bool(dtmf_digits)})"
+        )
         if not speech_result and not dtmf_digits:
             session_data.setdefault(call_sid, {})
             key = f"silence_{stage}"
@@ -3066,6 +3080,11 @@ def voice():
     else:
         debug_print(f"[voice] 🔇 silence guard skipped for stage='{stage}'")
 
+    # ----------------------------------------------------------------------
+    # Continue with main conversation logic (other stages)
+    # ----------------------------------------------------------------------
+    # ↓ add your existing stage-handling code below this point
+    # e.g. intro / intent / collect_dr_info / ask_time_date / etc.
 
 
 
@@ -3141,9 +3160,7 @@ def voice():
 
 
 
-    
     elif stage == "intent":
-      
         # ----------------------------------------------------------------------
         # 🎯 Intent detection stage: figure out what the caller wants:
         #   1. Book an appointment
@@ -3158,14 +3175,18 @@ def voice():
         lower = (speech_result or "").lower().strip()
         print(f"📢 intent :speech_result: {lower}")
 
-        # --- Handle keypad 1..7 (or spoken “1”..“7”) ---
+        # ----------------------------------------------------------------------
+        # 🔢 Handle keypad input 1..7 or spoken digits
+        # ----------------------------------------------------------------------
         choice = None
         if dtmf_digits and len(dtmf_digits) == 1 and dtmf_digits in "1234567":
             choice = dtmf_digits
         elif lower in {"1", "2", "3", "4", "5", "6", "7"}:
             choice = lower
 
-        # --- Handle voice keywords (for speech recognition) ---
+        # ----------------------------------------------------------------------
+        # 🗣️ Handle speech keywords (semantic triggers)
+        # ----------------------------------------------------------------------
         if any(word in lower for word in ["book", "appointment", "schedule"]):
             choice = "1"
         elif any(word in lower for word in ["cancel", "delete", "remove"]):
@@ -3186,41 +3207,23 @@ def voice():
         # ----------------------------------------------------------------------
         if choice:
             # 1️⃣ Book Appointment
-            # 1️⃣ Book Appointment
             if choice == "1":
                 print("📅 DTMF=1 → booking (start with phone collection)")
                 session_data.setdefault(call_sid, {})
                 session_data[call_sid].update({
-                    "stage": "collect_phone",     # start at phone number stage instead of doctor selection
-                    "origin_stage": "book",       # mark origin for later (collect_pin_number, etc.)
+                    "stage": "collect_phone",
+                    "origin_stage": "book",
                     "booking": {},
                     "retry_booking": 0,
                     "retry_time": 0
                 })
-
-                # Friendly opening message for new or returning patients
-                prompt = (
-                    "Please say or enter your ten-digit phone number, then press pound."
-                )
-
-                # Build <Gather> to capture phone number (DTMF or speech)
-                gather = Gather(
-                    input="speech dtmf",
-                    timeout=6,
-                    speech_timeout="auto",
-                    barge_in=True,
-                    finish_on_key="#",
-                    action="/voice",
-                    method="POST",
-                    language="en-US",
-                )
-                gather.say(gpt_speak(prompt), VOICE)
+                prompt = "Please say or enter your ten-digit phone number, then press pound."
+                gather = make_gather(prompt, input="speech dtmf", timeout=6,
+                                    speech_timeout="auto", barge_in=True,
+                                    finish_on_key="#", num_digits=10)
                 resp.append(gather)
-
-                # Safety redirect if user stays silent
                 resp.redirect("/voice")
                 return str(resp)
-
 
             # 2️⃣ Cancel Appointment
             if choice == "2":
@@ -3230,16 +3233,19 @@ def voice():
                     "cancel": {},
                     "retry_booking": 0
                 }
-                doctor_names = list(googleid_dr_name_map.values())
-                dtmf_map = {str(i): name for i, name in enumerate(doctor_names, start=1)}
+
+                # Use local doctor name list
+                doctor_list = list(doctor_names.values()) if isinstance(doctor_names, dict) else doctor_names
+                dtmf_map = {str(i): name for i, name in enumerate(doctor_list, start=1)}
                 session_data[call_sid]["doctor_dtmf_map"] = dtmf_map
-                doctor_list_with_keys = ", ".join([f"{name} (press {i})" for i, name in enumerate(doctor_names, start=1)])
+
+                doctor_list_with_keys = ", ".join([f"{name} (press {i})" for i, name in enumerate(doctor_list, start=1)])
                 prompt = (
                     f"Sure, I can help you cancel your appointment. "
                     f"Available doctors are: {doctor_list_with_keys}. "
                     "Please say the doctor's name or press the number."
                 )
-                gather = make_gather(prompt, hints=", ".join(doctor_names), num_digits=1)
+                gather = make_gather(prompt, hints=", ".join(doctor_list), num_digits=1)
                 resp.append(gather)
                 return str(resp)
 
@@ -3252,16 +3258,18 @@ def voice():
                     "retry_booking": 0,
                     "reschedule_after_cancel": True
                 }
-                doctor_names = list(googleid_dr_name_map.values())
-                dtmf_map = {str(i): name for i, name in enumerate(doctor_names, start=1)}
+
+                doctor_list = list(doctor_names.values()) if isinstance(doctor_names, dict) else doctor_names
+                dtmf_map = {str(i): name for i, name in enumerate(doctor_list, start=1)}
                 session_data[call_sid]["doctor_dtmf_map"] = dtmf_map
-                doctor_list_with_keys = ", ".join([f"{name} (press {i})" for i, name in enumerate(doctor_names, start=1)])
+
+                doctor_list_with_keys = ", ".join([f"{name} (press {i})" for i, name in enumerate(doctor_list, start=1)])
                 prompt = (
                     f"Sure, let's reschedule your appointment. First, we'll cancel your current one. "
                     f"Available doctors are: {doctor_list_with_keys}. "
                     "Please say the doctor's name or press the number."
                 )
-                gather = make_gather(prompt, hints=", ".join(doctor_names), num_digits=1)
+                gather = make_gather(prompt, hints=", ".join(doctor_list), num_digits=1)
                 resp.append(gather)
                 return str(resp)
 
@@ -3275,10 +3283,7 @@ def voice():
                     "retry_booking": 0
                 })
                 resp.say(gpt_speak("You said you want to update your credit card information. Please hold while we process this request."), VOICE)
-                try:
-                    resp.redirect(url_for("voice"))
-                except Exception:
-                    resp.redirect("/voice")
+                resp.redirect("/voice")
                 return str(resp)
 
             # 5️⃣ Update PIN Number
@@ -3297,7 +3302,7 @@ def voice():
                 resp.say(gpt_speak("You said you want to update your health insurance information. This option is not implemented yet. Please call the clinic for assistance."), VOICE)
                 return str(resp)
 
-            # 7️⃣ Voicemail
+            # 7️⃣ Leave Voicemail
             if choice == "7":
                 print("📩 DTMF=7 → voicemail")
                 session_data.setdefault(call_sid, {})
@@ -3311,13 +3316,15 @@ def voice():
                 )
                 return str(resp)
 
-        # 🚫 Ignore junk greetings or empty speech
+        # ----------------------------------------------------------------------
+        # 🚫 Handle greetings or empty input (re-prompt main menu)
+        # ----------------------------------------------------------------------
         junk_inputs = {
             "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
             "yo", "test", "1", "yes", "no"
         }
         if not lower or lower in junk_inputs:
-            print(f"⛔ Ignored junk input: '{lower}' — re-prompting menu")
+            print(f"⛔ Ignored junk input: '{lower}' — re-prompting main menu")
             gather = make_gather(
                 "Thank you for calling Epic Therapist. "
                 "Say 'book appointment' or press 1. "
@@ -3914,7 +3921,6 @@ def voice():
 
 
     elif stage == "collect_insurance_information":
-        global session_data
         # ----------------------------------------------------------------------
         # 🏦 Stage: collect_insurance_information (optimized for fast DTMF)
         # ----------------------------------------------------------------------
@@ -4399,7 +4405,6 @@ def voice():
 
 
     elif stage == "collect_dr_info":
-        
         # ----------------------------------------------------------------------
         # 🩺 Stage: collect_dr_info
         # ----------------------------------------------------------------------
@@ -4420,16 +4425,26 @@ def voice():
         spoken_clean = spoken_text.translate(str.maketrans('', '', _PUNCT)).strip()
         print(f"[collect_dr_info] speech='{spoken_clean}' DTMF='{dtmf_digits}'")
 
-        # Build the doctor keypad map on the first entry
+        # ----------------------------------------------------------------------
+        # 🗂️ Build doctor keypad map on first entry
+        # ----------------------------------------------------------------------
         if "doctor_dtmf_map" not in session_data[call_sid]:
             doctor_dtmf_map = {}
             prompt_lines = []
-            for i, (doc_id, friendly) in enumerate(doctor_names.items(), start=1):
+
+            # doctor_names should be a dict or list of names (local JSON / config)
+            if isinstance(doctor_names, dict):
+                doctor_list = list(doctor_names.values())
+            else:
+                doctor_list = doctor_names
+
+            for i, friendly in enumerate(doctor_list, start=1):
                 doctor_dtmf_map[str(i)] = friendly
                 prompt_lines.append(f"Press {i} for {friendly}.")
+
             session_data[call_sid]["doctor_dtmf_map"] = doctor_dtmf_map
 
-            # 🗣️ Speak list of doctors
+            # 🗣️ Prompt user with available doctors
             doctor_prompt = (
                 "Please choose your doctor. "
                 + " ".join(prompt_lines)
@@ -4449,21 +4464,23 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # Retrieve the map for later selections
+        # ----------------------------------------------------------------------
+        # 🧭 Retrieve the map for later selections
+        # ----------------------------------------------------------------------
         doctor_map = session_data[call_sid]["doctor_dtmf_map"]
-        matched_id = None
+        matched_name = None
 
-        # -------------------- 🔢 DTMF Matching --------------------
+        # ----------------------------------------------------------------------
+        # 🔢 DTMF Matching
+        # ----------------------------------------------------------------------
         if dtmf_digits and dtmf_digits in doctor_map:
-            chosen_name = doctor_map[dtmf_digits]
-            for doc_id, friendly in doctor_names.items():
-                if friendly.lower() == chosen_name.lower():
-                    matched_id = doc_id
-                    print(f"✅ DTMF matched doctor: {friendly}")
-                    break
+            matched_name = doctor_map[dtmf_digits]
+            print(f"✅ DTMF matched doctor: {matched_name}")
 
-        # -------------------- 🎙️ Speech Matching --------------------
-        if matched_id is None:
+        # ----------------------------------------------------------------------
+        # 🎙️ Speech Matching (Partial / Fuzzy)
+        # ----------------------------------------------------------------------
+        if matched_name is None:
             junk_inputs = {
                 "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
                 "yo", "test", "1", "yes", "no", "i know", "huh", "what", "okay", "ok",
@@ -4493,26 +4510,36 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
-            # 🔍 Fuzzy match by partial name
+            # 🔍 Partial name matching
             partial_matches = []
             spoken_tokens = set(spoken_clean.split())
-            for doc_id, friendly in googleid_dr_name_map.items():
+
+            if isinstance(doctor_names, dict):
+                doctor_list = list(doctor_names.values())
+            else:
+                doctor_list = doctor_names
+
+            for friendly in doctor_list:
                 friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
                 friendly_tokens = set(friendly_clean.split())
-                if (spoken_clean in friendly_clean or
-                    friendly_clean in spoken_clean or
-                    (spoken_tokens & friendly_tokens)):
-                    partial_matches.append((doc_id, friendly))
+                if (
+                    spoken_clean in friendly_clean
+                    or friendly_clean in spoken_clean
+                    or (spoken_tokens & friendly_tokens)
+                ):
+                    partial_matches.append(friendly)
 
             if len(partial_matches) == 1:
-                matched_id = partial_matches[0][0]
-                print(f"✅ Partial match with: {partial_matches[0][1]}")
+                matched_name = partial_matches[0]
+                print(f"✅ Partial match with: {matched_name}")
             elif len(partial_matches) > 1:
-                print(f"🔍 Multiple matches: {[name for _, name in partial_matches]}")
-                matched_id = partial_matches[0][0]
+                print(f"🔍 Multiple matches: {partial_matches}")
+                matched_name = partial_matches[0]
 
-        # -------------------- ❌ Retry on Failure --------------------
-        if matched_id is None:
+        # ----------------------------------------------------------------------
+        # ❌ Retry on Failure
+        # ----------------------------------------------------------------------
+        if matched_name is None:
             session_data[call_sid]["retry_booking"] += 1
             retries = session_data[call_sid]["retry_booking"]
             debug_print(f"❌ No doctor match for '{spoken_clean or dtmf_digits}' retry={retries}")
@@ -4549,19 +4576,20 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # -------------------- ✅ Success — Store and Move On --------------------
-        session_data[call_sid]["doctor_id"] = matched_id
-        friendly_name = googleid_dr_name_map[matched_id]
+        # ----------------------------------------------------------------------
+        # ✅ Success — Store & Move On
+        # ----------------------------------------------------------------------
+        session_data[call_sid]["doctor_name"] = matched_name
         session_data[call_sid]["stage"] = "ask_time_date"
 
         g = make_gather(
-            f"Great, your appointment will be with {friendly_name}. "
+            f"Great, your appointment will be with {matched_name}. "
             "Please say the appointment date and time, for example, 'October 8 at 9 30 A M'.",
             input="speech dtmf",
             timeout=10,
             speech_timeout="auto",
             barge_in=True,
-            finish_on_key='#'
+            finish_on_key="#"
         )
         resp.append(g)
         resp.redirect("/voice")
@@ -4602,7 +4630,6 @@ def voice():
         # ----------------------------------------------------------------------
         # 🛡️ Session Protection & Debug Info
         # ----------------------------------------------------------------------
-        # Ensure the global session_data dictionary and this call_sid exist
         if "session_data" not in globals():
             debug_print("[ask_time_date] ⚠️ session_data missing globally — recreating empty dict")
             session_data = {}
@@ -4612,29 +4639,27 @@ def voice():
             session_data[call_sid] = {"stage": "ask_time_date"}
 
         sd = session_data.setdefault(call_sid, {})
-
-        # 🔍 Print summary of what is currently in session (for diagnostics)
         debug_print(f"[ask_time_date] 📦 session keys → {list(sd.keys())}")
 
-        # Log important fields if they exist
-        if "doctor_name" in sd:
-            debug_print(f"[ask_time_date] 🩺 doctor_name → {sd.get('doctor_name')}")
+        # Log key session context
+        doctor_name = sd.get("doctor_name")
+        if doctor_name:
+            debug_print(f"[ask_time_date] 🩺 doctor_name → {doctor_name}")
         else:
-            debug_print("[ask_time_date] ⚠️ doctor_name missing from session")
+            debug_print("[ask_time_date] ⚠️ doctor_name missing — redirecting to doctor selection")
+            sd["stage"] = "collect_dr_info"
+            resp.append(make_gather("Please tell me which doctor you'd like to see."))
+            save_session(call_sid)
+            return str(resp)
 
         if "customer" in sd:
-            cust = sd.get("customer", {})
+            cust = sd["customer"]
             debug_print(f"[ask_time_date] 👤 customer info → phone={cust.get('phone_e164')} dob={cust.get('dob')}")
         else:
-            debug_print("[ask_time_date] ⚠️ customer info missing from session")
-
-        if "booking" in sd:
-            debug_print(f"[ask_time_date] 📚 booking keys → {list(sd['booking'].keys())}")
-        else:
-            debug_print("[ask_time_date] ⚠️ booking info missing from session")
+            debug_print("[ask_time_date] ⚠️ customer info missing")
 
         # ----------------------------------------------------------------------
-        # 🕓 Config / Text constants
+        # 🕓 Working days & hours
         # ----------------------------------------------------------------------
         working_days  = globals().get("WORKING_DAYS", (0, 1, 2, 3, 4, 5))
         working_start = globals().get("WORKING_HOURS_START", 8)
@@ -4665,126 +4690,70 @@ def voice():
         PROMPT_NEED_AMPM = "Say A or P to indicate A M or P M."
 
         # ----------------------------------------------------------------------
-        # 🔄 Load key session variables
+        # 🕑 Load user input
         # ----------------------------------------------------------------------
-        bad_time_tries = sd.get("bad_time_tries", 0)
-        silence_time   = sd.get("silence_time", 0)
-        silence_alts   = sd.get("silence_alts", 0)
-        alts_prompt    = sd.get("alts_prompt", "")
-        pending_digits = sd.get("pending_dt_digits")
-
-        # Doctor name is critical for all slot checks
-        doctor_name = sd.get("doctor_name")
-        if not doctor_name:
-            debug_print("[ask_time_date] ❌ No doctor selected → choose_doctor")
-            sd["stage"] = "choose_doctor"
-            doctor_list = ", ".join(googleid_dr_name_map.values())
-            resp.append(make_gather("Which doctor would you like to see?", hints=doctor_list))
-            save_session(call_sid)
-            return str(resp)
-
         raw_speech = (speech_result or "").strip()
         raw_dtmf   = (request.values.get("Digits") or "").strip()
 
-        # ----------------------------------------------------------------------
-        # 🕑 AM/PM Helpers
-        # ----------------------------------------------------------------------
-        def _extract_ampm(s: str) -> str:
-            if not s:
-                return ""
-            t = s.lower().strip()
-            t = _re.sub(r"\ba\s*\.?\s*m\.?\b", "am", t)
-            t = _re.sub(r"\bp\s*\.?\s*m\.?\b", "pm", t)
-            if _re.search(r"\bam\b", t): return "am"
-            if _re.search(r"\bpm\b", t): return "pm"
-            if _re.search(r"(^|[\s,])a($|[\s,])", t): return "am"
-            if _re.search(r"(^|[\s,])p($|[\s,])", t): return "pm"
-            return ""
+        # Parse the speech/digits into datetime
+        appointment_start, appointment_end = None, None
+        try:
+            result = smart_parse_time(raw_speech or raw_dtmf)
+            if result:
+                appointment_start = result.get("start")
+                appointment_end   = result.get("end")
+                debug_print(f"[ask_time_date] ✅ Parsed start={appointment_start}, end={appointment_end}")
+        except Exception as e:
+            debug_print(f"[ask_time_date] ❌ Failed to parse time input → {e}")
 
-        def _ensure_ampm_in_time(time_str: str, speech_src: str) -> Tuple[bool, str, str]:
-            if not time_str:
-                return (False, "", "missing_parts")
-            ampm = _extract_ampm(time_str) or _extract_ampm(speech_src)
-            if not ampm:
-                return (False, "", "missing_ampm")
-            t = _re.sub(r"\s*\b(am|pm|a|p)\b", "", time_str.lower()).strip()
-            return (True, f"{t} {ampm}", "")
-
-        # ----------------------------------------------------------------------
-        # ⏰ Past-time Check (local)
-        # ----------------------------------------------------------------------
-        now_utc = _pytz.UTC.localize(_dt.utcnow())
-        start_dt = _dt.fromisoformat(appointment_start.replace("Z", "+00:00"))
-        if start_dt <= now_utc:
-            alts = get_doctor_next_available_slots(
-                doctor_name, from_start_iso=appointment_end, limit=3
-            ) or []
-            options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
-            prompt  = (
-                f"That time has already passed. Would you like {options}?"
-                if options else PROMPT_PAST_TIME
-            )
-            sd["alts_prompt"]  = prompt
-            sd["silence_alts"] = 0
-            g = make_gather(prompt, input="speech dtmf", timeout=6,
-                            speech_timeout="auto", barge_in=True,
-                            action="/voice", method="POST")
+        if not appointment_start:
+            debug_print("[ask_time_date] ⚠️ Missing or invalid time → re-prompting")
+            g = make_gather(PROMPT_NEED_BOTH, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True)
             resp.append(g)
-            try:
-                resp.redirect(url_for("voice"))
-                debug_print("[ask_time_date] 🔁 past-time → redirect url_for('voice')")
-            except Exception:
-                resp.redirect("/voice")
-                debug_print("[ask_time_date] 🔁 past-time → redirect /voice (fallback)")
             sd["stage"] = "ask_time_date"
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧠 Availability Check — Local JSON
+        # ⏰ Past-time check
+        # ----------------------------------------------------------------------
+        now_utc = _pytz.UTC.localize(_dt.utcnow())
+        start_dt = _dt.fromisoformat(appointment_start.replace("Z", "+00:00"))
+        if start_dt <= now_utc:
+            alts = get_doctor_next_available_slots(doctor_name, from_start_iso=appointment_end, limit=3) or []
+            options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
+            prompt  = f"That time has already passed. Would you like {options}?" if options else PROMPT_PAST_TIME
+            g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True)
+            resp.append(g)
+            sd["stage"] = "ask_time_date"
+            save_session(call_sid)
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # 🧠 Availability check (local JSON)
         # ----------------------------------------------------------------------
         try:
-            slot_available = is_doctor_slot_available(
-                doctor_name, appointment_start, appointment_end
-            )
+            slot_available = is_doctor_slot_available(doctor_name, appointment_start, appointment_end)
         except Exception as e:
             debug_print(f"[ask_time_date] ⚠️ Availability check error → {e}")
             slot_available = False
 
         if not slot_available:
-            alts = get_doctor_next_available_slots(
-                doctor_name, from_start_iso=appointment_end, limit=3
-            ) or []
+            alts = get_doctor_next_available_slots(doctor_name, from_start_iso=appointment_end, limit=3) or []
             options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
-            prompt  = (
-                f"That time is not available. Would you like {options}?"
-                if options else "That time isn’t available. Please say another time with A or P."
-            )
-            sd["alts_prompt"]  = prompt
-            sd["silence_alts"] = 0
-            g = make_gather(prompt, input="speech dtmf", timeout=6,
-                            speech_timeout="auto", barge_in=True,
-                            action="/voice", method="POST")
+            prompt  = f"That time is not available. Would you like {options}?" if options else "That time isn’t available. Please say another time with A or P."
+            g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True)
             resp.append(g)
-            try:
-                resp.redirect(url_for("voice"))
-                debug_print("[ask_time_date] 🔁 unavailable → redirect url_for('voice')")
-            except Exception:
-                resp.redirect("/voice")
-                debug_print("[ask_time_date] 🔁 unavailable → redirect /voice (fallback)")
             sd["stage"] = "ask_time_date"
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ Slot Available — Continue Booking
+        # ✅ Slot Available — Proceed
         # ----------------------------------------------------------------------
-        sd.pop("alts_prompt", None)
-        sd["silence_alts"] = 0
-        sd.pop("pending_dt_digits", None)
         sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
 
-        # Handle reschedule context safely
+        # Handle reschedule context
         if sd.get("reschedule_after_cancel", False):
             cancel_info = sd.get("cancel", {})
             cust = sd.setdefault("customer", {})
@@ -4794,9 +4763,10 @@ def voice():
                 cust["dob"] = cancel_info["dob"]
             sd["reschedule_after_cancel"] = False
 
+        # Ensure phone and DOB are ready
         cust = sd.setdefault("customer", {})
         phone_e164 = cust.get("phone_e164") or sd.get("phone_e164")
-        dob        = cust.get("dob")        or sd.get("dob")
+        dob        = cust.get("dob") or sd.get("dob")
 
         if not phone_e164 or not dob:
             sd["stage"] = "collect_phone" if not phone_e164 else "collect_dob"
@@ -4805,21 +4775,13 @@ def voice():
                 if not phone_e164 else
                 "Please say your date of birth, like 'July third 1990'."
             )
-            g = make_gather(prompt, input="speech dtmf", timeout=5,
-                            speech_timeout="auto", barge_in=True,
-                            action="/voice", method="POST")
+            g = make_gather(prompt, input="speech dtmf", timeout=5, speech_timeout="auto", barge_in=True)
             resp.append(g)
-            try:
-                resp.redirect(url_for("voice"))
-                debug_print("[ask_time_date] 🔁 continue flow (ID collection) → redirect url_for('voice')")
-            except Exception:
-                resp.redirect("/voice")
-                debug_print("[ask_time_date] 🔁 continue flow (ID collection) → redirect /voice (fallback)")
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🛠️ Proceed to Next Stage
+        # 🛠️ Proceed to next stage
         # ----------------------------------------------------------------------
         try:
             found = customer_search(phone_number=phone_e164, dob=dob, default_country="US")
@@ -4832,23 +4794,21 @@ def voice():
         debug_print(f"[ask_time_date] 🎯 Next stage → {sd['stage']}")
 
         if sd["stage"] == "collect_first_name":
-            prompt = "Please say your first name, or type it and press pound."
             g = make_gather(
-                prompt,
+                "Please say your first name, or type it and press pound.",
                 input="speech dtmf",
                 timeout=6,
                 speech_timeout="5",
                 barge_in=True,
-                finish_on_key="#",
-                action="/voice", method="POST",
+                finish_on_key="#"
             )
             resp.append(g)
-            resp.redirect("/voice")
             save_session(call_sid)
             return str(resp)
 
-        resp.redirect("/voice")
+        # Continue booking
         save_session(call_sid)
+        resp.redirect("/voice")
         return str(resp)
 
 
@@ -5824,44 +5784,38 @@ def voice():
 
     elif stage == "collect_dr_info":
         # ----------------------------------------------------------------------
-        # 🩺 Stage: collect_dr_info  (Independent, no doctor_id)
+        # 🩺 Stage: collect_dr_info
         # ----------------------------------------------------------------------
         # 🎯 Purpose:
         #   - Read out a numbered list of doctors ("Press 1 for Dr. Smith").
         #   - Capture doctor selection by speech or keypad (DTMF).
         #   - Supports partial/fuzzy speech match and retries.
-        #   - Stores `doctor_name` directly.
-        #   - On success → move to "ask_time_date" (for appointment scheduling).
+        #   - On success → move to ask_time_date (for appointment scheduling).
         # ----------------------------------------------------------------------
 
         sd = session_data.setdefault(call_sid, {})
         sd.setdefault("retry_booking", 0)
         sd["origin_stage"] = "book"
 
-        # -------------------- 🧹 Clean Input --------------------
+        # Clean punctuation from speech input
         _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
         dtmf_digits = (request.values.get("Digits") or "").strip()
         spoken_text = (speech_result or "").strip().lower()
         spoken_clean = spoken_text.translate(str.maketrans('', '', _PUNCT)).strip()
+        debug_print(f"[collect_dr_info] 🗣 speech='{spoken_clean}' 🔢 DTMF='{dtmf_digits}'")
 
-        debug_print(f"[collect_dr_info] 🎙️ speech='{spoken_clean}' 🔢 DTMF='{dtmf_digits}'")
-
-        # -------------------- 🩺 Print Doctor Names for Debugging --------------------
-        debug_print(f"[collect_dr_info] 📋 Available doctors ({len(doctor_names)} total):")
-        for idx, doc_name in enumerate(doctor_names, start=1):
-            debug_print(f"    {idx}. {doc_name}")
-
-        # -------------------- 🏥 Build Doctor Menu (first time only) --------------------
+        # ----------------------------------------------------------------------
+        # 📋 Build the doctor keypad map (first entry only)
+        # ----------------------------------------------------------------------
         if "doctor_dtmf_map" not in sd:
             doctor_dtmf_map = {}
             prompt_lines = []
-
-            for i, friendly_name in enumerate(doctor_names, start=1):
-                doctor_dtmf_map[str(i)] = friendly_name
-                prompt_lines.append(f"Press {i} for {friendly_name}.")
-
+            for i, friendly in enumerate(doctor_names.values(), start=1):
+                doctor_dtmf_map[str(i)] = friendly
+                prompt_lines.append(f"Press {i} for {friendly}.")
             sd["doctor_dtmf_map"] = doctor_dtmf_map
 
+            # 🗣️ Speak list of doctors
             doctor_prompt = (
                 "Please choose your doctor. "
                 + " ".join(prompt_lines)
@@ -5879,18 +5833,25 @@ def voice():
             )
             resp.append(g)
             resp.redirect("/voice")
+            debug_print("[collect_dr_info] 📋 Initial doctor list prompt sent.")
             return str(resp)
 
-        # -------------------- 🔎 Retrieve Doctor Map --------------------
-        doctor_map = sd["doctor_dtmf_map"]
+        # ----------------------------------------------------------------------
+        # 🔎 Retrieve the map for subsequent interactions
+        # ----------------------------------------------------------------------
+        doctor_map = sd.get("doctor_dtmf_map", {})
         matched_name = None
 
-        # -------------------- 🔢 DTMF Matching --------------------
+        # ----------------------------------------------------------------------
+        # 🔢 DTMF Matching
+        # ----------------------------------------------------------------------
         if dtmf_digits and dtmf_digits in doctor_map:
             matched_name = doctor_map[dtmf_digits]
-            debug_print(f"[collect_dr_info] ✅ DTMF matched doctor_name='{matched_name}'")
+            debug_print(f"[collect_dr_info] ✅ DTMF matched doctor: {matched_name}")
 
-        # -------------------- 🎙️ Speech Matching --------------------
+        # ----------------------------------------------------------------------
+        # 🎙️ Speech Matching (fuzzy)
+        # ----------------------------------------------------------------------
         if matched_name is None:
             junk_inputs = {
                 "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
@@ -5899,15 +5860,13 @@ def voice():
             }
 
             if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
-                debug_print(f"[collect_dr_info] ⏩ Junk input '{spoken_clean}' — re-prompting")
-
+                debug_print(f"[collect_dr_info] ⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting")
                 prompt_lines = [f"Press {k} for {v}." for k, v in doctor_map.items()]
                 doctor_prompt = (
                     "Please say the name of the doctor you'd like to book with, "
                     "or press the number on your keypad. "
                     + " ".join(prompt_lines)
                 )
-
                 g = make_gather(
                     doctor_prompt,
                     input="speech dtmf",
@@ -5921,26 +5880,29 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
-            # 🔍 Fuzzy match by partial or token overlap
+            # 🔍 Fuzzy match by partial name
             partial_matches = []
             spoken_tokens = set(spoken_clean.split())
-
-            for friendly in doctor_names:
+            for friendly in doctor_names.values():
                 friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
                 friendly_tokens = set(friendly_clean.split())
-                if (spoken_clean in friendly_clean or
-                    friendly_clean in spoken_clean or
-                    (spoken_tokens & friendly_tokens)):
+                if (
+                    spoken_clean in friendly_clean
+                    or friendly_clean in spoken_clean
+                    or (spoken_tokens & friendly_tokens)
+                ):
                     partial_matches.append(friendly)
 
             if len(partial_matches) == 1:
                 matched_name = partial_matches[0]
-                debug_print(f"[collect_dr_info] ✅ Partial match with doctor_name='{matched_name}'")
+                debug_print(f"[collect_dr_info] ✅ Partial match with: {matched_name}")
             elif len(partial_matches) > 1:
-                debug_print(f"[collect_dr_info] 🔍 Multiple possible matches → {partial_matches}")
-                matched_name = partial_matches[0]  # pick first
+                debug_print(f"[collect_dr_info] 🔍 Multiple matches: {partial_matches}")
+                matched_name = partial_matches[0]
 
-        # -------------------- ❌ Retry on Failure --------------------
+        # ----------------------------------------------------------------------
+        # ❌ Retry on Failure
+        # ----------------------------------------------------------------------
         if matched_name is None:
             sd["retry_booking"] += 1
             retries = sd["retry_booking"]
@@ -5958,14 +5920,12 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-prompt doctor list
             prompt_lines = [f"Press {k} for {v}." for k, v in doctor_map.items()]
             doctor_prompt = (
                 "I couldn't match that to a doctor. "
                 + " ".join(prompt_lines)
                 + " You can also say the doctor's name."
             )
-
             g = make_gather(
                 doctor_prompt,
                 input="speech dtmf",
@@ -5979,15 +5939,12 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # -------------------- ✅ Success — Store and Move On --------------------
+        # ----------------------------------------------------------------------
+        # ✅ Success — Store and Move On
+        # ----------------------------------------------------------------------
         sd["doctor_name"] = matched_name
         sd["stage"] = "ask_time_date"
 
-        debug_print(f"[collect_dr_info] ✅ Stored doctor_name='{matched_name}'")
-        debug_print(f"[collect_dr_info] 🧭 Session keys now → {list(sd.keys())}")
-        debug_print(f"[collect_dr_info] 🩺 Session doctor_name value → {sd.get('doctor_name')}")
-
-        # 🗣️ Proceed to next step
         g = make_gather(
             f"Great, your appointment will be with {matched_name}. "
             "Please say the appointment date and time, for example, 'October 8 at 9 30 A M'.",
@@ -5995,12 +5952,14 @@ def voice():
             timeout=10,
             speech_timeout="auto",
             barge_in=True,
-            finish_on_key='#'
+            finish_on_key="#"
         )
         resp.append(g)
         resp.redirect("/voice")
-        return str(resp)
 
+        debug_print(f"[collect_dr_info] ✅ Stored doctor_name={matched_name} → next stage ask_time_date")
+        save_session(call_sid)
+        return str(resp)
 
 
 
@@ -6474,34 +6433,35 @@ def voice():
         #   • Supports both speech and DTMF input.
         #   • Uses GPT extraction as fallback for ambiguous speech.
         #   • Tags this flow with origin_stage="cancel" for downstream use
-        #     (e.g., collect_pin_number, cancel_appt_get_phone_number, etc.)
+        #     (e.g., cancel_appt_get_phone_number).
         # ----------------------------------------------------------------------
 
-        session_data.setdefault(call_sid, {})
-        session_data[call_sid].setdefault("cancel", {})
+        sd = session_data.setdefault(call_sid, {})
+        sd.setdefault("cancel", {})
+        sd["origin_stage"] = "cancel"
 
-        # ✅ Tag this session as cancellation flow origin
-        session_data[call_sid]["origin_stage"] = "cancel"
-
-        # Safe punctuation definition
+        # ----------------------------------------------------------------------
+        # 🧹 Punctuation and helper setup
+        # ----------------------------------------------------------------------
         try:
             _PUNCT = string.punctuation
         except Exception:
             _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
 
-        # ----------------------------------------------------------------------
-        # 🔍 Helper: Extract doctor name using GPT fallback
-        # ----------------------------------------------------------------------
+        def _clean(s: str) -> str:
+            """Normalize and strip punctuation for fuzzy matching."""
+            s = (s or "").lower().translate(str.maketrans("", "", _PUNCT)).strip()
+            return " ".join(s.split())
+
         def _extract_doctor_name(speech_text):
+            """GPT fallback extractor for doctor name (if needed)."""
             if not speech_text.strip():
                 return ""
-
             prompt = (
                 f"From this sentence: \"{speech_text}\", extract only the doctor's name "
-                f"mentioned. Return only the name, without titles like Dr. or punctuation. "
+                f"mentioned. Return only the name without titles like 'Dr.' or punctuation. "
                 f"If no name is mentioned, return an empty string."
             )
-
             try:
                 response = client.chat.completions.create(
                     model="gpt-3.5-turbo",
@@ -6512,37 +6472,33 @@ def voice():
                     temperature=0,
                 )
                 extracted = response.choices[0].message.content.strip()
-                print(f"✅ GPT extracted doctor name: {extracted}")
+                debug_print(f"[cancel_appointment] 🤖 GPT extracted doctor name → '{extracted}'")
                 return extracted
             except Exception as e:
-                print(f"⚠️ GPT fallback in extract_doctor_name: {type(e).__name__}: {e}")
+                debug_print(f"[cancel_appointment] ⚠️ GPT fallback failed → {type(e).__name__}: {e}")
                 return speech_text.strip()
 
         # ----------------------------------------------------------------------
-        # 🔧 Helper: Clean text (lowercase, remove punctuation)
-        # ----------------------------------------------------------------------
-        def _clean(s: str) -> str:
-            s = (s or "").lower().translate(str.maketrans("", "", _PUNCT)).strip()
-            return " ".join(s.split())
-
-        # ----------------------------------------------------------------------
-        # 🔊 Input handling
+        # 🔊 Input capture
         # ----------------------------------------------------------------------
         dtmf_digits = (request.values.get("Digits") or "").strip()
-        selected_text = (speech_result or "").strip()
+        spoken_text = (speech_result or "").strip()
+        spoken_clean = _clean(spoken_text)
 
-        # Build DTMF doctor map
-        doctor_names = list(googleid_dr_name_map.values())
-        doctor_dtmf_map = {str(i + 1): doc for i, doc in enumerate(doctor_names)}
-        session_data[call_sid]["doctor_dtmf_map"] = doctor_dtmf_map
+        # Build map for DTMF-based doctor selection
+        doctor_list = list(doctor_names.values())
+        doctor_dtmf_map = {str(i + 1): doc for i, doc in enumerate(doctor_list)}
+        sd["doctor_dtmf_map"] = doctor_dtmf_map
+
+        debug_print(f"[cancel_appointment] 🎙 speech='{spoken_clean}' 🔢 DTMF='{dtmf_digits}'")
 
         # ----------------------------------------------------------------------
         # 🔇 Silence handling
         # ----------------------------------------------------------------------
-        if not selected_text and not dtmf_digits:
-            tries = session_data[call_sid].get("silence_cancel_doc", 0) + 1
-            session_data[call_sid]["silence_cancel_doc"] = tries
-            debug_print(f"cancel_appointment: 🤐 No input detected (silence count={tries})")
+        if not spoken_clean and not dtmf_digits:
+            tries = sd.get("silence_cancel_doc", 0) + 1
+            sd["silence_cancel_doc"] = tries
+            debug_print(f"[cancel_appointment] 🤐 silence count={tries}/3")
 
             if tries >= 3:
                 resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
@@ -6550,111 +6506,95 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            options = ". ".join([f"{doc} (press {k})" for k, doc in doctor_dtmf_map.items()])
+            options = ". ".join([f"{name} (press {k})" for k, name in doctor_dtmf_map.items()])
             retry_prompt = (
                 f"I didn't hear the doctor's name. Available doctors are: {options}. "
-                "Please say the name of the doctor or press the number."
+                "Please say the doctor's name or press the corresponding number."
             )
-            session_data[call_sid]["stage"] = "cancel_appointment"
+            sd["stage"] = "cancel_appointment"
             resp.append(make_gather(
                 retry_prompt,
-                hints=", ".join(doctor_names),
+                hints=", ".join(doctor_list),
                 num_digits=1,
-                language="en-US",  # ✅ English (US)
+                language="en-US",
             ))
             return str(resp)
 
+        sd.pop("silence_cancel_doc", None)
+
         # ----------------------------------------------------------------------
-        # 🔢 Handle DTMF direct match
+        # 🔢 DTMF direct match
         # ----------------------------------------------------------------------
+        matched_name = None
         if dtmf_digits and dtmf_digits in doctor_dtmf_map:
             matched_name = doctor_dtmf_map[dtmf_digits]
-            matched_id = next(k for k, v in googleid_dr_name_map.items() if v == matched_name)
-            debug_print(f"cancel_appointment: ✅ DTMF match → {matched_name} ({matched_id})")
-        else:
-            # Clear silence counter if we heard something
-            session_data[call_sid].pop("silence_cancel_doc", None)
+            debug_print(f"[cancel_appointment] ✅ DTMF matched doctor → {matched_name}")
 
-            selected_clean = _clean(selected_text)
-            debug_print(f"cancel_appointment: 🗣️ Received doctor name → '{selected_clean}'")
-
+        # ----------------------------------------------------------------------
+        # 🎙 Speech match (fuzzy) if no DTMF
+        # ----------------------------------------------------------------------
+        if not matched_name:
             junk_inputs = {
                 "", "yes", "no", "yeah", "nope", "ok", "okay", "hello", "hi", "hey",
                 "good morning", "good afternoon", "good evening", "test", "i know", "what"
             }
-            if (not selected_clean) or (selected_clean in junk_inputs) or (len(selected_clean) < 2):
-                options = ". ".join([f"{doc} (press {k})" for k, doc in doctor_dtmf_map.items()])
+            if (not spoken_clean) or (spoken_clean in junk_inputs) or len(spoken_clean) < 2:
+                options = ". ".join([f"{name} (press {k})" for k, name in doctor_dtmf_map.items()])
                 retry_prompt = (
                     f"I didn't recognize that as a doctor's name. Available doctors are: {options}. "
                     "Please say the name or press the number."
                 )
-                session_data[call_sid]["stage"] = "cancel_appointment"
+                sd["stage"] = "cancel_appointment"
                 resp.append(make_gather(
                     retry_prompt,
-                    hints=", ".join(doctor_names),
+                    hints=", ".join(doctor_list),
                     num_digits=1,
-                    language="en-US",  # ✅ English
+                    language="en-US",
                 ))
                 return str(resp)
 
-            # ------------------------------
-            # 1️⃣ Partial substring / token match
-            # ------------------------------
-            matched_id = None
-            matched_name = None
+            # 🔍 Partial / token-based fuzzy matching
             partial_matches = []
-            spoken_tokens = set(selected_clean.split())
-
-            for doc_id, friendly_name in googleid_dr_name_map.items():
+            spoken_tokens = set(spoken_clean.split())
+            for friendly_name in doctor_names.values():
                 friendly_clean = _clean(friendly_name)
                 friendly_tokens = set(friendly_clean.split())
                 if (
-                    selected_clean in friendly_clean
-                    or friendly_clean in selected_clean
+                    spoken_clean in friendly_clean
+                    or friendly_clean in spoken_clean
                     or (spoken_tokens & friendly_tokens)
                 ):
-                    partial_matches.append((doc_id, friendly_name))
+                    partial_matches.append(friendly_name)
 
             if len(partial_matches) == 1:
-                matched_id, matched_name = partial_matches[0]
-                debug_print(f"cancel_appointment: ✅ Partial match → {matched_name} ({matched_id})")
+                matched_name = partial_matches[0]
+                debug_print(f"[cancel_appointment] ✅ Partial match → {matched_name}")
             elif len(partial_matches) > 1:
-                best = None
-                best_overlap = -1
-                for doc_id, friendly_name in partial_matches:
-                    overlap = len(spoken_tokens & set(_clean(friendly_name).split()))
-                    if overlap > best_overlap:
-                        best = (doc_id, friendly_name)
-                        best_overlap = overlap
-                if best:
-                    matched_id, matched_name = best
-                    debug_print(f"cancel_appointment: ✅ Multiple matches; chose best overlap → {matched_name} ({matched_id})")
+                matched_name = partial_matches[0]
+                debug_print(f"[cancel_appointment] 🔍 Multiple possible matches, defaulting to → {matched_name}")
 
-            # ------------------------------
-            # 2️⃣ GPT fallback if no match
-            # ------------------------------
-            if not matched_id:
+            # 🤖 GPT fallback
+            if not matched_name:
                 try:
-                    extracted_name = _extract_doctor_name(selected_text)
-                    debug_print(f"cancel_appointment: 🤖 GPT extracted name → '{extracted_name}'")
-                    if extracted_name:
-                        extracted_clean = _clean(extracted_name)
-                        for doc_id, friendly_name in googleid_dr_name_map.items():
-                            friendly_clean = _clean(friendly_name)
-                            if extracted_clean in friendly_clean or friendly_clean in extracted_clean:
-                                matched_id, matched_name = doc_id, friendly_name
-                                debug_print(f"cancel_appointment: ✅ GPT matched → {matched_name} ({matched_id})")
-                                break
+                    extracted_name = _extract_doctor_name(spoken_text)
+                    extracted_clean = _clean(extracted_name)
+                    for friendly_name in doctor_names.values():
+                        friendly_clean = _clean(friendly_name)
+                        if extracted_clean in friendly_clean or friendly_clean in extracted_clean:
+                            matched_name = friendly_name
+                            debug_print(f"[cancel_appointment] ✅ GPT matched doctor → {matched_name}")
+                            break
                 except Exception as e:
-                    debug_print(f"cancel_appointment: ⚠️ GPT fallback error → {e}")
+                    debug_print(f"[cancel_appointment] ⚠️ GPT fallback error → {e}")
 
         # ----------------------------------------------------------------------
-        # 3️⃣ Still no match → Retry
+        # ❌ Retry if still no match
         # ----------------------------------------------------------------------
-        if not matched_id:
-            retries = session_data[call_sid].get("retry_booking", 0)
-            session_data[call_sid]["retry_booking"] = retries + 1
+        if not matched_name:
+            retries = sd.get("retry_booking", 0) + 1
+            sd["retry_booking"] = retries
             max_retries = globals().get("MAX_NUMBER_DR_RETRY", 3)
+            debug_print(f"[cancel_appointment] ❌ No doctor match retry={retries}/{max_retries}")
 
             if retries >= max_retries:
                 resp.say(gpt_speak(
@@ -6664,37 +6604,41 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            options = ". ".join([f"{doc} (press {k})" for k, doc in doctor_dtmf_map.items()])
+            options = ". ".join([f"{name} (press {k})" for k, name in doctor_dtmf_map.items()])
             retry_prompt = (
                 f"I didn't recognize that name. Available doctors are: {options}. "
                 "Please say the name or press the number."
             )
-            session_data[call_sid]["stage"] = "cancel_appointment"
+            sd["stage"] = "cancel_appointment"
             resp.append(make_gather(
                 retry_prompt,
-                hints=", ".join(doctor_names),
+                hints=", ".join(doctor_list),
                 num_digits=1,
-                language="en-US",  # ✅ English
+                language="en-US",
             ))
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 4️⃣ Success → Save and move to phone number collection
+        # ✅ Success — store doctor_name and proceed
         # ----------------------------------------------------------------------
-        session_data[call_sid]["doctor_id"] = matched_id
-        session_data[call_sid]["cancel"]["doctor"] = matched_name or googleid_dr_name_map.get(matched_id, "the doctor")
-        session_data[call_sid]["stage"] = "cancel_appt_get_phone_number"
+        sd["cancel"]["doctor_name"] = matched_name
+        sd["doctor_name"] = matched_name
+        sd["stage"] = "cancel_appt_get_phone_number"
 
-        resp.append(make_gather(
-            "Thanks. What phone number did you use when booking the appointment?",
+        g = make_gather(
+            f"Thanks. What phone number did you use when booking your appointment with {matched_name}?",
             input="speech dtmf",
-            language="en-US",  # ✅ English language
+            language="en-US",
             num_digits=10,
             timeout=8,
             speech_timeout="6",
             barge_in=True,
-        ))
+        )
+        resp.append(g)
+        save_session(call_sid)
+        debug_print(f"[cancel_appointment] ✅ Stored doctor_name={matched_name} → next stage cancel_appt_get_phone_number")
         return str(resp)
+
 
 
 
@@ -7310,7 +7254,6 @@ def voice():
         #
         #   CURRENT CUSTOMER:
         #       • Confirms appointment slot
-        #       • Creates Google Calendar entry (with full metadata)
         #       • Persists locally via book_appointment_for_dr_name()
         #       • Sends SMS confirmation
         # ----------------------------------------------------------------------
@@ -7327,7 +7270,7 @@ def voice():
         # ----------------------------------------------------------------------
         # 🧩 Customer Info
         # ----------------------------------------------------------------------
-        customer         = sd.get("customer", {}) or {}
+        customer = sd.get("customer", {}) or {}
         first_name       = (customer.get("first_name") or "").strip()
         last_name        = (customer.get("last_name")  or "").strip()
         customer_address = (customer.get("address")    or "").strip()
@@ -7340,7 +7283,7 @@ def voice():
         # 🆕 NEW CUSTOMER FLOW
         # ----------------------------------------------------------------------
         if customer_status == "new":
-            debug_print("book_appt_confirm: 🆕 new customer → skipping doctor & appointment flow")
+            debug_print("book_appt_confirm: 🆕 new customer → skipping appointment booking")
 
             try:
                 inserted_ok = insert_customer(
@@ -7377,15 +7320,7 @@ def voice():
         # ----------------------------------------------------------------------
         debug_print("book_appt_confirm: 👤 current customer flow continues")
 
-        doctor_id = sd.get("doctor_id")
-        if not doctor_id:
-            debug_print("book_appt_confirm: ❌ missing doctor_id → choose_doctor")
-            session_data[call_sid]["stage"] = "choose_doctor"
-            resp.append(make_gather("Which doctor would you like to see?"))
-            return str(resp)
-
-        doctor_name = googleid_dr_name_map.get(doctor_id, "the doctor")
-
+        doctor_name = sd.get("doctor_name", "the doctor")
         appt = sd.get("appointment_time", {}) or {}
         appointment_start = appt.get("start")
         appointment_end   = appt.get("end")
@@ -7428,16 +7363,16 @@ def voice():
                 return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ Verify slot availability
+        # ✅ Verify slot availability (local JSON)
         # ----------------------------------------------------------------------
         try:
-            slot_ok = is_time_slot_available(doctor_id, appointment_start, appointment_end, creds)
+            slot_ok = is_doctor_slot_available(doctor_name, appointment_start, appointment_end)
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ slot check failed → {e}")
             slot_ok = False
 
         if not slot_ok:
-            session_data[call_sid]["stage"] = "ask_time_date"
+            sd["stage"] = "ask_time_date"
             resp.append(make_gather("Sorry, that slot was just taken. Please choose another time."))
             return str(resp)
 
@@ -7465,66 +7400,6 @@ def voice():
             debug_print(f"book_appt_confirm: ❌ insert_customer failed → {e}")
 
         # ----------------------------------------------------------------------
-        # 📅 Create Google Calendar Event with Full Metadata
-        # ----------------------------------------------------------------------
-        google_event_id = sd.get("google_event_id", "")
-        if not google_event_id:
-            try:
-                service = build("calendar", "v3", credentials=creds)
-
-                desc_lines = [
-                    f"Clinic appointment for {first_name} {last_name or ''}.",
-                    f"Phone: {phone_e164}",
-                    f"DOB: {customer_dob}",
-                    f"Address: {customer_address}",
-                ]
-                if insurance_name:
-                    desc_lines.append(f"Insurance: {insurance_name}")
-                if insurance_member_id:
-                    desc_lines.append(f"Member ID: {insurance_member_id}")
-
-                description_text = "\n".join(desc_lines).strip()
-
-                event_body = {
-                    "summary": f"Appointment: {doctor_name}",
-                    "description": description_text,
-                    "start": {"dateTime": appointment_start, "timeZone": "UTC"},
-                    "end":   {"dateTime": appointment_end,   "timeZone": "UTC"},
-                    "extendedProperties": {
-                        "private": {
-                            "patient_name": f"{first_name} {last_name or ''}",
-                            "first_name": first_name,
-                            "last_name": last_name,
-                            "phone_e164": phone_e164,
-                            "dob": customer_dob,
-                            "address": customer_address,
-                            "insurance_name": insurance_name,
-                            "insurance_member_id": insurance_member_id,
-                            "call_sid": call_sid,
-                        }
-                    },
-                }
-
-                ev = service.events().insert(
-                    calendarId=doctor_id,
-                    body=event_body,
-                    sendUpdates="none"
-                ).execute()
-
-                google_event_id = ev.get("id", "")
-                session_data[call_sid]["google_event_id"] = google_event_id
-
-                debug_print(f"book_appt_confirm: ✅ Google event created id={google_event_id}")
-                debug_print("book_appt_confirm: 📝 Event description content:")
-                debug_print(description_text)
-
-            except Exception as e:
-                debug_print(f"book_appt_confirm: ❌ Google insert failed → {e}")
-                session_data[call_sid]["stage"] = "ask_time_date"
-                resp.append(make_gather("Sorry, I couldn't confirm that slot. Please say another time."))
-                return str(resp)
-
-        # ----------------------------------------------------------------------
         # 🗂️ Log Appointment Locally
         # ----------------------------------------------------------------------
         try:
@@ -7534,17 +7409,15 @@ def voice():
                 phone=phone_e164,
                 utc_start=appointment_start,
                 utc_end=appointment_end,
-                calendar_id=doctor_id,
                 name=full_name,
                 dob=customer_dob,
                 address=customer_address,
-                event_id=google_event_id,
                 friendly_local=formatted_time,
                 debug=True
             )
             debug_print(f"book_appt_confirm: ✅ Appointment logged locally for {doctor_name} at {formatted_time}")
         except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ failed to log appointment via book_appointment_for_dr_name → {e}")
+            debug_print(f"book_appt_confirm: ⚠️ failed to log appointment locally → {e}")
 
         # ----------------------------------------------------------------------
         # ✅ Confirm + SMS Notification
@@ -7578,7 +7451,7 @@ def voice():
 
 
 
-# ======================================================================
+        # ======================================================================
         # 🧩 Stage: cancel_appt_confirm
         # ----------------------------------------------------------------------
         # PURPOSE:
