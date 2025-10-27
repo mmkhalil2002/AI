@@ -331,6 +331,9 @@ DEBUG  = True
 # ---- Country switch (US by default; set to "EG" to favor Egypt) ----
 COUNTRY = os.getenv("COUNTRY", "US").upper()   # e.g., export COUNTRY=EG
 
+with open("doctors_map.json") as f:
+   doctor_names = json.load(f)
+
 
 if USE_GPT:
     
@@ -351,6 +354,9 @@ else:
 
     client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     print("📞 Using Twilio client")
+
+
+
 
 
 #################################################
@@ -516,8 +522,6 @@ Purpose: Loads a dictionary mapping Google Calendar IDs to spoken-friendly docto
   "dr.alex@example.com": "Dr. Alex"
 }
 """
-with open("doctors_map.json") as f:
-   doctor_names = json.load(f)
 
 
 #load_doctor_appt()  # <== Call it here on startup
@@ -4405,7 +4409,6 @@ def voice():
 
 
     elif stage == "collect_dr_info":
-        global doctor_names
         # ----------------------------------------------------------------------
         # 🩺 Stage: collect_dr_info
         # ----------------------------------------------------------------------
@@ -4415,7 +4418,7 @@ def voice():
         #   - Supports partial/fuzzy speech match and retries.
         #   - On success → move to ask_time_date (for appointment scheduling).
         # ----------------------------------------------------------------------
-
+        global doctor_names
         session_data.setdefault(call_sid, {}).setdefault("retry_booking", 0)
         session_data[call_sid]["origin_stage"] = "book"
 
