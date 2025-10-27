@@ -4533,6 +4533,11 @@ def voice():
     elif stage == "ask_time_date":
         # ----------------------------------------------------------------------
         # 📅 ASK_TIME_DATE — Get appointment date/time (AM/PM required)
+        # PURPOSE:
+        #   • Parses spoken or keypad date/time input.
+        #   • Validates time window (future, working hours).
+        #   • Checks local JSON (doctor’s appointments) for availability.
+        #   • Suggests next available times if slot unavailable or past.
         # ----------------------------------------------------------------------
         debug_print(f"[ask_time_date] 🗣️ Received speech: {speech_result}")
 
@@ -4554,32 +4559,45 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧠 Parse input (smart_parse_time)
+        # 🧠 Parse input (smart_parse_time returns tuple)
         # ----------------------------------------------------------------------
-        raw_input = (speech_result or request.values.get("Digits") or "").strip()
         appointment_start, appointment_end = None, None
-        try:
-            parsed = smart_parse_time(raw_input)
-            if parsed and isinstance(parsed, tuple) and len(parsed) == 2:
-                spoken_day, spoken_time = parsed
-                tz = _pytz.timezone(CLINIC_TZ)
-                now = _dt.datetime.now(tz)
-                parsed_dt = _dt.datetime.strptime(f"{spoken_day} {spoken_time}", "%A, %B %d at %I:%M %p")
-                parsed_dt = tz.localize(parsed_dt.replace(year=now.year))
-                appointment_start = parsed_dt.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
-                end_dt = parsed_dt + _dt.timedelta(minutes=APPOINTMENT_DURATION_MINUTES)
-                appointment_end = end_dt.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
-                debug_print(f"[ask_time_date] ✅ Parsed time → {spoken_day} {spoken_time}")
-        except Exception as e:
-            debug_print(f"[ask_time_date] ❌ smart_parse_time failed → {e}")
+        raw_input = (speech_result or request.values.get("Digits") or "").strip()
 
+        try:
+            result = smart_parse_time(raw_input)
+            if result and isinstance(result, tuple) and len(result) == 2:
+                spoken_day, spoken_time = result
+                debug_print(f"[ask_time_date] 🧩 smart_parse_time returned tuple ({spoken_day}, {spoken_time})")
+
+                tz = _pytz.timezone(CLINIC_TZ)
+                now_local = _dt.datetime.now(tz)
+
+                # Parse spoken text into current-year datetime
+                parsed_dt = _dt.datetime.strptime(f"{spoken_day} {spoken_time}", "%A, %B %d at %I:%M %p")
+                parsed_dt = tz.localize(parsed_dt.replace(year=now_local.year))
+
+                # Convert to UTC
+                appointment_start = parsed_dt.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
+                appointment_end = (parsed_dt + _dt.timedelta(minutes=APPOINTMENT_DURATION_MINUTES)).astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
+
+                debug_print(f"[ask_time_date] ✅ Parsed start={appointment_start}, end={appointment_end}")
+            else:
+                debug_print(f"[ask_time_date] ⚠️ smart_parse_time returned invalid result → {result}")
+        except Exception as e:
+            debug_print(f"[ask_time_date] ❌ Failed to parse input → {e}")
+
+        # ----------------------------------------------------------------------
+        # 🧭 Handle invalid or empty time input
+        # ----------------------------------------------------------------------
         if not appointment_start:
             retry_count += 1
             if retry_count >= 3:
-                resp.say("I couldn’t get the time. Let’s start again. Goodbye!", VOICE)
+                resp.say("I couldn’t understand the time. Let’s start over. Goodbye!", VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
+
             sd["retry_time"] = retry_count
             g = make_gather(
                 "Please say the date and time, like 'October 8 at 9 30 A M'.",
@@ -4590,7 +4608,7 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ⏰ Past or busy slot check
+        # ⏰ Check if the slot is in the past or already taken
         # ----------------------------------------------------------------------
         now_utc = _pytz.UTC.localize(_dt.datetime.utcnow())
         try:
@@ -4619,7 +4637,7 @@ def voice():
             save_session(call_sid)
             return str(resp)
 
-        # --- Busy slot handling ---
+        # --- Busy slot handling (using local JSON check) ---
         slot_free = False
         try:
             slot_free = is_doctor_slot_available(doctor_name, appointment_start, appointment_end)
@@ -4646,16 +4664,15 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ Free slot → proceed
+        # ✅ Free slot → proceed to booking confirmation
         # ----------------------------------------------------------------------
         sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
         sd["stage"] = "book_appt_confirm"
         debug_print(f"[ask_time_date] ✅ Free slot confirmed → {appointment_start}")
+
         save_session(call_sid)
         resp.redirect("/voice")
         return str(resp)
-
-
 
 
 
