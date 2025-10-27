@@ -1,5 +1,5 @@
 #=======
-# update  10/23/2025 time_saved 
+# update  10/27/2025 time_saved 
 #  
 # =========================
 # Standard library imports
@@ -517,7 +517,7 @@ Purpose: Loads a dictionary mapping Google Calendar IDs to spoken-friendly docto
 }
 """
 with open("doctors_map.json") as f:
-   doctors_names = json.load(f)
+   doctor_names = json.load(f)
 
 
 #load_doctor_appt()  # <== Call it here on startup
