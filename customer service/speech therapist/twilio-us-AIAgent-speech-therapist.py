@@ -4812,74 +4812,52 @@ def voice():
         resp.redirect("/voice")
         return str(resp)
 
-        elif stage == "ask_time_date_select_alt":
-            # ----------------------------------------------------------------------
-            # 🧩 Stage: ask_time_date_select_alt — Handle alternative slot choice
-            # ----------------------------------------------------------------------
-            debug_print(f"[ask_time_date_select_alt] speech='{speech_result}' dtmf='{request.values.get('Digits')}'")
-            sd = session_data.get(call_sid, {})
-            alts = sd.get("alt_slots", [])
-            choice = (speech_result or request.values.get("Digits") or "").lower().strip()
 
-            # ----------------------------------------------------------------------
-            # 🚫 Handle refusal (“none”, “no”, “no thanks”)
-            # ----------------------------------------------------------------------
-            if any(x in choice for x in ["none", "no", "nope", "no thanks", "nothing", "nah"]):
-                debug_print("[ask_time_date_select_alt] 📴 User declined all options — ending call")
-                resp.say("Okay, no problem. You can call us anytime to book another appointment. Goodbye!", VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
 
-            # ----------------------------------------------------------------------
-            # ✅ Handle valid selection
-            # ----------------------------------------------------------------------
-            selected = None
-            if any(x in choice for x in ["1", "first", "one", "yes", "yeah", "sure", "ok", "okay"]):
-                selected = 0
-            elif any(x in choice for x in ["2", "second", "two"]):
-                selected = 1
-            elif any(x in choice for x in ["3", "third", "three"]):
-                selected = 2
+    # ----------------------------------------------------------------------
+# 🧩 Stage: ask_time_date_select_alt — handle alternative slot choice
+# ----------------------------------------------------------------------
+    elif stage == "ask_time_date_select_alt":
+        debug_print(f"[ask_time_date_select_alt] speech='{speech_result}' dtmf='{request.values.get('Digits')}'")
+        sd = session_data.get(call_sid, {})
+        alts = sd.get("alt_slots", [])
+        choice = (speech_result or request.values.get("Digits") or "").lower().strip()
 
-            if selected is not None and selected < len(alts):
-                chosen = alts[selected]
-                debug_print(f"[ask_time_date_select_alt] ✅ selected slot → {chosen['friendly']}")
-                sd["appointment_time"] = {"start": chosen["start"], "end": chosen["end"]}
-                sd["stage"] = "book_appt_confirm"
-                save_session(call_sid)
+        selected = None
+        if any(x in choice for x in ["1", "first", "one", "yes", "yeah", "sure", "ok"]):
+            selected = 0
+        elif any(x in choice for x in ["2", "second", "two"]):
+            selected = 1
+        elif any(x in choice for x in ["3", "third", "three"]):
+            selected = 2
 
-                # Friendly confirmation message before proceeding
-                g = make_gather(
-                    f"Great! I’ve selected {chosen['friendly']}. Let’s confirm your appointment details.",
-                    input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True
-                )
-                resp.append(g)
-                resp.redirect("/voice")
-                return str(resp)
+        if selected is not None and selected < len(alts):
+            chosen = alts[selected]
+            debug_print(f"[ask_time_date_select_alt] ✅ selected slot → {chosen['friendly']}")
+            sd["appointment_time"] = {"start": chosen["start"], "end": chosen["end"]}
+            sd["stage"] = "book_appt_confirm"
+            save_session(call_sid)
+            resp.redirect("/voice")
+            return str(resp)
 
-            # ----------------------------------------------------------------------
-            # ❌ Handle invalid or unclear input (retry)
-            # ----------------------------------------------------------------------
-            retries = sd.get("retry_alt", 0) + 1
-            sd["retry_alt"] = retries
-            if retries >= 3:
-                resp.say("I didn’t get a valid selection. Let’s start again. Goodbye!", VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            options_text = ", ".join([a["friendly"] for a in alts[:-1]]) + f", or {alts[-1]['friendly']}"
-            g = make_gather(
-                f"Please say 'first', 'second', or 'third' to choose from {options_text}. "
-                "Or say 'none' if you don't want to book right now.",
-                input="speech dtmf", timeout=8, speech_timeout="auto", barge_in=True
-            )
-            resp.append(g)
-            sd["stage"] = "ask_time_date_select_alt"
+        # Retry logic for no selection
+        retries = sd.get("retry_alt", 0) + 1
+        sd["retry_alt"] = retries
+        if retries >= 3:
+            resp.say("I didn’t get a valid selection. Let’s start again.")
+            sd["stage"] = "intro"
             save_session(call_sid)
             return str(resp)
 
+        options_text = ", ".join([a["friendly"] for a in alts[:-1]]) + f", or {alts[-1]['friendly']}"
+        g = make_gather(
+            f"Please say 'first', 'second', or 'third' to choose from {options_text}.",
+            input="speech dtmf", timeout=8, speech_timeout="auto", barge_in=True
+        )
+        resp.append(g)
+        sd["stage"] = "ask_time_date_select_alt"
+        save_session(call_sid)
+        return str(resp)
 
 
 
