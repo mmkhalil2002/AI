@@ -2886,7 +2886,7 @@ def safe_twiml_route(func):
 @app.route("/voice/", methods=["POST"])  # Accepts trailing slash
 @safe_twiml_route
 def voice():
-    global session_data
+    global session_data,doctor_names
     # ----------------------------------------------------------------------
     # 🎙️ Twilio Voice Entry Point
     # ----------------------------------------------------------------------
@@ -4418,7 +4418,7 @@ def voice():
         #   - Supports partial/fuzzy speech match and retries.
         #   - On success → move to ask_time_date (for appointment scheduling).
         # ----------------------------------------------------------------------
-        global doctor_names
+        #global doctor_names
         session_data.setdefault(call_sid, {}).setdefault("retry_booking", 0)
         session_data[call_sid]["origin_stage"] = "book"
 
