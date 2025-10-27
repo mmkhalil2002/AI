@@ -401,6 +401,114 @@ def save_session(call_sid: str):
 #######################################################
 
 
+
+import re as _re
+from datetime import datetime, timedelta
+
+def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: int = 30):
+    """
+    Standalone, dependency-free parser for human speech inputs like:
+        "October 8 at 9:00 a.m." or "Oct 8 9 30 P M"
+    Returns:
+        (start_iso, end_iso, friendly_str)
+
+    Example:
+        smart_parse_time("October 8 at 9 AM") →
+        ("2025-10-08T14:00:00Z", "2025-10-08T14:30:00Z", "Wednesday, October 8 at 9:00 AM")
+    """
+
+    def _dbg(msg: str):
+        try:
+            debug_print(msg)
+        except Exception:
+            print(msg)
+
+    # -------------------- Safety & cleanup --------------------
+    if not raw or not str(raw).strip():
+        _dbg("[smart_parse_time] ⚠️ Empty input")
+        return None, None, None
+
+    s = str(raw).strip().lower()
+    _dbg(f"[smart_parse_time] 🧠 raw input='{s}'")
+
+    # Normalize AM/PM patterns
+    s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s)
+    s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s)
+    s = _re.sub(r"o['’]?clock", "", s)
+    s = _re.sub(r"[^\w\s:]", " ", s)  # remove punctuation except colon
+    s = _re.sub(r"\s+", " ", s).strip()
+
+    # -------------------- Parse month/day/time --------------------
+    months = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12
+    }
+
+    month, day, hour, minute, ampm = None, None, 9, 0, "am"
+
+    # Month
+    for m in months:
+        if m in s:
+            month = months[m]
+            break
+
+    # Numeric month/day (e.g., 8/10 or 10-8)
+    if not month:
+        m = _re.search(r"\b(\d{1,2})[/-](\d{1,2})\b", s)
+        if m:
+            month, day = int(m.group(1)), int(m.group(2))
+
+    # Day
+    if not day:
+        m = _re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\b", s)
+        if m:
+            day = int(m.group(1))
+
+    # Hour / minute
+    m = _re.search(r"\b(\d{1,2})(?:[: ](\d{2}))?\b", s)
+    if m:
+        hour = int(m.group(1))
+        if m.group(2):
+            minute = int(m.group(2))
+
+    # AM/PM
+    if "pm" in s:
+        ampm = "pm"
+    elif "am" in s:
+        ampm = "am"
+
+    if not month or not day:
+        _dbg(f"[smart_parse_time] ❌ Couldn’t find month/day in '{s}'")
+        return None, None, None
+
+    # -------------------- Normalize hour --------------------
+    if ampm == "pm" and hour < 12:
+        hour += 12
+    if ampm == "am" and hour == 12:
+        hour = 0
+
+    # -------------------- Compose datetime --------------------
+    now = datetime.utcnow()
+    try:
+        dt_local = datetime(now.year, month, day, hour, minute)
+    except ValueError:
+        _dbg("[smart_parse_time] ❌ invalid date")
+        return None, None, None
+
+    # Apply timezone offset (e.g. −5 → UTC−5 → add +5h to get UTC)
+    dt_utc = dt_local + timedelta(hours=-tz_offset_hours)
+    dt_end = dt_utc + timedelta(minutes=default_duration_min)
+
+    # Friendly display
+    friendly = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
+
+    _dbg(f"[smart_parse_time] ✅ Parsed '{raw}' → {friendly}")
+    return dt_utc.isoformat(), dt_end.isoformat(), friendly
+
+
+
+
 ## print debug
 
 
