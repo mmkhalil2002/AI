@@ -1012,163 +1012,6 @@ def get_doctor_next_available_slots(
 
 
 
-# google dependent 
-def get_next_available_slots(
-    calendar_id: str,
-    creds,
-    *,
-    from_start_iso: str,
-    duration_minutes: int = None,
-    limit: int = 3,
-    tz_name: str = None,
-    work_hours=None,
-    slot_step_minutes: int = None,
-    search_days: int = None
-) -> list:
-    """Return up to `limit` future UTC slots strictly after from_start_iso."""
-
-    def _dbg(msg: str):
-        try: debug_print(msg)
-        except Exception: print(msg)
-
-    _dbg(f"get_next_available_slots: ▶️ cal={calendar_id} from={from_start_iso} limit={limit}")
-
-    if duration_minutes is None:
-        duration_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
-    if duration_minutes not in (15, 30, 45, 60):
-        duration_minutes = 30
-    if slot_step_minutes is None:
-        slot_step_minutes = duration_minutes
-
-    if tz_name is None:
-        tz_name = globals().get("CLINIC_TZ", "America/Chicago")
-    try:
-        tz_local = _pytz.timezone(tz_name)
-    except Exception:
-        tz_local = _pytz.timezone("America/Chicago")
-
-    WSTART = int(globals().get("WORKING_HOURS_START", 8))
-    WEND   = int(globals().get("WORKING_HOURS_END", 17))
-    if not work_hours:
-        work_hours = ((WSTART, WEND),)
-    WORKING_DAYS = set(int(x) for x in globals().get("WORKING_DAYS", {0,1,2,3,4}))
-
-    # Lunch break
-    def _as_time(val, default_h=None, default_m=0):
-        if val is None: return None if default_h is None else dtime(default_h, default_m)
-        if isinstance(val, dtime): return val
-        s = str(val).strip()
-        if not s: return None
-        if ":" in s: hh, mm = (s.split(":", 1) + ["0"])[:2]
-        else: hh, mm = s, "0"
-        try: return dtime(int(hh), int(mm))
-        except Exception: return None
-
-    LUNCH_START = _as_time(globals().get("LUNCH_BREAK_START"))
-    LUNCH_END   = _as_time(globals().get("LUNCH_BREAK_END"))
-    if search_days is None:
-        search_days = int(globals().get("SEARCH_DAYS", 14))
-
-    def _friendly(dt_local, now_local):
-        try:
-            if dt_local.year != now_local.year:
-                return dt_local.strftime("%A, %B %-d, %Y at %-I:%M %p")
-            return dt_local.strftime("%A, %B %-d at %-I:%M %p")
-        except Exception:
-            return dt_local.strftime("%A, %B %d at %I:%M %p")
-
-    def _align_up_to_window_grid(dt_local, minutes, window_start_local, *, now_local):
-        dt_local = dt_local.replace(second=0, microsecond=0)
-        anchor   = window_start_local.replace(second=0, microsecond=0)
-        diff_min = int((dt_local - anchor).total_seconds() // 60)
-        if diff_min <= 0:
-            aligned = anchor
-        else:
-            rem = diff_min % minutes
-            aligned = dt_local if rem == 0 else (dt_local + timedelta(minutes=(minutes - rem)))
-        if aligned.date() == now_local.date() and aligned <= now_local:
-            steps = ((now_local - anchor).total_seconds() // 60 // minutes) + 1
-            aligned = anchor + timedelta(minutes=int(steps * minutes))
-        return aligned
-
-    # --- UTC baselines ---
-    now_utc = datetime.now(_pytz.UTC)
-    now_loc = now_utc.astimezone(tz_local)
-
-    try:
-        req_utc = isoparse((from_start_iso or "").strip())
-        if req_utc.tzinfo is None:
-            req_utc = _pytz.UTC.localize(req_utc)
-    except Exception:
-        req_utc = now_utc
-    req_local = req_utc.astimezone(tz_local)
-
-    search_window_start = now_utc
-    search_window_end   = now_utc + timedelta(days=search_days)
-    base_utc = req_utc if (search_window_start <= req_utc <= search_window_end) else now_utc
-    cur_local = base_utc.astimezone(tz_local)
-
-    results, seen = [], set()
-
-    while cur_local.astimezone(_pytz.UTC) < search_window_end and len(results) < limit:
-        if cur_local.weekday() not in WORKING_DAYS:
-            cur_local = cur_local + timedelta(days=1)
-            cur_local = cur_local.replace(hour=WSTART, minute=0, second=0, microsecond=0)
-            continue
-
-        windows = []
-        for ws, we in work_hours:
-            wstart = tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day, ws, 0))
-            wend   = tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day, we, 0))
-            windows.append((wstart, wend))
-
-        progressed = False
-        for wstart, wend in windows:
-            if cur_local < wstart:
-                cur_local = wstart
-            cur_local = _align_up_to_window_grid(cur_local, slot_step_minutes, wstart, now_local=now_loc)
-
-            while cur_local + timedelta(minutes=duration_minutes) <= wend and len(results) < limit:
-                if LUNCH_START and LUNCH_END:
-                    if cur_local.time() < LUNCH_END and (cur_local + timedelta(minutes=duration_minutes)).time() > LUNCH_START:
-                        cur_local = tz_local.localize(datetime.combine(cur_local.date(), LUNCH_END))
-                        cur_local = _align_up_to_window_grid(cur_local, slot_step_minutes, wstart, now_local=now_loc)
-                        continue
-
-                start_iso = cur_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
-                end_iso   = (cur_local + timedelta(minutes=duration_minutes)).astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
-
-                assert start_iso.endswith("Z"), "Slot must be UTC"
-
-                try:
-                    if is_time_slot_available(calendar_id, start_iso, end_iso, creds) and start_iso not in seen:
-                        seen.add(start_iso)
-                        results.append({
-                            "start": start_iso,
-                            "end": end_iso,
-                            "friendly": _friendly(cur_local, now_loc),
-                            "tz": tz_name,
-                        })
-                        _dbg(f"get_next_available_slots: ✅ add {results[-1]['friendly']}")
-                except Exception as e:
-                    _dbg(f"get_next_available_slots: ❌ slot_check error → {e}")
-
-                cur_local = cur_local + timedelta(minutes=slot_step_minutes)
-                progressed = True
-
-        if not progressed:
-            cur_local = cur_local + timedelta(days=1)
-            cur_local = cur_local.replace(hour=WSTART, minute=0, second=0, microsecond=0)
-
-    _dbg(f"get_next_available_slots: ✅ suggestions={len(results)}")
-    return results
-
-
-
-
-
-
-
 
 
 
@@ -4733,9 +4576,9 @@ def voice():
         if not appointment_start:
             retry_count += 1
             if retry_count >= 3:
-                resp.say("I couldn’t get the time. Let’s start again.")
-                sd["stage"] = "intro"
-                save_session(call_sid)
+                resp.say("I couldn’t get the time. Let’s start again. Goodbye!", VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
                 return str(resp)
             sd["retry_time"] = retry_count
             g = make_gather(
@@ -4747,7 +4590,7 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ⏰ Past or busy slot check (fixed)
+        # ⏰ Past or busy slot check
         # ----------------------------------------------------------------------
         now_utc = _pytz.UTC.localize(_dt.datetime.utcnow())
         try:
@@ -4764,7 +4607,8 @@ def voice():
                 options_text = ", ".join([a["friendly"] for a in alts[:-1]]) + f", or {alts[-1]['friendly']}"
                 prompt = (
                     f"That time has already passed. Would you like {options_text}? "
-                    "You can say 'first', 'second', 'third', or just 'yes' to choose the first one."
+                    "You can say 'first', 'second', 'third', or 'yes' to choose the first one. "
+                    "Or say 'none' if you don’t want to book right now."
                 )
                 sd["stage"] = "ask_time_date_select_alt"
             else:
@@ -4778,7 +4622,7 @@ def voice():
         # --- Busy slot handling ---
         slot_free = False
         try:
-            slot_free = is_time_slot_available(doctor_name, appointment_start, appointment_end)
+            slot_free = is_doctor_slot_available(doctor_name, appointment_start, appointment_end)
             debug_print(f"[ask_time_date] ⏱️ Slot availability → {slot_free}")
         except Exception as e:
             debug_print(f"[ask_time_date] ⚠️ Slot check error → {e}")
@@ -4790,20 +4634,19 @@ def voice():
                 options_text = ", ".join([a["friendly"] for a in alts[:-1]]) + f", or {alts[-1]['friendly']}"
                 prompt = (
                     f"That time is already booked. Would you like {options_text}? "
-                    "Say 'first', 'second', 'third', or 'yes' to pick the first option."
+                    "Say 'first', 'second', 'third', 'yes', or 'none' to decline."
                 )
                 sd["stage"] = "ask_time_date_select_alt"
             else:
                 prompt = "That time isn’t available. Please say another time."
                 sd["stage"] = "ask_time_date"
-
             g = make_gather(prompt, input="speech dtmf", timeout=8, speech_timeout="auto", barge_in=True)
             resp.append(g)
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ Free slot → proceed to booking confirmation
+        # ✅ Free slot → proceed
         # ----------------------------------------------------------------------
         sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
         sd["stage"] = "book_appt_confirm"
@@ -4814,8 +4657,10 @@ def voice():
 
 
 
-    # ----------------------------------------------------------------------
-# 🧩 Stage: ask_time_date_select_alt — handle alternative slot choice
+
+
+# ----------------------------------------------------------------------
+# 🧩 Stage: ask_time_date_select_alt — Handle alternative slot choice
 # ----------------------------------------------------------------------
     elif stage == "ask_time_date_select_alt":
         debug_print(f"[ask_time_date_select_alt] speech='{speech_result}' dtmf='{request.values.get('Digits')}'")
@@ -4823,8 +4668,17 @@ def voice():
         alts = sd.get("alt_slots", [])
         choice = (speech_result or request.values.get("Digits") or "").lower().strip()
 
+        # 🚫 Handle refusal (“none”, “no”, “no thanks”)
+        if any(x in choice for x in ["none", "no", "nope", "no thanks", "nothing", "nah"]):
+            debug_print("[ask_time_date_select_alt] 📴 User declined all options — ending call")
+            resp.say("Okay, no problem. You can call us anytime to book another appointment. Goodbye!", VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
+
+        # ✅ Handle valid selection
         selected = None
-        if any(x in choice for x in ["1", "first", "one", "yes", "yeah", "sure", "ok"]):
+        if any(x in choice for x in ["1", "first", "one", "yes", "yeah", "sure", "ok", "okay"]):
             selected = 0
         elif any(x in choice for x in ["2", "second", "two"]):
             selected = 1
@@ -4837,27 +4691,34 @@ def voice():
             sd["appointment_time"] = {"start": chosen["start"], "end": chosen["end"]}
             sd["stage"] = "book_appt_confirm"
             save_session(call_sid)
+            g = make_gather(
+                f"Great! I’ve selected {chosen['friendly']}. Let’s confirm your appointment details.",
+                input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True
+            )
+            resp.append(g)
             resp.redirect("/voice")
             return str(resp)
 
-        # Retry logic for no selection
+        # ❌ Invalid or unclear input (retry)
         retries = sd.get("retry_alt", 0) + 1
         sd["retry_alt"] = retries
         if retries >= 3:
-            resp.say("I didn’t get a valid selection. Let’s start again.")
-            sd["stage"] = "intro"
-            save_session(call_sid)
+            resp.say("I didn’t get a valid selection. Let’s start again. Goodbye!", VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
             return str(resp)
 
         options_text = ", ".join([a["friendly"] for a in alts[:-1]]) + f", or {alts[-1]['friendly']}"
         g = make_gather(
-            f"Please say 'first', 'second', or 'third' to choose from {options_text}.",
+            f"Please say 'first', 'second', or 'third' to choose from {options_text}. "
+            "Or say 'none' if you don't want to book right now.",
             input="speech dtmf", timeout=8, speech_timeout="auto", barge_in=True
         )
         resp.append(g)
         sd["stage"] = "ask_time_date_select_alt"
         save_session(call_sid)
         return str(resp)
+
 
 
 
