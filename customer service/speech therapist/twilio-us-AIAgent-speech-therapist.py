@@ -4808,14 +4808,15 @@ def voice():
         raw_speech = (speech_result or "").strip()
         raw_dtmf   = (request.values.get("Digits") or "").strip()
 
-        # Parse the speech/digits into datetime
-        appointment_start, appointment_end = None, None
+        # Parse the speech/digits into datetime (tuple-based parser)
+        appointment_start, appointment_end, friendly_time = None, None, None
         try:
-            result = smart_parse_time(raw_speech or raw_dtmf)
-            if result:
-                appointment_start = result.get("start")
-                appointment_end   = result.get("end")
-                debug_print(f"[ask_time_date] ✅ Parsed start={appointment_start}, end={appointment_end}")
+            appointment_start, appointment_end, friendly_time = smart_parse_time(raw_speech or raw_dtmf)
+            if appointment_start and appointment_end:
+                debug_print(f"[ask_time_date] ✅ Parsed time → {friendly_time} "
+                            f"(start={appointment_start}, end={appointment_end})")
+            else:
+                debug_print("[ask_time_date] ⚠️ smart_parse_time returned None values")
         except Exception as e:
             debug_print(f"[ask_time_date] ❌ Failed to parse time input → {e}")
 
@@ -4830,12 +4831,14 @@ def voice():
         # ----------------------------------------------------------------------
         # ⏰ Past-time check
         # ----------------------------------------------------------------------
-        now_utc = _pytz.UTC.localize(_dt.utcnow())
-        start_dt = _dt.fromisoformat(appointment_start.replace("Z", "+00:00"))
+        now_utc = _dt.utcnow()
+        try:
+            start_dt = _dt.fromisoformat(appointment_start.replace("Z", "+00:00"))
+        except Exception:
+            start_dt = now_utc
+
         if start_dt <= now_utc:
-            alts = get_doctor_next_available_slots(doctor_name, from_start_iso=appointment_end, limit=3) or []
-            options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
-            prompt  = f"That time has already passed. Would you like {options}?" if options else PROMPT_PAST_TIME
+            prompt = PROMPT_PAST_TIME
             g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True)
             resp.append(g)
             sd["stage"] = "ask_time_date"
@@ -4852,9 +4855,7 @@ def voice():
             slot_available = False
 
         if not slot_available:
-            alts = get_doctor_next_available_slots(doctor_name, from_start_iso=appointment_end, limit=3) or []
-            options = " or ".join([a.get("friendly", "") for a in alts if a.get("friendly")])
-            prompt  = f"That time is not available. Would you like {options}?" if options else "That time isn’t available. Please say another time with A or P."
+            prompt  = "That time isn’t available. Please say another time with A or P."
             g = make_gather(prompt, input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True)
             resp.append(g)
             sd["stage"] = "ask_time_date"
@@ -4864,7 +4865,7 @@ def voice():
         # ----------------------------------------------------------------------
         # ✅ Slot Available — Proceed
         # ----------------------------------------------------------------------
-        sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
+        sd["appointment_time"] = {"start": appointment_start, "end": appointment_end, "friendly": friendly_time}
 
         # Handle reschedule context
         if sd.get("reschedule_after_cancel", False):
@@ -4923,6 +4924,7 @@ def voice():
         save_session(call_sid)
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
