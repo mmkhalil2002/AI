@@ -864,31 +864,6 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
     return True
 
 
-"""
-    🔍 PURPOSE
-    ----------
-    Return up to `limit` future UTC slots strictly after `from_start_iso`
-    using ONLY the local doctor JSON file (no Google Calendar).
-
-    🧠 HOW IT WORKS
-    ----------------
-    • Reads each day's working hours (e.g., 8 AM–5 PM).
-    • Iterates forward in time, skipping weekends and lunch.
-    • Calls is_doctor_slot_available() to test if each slot is free.
-    • Returns a list of free slot dictionaries, sorted chronologically.
-
-    ✅ RETURNS
-    ----------
-    [
-        {
-            "start": "2025-10-22T14:00:00Z",
-            "end": "2025-10-22T14:30:00Z",
-            "friendly": "Wednesday, October 22 at 2:00 PM",
-            "tz": "America/Chicago"
-        },
-        ...
-    ]
-    """
 
 def get_doctor_next_available_slots(
     doctor_name: str,
@@ -901,56 +876,67 @@ def get_doctor_next_available_slots(
     slot_step_minutes: int = None,
     search_days: int = None
 ) -> list:
-   
+    
+
     # ----------------------------------------------------------------------
-    # 🧩 Internal debug helper — wraps debug_print safely
+    # 🧩 Local debug helper — wraps debug_print safely to avoid crashes
     # ----------------------------------------------------------------------
     def _dbg(msg: str):
         try:
-            debug_print(msg)
+            debug_print(msg)  # uses your global debug_print if available
         except Exception:
-            print(msg)
+            print(msg)  # fallback print if debug_print fails
 
     _dbg(f"[get_doctor_next_available_slots] ▶️ doctor={doctor_name} from={from_start_iso} limit={limit}")
 
     # ----------------------------------------------------------------------
-    # ⚙️ Environment & Defaults
+    # ⚙️ Read environment defaults and apply sane fallbacks
     # ----------------------------------------------------------------------
-    # Appointment duration (default 30 minutes)
+    # If duration isn't set, use 30 minutes by default
     if duration_minutes is None:
         duration_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
+
+    # Safety net — enforce typical appointment lengths
     if duration_minutes not in (15, 30, 45, 60):
         duration_minutes = 30
 
-    # Step size for moving between slots (default = duration)
+    # Step size = increment when searching forward (default = same as duration)
     if slot_step_minutes is None:
         slot_step_minutes = duration_minutes
 
-    # Clinic timezone (default: America/Chicago)
+    # Determine timezone — default to "America/Chicago" if not set
     if tz_name is None:
         tz_name = globals().get("CLINIC_TZ", "America/Chicago")
     try:
         tz_local = _pytz.timezone(tz_name)
     except Exception:
+        _dbg("[get_doctor_next_available_slots] ⚠️ Invalid timezone, defaulting to America/Chicago")
         tz_local = _pytz.timezone("America/Chicago")
 
-    # Working hours and days (defaults)
-    WSTART = int(globals().get("WORKING_HOURS_START", 8))   # 8 AM
-    WEND   = int(globals().get("WORKING_HOURS_END", 17))    # 5 PM
+    # Working hours (default: 8 AM – 5 PM)
+    WSTART = int(globals().get("WORKING_HOURS_START", 8))
+    WEND   = int(globals().get("WORKING_HOURS_END", 17))
+
+    # If none provided explicitly, use a single continuous work window
     if not work_hours:
         work_hours = ((WSTART, WEND),)
-    WORKING_DAYS = set(int(x) for x in globals().get("WORKING_DAYS", {0, 1, 2, 3, 4}))  # Mon–Fri
 
-    # Optional lunch window (from environment)
+    # Define working days (Mon–Fri by default)
+    WORKING_DAYS = set(int(x) for x in globals().get("WORKING_DAYS", {0, 1, 2, 3, 4}))
+
+    # ----------------------------------------------------------------------
+    # 🕛 Optional lunch break setup
+    # ----------------------------------------------------------------------
     def _as_time(val, default_h=None, default_m=0):
-        """Helper to parse hour strings like '12:30' → datetime.time(12,30)."""
+        """Converts strings like '12:30' or '14' → datetime.time object."""
         if val is None:
             return None if default_h is None else dtime(default_h, default_m)
         if isinstance(val, dtime):
-            return val
+            return val  # already a time object
         s = str(val).strip()
         if not s:
             return None
+        # Split '12:30' into (12,30)
         if ":" in s:
             hh, mm = (s.split(":", 1) + ["0"])[:2]
         else:
@@ -960,110 +946,134 @@ def get_doctor_next_available_slots(
         except Exception:
             return None
 
+    # Pull from global vars if set (e.g., LUNCH_BREAK_START="12:00")
     LUNCH_START = _as_time(globals().get("LUNCH_BREAK_START"))
     LUNCH_END   = _as_time(globals().get("LUNCH_BREAK_END"))
 
-    # How many days ahead to search for free slots
+    # How far forward to search — default 14 days
     if search_days is None:
         search_days = int(globals().get("SEARCH_DAYS", 14))
 
     # ----------------------------------------------------------------------
-    # 🕐 Formatting helpers
+    # 🕐 Friendly name formatter for human speech
     # ----------------------------------------------------------------------
     def _friendly(dt_local, now_local):
-        """Make human-friendly time strings like 'Wednesday, October 22 at 2:00 PM'."""
+        """Formats datetime → readable string like 'Tuesday, July 3 at 9:00 AM'."""
         try:
             if dt_local.year != now_local.year:
+                # Include year if it's different from current
                 return dt_local.strftime("%A, %B %-d, %Y at %-I:%M %p")
             return dt_local.strftime("%A, %B %-d at %-I:%M %p")
         except Exception:
+            # Fallback for platforms without %-d (e.g., Windows)
             return dt_local.strftime("%A, %B %d at %I:%M %p")
 
+    # ----------------------------------------------------------------------
+    # ⏩ Helper to align current time to the next valid grid slot
+    # ----------------------------------------------------------------------
     def _align_up_to_window_grid(dt_local, minutes, window_start_local, *, now_local):
         """
-        Align a datetime upward to the nearest multiple of 'minutes'
-        within the current working window. Example: round up to next 30-minute mark.
+        Aligns to the next valid slot boundary.
+        Example:
+            If appointments are 30 minutes apart and it's 09:10,
+            next available grid = 09:30.
         """
         dt_local = dt_local.replace(second=0, microsecond=0)
         anchor = window_start_local.replace(second=0, microsecond=0)
         diff_min = int((dt_local - anchor).total_seconds() // 60)
+
         if diff_min <= 0:
-            aligned = anchor
+            aligned = anchor  # start of window
         else:
             rem = diff_min % minutes
             aligned = dt_local if rem == 0 else (dt_local + timedelta(minutes=(minutes - rem)))
-        # If we’re on the same day and alignment is in the past → skip ahead
+
+        # Prevent scheduling in the past (e.g., same day but time passed)
         if aligned.date() == now_local.date() and aligned <= now_local:
             steps = ((now_local - anchor).total_seconds() // 60 // minutes) + 1
             aligned = anchor + timedelta(minutes=int(steps * minutes))
+
         return aligned
 
     # ----------------------------------------------------------------------
-    # ⏱️ Establish current time context
+    # ⏱️ Time initialization and validation
     # ----------------------------------------------------------------------
     now_utc = datetime.now(_pytz.UTC)
     now_loc = now_utc.astimezone(tz_local)
 
+    # Try parsing the starting point (from_start_iso)
     try:
         req_utc = isoparse((from_start_iso or "").strip())
         if req_utc.tzinfo is None:
             req_utc = _pytz.UTC.localize(req_utc)
     except Exception:
+        _dbg("[get_doctor_next_available_slots] ⚠️ Invalid from_start_iso, defaulting to now")
         req_utc = now_utc
 
+    # Convert requested start time to local timezone
     req_local = req_utc.astimezone(tz_local)
+
+    # Define search time window (e.g., next 14 days)
     search_window_start = now_utc
     search_window_end = now_utc + timedelta(days=search_days)
 
-    # Start scanning either from 'from_start_iso' or now
+    # Start scanning from the given time if it's valid; otherwise, from now
     base_utc = req_utc if (search_window_start <= req_utc <= search_window_end) else now_utc
     cur_local = base_utc.astimezone(tz_local)
 
-    results, seen = [], set()
+    results, seen = [], set()  # results list & set of seen slots (to avoid duplicates)
 
     # ----------------------------------------------------------------------
-    # 🔁 MAIN LOOP — day by day, hour by hour
+    # 🔁 MAIN LOOP — day-by-day, slot-by-slot
     # ----------------------------------------------------------------------
     while cur_local.astimezone(_pytz.UTC) < search_window_end and len(results) < limit:
-        # Skip weekends or non-working days
+
+        # Skip non-working days (e.g., weekends)
         if cur_local.weekday() not in WORKING_DAYS:
-            _dbg(f"[get_doctor_next_available_slots] 💤 Skipping non-working day {cur_local.strftime('%A')}")
+            _dbg(f"[get_doctor_next_available_slots] 💤 Skipping {cur_local.strftime('%A')} (non-working day)")
             cur_local = cur_local + timedelta(days=1)
             cur_local = cur_local.replace(hour=WSTART, minute=0, second=0, microsecond=0)
             continue
 
-        # Construct the day's working windows (supports split shifts)
+        # Build working windows for the day (e.g., 8 AM–5 PM)
         windows = []
         for ws, we in work_hours:
             wstart = tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day, ws, 0))
             wend   = tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day, we, 0))
             windows.append((wstart, wend))
 
-        progressed = False  # track if we advanced through any slot in the day
+        progressed = False  # Tracks whether any slots were evaluated for the day
+
+        # Iterate through all working windows in this day
         for wstart, wend in windows:
-            # Align the current time to the working window grid
+
+            # Align to the first valid slot of the current window
             if cur_local < wstart:
                 cur_local = wstart
             cur_local = _align_up_to_window_grid(cur_local, slot_step_minutes, wstart, now_local=now_loc)
 
-            # Inner loop: move through each slot within current window
+            # Walk through the window in slot_step_minutes increments
             while cur_local + timedelta(minutes=duration_minutes) <= wend and len(results) < limit:
-                # Skip lunch break, if defined
+
+                # Skip lunch break if defined
                 if LUNCH_START and LUNCH_END:
                     if (cur_local.time() < LUNCH_END and
                         (cur_local + timedelta(minutes=duration_minutes)).time() > LUNCH_START):
-                        _dbg("[get_doctor_next_available_slots] 🍽️ Skipping lunch window")
+                        _dbg("[get_doctor_next_available_slots] 🍽️ Inside lunch window — skipping")
                         cur_local = tz_local.localize(datetime.combine(cur_local.date(), LUNCH_END))
                         cur_local = _align_up_to_window_grid(cur_local, slot_step_minutes, wstart, now_local=now_loc)
                         continue
 
-                # Convert to UTC ISO strings
+                # Convert to UTC ISO format (Z-suffix for consistency)
                 start_iso = cur_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
                 end_iso   = (cur_local + timedelta(minutes=duration_minutes)).astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
 
-                # ✅ Local JSON-based slot check
+                # ------------------------------------------------------------------
+                # ✅ Check availability using the JSON-based appointment list
+                # ------------------------------------------------------------------
                 try:
                     if is_doctor_slot_available(doctor_name, start_iso, end_iso) and start_iso not in seen:
+                        # Slot is available → store it
                         seen.add(start_iso)
                         results.append({
                             "start": start_iso,
@@ -1071,21 +1081,24 @@ def get_doctor_next_available_slots(
                             "friendly": _friendly(cur_local, now_loc),
                             "tz": tz_name,
                         })
-                        _dbg(f"[get_doctor_next_available_slots] ✅ Added {results[-1]['friendly']} ({start_iso})")
+                        _dbg(f"[get_doctor_next_available_slots] ✅ Added available slot → {results[-1]['friendly']} ({start_iso})")
                 except Exception as e:
-                    _dbg(f"[get_doctor_next_available_slots] ❌ Slot check error → {e}")
+                    _dbg(f"[get_doctor_next_available_slots] ❌ Slot check failed → {e}")
 
-                # Move ahead by slot_step_minutes
+                # Move forward in time by one slot increment
                 cur_local = cur_local + timedelta(minutes=slot_step_minutes)
                 progressed = True
 
-        # If no progress made (no window hit), move to next day
+        # If the current day had no progress (no valid slots), move to next day
         if not progressed:
-            _dbg(f"[get_doctor_next_available_slots] ⏭️ No slots found on {cur_local.strftime('%A')} — advancing to next day")
+            _dbg(f"[get_doctor_next_available_slots] ⏭️ No free slots found on {cur_local.strftime('%A')} — moving to next day")
             cur_local = cur_local + timedelta(days=1)
             cur_local = cur_local.replace(hour=WSTART, minute=0, second=0, microsecond=0)
 
-    _dbg(f"[get_doctor_next_available_slots] ✅ Completed search — total={len(results)} suggestions")
+    # ----------------------------------------------------------------------
+    # 🏁 Summary of the search process
+    # ----------------------------------------------------------------------
+    _dbg(f"[get_doctor_next_available_slots] ✅ Search complete — {len(results)} available slot(s) found")
     return results
 
 
