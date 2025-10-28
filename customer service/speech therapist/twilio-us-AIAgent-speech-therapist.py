@@ -890,7 +890,6 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
     ]
     """
 
-
 def get_doctor_next_available_slots(
     doctor_name: str,
     *,
@@ -902,9 +901,7 @@ def get_doctor_next_available_slots(
     slot_step_minutes: int = None,
     search_days: int = None
 ) -> list:
-    
    
-
     # ----------------------------------------------------------------------
     # 🧩 Internal debug helper — wraps debug_print safely
     # ----------------------------------------------------------------------
@@ -1064,7 +1061,7 @@ def get_doctor_next_available_slots(
                 start_iso = cur_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
                 end_iso   = (cur_local + timedelta(minutes=duration_minutes)).astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
 
-                # Check slot using local JSON data
+                # ✅ Local JSON-based slot check
                 try:
                     if is_doctor_slot_available(doctor_name, start_iso, end_iso) and start_iso not in seen:
                         seen.add(start_iso)
