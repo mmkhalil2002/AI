@@ -759,8 +759,17 @@ session_data = {}
         ]
     """
 
+
+
 def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> bool:
-    
+    """
+    Determine if a given [start, end) time slot is available for the doctor
+    based entirely on the local JSON appointment file.
+
+    ✅ Returns:
+        True  → The slot is free (no overlaps).
+        False → The slot is busy (overlaps with an existing booking).
+    """
 
     def _as_utc_dt(s: str):
         """
@@ -799,7 +808,7 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
     # 📂 Locate doctor's JSON appointment file
     # ----------------------------------------------------------------------
     # Normalize the doctor file name: "Alfred Hitchcock" → "alfred_hitchcock.json"
-    safe_name = re.sub(r"\s+", "_", doctor_name.strip().lower())
+    safe_name = _re.sub(r"\s+", "_", doctor_name.strip().lower())
     doc_path = os.path.join("appointment_data", f"{safe_name}.json")
 
     debug_print(f"[is_doctor_slot_available] 📁 Loading file for doctor '{doctor_name}' → {doc_path}")
@@ -862,6 +871,9 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
     debug_print(f"[is_doctor_slot_available] ✅ Slot is available for {doctor_name}: "
                 f"{start_dt.isoformat()} → {end_dt.isoformat()}")
     return True
+
+
+
 
 
 
