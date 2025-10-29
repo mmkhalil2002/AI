@@ -5892,51 +5892,23 @@ def voice():
 
 
 
+
     elif stage == "collect_dr_info":
         # ----------------------------------------------------------------------
         # 🩺 Stage: collect_dr_info
         # ----------------------------------------------------------------------
-        # 🎯 PURPOSE:
-        #   - Present a list of available doctors (by keypad or speech).
-        #   - Capture the user’s selection using DTMF (1, 2, 3...) or speech.
-        #   - Perform fuzzy matching on spoken names (partial word matches).
-        #   - Retry up to 3 times if no valid match is found.
-        #   - On success → move to stage "ask_time_date" for time selection.
+        # 🎯 Purpose:
+        #   - Read out a numbered list of doctors ("Press 1 for Dr. Smith").
+        #   - Capture doctor selection by speech or keypad (DTMF).
+        #   - Supports partial/fuzzy speech match and retries.
+        #   - On success → move to ask_time_date (for appointment scheduling).
         # ----------------------------------------------------------------------
 
-        # ----------------------------------------------------------------------
-        # 💬 Voice Prompts — all text in variables for easy maintenance
-        # ----------------------------------------------------------------------
-        VOICE_INTRO_PROMPT = "Please choose your doctor."
-        VOICE_INSTRUCTION_APPENDIX = "You can also say the doctor's name."
-        VOICE_REPROMPT_ON_JUNK = (
-            "Please say the name of the doctor you'd like to book with, "
-            "or press the number on your keypad."
-        )
-        VOICE_FAIL_FINAL = (
-            "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
-            "Please call us again later."
-        )
-        VOICE_RETRY_PROMPT = (
-            "I couldn't match that to a doctor. "
-            "You can also say the doctor's name."
-        )
-        VOICE_SUCCESS_PROMPT_TEMPLATE = (
-            "Great, your appointment will be with {doctor}. "
-            "Please say the appointment date and time, for example, "
-            "'October 8 at 9 30 A M'."
-        )
-
-        # ----------------------------------------------------------------------
-        # ⚙️ Initialize Session State
-        # ----------------------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
         sd.setdefault("retry_booking", 0)
         sd["origin_stage"] = "book"
 
-        # ----------------------------------------------------------------------
-        # 🧹 Clean speech input (remove punctuation, lowercase for fuzzy matching)
-        # ----------------------------------------------------------------------
+        # Clean punctuation from speech input
         _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
         dtmf_digits = (request.values.get("Digits") or "").strip()
         spoken_text = (speech_result or "").strip().lower()
@@ -5944,24 +5916,23 @@ def voice():
         debug_print(f"[collect_dr_info] 🗣 speech='{spoken_clean}' 🔢 DTMF='{dtmf_digits}'")
 
         # ----------------------------------------------------------------------
-        # 📋 Build the doctor keypad map (first interaction only)
+        # 📋 Build the doctor keypad map (first entry only)
         # ----------------------------------------------------------------------
         if "doctor_dtmf_map" not in sd:
             doctor_dtmf_map = {}
             prompt_lines = []
-
-            # Enumerate available doctor names into "Press 1 for Dr. X"
             for i, friendly in enumerate(doctor_names.values(), start=1):
                 doctor_dtmf_map[str(i)] = friendly
                 prompt_lines.append(f"Press {i} for {friendly}.")
-
-            # Store map for future use within session
             sd["doctor_dtmf_map"] = doctor_dtmf_map
 
-            # Combine all parts into a single spoken message
-            doctor_prompt = f"{VOICE_INTRO_PROMPT} " + " ".join(prompt_lines) + " " + VOICE_INSTRUCTION_APPENDIX
+            # 🗣️ Speak list of doctors
+            doctor_prompt = (
+                "Please choose your doctor. "
+                + " ".join(prompt_lines)
+                + " You can also say the doctor's name."
+            )
 
-            # Create <Gather> TwiML element for speech/DTMF capture
             g = make_gather(
                 doctor_prompt,
                 input="speech dtmf",
@@ -5977,36 +5948,36 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🔎 Retrieve the stored map for repeated interactions
+        # 🔎 Retrieve the map for subsequent interactions
         # ----------------------------------------------------------------------
         doctor_map = sd.get("doctor_dtmf_map", {})
         matched_name = None
 
         # ----------------------------------------------------------------------
-        # 🔢 Case 1: Direct DTMF match (e.g., user pressed "2")
+        # 🔢 DTMF Matching
         # ----------------------------------------------------------------------
         if dtmf_digits and dtmf_digits in doctor_map:
             matched_name = doctor_map[dtmf_digits]
             debug_print(f"[collect_dr_info] ✅ DTMF matched doctor: {matched_name}")
 
         # ----------------------------------------------------------------------
-        # 🎙️ Case 2: Speech-based fuzzy matching
+        # 🎙️ Speech Matching (fuzzy)
         # ----------------------------------------------------------------------
         if matched_name is None:
-            # Ignore junk words or empty input (like “hello”, “ok”, etc.)
             junk_inputs = {
                 "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
                 "yo", "test", "1", "yes", "no", "i know", "huh", "what", "okay", "ok",
                 "bye", "goodbye", ""
             }
 
-            # 🧩 If invalid input → re-prompt
             if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
-                debug_print(f"[collect_dr_info] ⏩ Skipping junk input: '{spoken_clean}' — re-prompting")
-
+                debug_print(f"[collect_dr_info] ⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting")
                 prompt_lines = [f"Press {k} for {v}." for k, v in doctor_map.items()]
-                doctor_prompt = f"{VOICE_REPROMPT_ON_JUNK} " + " ".join(prompt_lines)
-
+                doctor_prompt = (
+                    "Please say the name of the doctor you'd like to book with, "
+                    "or press the number on your keypad. "
+                    + " ".join(prompt_lines)
+                )
                 g = make_gather(
                     doctor_prompt,
                     input="speech dtmf",
@@ -6020,15 +5991,12 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
-            # 🔍 Try fuzzy/partial token match
+            # 🔍 Fuzzy match by partial name
             partial_matches = []
             spoken_tokens = set(spoken_clean.split())
-
             for friendly in doctor_names.values():
                 friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
                 friendly_tokens = set(friendly_clean.split())
-
-                # Match if names overlap, or one contained in the other
                 if (
                     spoken_clean in friendly_clean
                     or friendly_clean in spoken_clean
@@ -6036,34 +6004,39 @@ def voice():
                 ):
                     partial_matches.append(friendly)
 
-            # ✅ Single unique match
             if len(partial_matches) == 1:
                 matched_name = partial_matches[0]
-                debug_print(f"[collect_dr_info] ✅ Partial match: {matched_name}")
-            # ⚠️ Multiple possible matches — pick first for simplicity
+                debug_print(f"[collect_dr_info] ✅ Partial match with: {matched_name}")
             elif len(partial_matches) > 1:
                 debug_print(f"[collect_dr_info] 🔍 Multiple matches: {partial_matches}")
                 matched_name = partial_matches[0]
 
         # ----------------------------------------------------------------------
-        # ❌ Case 3: No match — retry or fail out
+        # ❌ Retry on Failure
         # ----------------------------------------------------------------------
         if matched_name is None:
             sd["retry_booking"] += 1
             retries = sd["retry_booking"]
             debug_print(f"[collect_dr_info] ❌ No doctor match for '{spoken_clean or dtmf_digits}' retry={retries}")
 
-            # 3 failed attempts → hang up gracefully
             if retries >= 3:
-                resp.say(gpt_speak(VOICE_FAIL_FINAL), VOICE)
+                resp.say(
+                    gpt_speak(
+                        "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
+                        "Please call us again later."
+                    ),
+                    VOICE
+                )
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Otherwise, prompt again with doctor list
             prompt_lines = [f"Press {k} for {v}." for k, v in doctor_map.items()]
-            doctor_prompt = f"{VOICE_RETRY_PROMPT} " + " ".join(prompt_lines)
-
+            doctor_prompt = (
+                "I couldn't match that to a doctor. "
+                + " ".join(prompt_lines)
+                + " You can also say the doctor's name."
+            )
             g = make_gather(
                 doctor_prompt,
                 input="speech dtmf",
@@ -6078,16 +6051,14 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ Success — Save doctor and move to "ask_time_date"
+        # ✅ Success — Store and Move On
         # ----------------------------------------------------------------------
         sd["doctor_name"] = matched_name
         sd["stage"] = "ask_time_date"
 
-        # Build personalized success message
-        success_prompt = VOICE_SUCCESS_PROMPT_TEMPLATE.format(doctor=matched_name)
-
         g = make_gather(
-            success_prompt,
+            f"Great, your appointment will be with {matched_name}. "
+            "Please say the appointment date and time, for example, 'October 8 at 9 30 A M'.",
             input="speech dtmf",
             timeout=10,
             speech_timeout="auto",
