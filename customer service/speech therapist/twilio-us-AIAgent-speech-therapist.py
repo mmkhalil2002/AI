@@ -4922,12 +4922,22 @@ def voice():
             resp.append(g)
             save_session(call_sid)
 
-            # Wait for input; if silence again, repeat 3 times, then hang up
+            # ------------------------------------------------------------------
+            # 🕐 Handle silence after options (3 retries total)
+            # ------------------------------------------------------------------
             sd["alts_list"] = alts
             sd["stage"] = "ask_time_date"
             sd["silence_retry"] = sd.get("silence_retry", 0) + 1
 
-            if sd["silence_retry"] >= 3:
+            if sd["silence_retry"] == 1:
+                debug_print("[ask_time_date][alts] 🔄 First silence → repeat options once")
+                resp.pause(length=0.5)
+                resp.say(gpt_speak(NO_RESPONSE_AFTER_SUGGESTIONS_MSG), VOICE)
+            elif sd["silence_retry"] == 2:
+                debug_print("[ask_time_date][alts] 🔄 Second silence → repeat options again")
+                resp.pause(length=0.5)
+                resp.say(gpt_speak(NO_RESPONSE_AFTER_SUGGESTIONS_MSG), VOICE)
+            elif sd["silence_retry"] >= 3:
                 debug_print(f"[ask_time_date][msg] → {FINAL_SILENCE_MSG}")
                 resp.say(gpt_speak(FINAL_SILENCE_MSG), VOICE)
                 resp.hangup()
