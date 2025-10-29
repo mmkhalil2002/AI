@@ -4427,7 +4427,7 @@ def voice():
             # ✅ Branch based on origin
             if origin_stage == "book":
                 next_stage = "collect_dr_info"  # ⬅️ UPDATED
-                msg = "Thank you. Your PIN has been verified. Let's continue — please select your doctor."
+                msg = "Thank you. Your PIN has been verified. Let's continue"
             elif origin_stage == "cancel":
                 next_stage = "cancel_appt_get_time_date"
                 msg = "Thank you. PIN verified. Let's proceed to locate your appointment for cancellation."
