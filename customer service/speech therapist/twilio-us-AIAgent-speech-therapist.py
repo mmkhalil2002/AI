@@ -414,10 +414,7 @@ def save_session(call_sid: str):
 
 def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: int = 30):
     """
-    Parses phrases like:
-        'October 8 at 9:30 AM'
-    Returns dict with:
-        start, end, friendly, is_past
+    Robust version — handles speech-to-text artifacts like '2000 p.m.' for '2:00 p.m.'
     """
 
     def _dbg(msg):
@@ -433,14 +430,24 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
     s = str(raw).strip().lower()
     _dbg(f"[smart_parse_time] 🧠 raw input='{s}'")
 
-    # --- Clean punctuation / normalize ---
+    # ------------------------------------------------------------------
+    # 🧹 Normalize text and fix STT misreads like '2000 pm' → '2:00 pm'
+    # ------------------------------------------------------------------
+    s = _re.sub(r"o['’]?clock", "", s)
     s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s)
     s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s)
-    s = _re.sub(r"o['’]?clock", "", s)
     s = _re.sub(r"[^\w\s:]", " ", s)
     s = _re.sub(r"\s+", " ", s).strip()
+
+    # Fix '2000 pm' or '20 00 pm' → '2:00 pm'
+    s = _re.sub(r"\b20\s?00\s*pm\b", "2 00 pm", s)
+    s = _re.sub(r"\b2000\s*pm\b", "2 00 pm", s)
+    s = _re.sub(r"\btwenty hundred\s*pm\b", "2 00 pm", s)
     _dbg(f"[smart_parse_time] 🧹 normalized='{s}'")
 
+    # ------------------------------------------------------------------
+    # 🗓️ Extract month
+    # ------------------------------------------------------------------
     months = {
         "january": 1, "february": 2, "march": 3, "april": 4,
         "may": 5, "june": 6, "july": 7, "august": 8,
@@ -454,7 +461,9 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
             _dbg(f"[smart_parse_time] 🗓️ found month='{m}' → {month}")
             break
 
-    # --- Extract time ---
+    # ------------------------------------------------------------------
+    # 🕐 Extract time like 9:30, 2 00, etc.
+    # ------------------------------------------------------------------
     m_time = _re.search(r"\b(\d{1,2})(?:[: ](\d{2}))?\s*(am|pm)?\b", s)
     if m_time:
         hour = int(m_time.group(1))
@@ -462,7 +471,9 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
         ampm = m_time.group(3) or "am"
         _dbg(f"[smart_parse_time] ⏰ time → {hour}:{minute:02d} {ampm}")
 
-    # --- Extract day ---
+    # ------------------------------------------------------------------
+    # 📅 Extract day (before "at")
+    # ------------------------------------------------------------------
     m_day = _re.search(r"\b([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?\b(?=.*\bat\b)", s)
     if m_day:
         day = int(m_day.group(1))
@@ -470,11 +481,13 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
 
     tz_local = _pytz.FixedOffset(tz_offset_hours * 60)
     now_local = datetime.now(tz_local)
+
     if not month:
         month = now_local.month
     if not day:
         day = now_local.day
 
+    # Convert 12h → 24h
     if ampm == "pm" and hour < 12:
         hour += 12
     if ampm == "am" and hour == 12:
@@ -486,16 +499,24 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
         _dbg(f"[smart_parse_time] ❌ invalid date → {e}")
         return None
 
-    # --- Determine past/future ---
+    # ------------------------------------------------------------------
+    # 🧭 Determine if past
+    # ------------------------------------------------------------------
     is_past = dt_local < now_local - timedelta(minutes=2)
 
-    # --- Optional year rollover: only if clearly next year (e.g., user says January while now is December) ---
-    if dt_local < now_local and (month - now_local.month) <= -10:
+    # If earlier in same year → past, not next year
+    if dt_local.month < now_local.month or (dt_local.month == now_local.month and dt_local.day < now_local.day):
+        is_past = True
+
+    # Optional rollover only for next year if month < current and diff > 6 months
+    if dt_local < now_local and (now_local.month - dt_local.month) > 6:
         _dbg("[smart_parse_time] ⏩ rolling to next year (month wraparound)")
         dt_local = tz_local.localize(datetime(now_local.year + 1, month, day, hour, minute))
         is_past = False
 
-    # --- Check MAX_ADVANCE_MONTHS ---
+    # ------------------------------------------------------------------
+    # 📏 Check booking horizon
+    # ------------------------------------------------------------------
     try:
         max_months = int(globals().get("MAX_ADVANCE_MONTHS", 6))
     except Exception:
@@ -505,6 +526,9 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
         _dbg(f"[smart_parse_time] 🚫 beyond booking window ({max_months} mo)")
         return None
 
+    # ------------------------------------------------------------------
+    # 🕒 Convert to UTC + friendly string
+    # ------------------------------------------------------------------
     dt_utc = dt_local.astimezone(_pytz.UTC)
     dt_end = dt_utc + timedelta(minutes=default_duration_min)
     friendly = dt_local.strftime("%A, %B %-d at %-I:%M %p").replace(" 0", " ")
@@ -518,6 +542,7 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
 
     _dbg(f"[smart_parse_time] ✅ Parsed '{raw}' → {friendly} (past={is_past}) start={result['start']}")
     return result
+
 
 
 
