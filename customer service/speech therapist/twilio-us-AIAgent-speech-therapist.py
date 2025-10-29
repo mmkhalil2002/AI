@@ -4744,14 +4744,9 @@ def voice():
         )
         REASK_TIME_MSG = "Please tell me another time that works for you."
         NO_RESPONSE_AFTER_SUGGESTIONS_MSG = (
-            "I didn’t hear from you. Let me repeat the available times again."
+            "I didn’t hear from you. Please call us again when you're ready. Goodbye."
         )
-        FINAL_SILENCE_MSG = (
-            "I still didn’t hear from you. Please call us again when you're ready. Goodbye."
-        )
-        NO_AVAILABLE_SLOTS_MSG = (
-            "Sorry, there are no upcoming available appointments."
-        )
+        NO_AVAILABLE_SLOTS_MSG = "Sorry, there are no upcoming available appointments."
 
         # ----------------------------------------------------------------------
         # 🧱 Session Setup
@@ -4831,7 +4826,7 @@ def voice():
                 make_gather(
                     SAY_DATE_AGAIN_MSG,
                     input="speech dtmf",
-                    timeout=15,
+                    timeout=12,
                     speech_timeout='end',
                     barge_in=True,
                 )
@@ -4881,6 +4876,7 @@ def voice():
             msg = OLD_DATE_MSG if is_past else f"We can book up to {MAX_ADVANCE_MONTHS} months from today."
             resp.say(gpt_speak(msg), VOICE)
 
+            # Get 3 new slots
             alts = get_doctor_next_available_slots(
                 doctor_name,
                 from_start_iso=now_utc.isoformat(),
@@ -4895,27 +4891,22 @@ def voice():
                 return str(resp)
 
             # ------------------------------------------------------------------
-            # 🔁 Announce the 3 suggestions slowly, with repetition
+            # 🔁 Announce the 3 suggestions once (no endless repetition)
             # ------------------------------------------------------------------
             debug_print("[ask_time_date][alts] 🎯 Suggested available slots:")
             for i, a in enumerate(alts, start=1):
-                debug_print(f"   {i}. {a['friendly']} ({a['start']} → {a['end']})")
+                debug_print(f"   {i}. {a['friendly']}")
+                resp.say(gpt_speak(f"Option {i}: {a['friendly']}."), VOICE)
+                resp.pause(length=0.4)
 
-            for cycle in range(1, 4):  # Repeat 3 times
-                debug_print(f"[ask_time_date][alts] 🔊 Repetition {cycle}/3")
-                for i, a in enumerate(alts, start=1):
-                    resp.say(gpt_speak(f"Option {i}: {a['friendly']}."), VOICE)
-                    resp.pause(length=0.5)
-                resp.pause(length=1.5)
-
-            # Prompt again
+            # Prompt for response
             debug_print(f"[ask_time_date][msg] → {REASK_TIME_MSG}")
             resp.say(gpt_speak(REASK_TIME_MSG), VOICE)
 
             g = make_gather(
                 REASK_TIME_MSG,
                 input="speech dtmf",
-                timeout=18,
+                timeout=15,
                 speech_timeout='end',
                 barge_in=True,
             )
@@ -4923,23 +4914,15 @@ def voice():
             save_session(call_sid)
 
             # ------------------------------------------------------------------
-            # 🕐 Handle silence after options (3 retries total)
+            # 🕐 If no response after suggestions → say goodbye politely
             # ------------------------------------------------------------------
             sd["alts_list"] = alts
             sd["stage"] = "ask_time_date"
             sd["silence_retry"] = sd.get("silence_retry", 0) + 1
 
-            if sd["silence_retry"] == 1:
-                debug_print("[ask_time_date][alts] 🔄 First silence → repeat options once")
-                resp.pause(length=0.5)
+            if sd["silence_retry"] >= 2:
+                debug_print(f"[ask_time_date][msg] → {NO_RESPONSE_AFTER_SUGGESTIONS_MSG}")
                 resp.say(gpt_speak(NO_RESPONSE_AFTER_SUGGESTIONS_MSG), VOICE)
-            elif sd["silence_retry"] == 2:
-                debug_print("[ask_time_date][alts] 🔄 Second silence → repeat options again")
-                resp.pause(length=0.5)
-                resp.say(gpt_speak(NO_RESPONSE_AFTER_SUGGESTIONS_MSG), VOICE)
-            elif sd["silence_retry"] >= 3:
-                debug_print(f"[ask_time_date][msg] → {FINAL_SILENCE_MSG}")
-                resp.say(gpt_speak(FINAL_SILENCE_MSG), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
@@ -4958,7 +4941,7 @@ def voice():
             free = False
 
         # ----------------------------------------------------------------------
-        # ❌ If slot is busy → ask again
+        # ❌ If slot is busy → ask again quickly (no long repetition)
         # ----------------------------------------------------------------------
         if not free:
             msg = f"That time is not available. {REASK_TIME_MSG}"
@@ -4967,7 +4950,7 @@ def voice():
             g = make_gather(
                 REASK_TIME_MSG,
                 input="speech dtmf",
-                timeout=15,
+                timeout=10,
                 speech_timeout='end',
                 barge_in=True,
             )
