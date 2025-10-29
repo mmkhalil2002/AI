@@ -410,18 +410,26 @@ def save_session(call_sid: str):
 # 📅 smart_parse_time — fully compatible with ask_time_date
 # ==============================================================
 
+# ----------------------------------------------------------------------
+# 🧠 SMART TIME PARSER — timezone & MAX_ADVANCE_MONTHS aware
+# ----------------------------------------------------------------------
+from datetime import datetime, timedelta
+from dateutil.parser import isoparse
+import re as _re
+import pytz as _pytz
 
 def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: int = 30):
     """
-    PURPOSE:
-        Converts spoken or textual date/time (e.g., "October 8 at 9 AM")
-        into UTC ISO timestamps compatible with ask_time_date().
-
-    BEHAVIOR:
-        - Always returns a valid dict with "start", "end", "friendly", "is_past"
-        - Never returns None unless input is totally unrecognizable
-        - Honors global MAX_ADVANCE_MONTHS for booking window
-        - Flags old times as is_past=True (but still returns them)
+    Parse human speech like:
+        'October 8 at 9:30 AM'
+    Returns dict:
+        {
+            'start': '2025-10-08T14:30:00Z',
+            'end': '2025-10-08T15:00:00Z',
+            'friendly': 'Wednesday, October 8 at 9:30 AM',
+            'is_past': False
+        }
+    Compatible with ask_time_date().
     """
 
     def _dbg(msg):
@@ -430,9 +438,6 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
         except Exception:
             print(msg)
 
-    # ------------------------------------------------------------------
-    # 🧹 Step 1: Preprocess input
-    # ------------------------------------------------------------------
     if not raw or not str(raw).strip():
         _dbg("[smart_parse_time] ⚠️ Empty input")
         return None
@@ -440,7 +445,7 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
     s = str(raw).strip().lower()
     _dbg(f"[smart_parse_time] 🧠 raw input='{s}'")
 
-    # Normalize AM/PM variations
+    # Normalize AM/PM and clean text
     s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s)
     s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s)
     s = _re.sub(r"o['’]?clock", "", s)
@@ -448,12 +453,10 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
     s = _re.sub(r"\s+", " ", s).strip()
     _dbg(f"[smart_parse_time] 🧹 normalized='{s}'")
 
-    # ------------------------------------------------------------------
-    # 🗓️ Step 2: Extract month/day/time from text
-    # ------------------------------------------------------------------
     months = {
-        "january":1,"february":2,"march":3,"april":4,"may":5,"june":6,
-        "july":7,"august":8,"september":9,"october":10,"november":11,"december":12
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12
     }
 
     month, day, hour, minute, ampm = None, None, 9, 0, "am"
@@ -468,7 +471,6 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
         m = _re.search(r"\b(\d{1,2})[/-](\d{1,2})\b", s)
         if m:
             month, day = int(m.group(1)), int(m.group(2))
-            _dbg(f"[smart_parse_time] 🔢 numeric month/day → {month}/{day}")
 
     if not day:
         m = _re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\b", s)
@@ -476,7 +478,6 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
             day = int(m.group(1))
             _dbg(f"[smart_parse_time] 📅 day → {day}")
 
-    # Extract time (hour/minute)
     m = _re.search(r"\b(\d{1,2})(?:[: ](\d{2}))?\b", s)
     if m:
         hour = int(m.group(1))
@@ -491,75 +492,72 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
     _dbg(f"[smart_parse_time] 🕐 ampm='{ampm}'")
 
     if not month or not day:
-        _dbg(f"[smart_parse_time] ❌ Couldn’t find month/day — returning None")
+        _dbg(f"[smart_parse_time] ❌ Missing month/day in '{s}'")
         return None
 
-    # ------------------------------------------------------------------
-    # ⏱️ Step 3: Normalize hour and compose datetime
-    # ------------------------------------------------------------------
     if ampm == "pm" and hour < 12:
         hour += 12
     if ampm == "am" and hour == 12:
         hour = 0
     _dbg(f"[smart_parse_time] 🧭 normalized 24h → {hour:02d}:{minute:02d}")
 
-    now = datetime.utcnow()
+    # --------------------------------------------------------------
+    # Build localized datetime safely
+    # --------------------------------------------------------------
+    tz_local = _pytz.FixedOffset(tz_offset_hours * 60)
+    now_local = datetime.now(tz_local)
     try:
-        dt_local = datetime(now.year, month, day, hour, minute)
+        dt_local = tz_local.localize(datetime(now_local.year, month, day, hour, minute))
     except ValueError as e:
         _dbg(f"[smart_parse_time] ❌ Invalid date → {e}")
         return None
 
-    # ------------------------------------------------------------------
-    # 📏 Step 4: Apply MAX_ADVANCE_MONTHS window
-    # ------------------------------------------------------------------
-    MAX_ADVANCE_MONTHS = int(globals().get("MAX_ADVANCE_MONTHS", 6))
+    # If same day but earlier than now by > 5 minutes → treat as past
+    is_past = (dt_local < (now_local - timedelta(minutes=5)))
 
-    def _add_months(dt, m):
-        import calendar
-        y, mm = dt.year, dt.month + m
-        y += (mm - 1) // 12
-        mm = ((mm - 1) % 12) + 1
-        d = min(dt.day, calendar.monthrange(y, mm)[1])
-        return dt.replace(year=y, month=mm, day=d)
-
-    limit_end = _add_months(now, MAX_ADVANCE_MONTHS)
-    _dbg(f"[smart_parse_time] 📏 MAX_ADVANCE_MONTHS={MAX_ADVANCE_MONTHS} → limit={limit_end.date()}")
-
-    is_past = False
-
-    if dt_local < now:
-        _dbg("[smart_parse_time] ⏳ Date is in the past (old appointment)")
+    # If the date truly already happened (month/day earlier)
+    if dt_local.date() < now_local.date():
         is_past = True
-    elif dt_local > limit_end:
-        _dbg("[smart_parse_time] ⚠️ Beyond booking horizon → clipping to max allowed")
-        dt_local = limit_end
 
-    # ------------------------------------------------------------------
-    # 🌐 Step 5: Convert to UTC ISO and build friendly label
-    # ------------------------------------------------------------------
-    dt_utc = dt_local + timedelta(hours=-tz_offset_hours)
+    # If it’s before now but same day, keep this year but mark as past
+    if not is_past and dt_local.year < now_local.year:
+        is_past = True
+
+    # If it’s in the past by full day → maybe next year
+    if is_past and dt_local.date() < now_local.date():
+        _dbg(f"[smart_parse_time] ⏩ Rolled over to next year → {now_local.year + 1}")
+        dt_local = tz_local.localize(datetime(now_local.year + 1, month, day, hour, minute))
+        is_past = False
+
+    # UTC conversion
+    dt_utc = dt_local.astimezone(_pytz.UTC)
     dt_end = dt_utc + timedelta(minutes=default_duration_min)
 
+    # Check MAX_ADVANCE_MONTHS
     try:
-        friendly = dt_local.strftime("%A, %B %-d at %-I:%M %p")
+        max_months = int(globals().get("MAX_ADVANCE_MONTHS", 6))
     except Exception:
-        friendly = dt_local.strftime("%A, %B %d at %I:%M %p")
+        max_months = 6
+    limit_utc = (now_local + timedelta(days=30 * max_months)).astimezone(_pytz.UTC)
+    _dbg(f"[smart_parse_time] 📏 MAX_ADVANCE_MONTHS={max_months} → limit={limit_utc.date()}")
 
-    # ------------------------------------------------------------------
-    # ✅ Step 6: Return result compatible with ask_time_date
-    # ------------------------------------------------------------------
+    # Reject only if beyond window
+    if dt_utc > limit_utc:
+        _dbg("[smart_parse_time] 🚫 Date beyond allowed booking window")
+        return None
+
+    friendly = dt_local.strftime("%A, %B %-d at %-I:%M %p").replace(" 0", " ")
+
     result = {
-        "start": dt_utc.isoformat() + "Z",
-        "end": dt_end.isoformat() + "Z",
+        "start": dt_utc.isoformat().replace("+00:00", "Z"),
+        "end": dt_end.isoformat().replace("+00:00", "Z"),
         "friendly": friendly,
         "is_past": is_past
     }
 
-    _dbg(f"[smart_parse_time] ✅ Parsed '{raw}' → {friendly} "
-         f"(past={is_past}) start={result['start']} end={result['end']}")
-
+    _dbg(f"[smart_parse_time] ✅ Parsed '{raw}' → {friendly} (past={is_past}) start={result['start']}")
     return result
+
 
 
 
