@@ -410,23 +410,17 @@ def save_session(call_sid: str):
 # 📅 smart_parse_time — fully compatible with ask_time_date
 # ==============================================================
 
-# ----------------------------------------------------------------------
-# 🧠 SMART TIME PARSER — timezone & MAX_ADVANCE_MONTHS aware
-# ----------------------------------------------------------------------
-from datetime import datetime, timedelta
-from dateutil.parser import isoparse
-import re as _re
-import pytz as _pytz
+
 
 def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: int = 30):
     """
-    Parse human speech like:
-        'October 8 at 9:30 AM'
+    Robust speech parser for phrases like:
+        "October 29 at 12:30 PM", "October at 9 PM", "Oct 8 9 30 AM"
     Returns dict:
         {
-            'start': '2025-10-08T14:30:00Z',
-            'end': '2025-10-08T15:00:00Z',
-            'friendly': 'Wednesday, October 8 at 9:30 AM',
+            'start': '2025-10-29T17:30:00Z',
+            'end':   '2025-10-29T18:00:00Z',
+            'friendly': 'Wednesday, October 29 at 12:30 PM',
             'is_past': False
         }
     Compatible with ask_time_date().
@@ -445,7 +439,7 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
     s = str(raw).strip().lower()
     _dbg(f"[smart_parse_time] 🧠 raw input='{s}'")
 
-    # Normalize AM/PM and clean text
+    # Normalize AM/PM and clean punctuation
     s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s)
     s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s)
     s = _re.sub(r"o['’]?clock", "", s)
@@ -459,92 +453,83 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
         "september": 9, "october": 10, "november": 11, "december": 12
     }
 
+    # --------------------------------------------------------------
+    # Extract month name
+    # --------------------------------------------------------------
     month, day, hour, minute, ampm = None, None, 9, 0, "am"
-
     for m in months:
         if m in s:
             month = months[m]
             _dbg(f"[smart_parse_time] 🗓️ found month='{m}' → {month}")
             break
 
-    if not month:
-        m = _re.search(r"\b(\d{1,2})[/-](\d{1,2})\b", s)
-        if m:
-            month, day = int(m.group(1)), int(m.group(2))
+    # --------------------------------------------------------------
+    # Extract time (e.g., 9:50)
+    # --------------------------------------------------------------
+    time_match = _re.search(r"\b(\d{1,2})(?:[: ](\d{2}))?\s*(am|pm)?\b", s)
+    if time_match:
+        hour = int(time_match.group(1))
+        minute = int(time_match.group(2) or 0)
+        ampm = time_match.group(3) or "am"
+        _dbg(f"[smart_parse_time] ⏰ time → {hour}:{minute:02d} {ampm}")
 
+    # --------------------------------------------------------------
+    # Extract explicit day (if any before "at")
+    # Example: "October 29 at 9:30 pm" → 29
+    # --------------------------------------------------------------
+    m_day = _re.search(r"\b([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?\b(?=.*\bat\b)", s)
+    if m_day:
+        day = int(m_day.group(1))
+        _dbg(f"[smart_parse_time] 📅 day (before 'at') → {day}")
+
+    # If day not found, infer today's date if month matches current month
+    tz_local = _pytz.FixedOffset(tz_offset_hours * 60)
+    now_local = datetime.now(tz_local)
     if not day:
-        m = _re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\b", s)
-        if m:
-            day = int(m.group(1))
-            _dbg(f"[smart_parse_time] 📅 day → {day}")
+        if month == now_local.month:
+            day = now_local.day
+            _dbg(f"[smart_parse_time] 📅 inferred current day={day}")
+        else:
+            # default to middle of the month if no day at all
+            day = 15
+            _dbg(f"[smart_parse_time] 📅 defaulted day={day}")
 
-    m = _re.search(r"\b(\d{1,2})(?:[: ](\d{2}))?\b", s)
-    if m:
-        hour = int(m.group(1))
-        if m.group(2):
-            minute = int(m.group(2))
-        _dbg(f"[smart_parse_time] ⏰ hour={hour} minute={minute}")
-
-    if "pm" in s:
-        ampm = "pm"
-    elif "am" in s:
-        ampm = "am"
-    _dbg(f"[smart_parse_time] 🕐 ampm='{ampm}'")
-
-    if not month or not day:
-        _dbg(f"[smart_parse_time] ❌ Missing month/day in '{s}'")
-        return None
-
+    # --------------------------------------------------------------
+    # Normalize 24h and build datetime
+    # --------------------------------------------------------------
     if ampm == "pm" and hour < 12:
         hour += 12
     if ampm == "am" and hour == 12:
         hour = 0
-    _dbg(f"[smart_parse_time] 🧭 normalized 24h → {hour:02d}:{minute:02d}")
 
-    # --------------------------------------------------------------
-    # Build localized datetime safely
-    # --------------------------------------------------------------
-    tz_local = _pytz.FixedOffset(tz_offset_hours * 60)
-    now_local = datetime.now(tz_local)
     try:
         dt_local = tz_local.localize(datetime(now_local.year, month, day, hour, minute))
-    except ValueError as e:
-        _dbg(f"[smart_parse_time] ❌ Invalid date → {e}")
+    except Exception as e:
+        _dbg(f"[smart_parse_time] ❌ invalid date → {e}")
         return None
 
-    # If same day but earlier than now by > 5 minutes → treat as past
-    is_past = (dt_local < (now_local - timedelta(minutes=5)))
+    now_local_floor = now_local.replace(second=0, microsecond=0)
+    is_past = dt_local < now_local_floor - timedelta(minutes=2)  # 2-minute tolerance
 
-    # If the date truly already happened (month/day earlier)
-    if dt_local.date() < now_local.date():
-        is_past = True
-
-    # If it’s before now but same day, keep this year but mark as past
-    if not is_past and dt_local.year < now_local.year:
-        is_past = True
-
-    # If it’s in the past by full day → maybe next year
-    if is_past and dt_local.date() < now_local.date():
-        _dbg(f"[smart_parse_time] ⏩ Rolled over to next year → {now_local.year + 1}")
-        dt_local = tz_local.localize(datetime(now_local.year + 1, month, day, hour, minute))
-        is_past = False
-
-    # UTC conversion
-    dt_utc = dt_local.astimezone(_pytz.UTC)
-    dt_end = dt_utc + timedelta(minutes=default_duration_min)
-
-    # Check MAX_ADVANCE_MONTHS
+    # If more than 12 months in future, roll back
     try:
         max_months = int(globals().get("MAX_ADVANCE_MONTHS", 6))
     except Exception:
         max_months = 6
-    limit_utc = (now_local + timedelta(days=30 * max_months)).astimezone(_pytz.UTC)
-    _dbg(f"[smart_parse_time] 📏 MAX_ADVANCE_MONTHS={max_months} → limit={limit_utc.date()}")
+    limit_local = now_local + timedelta(days=30 * max_months)
 
-    # Reject only if beyond window
-    if dt_utc > limit_utc:
-        _dbg("[smart_parse_time] 🚫 Date beyond allowed booking window")
+    # If date beyond allowed horizon
+    if dt_local > limit_local:
+        _dbg(f"[smart_parse_time] 🚫 date beyond booking window (>{max_months} months)")
         return None
+
+    # If the date already passed but still within same month → bump to next day
+    if is_past and dt_local.date() == now_local.date() and (now_local.hour - hour) < 2:
+        _dbg("[smart_parse_time] 🔄 Adjusted for same-day near-future window")
+        is_past = False
+
+    dt_utc = dt_local.astimezone(_pytz.UTC)
+    dt_end = dt_utc + timedelta(minutes=default_duration_min)
 
     friendly = dt_local.strftime("%A, %B %-d at %-I:%M %p").replace(" 0", " ")
 
@@ -552,7 +537,7 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
         "start": dt_utc.isoformat().replace("+00:00", "Z"),
         "end": dt_end.isoformat().replace("+00:00", "Z"),
         "friendly": friendly,
-        "is_past": is_past
+        "is_past": is_past,
     }
 
     _dbg(f"[smart_parse_time] ✅ Parsed '{raw}' → {friendly} (past={is_past}) start={result['start']}")
