@@ -4715,41 +4715,30 @@ def voice():
         # 📅 Stage: ask_time_date
         # ----------------------------------------------------------------------
         # 🎯 Purpose:
-        #   - Capture and parse the spoken or keypad date/time input.
-        #   - Validate the requested time window (future, within 6 months).
-        #   - Suggest alternative slots if the date is past or out of range.
-        #   - Listen actively and handle silence politely (1 retry, then exit).
+        #   - Parse user's date/time input.
+        #   - Validate within booking window (MAX_ADVANCE_MONTHS).
+        #   - Handle past or invalid times by suggesting new ones.
+        #   - Keep caller in this stage until valid slot or hang-up.
         # ----------------------------------------------------------------------
 
         debug_print(f"[ask_time_date] 🗣️ Received speech: {speech_result}")
 
         # ----------------------------------------------------------------------
-        # 💬 Centralized Voice Prompts
+        # 💬 Standardized Prompts
         # ----------------------------------------------------------------------
         OLD_DATE_MSG = (
             "That time has already passed and is no longer valid. "
             "Let me suggest the next available appointment times."
         )
-        ASK_DOCTOR_MSG = "Please tell me which doctor you'd like to see."
-        SAY_DATE_AGAIN_MSG = (
-            "Please say the date and time, for example, 'October 8 at 9 30 A M'."
-        )
-        SILENCE_MSG = (
-            "I didn’t hear anything. Please say the date and time clearly, "
-            "like 'October 10 at 9 A M'."
-        )
-        NO_DECISION_MSG = (
-            "It seems you’re not ready to decide right now. "
-            "Please call us back when you’re ready. Goodbye."
-        )
-        REASK_TIME_MSG = "Please tell me another time that works for you."
-        NO_RESPONSE_AFTER_SUGGESTIONS_MSG = (
-            "I didn’t hear from you. Please call us again when you're ready. Goodbye."
-        )
+        SAY_DATE_AGAIN_MSG = "Please say the date and time, for example, 'October 8 at 9 30 A M'."
+        SILENCE_MSG = "I didn’t hear anything. Please say the date and time clearly."
+        NO_DECISION_MSG = "It seems you’re not ready right now. Please call us back when you’re ready. Goodbye."
         NO_AVAILABLE_SLOTS_MSG = "Sorry, there are no upcoming available appointments."
+        REASK_TIME_MSG = "Please tell me another time that works for you."
+        NO_RESPONSE_AFTER_SUGGESTIONS_MSG = "I didn’t hear from you. Please call us again when you're ready. Goodbye."
 
         # ----------------------------------------------------------------------
-        # 🧱 Session Initialization
+        # 🧱 Session Setup
         # ----------------------------------------------------------------------
         session_data.setdefault(call_sid, {})
         sd = session_data[call_sid]
@@ -4759,207 +4748,171 @@ def voice():
         if not doctor_name:
             debug_print("[ask_time_date] ❌ Missing doctor_name → collect_dr_info")
             sd["stage"] = "collect_dr_info"
-            resp.append(make_gather(ASK_DOCTOR_MSG))
+            resp.append(make_gather("Please tell me which doctor you'd like to see."))
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🔇 Handle complete silence (no input)
+        # 🔇 Silence Handling
         # ----------------------------------------------------------------------
         if not speech_result and not request.values.get("Digits"):
             sd["silence_retry"] = sd.get("silence_retry", 0) + 1
             debug_print(f"[ask_time_date] 🔇 Silence detected — retry {sd['silence_retry']}")
 
             if sd["silence_retry"] >= 2:
-                # If silence twice → end call
                 debug_print("[ask_time_date] 🚫 Too many silences — ending call")
                 resp.say(gpt_speak(NO_DECISION_MSG), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # First time → politely re-ask
-            resp.append(
-                make_gather(
-                    SILENCE_MSG,
-                    input="speech dtmf",
-                    timeout=12,
-                    speech_timeout="end",
-                    barge_in=True,
-                )
+            # Re-ask politely
+            g = make_gather(
+                SILENCE_MSG,
+                input="speech dtmf",
+                timeout=12,
+                speech_timeout="end",
+                barge_in=True,
+                action="/voice"  # 🧩 ensures return to same endpoint with context
             )
+            resp.append(g)
+            sd["stage"] = "ask_time_date"
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🎙️ Parse speech or DTMF input
+        # 🎙️ Parse speech or DTMF
         # ----------------------------------------------------------------------
         raw_speech = (speech_result or "").strip()
         raw_dtmf = (request.values.get("Digits") or "").strip()
-        debug_print(f"[ask_time_date][parse] 🎙️ raw_speech='{raw_speech}' raw_dtmf='{raw_dtmf}'")
+        debug_print(f"[ask_time_date][parse] raw_speech='{raw_speech}' raw_dtmf='{raw_dtmf}'")
 
-        result = None
-        if raw_speech or raw_dtmf:
-            try:
-                result = smart_parse_time(raw_speech or raw_dtmf)
-                debug_print(f"[ask_time_date][parse] 🧠 smart_parse_time result → {result}")
-            except Exception as e:
-                debug_print(f"[ask_time_date][parse] ❌ parse error → {e}")
+        try:
+            result = smart_parse_time(raw_speech or raw_dtmf)
+            debug_print(f"[ask_time_date][parse] smart_parse_time → {result}")
+        except Exception as e:
+            debug_print(f"[ask_time_date][parse] ❌ Error → {e}")
+            result = None
 
         # ----------------------------------------------------------------------
-        # ❌ Parsing failure → re-ask (3 total attempts)
+        # 🧠 Retry if invalid
         # ----------------------------------------------------------------------
-        if not result or not isinstance(result, dict):
-            retry_count = sd.get("retry_time", 0) + 1
-            sd["retry_time"] = retry_count
-            debug_print(f"[ask_time_date][retry] 🔁 Attempt {retry_count}/3")
+        if not result:
+            sd["retry_time"] = sd.get("retry_time", 0) + 1
+            retry = sd["retry_time"]
+            debug_print(f"[ask_time_date][retry] Attempt {retry}/3")
 
-            if retry_count >= 3:
-                debug_print("[ask_time_date] 🚫 Too many invalid attempts — hanging up")
+            if retry >= 3:
                 resp.say(gpt_speak(NO_DECISION_MSG), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Ask again politely
-            resp.append(
-                make_gather(
-                    SAY_DATE_AGAIN_MSG,
-                    input="speech dtmf",
-                    timeout=12,
-                    speech_timeout="end",
-                    barge_in=True,
-                )
+            g = make_gather(
+                SAY_DATE_AGAIN_MSG,
+                input="speech dtmf",
+                timeout=12,
+                speech_timeout="end",
+                barge_in=True,
+                action="/voice",
             )
+            resp.append(g)
+            sd["stage"] = "ask_time_date"
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ Parsed successfully
+        # ✅ Parsed time
         # ----------------------------------------------------------------------
         appointment_start = result["start"]
         appointment_end = result["end"]
         friendly_said = result["friendly"]
         is_past = result.get("is_past", False)
-        debug_print(f"[ask_time_date][parse] ✅ Parsed → {friendly_said}")
-
-        # ----------------------------------------------------------------------
-        # 🕓 Booking Window Validation
-        # ----------------------------------------------------------------------
-        try:
-            start_dt = isoparse(appointment_start.replace("Z", "+00:00"))
-        except Exception:
-            start_dt = _pytz.UTC.localize(_dt.utcnow())
+        debug_print(f"[ask_time_date] ✅ Parsed → {friendly_said}")
 
         now_utc = _pytz.UTC.localize(_dt.utcnow())
         tz_local = _pytz.timezone(globals().get("CLINIC_TZ", "America/Chicago"))
-        now_local = now_utc.astimezone(tz_local)
-
-        def _add_months(dt, months):
-            """Safely add N months to datetime (for max advance limit)."""
-            import calendar
-            y, m = dt.year, dt.month + months
-            y += (m - 1) // 12
-            m = ((m - 1) % 12) + 1
-            d = min(dt.day, calendar.monthrange(y, m)[1])
-            return dt.replace(year=y, month=m, day=d)
-
-        limit_end_local = _add_months(now_local, MAX_ADVANCE_MONTHS)
-        limit_end_utc = limit_end_local.astimezone(_pytz.UTC)
-        debug_print(f"[ask_time_date][policy] 📏 Booking window = {MAX_ADVANCE_MONTHS} months ahead")
+        limit_end_utc = (_dt.now(tz_local) + timedelta(days=30 * MAX_ADVANCE_MONTHS)).astimezone(_pytz.UTC)
 
         # ----------------------------------------------------------------------
-        # ⏰ Handle past or out-of-range date → suggest new times
+        # ⏰ Past / Out-of-Range handling
         # ----------------------------------------------------------------------
+        start_dt = isoparse(appointment_start.replace("Z", "+00:00"))
         if is_past or start_dt <= now_utc or start_dt > limit_end_utc:
-            debug_print(f"[ask_time_date] ⚠️ Out-of-range time → {friendly_said}")
-            msg = OLD_DATE_MSG if is_past else f"We can book up to {MAX_ADVANCE_MONTHS} months from today."
-            resp.say(gpt_speak(msg), VOICE)
+            debug_print(f"[ask_time_date] ⚠️ Past or out-of-range time → {friendly_said}")
+            resp.say(gpt_speak(OLD_DATE_MSG), VOICE)
 
-            # Get up to 3 available slots
-            alts = get_doctor_next_available_slots(
-                doctor_name, from_start_iso=now_utc.isoformat(), limit=3
-            ) or []
-
+            alts = get_doctor_next_available_slots(doctor_name, from_start_iso=now_utc.isoformat(), limit=3)
             if not alts:
-                debug_print("[ask_time_date] ⚠️ No available slots — ending call")
                 resp.say(gpt_speak(NO_AVAILABLE_SLOTS_MSG), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Combine options into a single string for faster TTS + immediate listening
-            combined_msg = "Here are the next available times. "
-            for i, a in enumerate(alts, start=1):
-                combined_msg += f"Option {i}: {a['friendly']}. "
-            combined_msg += "Please say the option number, or tell me another date and time."
+            # Combine all options into one gather (short message)
+            options_text = " ".join(
+                [f"Option {i}: {a['friendly']}." for i, a in enumerate(alts, start=1)]
+            )
+            full_prompt = (
+                f"Here are the next available times. {options_text} "
+                "Please say the option number, or tell me another date and time."
+            )
+            debug_print(f"[ask_time_date][alts] Combined → {full_prompt}")
 
-            debug_print(f"[ask_time_date][alts] 🎯 Combined message → {combined_msg}")
-
-            # 🎧 One Gather block (starts listening during speech)
             g = make_gather(
-                combined_msg,
+                full_prompt,
                 input="speech dtmf",
-                timeout=12,
+                timeout=15,
                 speech_timeout="auto",
-                barge_in=True,   # 🔊 Allows user to interrupt while options play
+                barge_in=True,
+                action="/voice",   # 🧩 stays in the same route
             )
             resp.append(g)
+            sd["stage"] = "ask_time_date"
+            sd["alts_list"] = alts
+            sd["silence_retry"] = sd.get("silence_retry", 0) + 1
             save_session(call_sid)
 
-            # Handle silence after suggestions
-            sd["alts_list"] = alts
-            sd["stage"] = "ask_time_date"
-            sd["silence_retry"] = sd.get("silence_retry", 0) + 1
-
             if sd["silence_retry"] >= 2:
-                debug_print(f"[ask_time_date][msg] → {NO_RESPONSE_AFTER_SUGGESTIONS_MSG}")
                 resp.say(gpt_speak(NO_RESPONSE_AFTER_SUGGESTIONS_MSG), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
-                return str(resp)
-
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ Within valid window → check if slot is free
+        # ✅ Within range → check availability
         # ----------------------------------------------------------------------
-        debug_print(f"[ask_time_date][avail] 🔍 Checking {doctor_name} availability")
+        free = False
         try:
             free = is_doctor_slot_available(doctor_name, appointment_start, appointment_end)
-            debug_print(f"[ask_time_date][avail] 🧩 Slot availability → {free}")
+            debug_print(f"[ask_time_date][avail] Slot free → {free}")
         except Exception as e:
             debug_print(f"[ask_time_date][avail] ⚠️ Error → {e}")
-            free = False
 
-        # ----------------------------------------------------------------------
-        # ❌ Slot busy → re-ask quickly (no repetition)
-        # ----------------------------------------------------------------------
         if not free:
-            msg = f"That time is not available. {REASK_TIME_MSG}"
-            debug_print(f"[ask_time_date][msg] → {msg}")
             g = make_gather(
-                msg,
+                f"That time is not available. {REASK_TIME_MSG}",
                 input="speech dtmf",
                 timeout=10,
-                speech_timeout="end",
+                speech_timeout="auto",
                 barge_in=True,
+                action="/voice",
             )
             resp.append(g)
+            sd["stage"] = "ask_time_date"
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🗓️ Slot confirmed → redirect to booking confirmation stage
+        # ✅ Confirm and continue
         # ----------------------------------------------------------------------
         debug_print(f"[ask_time_date] ✅ Slot accepted → {friendly_said}")
         sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
         sd["stage"] = "book_appt_confirm"
         save_session(call_sid)
-
-        debug_print("[ask_time_date] 🔁 Redirecting to /voice for booking confirmation")
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
