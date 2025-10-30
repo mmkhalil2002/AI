@@ -4802,17 +4802,7 @@ def voice():
 
         debug_print(f"[collect_book_time_date] 🗣️ Received speech: {speech_result}")
 
-        # ----------------------------------------------------------------------
-        # 🕓 Speech Pause Duration (milliseconds)
-        #   Controls SSML <break> tag timing between spoken appointment options.
-        #   Change this value to adjust the gap between each option.
-        #   Examples:
-        #       500  → half-second pause (default)
-        #      1000  → one-second pause (clearer spacing)
-        #      2000  → two-second pause (more distinct)
-        # ----------------------------------------------------------------------
-        PAUSE_MS = 1000  # 🆕 you can adjust this to control how long Twilio pauses between options
-
+        
         # ----------------------------------------------------------------------
         # 💬 VOICE MESSAGES — centralized for maintainability & localization
         # ----------------------------------------------------------------------
