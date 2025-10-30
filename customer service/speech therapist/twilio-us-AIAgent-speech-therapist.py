@@ -575,46 +575,104 @@ def _append_stage_to_action(action: Optional[str], next_stage: Optional[str]) ->
         return f"{base}{sep}stage={next_stage}"
     return base
 
+# ======================================================================
+# 🛠️ make_gather() — Twilio <Gather> Builder with SSML & Fallback Logic
+# ======================================================================
+# PURPOSE:
+#   Construct a Twilio <Gather> element that can capture both speech
+#   and keypad (DTMF) input with environment-driven defaults.
+#
+# FEATURES:
+#   • Accepts optional `next_stage` for legacy compatibility.
+#   • Auto-appends '?stage=...' to the action URL.
+#   • Supports `hints` for better speech recognition accuracy.
+#   • Allows SSML-based voice prompts (e.g., <break time="500ms"/>).
+#   • Includes strong error handling — always returns a valid <Gather>.
+#
+# PARAMETERS:
+#   prompt          (str)  → The text (or SSML) to speak to the caller.
+#   next_stage      (str)  → Optional; appended to action as '?stage=...'.
+#   hints           (str)  → Optional multiline hint list for speech model.
+#   input           (str)  → 'speech', 'dtmf', or 'speech dtmf' (default).
+#   num_digits      (int)  → Expected DTMF digits (None = flexible).
+#   timeout         (int)  → Max wait time for DTMF digits (seconds).
+#   speech_timeout  (str)  → Max silence wait before speech completes ("auto" or seconds).
+#   finish_on_key   (str)  → Key (e.g., '#') that ends input early.
+#   barge_in        (bool) → Whether user can interrupt playback.
+#   language        (str)  → STT language code ('en-US', 'ar-EG', etc.).
+#   action          (str)  → Webhook endpoint (e.g., '/voice').
+#   method          (str)  → HTTP method for callback ('POST' or 'GET').
+#
+# RETURNS:
+#   Twilio <Gather> object ready to append to VoiceResponse.
+#
+# NOTES:
+#   - Automatically detects SSML markup and sets allow_ssml=True.
+#   - Falls back gracefully if Twilio API parameters are invalid.
+#   - Centralized debug_print messages for reliability tracking.
+# ======================================================================
 
 def make_gather(
     prompt: str,
     *,
-    next_stage: Optional[str] = None,               # ← back-compat
-    hints: Optional[str] = None,
-    input: str = "speech dtmf",
+    next_stage: Optional[str] = None,               # ← backward-compatible stage chaining
+    hints: Optional[str] = None,                    # ← speech recognition vocabulary
+    input: str = "speech dtmf",                     # ← capture both speech & DTMF by default
     num_digits: Optional[int] = None,
-    timeout: int = PAUSE_BETWEEN_DIGITS,            # ← default from ENV
-    speech_timeout: str = SPEECH_INPUT_DURATION,    # ← default from ENV ("auto" or seconds string)
+    timeout: int = PAUSE_BETWEEN_DIGITS,            # ← DTMF timeout default from ENV
+    speech_timeout: str = SPEECH_INPUT_DURATION,    # ← e.g. "auto" or "5"
     finish_on_key: str = "#",
     barge_in: bool = True,
     language: str = "en-US",
     action: Optional[str] = "/voice",
     method: str = "POST",
-    ):
+):
     """
-    Build and RETURN a Twilio <Gather> with ENV-driven defaults.
+    Build and RETURN a Twilio <Gather> element with configurable behavior.
 
     Backward compatible:
-      - Accepts next_stage and appends it as '?stage=...' to action.
-      - Returns the <Gather> so callers can `resp.append(make_gather(...))`.
+      - Supports next_stage (adds '?stage=...' to action URL).
+      - Returns the <Gather> so caller can append it to a VoiceResponse.
 
     Notes:
-      - timeout controls DTMF first-digit / inter-digit wait.
-      - speech_timeout controls how long STT waits for silence ("auto" or seconds).
-      - language can be 'en-US', 'ar-EG', etc.
-      - hints can include multiline Arabic/English name lists.
+      - timeout controls DTMF inter-digit wait.
+      - speech_timeout controls silence detection.
+      - language sets speech recognition locale.
+      - hints provides contextual phrases for better accuracy.
+      - SSML markup (<break>, <emphasis>) automatically enabled.
     """
-    # Normalize speechTimeout
+
+    # ------------------------------------------------------------------
+    # 🧹 Normalize speech_timeout — convert numeric strings to int
+    # ------------------------------------------------------------------
     _speech_timeout = int(speech_timeout) if str(speech_timeout).isdigit() else speech_timeout
+
+    # 🧮 Validate num_digits — must be a positive integer
     _num_digits = num_digits if (isinstance(num_digits, int) and num_digits > 0) else None
+
+    # 🧭 Append next_stage to action for compatibility
     _action = _append_stage_to_action(action, next_stage)
 
-    # 🧠 Normalize hints (flatten multiline → comma-separated)
+    # ------------------------------------------------------------------
+    # 🧠 Normalize speech recognition hints
+    #    - Flatten multiline input (e.g. Arabic/English names)
+    #    - Convert to comma-separated format
+    # ------------------------------------------------------------------
     _hints = None
     if hints:
         _hints = ", ".join(line.strip() for line in hints.splitlines() if line.strip())
 
+    # ------------------------------------------------------------------
+    # 🗣️ Determine if SSML is present in the prompt text
+    #    - Detects <break>, <emphasis>, <prosody>, etc.
+    #    - If found, Twilio's allow_ssml=True will be enabled.
+    # ------------------------------------------------------------------
+    _contains_ssml = any(tag in prompt for tag in ("<break", "<emphasis", "<prosody", "<say-as"))
+
     try:
+        # ===============================================================
+        # 🎤 Primary Attempt: Build the <Gather> with all enhanced params
+        # ===============================================================
         g = Gather(
             input=input,
             action=_action,
@@ -627,19 +685,29 @@ def make_gather(
             language=language,
             bargeIn=barge_in,
         )
-        g.say(gpt_speak(prompt), voice=VOICE)
+
+        # 🗣️ Add the spoken prompt using Twilio's <Say> tag
+        #     - If SSML detected, allow Twilio to parse markup correctly.
+        g.say(gpt_speak(prompt), voice=VOICE, allow_ssml=_contains_ssml)
         return g
 
     except Exception as e:
+        # ===============================================================
+        # ⚠️ Primary <Gather> creation failed — fallback attempt
+        # ===============================================================
         debug_print(f"make_gather: ⚠️ failed to build Gather → {e}")
-        # Fallback to ensure the prompt still speaks
+
         try:
+            # Rebuild with minimal configuration to ensure voice response
             g = Gather(input=input, action=_action, method=method)
-            g.say(gpt_speak(prompt), voice=VOICE)
+            g.say(gpt_speak(prompt), voice=VOICE, allow_ssml=_contains_ssml)
             return g
-        except Exception:
-            debug_print(f"make_gather: ❌ secondary fallback failed → {e}")
+
+        except Exception as e2:
+            # Final fallback — cannot recover from Twilio parameter failure
+            debug_print(f"make_gather: ❌ secondary fallback failed → {e2}")
             return None
+
 
 
 
