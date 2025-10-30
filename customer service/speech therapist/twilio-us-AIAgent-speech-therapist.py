@@ -271,7 +271,7 @@ CREATE_NEW_CUSTOMER = bool(os.getenv("CREATE_NEW_CUSTOMER", True))  # d
 #       500 → half-second pause
 #      1000 → one-second pause (recommended for clearer spacing)
 # ----------------------------------------------------------------------
-PAUSE_MS = int(os.getenv("PAUSE_MS", 1000))  # pause time btween messages
+PAUSE_MS = int(os.getenv("PAUSE_MS", 2000))  # pause time btween messages
 
 
 DB_FOLDER = "appointment_data"
