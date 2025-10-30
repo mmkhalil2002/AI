@@ -264,6 +264,15 @@ MAX_GET_PHONE_RETRIES = int(os.getenv("MAX_GET_PHONE_RETRIES", 3))
 MAX_ADVANCE_MONTHS = int(os.getenv("MAX_ADVANCE_MONTHS", 6))
 # do u allow to create new customer on LINE
 CREATE_NEW_CUSTOMER = bool(os.getenv("CREATE_NEW_CUSTOMER", True))  # d
+# ----------------------------------------------------------------------
+# 🕓 Speech Pause Duration (milliseconds)
+#   Controls SSML <break> tag timing between spoken appointment options.
+#   Examples:
+#       500 → half-second pause
+#      1000 → one-second pause (recommended for clearer spacing)
+# ----------------------------------------------------------------------
+PAUSE_MS = int(os.getenv("PAUSE_MS", 1000))  # pause time btween messages
+
 
 DB_FOLDER = "appointment_data"
 DB_FILE   = os.path.join(DB_FOLDER, "customers.json")  # human-readable, not JSON
@@ -4771,11 +4780,21 @@ def voice():
         #   - Capture and validate spoken or keypad date/time.
         #   - Handle silence, invalid input, and past times.
         #   - Offer up to 3 alternative appointment times if needed.
-        #   - Insert 500 ms pauses between proposed appointment options.
+        #   - Insert controlled SSML pauses between proposed appointment options.
         #   - Keep all voice messages in easily editable variables.
         # ----------------------------------------------------------------------
 
         debug_print(f"[ask_time_date] 🗣️ Received speech: {speech_result}")
+
+        # ----------------------------------------------------------------------
+        # 🕓 Speech Pause Duration (milliseconds)
+        #   Controls SSML <break> tag timing between spoken appointment options.
+        #   Change this value to adjust the gap between each option.
+        #   Examples:
+        #       500  → half-second pause (default)
+        #      1000  → one-second pause (clearer spacing)
+        # ----------------------------------------------------------------------
+        PAUSE_MS = 1000  # 🆕 you can adjust this to control how long Twilio pauses between options
 
         # ----------------------------------------------------------------------
         # 💬 VOICE MESSAGES — centralized for maintainability & localization
@@ -4930,16 +4949,16 @@ def voice():
                 resp.hangup()
                 return str(resp)
 
-            # 🕒 Build SSML with 500 ms pauses between each option
-            
+            # 🗣️ Build spoken options with configurable pause duration between each
+            #   Using SSML <break> tag with PAUSE_MS milliseconds.
 
-            # 🗣️ Build spoken options with 500 ms pause between each
+            # 🗣️ Build spoken options with configurable pause duration between each
             #
             # ──────────────────────────────────────────────────────────────
             # 🔍 PURPOSE:
             #   This line dynamically builds a natural-sounding spoken list of
             #   appointment options (Option 1, Option 2, etc.) that Twilio’s
-            #   voice engine will read aloud with half-second pauses between them.
+            #   voice engine will read aloud with pauses between them.
             #
             # 🧠 HOW IT WORKS:
             #   1️⃣  The variable `alts` is a list of dictionaries like:
@@ -4957,23 +4976,23 @@ def voice():
             #              "Option 3: Wednesday, October 30 at 11 A M."]
             #
             #   3️⃣  The .join() call:
-            #           " <break time=\"500ms\"/> ".join([...])
+            #           f" <break time=\"{PAUSE_MS}ms\"/> ".join([...])
             #       Combines all strings into a single sentence, inserting
             #       an SSML <break> tag (pause) between each one:
             #           → "Option 1: Monday, October 28 at 9 A M.
-            #              <break time=\"500ms\"/>
+            #              <break time=\"1000ms\"/>
             #              Option 2: Tuesday, October 29 at 2 P M.
-            #              <break time=\"500ms\"/>
+            #              <break time=\"1000ms\"/>
             #              Option 3: Wednesday, October 30 at 11 A M."
             #
-            #   4️⃣  The <break time="500ms"/> tag is SSML (Speech Synthesis
-            #       Markup Language). It tells Twilio to pause 0.5 seconds before
-            #       speaking the next option — making the dialogue more natural.
+            #   4️⃣  The <break time="{PAUSE_MS}ms"/> tag is SSML (Speech Synthesis
+            #       Markup Language). It tells Twilio to pause for PAUSE_MS milliseconds
+            #       before speaking the next option — making the dialogue more natural.
             #
-            # 🗣️ FINAL SPOKEN OUTPUT:
-            #   “Option 1: Monday, October 28 at 9 A M.” [pause 0.5s]
-            #   “Option 2: Tuesday, October 29 at 2 P M.” [pause 0.5s]
-            #   “Option 3: Wednesday, October 30 at 11 A M.” [pause 0.5s]
+            # 🗣️ FINAL SPOKEN OUTPUT (if PAUSE_MS = 1000):
+            #   “Option 1: Monday, October 28 at 9 A M.” [pause 1.0s]
+            #   “Option 2: Tuesday, October 29 at 2 P M.” [pause 1.0s]
+            #   “Option 3: Wednesday, October 30 at 11 A M.” [pause 1.0s]
             #
             # ──────────────────────────────────────────────────────────────
 
@@ -5010,18 +5029,18 @@ def voice():
             # next available appointment times to the caller.
             # ----------------------------------------------------------------------
 
-
-
-            options_with_pauses = " <break time=\"500ms\"/> ".join(
+            options_with_pauses = f" <break time=\"{PAUSE_MS}ms\"/> ".join(
                 [f"Option {i}: {a['friendly']}." for i, a in enumerate(alts, start=1)]
             )
 
             combined = (
                 f"{VOICE_NEXT_AVAILABLE_INTRO} "
-                f"<break time=\"500ms\"/> {options_with_pauses} "
-                f"<break time=\"500ms\"/> {VOICE_NEXT_AVAILABLE_OUTRO}"
+                f"<break time=\"{PAUSE_MS}ms\"/> {options_with_pauses} "
+                f"<break time=\"{PAUSE_MS}ms\"/> {VOICE_NEXT_AVAILABLE_OUTRO}"
             )
 
+
+            
             # Create SSML-enabled <Gather> block
             g = make_gather(
                 combined,
@@ -5030,8 +5049,7 @@ def voice():
                 speech_timeout="auto",
                 barge_in=True,
                 action="/voice",
-                method="POST",
-                ssml=True  # ✅ Enables <break> pauses
+                method="POST"
             )
             resp.append(g)
             sd["alts_list"] = alts
