@@ -4802,7 +4802,17 @@ def voice():
 
         debug_print(f"[collect_book_time_date] 🗣️ Received speech: {speech_result}")
 
-        
+        # ----------------------------------------------------------------------
+        # 🕓 Speech Pause Duration (milliseconds)
+        #   Controls SSML <break> tag timing between spoken appointment options.
+        #   Change this value to adjust the gap between each option.
+        #   Examples:
+        #       500  → half-second pause (default)
+        #      1000  → one-second pause (clearer spacing)
+        #      2000  → two-second pause (more distinct)
+        # ----------------------------------------------------------------------
+        PAUSE_MS = 1000  # 🆕 you can adjust this to control how long Twilio pauses between options
+
         # ----------------------------------------------------------------------
         # 💬 VOICE MESSAGES — centralized for maintainability & localization
         # ----------------------------------------------------------------------
@@ -4983,12 +4993,7 @@ def voice():
             #   3️⃣  The .join() call:
             #           f" <break time=\"{PAUSE_MS}ms\"/> ".join([...])
             #       Combines all strings into a single sentence, inserting
-            #       an SSML <break> tag (pause) between each one:
-            #           → "Option 1: Monday, October 28 at 9 A M.
-            #              <break time=\"1000ms\"/>
-            #              Option 2: Tuesday, October 29 at 2 P M.
-            #              <break time=\"1000ms\"/>
-            #              Option 3: Wednesday, October 30 at 11 A M."
+            #       an SSML <break> tag (pause) between each one.
             #
             #   4️⃣  The <break time="{PAUSE_MS}ms"/> tag is SSML (Speech Synthesis
             #       Markup Language). It tells Twilio to pause for PAUSE_MS milliseconds
@@ -4998,6 +5003,23 @@ def voice():
             #   “Option 1: Monday, October 28 at 9 A M.” [pause 1.0s]
             #   “Option 2: Tuesday, October 29 at 2 P M.” [pause 1.0s]
             #   “Option 3: Wednesday, October 30 at 11 A M.” [pause 1.0s]
+            #
+            # 📘 Example:
+            #   The SSML string built will look like this:
+            #   "<speak>
+            #       Here are the next available times.
+            #       <break time='1000ms'/>
+            #       Option 1: Monday, October 28 at 9 A M.
+            #       <break time='1000ms'/>
+            #       Option 2: Tuesday, October 29 at 2 P M.
+            #       <break time='1000ms'/>
+            #       Option 3: Wednesday, October 30 at 11 A M.
+            #       <break time='1000ms'/>
+            #       Please say the option number, or tell me another date and time.
+            #    </speak>"
+            #
+            #   Twilio interprets this properly as a real pause between lines —
+            #   the caller hears silence between options, not the text "<break>".
             # ──────────────────────────────────────────────────────────────
 
             # ----------------------------------------------------------------------
@@ -5019,32 +5041,33 @@ def voice():
             #       For example, if a = {"friendly": "Monday, October 28 at 9 A M"},
             #       then a['friendly'] returns the string:
             #           "Monday, October 28 at 9 A M"
-            #     - This value represents a human-readable description of the appointment time,
-            #       which Twilio will speak aloud to the caller.
-            #
-            # So putting it all together:
-            #    f"Option {i}: {a['friendly']}."
-            # becomes for each iteration:
-            #    "Option 1: Monday, October 28 at 9 A M."
-            #    "Option 2: Tuesday, October 29 at 2 P M."
-            #    "Option 3: Wednesday, October 30 at 11 A M."
-            #
-            # This results in a clean, friendly voice prompt that enumerates the
-            # next available appointment times to the caller.
             # ----------------------------------------------------------------------
 
             options_ssml = f" <break time=\"{PAUSE_MS}ms\"/> ".join(
                 [f"Option {i}: {a['friendly']}." for i, a in enumerate(alts, start=1)]
             )
 
+            # 📘 SSML NOTE:
+            #   Twilio ignores <break> tags unless they are wrapped inside a <speak> block.
+            #   Without <speak>...</speak>, the tags are read as plain text or skipped.
+            #   By wrapping our combined message with <speak>, we activate SSML processing
+            #   so the caller actually hears a pause between each option.
+            #
+            #   The <break> tags remain invisible — callers will never hear “1000 milliseconds”,
+            #   they will simply experience a natural pause between sentences.
+            #
+            #   This is the supported and recommended method per Twilio SSML documentation.
+            # ----------------------------------------------------------------------
+
             combined = (
-                f"{VOICE_NEXT_AVAILABLE_INTRO}"
-                f"<break time=\"{PAUSE_MS}ms\"/>"
-                f"{options_ssml}"
-                f"<break time=\"{PAUSE_MS}ms\"/>"
-                f"{VOICE_NEXT_AVAILABLE_OUTRO}"
+                f"<speak>{VOICE_NEXT_AVAILABLE_INTRO}"
+                f"<break time=\"{PAUSE_MS}ms\"/>{options_ssml}"
+                f"<break time=\"{PAUSE_MS}ms\"/>{VOICE_NEXT_AVAILABLE_OUTRO}</speak>"
             )
 
+            debug_print(f"[collect_book_time_date] 🗣️ SSML prompt prepared with {len(alts)} options and {PAUSE_MS}ms pauses")
+
+            # Create SSML-enabled <Gather> block
             g = make_gather(
                 combined,
                 input="speech dtmf",
@@ -5084,6 +5107,7 @@ def voice():
         save_session(call_sid)
         resp.redirect("/voice")
         return str(resp)
+
         
 
 
