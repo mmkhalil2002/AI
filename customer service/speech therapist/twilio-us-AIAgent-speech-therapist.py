@@ -3685,6 +3685,7 @@ def voice():
 
     
     elif stage == "collect_phone":
+        
         # ======================================================================
         # 📞 Stage: collect_phone — capture customer phone number via speech/DTMF
         # ----------------------------------------------------------------------
@@ -3695,29 +3696,6 @@ def voice():
         # ======================================================================
 
         debug_print("[collect_phone] 📍 Stage entered")
-
-        # ----------------------------------------------------------------------
-        # 💬 VOICE MESSAGES — centralized for maintainability & localization
-        # ----------------------------------------------------------------------
-        VOICE_SILENCE_MSG = (
-            "I didn’t hear your phone number. Please say or enter your 10-digit number, then press pound."
-        )
-        VOICE_SILENCE_FINAL_MSG = (
-            "I'm sorry, I still didn't get your phone number. Please call again later."
-        )
-        VOICE_INVALID_NUMBER_MSG = (
-            "That doesn’t sound complete. Please say or enter your 10-digit phone number including area code, then press pound."
-        )
-        VOICE_TOO_MANY_INVALID_MSG = (
-            "I'm sorry, I couldn’t capture your phone number. Please call again later."
-        )
-        VOICE_RESCHEDULE_MSG = (
-            "Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 A M'."
-        )
-        VOICE_DOB_PROMPT_MSG = (
-            "Thanks. What’s your date of birth? You can say it, or enter two digits for month, "
-            "two for day, and four for year, then press pound."
-        )
 
         # ----------------------------------------------------------------------
         # 🔁 Load session safely (never overwrite)
@@ -3756,35 +3734,31 @@ def voice():
             sd["silence_collect_phone"] = tries
             debug_print(f"[collect_phone] 🤐 No input (tries={tries}/3)")
 
-            # 1️⃣ Allow up to 3 silent retries before ending call
             if tries < 3:
                 g = make_gather(
-                    prompt=VOICE_SILENCE_MSG,
-                    input="speech dtmf",
-                    timeout=4,
-                    speech_timeout="auto",
-                    barge_in=True,
-                    finish_on_key="#"
+                    prompt="I didn’t hear your phone number. "
+                        "Please say or enter your 10-digit number, then press pound.",
+                    input="speech dtmf", timeout=4, speech_timeout="auto",
+                    barge_in=True, finish_on_key="#"
                 )
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # ❌ Too many silences → hang up politely
-            resp.say(gpt_speak(VOICE_SILENCE_FINAL_MSG), VOICE)
+            # ❌ Too many silences → hang up
+            resp.say(gpt_speak("I'm sorry, I still didn't get your phone number. Please call again later."), VOICE)
             resp.hangup()
             save_session(call_sid)   # ✅ persist logs for debugging
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # ✅ Clear silence counter once input is received
+        # Clear silence counter since we received input
         sd.pop("silence_collect_phone", None)
 
         # ----------------------------------------------------------------------
         # 🔢 Convert spoken input to digits if needed
         # ----------------------------------------------------------------------
         def _spoken_to_digits(raw: str) -> str:
-            """Convert spoken words like 'four one five' or 'double three' into numeric digits."""
             if not raw:
                 return ""
             words = (
@@ -3820,15 +3794,13 @@ def voice():
         debug_print(f"[collect_phone] 🔍 raw_digits='{raw_digits}'")
 
         # ----------------------------------------------------------------------
-        # 🌐 Normalize to E.164 format
+        # 🌐 Normalize to E.164
         # ----------------------------------------------------------------------
         country = sd.get("phone_country", (COUNTRY or "US")).upper()
         try:
-            # Convert input to standardized +E.164 international format
             phone_e164 = normalize_phone_e164(raw_digits, country)
             debug_print(f"[collect_phone] ✅ normalized → {phone_e164}")
         except Exception as e:
-            # Fallback logic for basic US numbers if library fails
             debug_print(f"[collect_phone] ⚠️ normalize_phone_e164 failed: {e}")
             d = raw_digits
             if country == "US":
@@ -3847,22 +3819,19 @@ def voice():
             sd["retry_phone"] = r
             debug_print(f"[collect_phone] ❌ invalid number (retry {r}/3) input='{raw_digits}'")
 
-            # Allow 3 retries before termination
             if r < 3:
                 g = make_gather(
-                    prompt=VOICE_INVALID_NUMBER_MSG,
-                    input="speech dtmf",
-                    timeout=5,
-                    speech_timeout="auto",
-                    barge_in=True,
-                    finish_on_key="#"
+                    prompt="That doesn’t sound complete. "
+                        "Please say or enter your 10-digit phone number including area code, then press pound.",
+                    input="speech dtmf", timeout=5, speech_timeout="auto",
+                    barge_in=True, finish_on_key="#"
                 )
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # ❌ Max invalid → hangup politely
-            resp.say(gpt_speak(VOICE_TOO_MANY_INVALID_MSG), VOICE)
+            # ❌ Max invalid → hangup
+            resp.say(gpt_speak("I'm sorry, I couldn’t capture your phone number. Please call again later."), VOICE)
             resp.hangup()
             save_session(call_sid)
             session_data.pop(call_sid, None)
@@ -3895,12 +3864,9 @@ def voice():
         if sd.get("reschedule_after_cancel"):
             sd["stage"] = "collect_book_time_date"
             g = make_gather(
-                prompt=VOICE_RESCHEDULE_MSG,
-                input="speech dtmf",
-                timeout=5,
-                speech_timeout="auto",
-                barge_in=True,
-                finish_on_key="#"
+                prompt="Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 A M'.",
+                input="speech dtmf", timeout=5, speech_timeout="auto",
+                barge_in=True, finish_on_key="#"
             )
             resp.append(g)
             resp.redirect("/voice")
@@ -3913,12 +3879,10 @@ def voice():
         # ----------------------------------------------------------------------
         sd["stage"] = "collect_dob"
         g = make_gather(
-            prompt=VOICE_DOB_PROMPT_MSG,
-            input="speech dtmf",
-            timeout=5,
-            speech_timeout="auto",
-            barge_in=True,
-            finish_on_key="#"
+            prompt="Thanks. What’s your date of birth? You can say it, or enter two digits for month, "
+                "two for day, and four for year, then press pound.",
+            input="speech dtmf", timeout=5, speech_timeout="auto",
+            barge_in=True, finish_on_key="#"
         )
         resp.append(g)
         resp.redirect("/voice")
@@ -3935,14 +3899,43 @@ def voice():
 
 
 
-
     elif stage == "collect_dob":
-        
         # ----------------------------------------------------------------------
         # 🎂 Stage: collect_dob — capture and validate date of birth
         # ----------------------------------------------------------------------
         t_stage_start = _time_mod.perf_counter()
         debug_print(f"[collect_dob] 📍 Stage entered at {_time_mod.strftime('%H:%M:%S')}")
+
+        # ----------------------------------------------------------------------
+        # 💬 VOICE MESSAGES — centralized for maintainability & localization
+        # ----------------------------------------------------------------------
+        VOICE_SILENCE_MSG = (
+            "Please say your date of birth, for example, 'July 3 1956'. "
+            "Or enter two digits for month, two for day, and four for year, then press pound."
+        )
+        VOICE_SILENCE_FINAL_MSG = (
+            "Sorry, I couldn’t get your date of birth. Please call again later."
+        )
+        VOICE_PARSE_FAIL_MSG = (
+            "I didn’t catch your full birth date. Please say it again, for example, 'July 3 1956'. "
+            "You can also enter it using your keypad: 2 digits for month, 2 for day, and 4 for year, then press pound."
+        )
+        VOICE_INVALID_DOB_MSG = (
+            "That doesn’t seem like a valid date of birth. "
+            "Please enter 2 digits for month, 2 for day, and 4 for year, then press #."
+        )
+        VOICE_NOT_FOUND_MSG = (
+            "We couldn’t find a record with that phone number and date of birth. "
+            "If you are a new customer, press 1. If you are an existing customer, press 2."
+        )
+        VOICE_NEW_CUSTOMER_MSG = (
+            "We found your record, but your registration with the clinic is not complete. "
+            "Please contact the clinic to finish your registration before booking an appointment. Goodbye!"
+        )
+        VOICE_PIN_PROMPT_MSG = (
+            "Thank you. For security verification, please enter your six digit PIN number now, "
+            "followed by the pound key. If you prefer, you can also say each digit slowly."
+        )
 
         # ----------------------------------------------------------------------
         # 🛡️ Session protection — ensure dictionary exists
@@ -3963,31 +3956,7 @@ def voice():
         debug_print(f"[collect_dob] 🔎 doctor_name check → {sd.get('doctor_name')}")
 
         # ----------------------------------------------------------------------
-        # 📢 Define message constants (including missing MSG_PIN_PROMPT)
-        # ----------------------------------------------------------------------
-        MSG_PARSE_FAIL = (
-            "I didn’t catch your full birth date. Please say it again, for example, 'July 3 1956'. "
-            "You can also enter it using your keypad: 2 digits for month, 2 for day, and 4 for year, then press pound."
-        )
-        MSG_INVALID_DOB = (
-            "That doesn’t seem like a valid date of birth. "
-            "Please enter 2 digits for month, 2 for day, and 4 for year, then press #."
-        )
-        MSG_NOT_FOUND = (
-            "We couldn’t find a record with that phone number and date of birth. "
-            "If you are a new customer, press 1. If you are an existing customer, press 2."
-        )
-        MSG_NEW_CUSTOMER = (
-            "We found your record, but your registration with the clinic is not complete. "
-            "Please contact the clinic to finish your registration before booking an appointment. Goodbye!"
-        )
-        MSG_PIN_PROMPT = (
-            "Thank you. For security verification, please enter your six digit PIN number now, "
-            "followed by the pound key. If you prefer, you can also say each digit slowly."
-        )
-
-        # ----------------------------------------------------------------------
-        # 🎧 Capture inputs
+        # 🎧 Capture inputs (speech or keypad digits)
         # ----------------------------------------------------------------------
         try:
             dtmf_digits = (request.values.get("Digits") or "").strip()
@@ -4005,30 +3974,36 @@ def voice():
             debug_print(f"[collect_dob] 🤐 silence tries={tries}/3")
 
             if tries < 3:
-                prompt = (
-                    "Please say your date of birth, for example, 'July 3 1956'. "
-                    "Or enter two digits for month, two for day, and four for year, then press pound."
+                g = make_gather(
+                    VOICE_SILENCE_MSG,
+                    input="speech dtmf",
+                    timeout=3,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    finish_on_key="#"
                 )
-                g = make_gather(prompt, input="speech dtmf", timeout=3,
-                                speech_timeout="auto", barge_in=True, finish_on_key="#")
                 resp.append(g)
                 sd["stage"] = "collect_dob"
                 save_session(call_sid)
                 resp.redirect("/voice")
                 return str(resp)
 
-            resp.say(gpt_speak("Sorry, I couldn’t get your date of birth. Please call again later."), VOICE)
+            # ❌ Too many silent attempts → hang up politely
+            resp.say(gpt_speak(VOICE_SILENCE_FINAL_MSG), VOICE)
             resp.hangup()
             debug_print(f"[collect_dob] 🧹 clearing session after hangup (call_sid={call_sid})")
             session_data.pop(call_sid, None)
             return str(resp)
 
+        # ✅ Reset silence counter once valid input is received
         sd.pop("silence_dob", None)
 
         # ----------------------------------------------------------------------
-        # 🧩 Parse DOB
+        # 🧩 Parse DOB (from DTMF or speech)
         # ----------------------------------------------------------------------
         dob_date = None
+
+        # 🧮 If DTMF provided (numeric keypad input)
         if dtmf_digits:
             d = _re.sub(r"\D", "", dtmf_digits)
             if len(d) >= 8:
@@ -4039,27 +4014,72 @@ def voice():
                 except Exception as e:
                     debug_print(f"[collect_dob] ❌ keypad parse error → {e}")
 
+        # 🗣️ If not from keypad, try parsing spoken date
         if not dob_date and speech_text:
             try:
+                # ----------------------------------------------------------------------
+                # 🧹 Clean and normalize spoken date text before parsing
+                # ----------------------------------------------------------------------
+                # Example raw speech input:
+                #   "July 3rd, 1956."  → we need to make it machine-friendly like "July 3 1956"
+                # ----------------------------------------------------------------------
+
                 t = _re.sub(r"[.,;:]+$", "", speech_text)
+                # 🔹 Removes punctuation at the *end* of the spoken text.
+                #   - Pattern: [.,;:]+$
+                #       • [.,;:]  → matches period (.), comma (,), semicolon (;), or colon (:)
+                #       • +       → one or more occurrences
+                #       • $       → end of string anchor
+                #   ✅ Example: "July 3rd, 1956." → "July 3rd, 1956"
+
                 t = _re.sub(r"[,\.;:]", " ", t)
+                # 🔹 Replaces punctuation *inside* the string with spaces.
+                #   - Pattern: [,\.;:]
+                #       • Matches commas, periods, semicolons, or colons.
+                #   ✅ Example: "July 3rd, 1956" → "July 3rd 1956"
+
                 t = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=_re.IGNORECASE)
+                # 🔹 Removes ordinal suffixes (st, nd, rd, th) from day numbers.
+                #   - Pattern: \b(\d{1,2})(st|nd|rd|th)\b
+                #       • \b → **word boundary**, ensures match only at word edges.
+                #       • (\d{1,2}) → captures one or two digits (day numbers like "3" or "21")
+                #       • (st|nd|rd|th) → matches common ordinal suffixes.
+                #       • \b → another word boundary to prevent partial matches.
+                #   ✅ Example: "July 3rd 1956" → "July 3 1956"
+
                 t = _re.sub(r"\s+", " ", t).strip()
+                # 🔹 Collapses multiple whitespace characters into one space and trims edges.
+                #   - Pattern: \s+
+                #       • \s → **whitespace** (spaces, tabs, newlines)
+                #       • +  → one or more occurrences.
+                #   - `.strip()` removes leading/trailing spaces.
+                #   ✅ Example: "  March   22nd,   1988 " → "March 22 1988"
+
+                # ----------------------------------------------------------------------
+                # 🧠 Parse normalized string using dateutil.parser
+                # ----------------------------------------------------------------------
                 parsed = _dtparse(t, fuzzy=True)
                 dob_date = date(parsed.year, parsed.month, parsed.day)
                 debug_print("[collect_dob] ✅ parsed DOB from speech")
             except Exception as e:
+                # ❌ Unable to parse → re-prompt the user
                 debug_print(f"[collect_dob] ❌ speech parse failed → {e}")
                 sd["stage"] = "collect_dob"
-                g = make_gather(MSG_PARSE_FAIL, input="speech dtmf", timeout=3,
-                                speech_timeout="auto", barge_in=True, finish_on_key="#")
+                g = make_gather(
+                    VOICE_PARSE_FAIL_MSG,
+                    input="speech dtmf",
+                    timeout=3,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    finish_on_key="#"
+                )
                 resp.append(g)
                 save_session(call_sid)
                 resp.redirect("/voice")
                 return str(resp)
 
         # ----------------------------------------------------------------------
-        # ⚙️ Validate DOB
+        # ⚙️ Validate DOB range (1900 ≤ DOB ≤ today)
         # ----------------------------------------------------------------------
         try:
             today = _date_local.today()
@@ -4068,19 +4088,26 @@ def voice():
         except Exception as e:
             debug_print(f"[collect_dob] ⚠️ Validation error → {e}")
             sd["stage"] = "collect_dob"
-            g = make_gather(MSG_INVALID_DOB, input="dtmf", timeout=3, barge_in=True, finish_on_key="#")
+            g = make_gather(
+                VOICE_INVALID_DOB_MSG,
+                input="dtmf",
+                timeout=3,
+                barge_in=True,
+                finish_on_key="#"
+            )
             resp.append(g)
             save_session(call_sid)
             resp.redirect("/voice")
             return str(resp)
 
+        # ✅ Store DOB in session once validated
         iso_dob = dob_date.strftime("%Y-%m-%d")
         sd["customer"]["dob"] = iso_dob
         sd["cancel"]["dob"] = iso_dob
         debug_print(f"[collect_dob] ✅ Stored DOB → {iso_dob}")
 
         # ----------------------------------------------------------------------
-        # 🔍 Lookup customer
+        # 🔍 Lookup customer by phone & DOB
         # ----------------------------------------------------------------------
         phone_e164 = sd["customer"].get("phone_e164") or sd.get("phone_e164")
         found, customer_status = False, "unknown"
@@ -4098,33 +4125,47 @@ def voice():
             debug_print("[collect_dob] ⚠️ phone_e164 missing before lookup")
 
         # ----------------------------------------------------------------------
-        # 🔀 Branching
+        # 🔀 Branching based on lookup result
         # ----------------------------------------------------------------------
         if not found:
             sd["stage"] = "verify_customer_type"
-            g = make_gather(MSG_NOT_FOUND, input="dtmf", timeout=3, barge_in=True, finish_on_key="#")
+            g = make_gather(
+                VOICE_NOT_FOUND_MSG,
+                input="dtmf",
+                timeout=3,
+                barge_in=True,
+                finish_on_key="#"
+            )
             resp.append(g)
             save_session(call_sid)
             resp.redirect("/voice")
             debug_print("[collect_dob] 🔀 not found → verify_customer_type")
             return str(resp)
 
+        # 🟡 Incomplete registration (new)
         if customer_status == "new":
             debug_print("[collect_dob] 🟡 incomplete registration → hangup")
-            resp.say(gpt_speak(MSG_NEW_CUSTOMER), VOICE)
+            resp.say(gpt_speak(VOICE_NEW_CUSTOMER_MSG), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # ✅ Valid existing customer
+        # ✅ Valid existing customer → proceed to PIN verification
         sd["stage"] = "collect_pin_number"
-        g = make_gather(MSG_PIN_PROMPT, input="speech dtmf", timeout=5,
-                        speech_timeout="auto", barge_in=True, finish_on_key="#")
+        g = make_gather(
+            VOICE_PIN_PROMPT_MSG,
+            input="speech dtmf",
+            timeout=5,
+            speech_timeout="auto",
+            barge_in=True,
+            finish_on_key="#"
+        )
         resp.append(g)
         save_session(call_sid)
         resp.redirect("/voice")
         debug_print(f"[collect_dob] ✅ proceed → collect_pin_number (doctor_name={sd.get('doctor_name')})")
         return str(resp)
+
 
 
 
