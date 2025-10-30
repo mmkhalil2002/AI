@@ -416,7 +416,7 @@ def save_session(call_sid: str):
 #import re as _re
 #from datetime import datetime, timedelta
 # ==============================================================
-# 📅 smart_parse_time — fully compatible with ask_time_date
+# 📅 smart_parse_time — fully compatible with collect_book_time_date
 # ==============================================================
 
 
@@ -617,6 +617,7 @@ def _append_stage_to_action(action: Optional[str], next_stage: Optional[str]) ->
 #
 # NOTES:
 #   - Automatically detects SSML markup and sets allow_ssml=True.
+#   - Uses RAW prompt when SSML is present (to avoid escaping by gpt_speak()).
 #   - Falls back gracefully if Twilio API parameters are invalid.
 #   - Centralized debug_print messages for reliability tracking.
 # ======================================================================
@@ -650,6 +651,7 @@ def make_gather(
       - hints provides contextual phrases for better accuracy.
       - SSML markup (<break>, <emphasis>) automatically enabled.
     """
+    import re  # local import to avoid global dependency if not needed
 
     # ------------------------------------------------------------------
     # 🧹 Normalize speech_timeout — convert numeric strings to int
@@ -673,10 +675,12 @@ def make_gather(
 
     # ------------------------------------------------------------------
     # 🗣️ Determine if SSML is present in the prompt text
-    #    - Detects <break>, <emphasis>, <prosody>, etc.
+    #    - Detects <break>, <emphasis>, <prosody>, <say-as>, etc.
     #    - If found, Twilio's allow_ssml=True will be enabled.
+    #    - IMPORTANT: When SSML is present, we pass RAW prompt (no gpt_speak())
+    #      to avoid escaping angle brackets which would break SSML.
     # ------------------------------------------------------------------
-    _contains_ssml = any(tag in prompt for tag in ("<break", "<emphasis", "<prosody", "<say-as"))
+    _contains_ssml = bool(re.search(r"<\s*(break|emphasis|prosody|say-as)\b", prompt, re.IGNORECASE))
 
     try:
         # ===============================================================
@@ -687,17 +691,22 @@ def make_gather(
             action=_action,
             method=method,
             timeout=int(timeout),
-            speechTimeout=_speech_timeout,
-            finishOnKey=finish_on_key,
-            numDigits=_num_digits,
+            speechTimeout=_speech_timeout,   # ← keep camelCase to match your system
+            finishOnKey=finish_on_key,       # ← keep camelCase to match your system
+            numDigits=_num_digits,           # ← keep camelCase to match your system
             hints=_hints,
             language=language,
-            bargeIn=barge_in,
+            bargeIn=barge_in,                # ← keep camelCase to match your system
         )
 
         # 🗣️ Add the spoken prompt using Twilio's <Say> tag
-        #     - If SSML detected, allow Twilio to parse markup correctly.
-        g.say(gpt_speak(prompt), voice=VOICE, allow_ssml=_contains_ssml)
+        #     - If SSML detected, allow Twilio to parse markup correctly
+        #       and pass RAW prompt (no gpt_speak()) to preserve tags.
+        if _contains_ssml:
+            g.say(prompt, voice=VOICE, allow_ssml=True)
+        else:
+            g.say(gpt_speak(prompt), voice=VOICE)
+
         return g
 
     except Exception as e:
@@ -709,13 +718,20 @@ def make_gather(
         try:
             # Rebuild with minimal configuration to ensure voice response
             g = Gather(input=input, action=_action, method=method)
-            g.say(gpt_speak(prompt), voice=VOICE, allow_ssml=_contains_ssml)
+
+            # Keep the same SSML-vs-plain logic on fallback too
+            if _contains_ssml:
+                g.say(prompt, voice=VOICE, allow_ssml=True)
+            else:
+                g.say(gpt_speak(prompt), voice=VOICE)
+
             return g
 
         except Exception as e2:
             # Final fallback — cannot recover from Twilio parameter failure
             debug_print(f"make_gather: ❌ secondary fallback failed → {e2}")
             return None
+
 
 
 
@@ -3135,7 +3151,7 @@ def voice():
                 hints
             )
 
-        if st == "ask_time_date":
+        if st == "collect_book_time_date":
             return (
                 "Please say the appointment time, for example, 'August fifteenth at 5 AM'. "
                 "Or enter two digits for month, two for day, two for hour, and two for minutes, "
@@ -3241,7 +3257,7 @@ def voice():
     # Continue with main conversation logic (other stages)
     # ----------------------------------------------------------------------
     # ↓ add your existing stage-handling code below this point
-    # e.g. intro / intent / collect_dr_info / ask_time_date / etc.
+    # e.g. intro / intent / collect_dr_info / collect_book_time_date / etc.
 
 
 
@@ -3846,7 +3862,7 @@ def voice():
         # 🔁 Reschedule-after-cancel shortcut
         # ----------------------------------------------------------------------
         if sd.get("reschedule_after_cancel"):
-            sd["stage"] = "ask_time_date"
+            sd["stage"] = "collect_book_time_date"
             g = make_gather(
                 prompt="Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 A M'.",
                 input="speech dtmf", timeout=5, speech_timeout="auto",
@@ -3854,7 +3870,7 @@ def voice():
             )
             resp.append(g)
             resp.redirect("/voice")
-            debug_print("[collect_phone] 🔁 reschedule → ask_time_date")
+            debug_print("[collect_phone] 🔁 reschedule →  collect_book_time_date")
             save_session(call_sid)
             return str(resp)
 
@@ -4305,7 +4321,7 @@ def voice():
 
             else:
                 debug_print("verify_customer_type: found=True but pressed 1=new → continue to scheduling")
-                sd["stage"] = "ask_time_date"
+                sd["stage"] = "collect_book_time_date"
                 g = make_gather(
                     "Okay. Please say the appointment date and time, for example, 'October 8 at 9 30 A M'.",
                     input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True, finish_on_key="#"
@@ -4331,8 +4347,8 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
             else:
-                debug_print("verify_customer_type: 2=existing; found=True → proceed to ask_time_date")
-                sd["stage"] = "ask_time_date"
+                debug_print("verify_customer_type: 2=existing; found=True → proceed to collect_book_time_date")
+                sd["stage"] = "collect_book_time_date"
                 g = make_gather(
                     "Great. Please say the appointment date and time, for example, 'October 8 at 2 P M'.",
                     input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True, finish_on_key="#"
@@ -4569,7 +4585,7 @@ def voice():
         #   - Read out a numbered list of doctors ("Press 1 for Dr. Smith").
         #   - Capture doctor selection by speech or keypad (DTMF).
         #   - Supports partial/fuzzy speech match and retries.
-        #   - On success → move to ask_time_date (for appointment scheduling).
+        #   - On success → move to collect_book_time_date (for appointment scheduling).
         # ----------------------------------------------------------------------
         #global doctor_names
         session_data.setdefault(call_sid, {}).setdefault("retry_booking", 0)
@@ -4737,7 +4753,7 @@ def voice():
         # ✅ Success — Store & Move On
         # ----------------------------------------------------------------------
         session_data[call_sid]["doctor_name"] = matched_name
-        session_data[call_sid]["stage"] = "ask_time_date"
+        session_data[call_sid]["stage"] = "collect_book_time_date"
 
         g = make_gather(
             f"Great, your appointment will be with {matched_name}. "
@@ -4758,7 +4774,7 @@ def voice():
 
 
      # ----------------------------------------------------------------------
-     # 📅 Stage: ask_time_date
+     # 📅 Stage: collect_book_time_date
      # Purpose:
      #   - Parse spoken date/time (e.g., “September 12 at 10 AM”) without external helpers.
      #   - Build a concrete UTC timeslot (start/end) using clinic TZ and duration.
@@ -4772,9 +4788,9 @@ def voice():
      #   - We never assign to `_re`, so it stays global and safe.
      #   - Every code path returns `str(resp)` (Flask requirement).
      # ----------------------------------------------------------------------
-    elif stage == "ask_time_date":
+    elif stage == "collect_book_time_date":
         # ----------------------------------------------------------------------
-        # 📅 Stage: ask_time_date
+        # 📅 Stage: collect_book_time_date
         # ----------------------------------------------------------------------
         # 🎯 PURPOSE:
         #   - Capture and validate spoken or keypad date/time.
@@ -4784,7 +4800,7 @@ def voice():
         #   - Keep all voice messages in easily editable variables.
         # ----------------------------------------------------------------------
 
-        debug_print(f"[ask_time_date] 🗣️ Received speech: {speech_result}")
+        debug_print(f"[collect_book_time_date] 🗣️ Received speech: {speech_result}")
 
         # ----------------------------------------------------------------------
         # 🕓 Speech Pause Duration (milliseconds)
@@ -4827,7 +4843,7 @@ def voice():
         # ----------------------------------------------------------------------
         session_data.setdefault(call_sid, {})
         sd = session_data[call_sid]
-        sd.setdefault("stage", "ask_time_date")
+        sd.setdefault("stage", "collect_book_time_date")
 
         doctor_name = sd.get("doctor_name")
         if not doctor_name:
@@ -4868,7 +4884,7 @@ def voice():
         # 🧠 PARSE INPUT
         # ----------------------------------------------------------------------
         raw = (speech_result or request.values.get("Digits") or "").strip()
-        debug_print(f"[ask_time_date][parse] raw='{raw}'")
+        debug_print(f"[collect_book_time_date][parse] raw='{raw}'")
 
         # Handle spoken “Option one / two / three” responses
         if sd.get("alts_list"):
@@ -4888,7 +4904,7 @@ def voice():
 
             if raw.isdigit() and 1 <= int(raw) <= len(sd["alts_list"]):
                 choice = sd["alts_list"][int(raw) - 1]
-                debug_print(f"[ask_time_date] 🎯 User selected Option {raw}: {choice['friendly']}")
+                debug_print(f"[collect_book_time_date] 🎯 User selected Option {raw}: {choice['friendly']}")
                 sd["appointment_time"] = {"start": choice["start"], "end": choice["end"]}
                 sd["stage"] = "book_appt_confirm"
                 save_session(call_sid)
@@ -4899,7 +4915,7 @@ def voice():
         try:
             result = smart_parse_time(raw)
         except Exception as e:
-            debug_print(f"[ask_time_date][parse] error: {e}")
+            debug_print(f"[collect_book_time_date][parse] error: {e}")
             result = None
 
         # ----------------------------------------------------------------------
@@ -5029,20 +5045,20 @@ def voice():
             # next available appointment times to the caller.
             # ----------------------------------------------------------------------
 
-          
-
-            options_text = " ".join([f"Option {i}: {a['friendly']}." for i, a in enumerate(alts, start=1)])
+            # ✅ Use SSML <break> pauses so delay is actually audible
+            options_ssml = f" <break time=\"{PAUSE_MS}ms\"/> ".join(
+                [f"Option {i}: {a['friendly']}." for i, a in enumerate(alts, start=1)]
+            )
 
             combined = (
                 f"{VOICE_NEXT_AVAILABLE_INTRO} "
-                f"{options_text} "
+                f"<break time=\"{PAUSE_MS}ms\"/> "
+                f"{options_ssml} "
+                f"<break time=\"{PAUSE_MS}ms\"/> "
                 f"{VOICE_NEXT_AVAILABLE_OUTRO}"
             )
 
-
-
-            
-            # Create SSML-enabled <Gather> block
+            # Create SSML-enabled <Gather> block (Twilio supports <break> here)
             g = make_gather(
                 combined,
                 input="speech dtmf",
@@ -5054,7 +5070,7 @@ def voice():
             )
             resp.append(g)
             sd["alts_list"] = alts
-            sd["stage"] = "ask_time_date"
+            sd["stage"] = "collect_book_time_date"
             save_session(call_sid)
             return str(resp)
 
@@ -5082,6 +5098,9 @@ def voice():
         save_session(call_sid)
         resp.redirect("/voice")
         return str(resp)
+
+        
+
 
 
 
@@ -6132,7 +6151,7 @@ def voice():
         #   - Capture the user’s selection using DTMF (1, 2, 3...) or speech.
         #   - Perform fuzzy matching on spoken names (partial word matches).
         #   - Retry up to 3 times if no valid match is found.
-        #   - On success → move to stage "ask_time_date" for time selection.
+        #   - On success → move to stage "collect_book_time_date" for time selection.
         # ----------------------------------------------------------------------
 
         # ----------------------------------------------------------------------
@@ -6309,10 +6328,10 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ Success — Save doctor and move to "ask_time_date"
+        # ✅ Success — Save doctor and move to "collect_book_time_date"
         # ----------------------------------------------------------------------
         sd["doctor_name"] = matched_name
-        sd["stage"] = "ask_time_date"
+        sd["stage"] = "collect_book_time_date"
 
         # Build personalized success message
         success_prompt = VOICE_SUCCESS_PROMPT_TEMPLATE.format(doctor=matched_name)
@@ -6328,7 +6347,7 @@ def voice():
         resp.append(g)
         resp.redirect("/voice")
 
-        debug_print(f"[collect_dr_info] ✅ Stored doctor_name={matched_name} → next stage ask_time_date")
+        debug_print(f"[collect_dr_info] ✅ Stored doctor_name={matched_name} → next stage collect_book_time_date")
         save_session(call_sid)
         return str(resp)
 
@@ -7743,7 +7762,7 @@ def voice():
             slot_ok = False
 
         if not slot_ok:
-            sd["stage"] = "ask_time_date"
+            sd["stage"] = "collect_book_time_date"
             resp.append(make_gather("Sorry, that slot was just taken. Please choose another time."))
             return str(resp)
 
@@ -7863,7 +7882,7 @@ def voice():
 
             # If user was trying to reschedule, gracefully continue to time selection
             if reschedule_flag:
-                session_data[call_sid]["stage"] = "ask_time_date"
+                session_data[call_sid]["stage"] = "collect_book_time_date"
                 session_data[call_sid]["reschedule_after_cancel"] = False
                 resp.append(make_gather(
                     "Please say the new date and time for your appointment, for example, 'October 12th at 9 a.m.'"
@@ -7958,8 +7977,8 @@ def voice():
         # 🔁 Optional reschedule flow
         # ----------------------------------------------------------------------
         if reschedule_flag:
-            debug_print("cancel_appt_confirm: 🔄 Reschedule-after-cancel detected → forwarding to ask_time_date")
-            session_data[call_sid]["stage"] = "ask_time_date"
+            debug_print("cancel_appt_confirm: 🔄 Reschedule-after-cancel detected → forwarding to collect_book_time_date")
+            session_data[call_sid]["stage"] = "collect_book_time_date"
             session_data[call_sid]["reschedule_after_cancel"] = False
 
             # Keep customer info intact so we can reuse it for the new booking
