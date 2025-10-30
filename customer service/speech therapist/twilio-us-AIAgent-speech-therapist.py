@@ -3685,7 +3685,6 @@ def voice():
 
     
     elif stage == "collect_phone":
-        
         # ======================================================================
         # 📞 Stage: collect_phone — capture customer phone number via speech/DTMF
         # ----------------------------------------------------------------------
@@ -3696,6 +3695,29 @@ def voice():
         # ======================================================================
 
         debug_print("[collect_phone] 📍 Stage entered")
+
+        # ----------------------------------------------------------------------
+        # 💬 VOICE MESSAGES — centralized for maintainability & localization
+        # ----------------------------------------------------------------------
+        VOICE_SILENCE_MSG = (
+            "I didn’t hear your phone number. Please say or enter your 10-digit number, then press pound."
+        )
+        VOICE_SILENCE_FINAL_MSG = (
+            "I'm sorry, I still didn't get your phone number. Please call again later."
+        )
+        VOICE_INVALID_NUMBER_MSG = (
+            "That doesn’t sound complete. Please say or enter your 10-digit phone number including area code, then press pound."
+        )
+        VOICE_TOO_MANY_INVALID_MSG = (
+            "I'm sorry, I couldn’t capture your phone number. Please call again later."
+        )
+        VOICE_RESCHEDULE_MSG = (
+            "Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 A M'."
+        )
+        VOICE_DOB_PROMPT_MSG = (
+            "Thanks. What’s your date of birth? You can say it, or enter two digits for month, "
+            "two for day, and four for year, then press pound."
+        )
 
         # ----------------------------------------------------------------------
         # 🔁 Load session safely (never overwrite)
@@ -3734,31 +3756,35 @@ def voice():
             sd["silence_collect_phone"] = tries
             debug_print(f"[collect_phone] 🤐 No input (tries={tries}/3)")
 
+            # 1️⃣ Allow up to 3 silent retries before ending call
             if tries < 3:
                 g = make_gather(
-                    prompt="I didn’t hear your phone number. "
-                        "Please say or enter your 10-digit number, then press pound.",
-                    input="speech dtmf", timeout=4, speech_timeout="auto",
-                    barge_in=True, finish_on_key="#"
+                    prompt=VOICE_SILENCE_MSG,
+                    input="speech dtmf",
+                    timeout=4,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    finish_on_key="#"
                 )
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # ❌ Too many silences → hang up
-            resp.say(gpt_speak("I'm sorry, I still didn't get your phone number. Please call again later."), VOICE)
+            # ❌ Too many silences → hang up politely
+            resp.say(gpt_speak(VOICE_SILENCE_FINAL_MSG), VOICE)
             resp.hangup()
             save_session(call_sid)   # ✅ persist logs for debugging
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # Clear silence counter since we received input
+        # ✅ Clear silence counter once input is received
         sd.pop("silence_collect_phone", None)
 
         # ----------------------------------------------------------------------
         # 🔢 Convert spoken input to digits if needed
         # ----------------------------------------------------------------------
         def _spoken_to_digits(raw: str) -> str:
+            """Convert spoken words like 'four one five' or 'double three' into numeric digits."""
             if not raw:
                 return ""
             words = (
@@ -3794,13 +3820,15 @@ def voice():
         debug_print(f"[collect_phone] 🔍 raw_digits='{raw_digits}'")
 
         # ----------------------------------------------------------------------
-        # 🌐 Normalize to E.164
+        # 🌐 Normalize to E.164 format
         # ----------------------------------------------------------------------
         country = sd.get("phone_country", (COUNTRY or "US")).upper()
         try:
+            # Convert input to standardized +E.164 international format
             phone_e164 = normalize_phone_e164(raw_digits, country)
             debug_print(f"[collect_phone] ✅ normalized → {phone_e164}")
         except Exception as e:
+            # Fallback logic for basic US numbers if library fails
             debug_print(f"[collect_phone] ⚠️ normalize_phone_e164 failed: {e}")
             d = raw_digits
             if country == "US":
@@ -3819,19 +3847,22 @@ def voice():
             sd["retry_phone"] = r
             debug_print(f"[collect_phone] ❌ invalid number (retry {r}/3) input='{raw_digits}'")
 
+            # Allow 3 retries before termination
             if r < 3:
                 g = make_gather(
-                    prompt="That doesn’t sound complete. "
-                        "Please say or enter your 10-digit phone number including area code, then press pound.",
-                    input="speech dtmf", timeout=5, speech_timeout="auto",
-                    barge_in=True, finish_on_key="#"
+                    prompt=VOICE_INVALID_NUMBER_MSG,
+                    input="speech dtmf",
+                    timeout=5,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    finish_on_key="#"
                 )
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # ❌ Max invalid → hangup
-            resp.say(gpt_speak("I'm sorry, I couldn’t capture your phone number. Please call again later."), VOICE)
+            # ❌ Max invalid → hangup politely
+            resp.say(gpt_speak(VOICE_TOO_MANY_INVALID_MSG), VOICE)
             resp.hangup()
             save_session(call_sid)
             session_data.pop(call_sid, None)
@@ -3864,9 +3895,12 @@ def voice():
         if sd.get("reschedule_after_cancel"):
             sd["stage"] = "collect_book_time_date"
             g = make_gather(
-                prompt="Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 A M'.",
-                input="speech dtmf", timeout=5, speech_timeout="auto",
-                barge_in=True, finish_on_key="#"
+                prompt=VOICE_RESCHEDULE_MSG,
+                input="speech dtmf",
+                timeout=5,
+                speech_timeout="auto",
+                barge_in=True,
+                finish_on_key="#"
             )
             resp.append(g)
             resp.redirect("/voice")
@@ -3879,10 +3913,12 @@ def voice():
         # ----------------------------------------------------------------------
         sd["stage"] = "collect_dob"
         g = make_gather(
-            prompt="Thanks. What’s your date of birth? You can say it, or enter two digits for month, "
-                "two for day, and four for year, then press pound.",
-            input="speech dtmf", timeout=5, speech_timeout="auto",
-            barge_in=True, finish_on_key="#"
+            prompt=VOICE_DOB_PROMPT_MSG,
+            input="speech dtmf",
+            timeout=5,
+            speech_timeout="auto",
+            barge_in=True,
+            finish_on_key="#"
         )
         resp.append(g)
         resp.redirect("/voice")
@@ -3891,6 +3927,7 @@ def voice():
         # ✅ persist state
         save_session(call_sid)
         return str(resp)
+
 
 
 
