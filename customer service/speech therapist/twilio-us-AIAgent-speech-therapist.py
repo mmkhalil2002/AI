@@ -5029,15 +5029,16 @@ def voice():
             # next available appointment times to the caller.
             # ----------------------------------------------------------------------
 
-            options_with_pauses = f" <break time=\"{PAUSE_MS}ms\"/> ".join(
-                [f"Option {i}: {a['friendly']}." for i, a in enumerate(alts, start=1)]
-            )
+          
+
+            options_text = " ".join([f"Option {i}: {a['friendly']}." for i, a in enumerate(alts, start=1)])
 
             combined = (
                 f"{VOICE_NEXT_AVAILABLE_INTRO} "
-                f"<break time=\"{PAUSE_MS}ms\"/> {options_with_pauses} "
-                f"<break time=\"{PAUSE_MS}ms\"/> {VOICE_NEXT_AVAILABLE_OUTRO}"
+                f"{options_text} "
+                f"{VOICE_NEXT_AVAILABLE_OUTRO}"
             )
+
 
 
             
