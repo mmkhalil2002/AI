@@ -1,5 +1,5 @@
 #=======
-# update  10/29/2025 time_saved 
+# update  10/30/2025 time_saved 
 #  
 # =========================
 # Standard library imports
@@ -4696,305 +4696,305 @@ def voice():
      #   - Every code path returns `str(resp)` (Flask requirement).
      # ----------------------------------------------------------------------
     elif stage == "ask_time_date":
-    # ----------------------------------------------------------------------
-    # 📅 Stage: ask_time_date
-    # ----------------------------------------------------------------------
-    # 🎯 PURPOSE:
-    #   - Capture and validate spoken or keypad date/time.
-    #   - Handle silence, invalid input, and past times.
-    #   - Offer up to 3 alternative appointment times if needed.
-    #   - Insert 500 ms pauses between proposed appointment options.
-    #   - Keep all voice messages in easily editable variables.
-    # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # 📅 Stage: ask_time_date
+        # ----------------------------------------------------------------------
+        # 🎯 PURPOSE:
+        #   - Capture and validate spoken or keypad date/time.
+        #   - Handle silence, invalid input, and past times.
+        #   - Offer up to 3 alternative appointment times if needed.
+        #   - Insert 500 ms pauses between proposed appointment options.
+        #   - Keep all voice messages in easily editable variables.
+        # ----------------------------------------------------------------------
 
-    debug_print(f"[ask_time_date] 🗣️ Received speech: {speech_result}")
+        debug_print(f"[ask_time_date] 🗣️ Received speech: {speech_result}")
 
-    # ----------------------------------------------------------------------
-    # 💬 VOICE MESSAGES — centralized for maintainability & localization
-    # ----------------------------------------------------------------------
-    VOICE_OLD_DATE_MSG = (
-        "That time has already passed. Let me suggest the next available appointment times."
-    )
-    VOICE_NO_DECISION_MSG = (
-        "It seems you’re not ready right now. Please call us back when you’re ready. Goodbye."
-    )
-    VOICE_SILENCE_MSG = (
-        "I didn’t hear anything. Please say the date and time clearly, "
-        "for example, 'October 10 at 9 A M'."
-    )
-    VOICE_REASK_TIME_MSG = "Please tell me another time that works for you."
-    VOICE_NO_AVAILABLE_SLOTS_MSG = "Sorry, there are no upcoming available appointments."
-    VOICE_NO_RESPONSE_MSG = (
-        "I didn’t hear from you. Please call us again when you're ready. Goodbye."
-    )
-    VOICE_ASK_AGAIN_MSG = (
-        "Please say the date and time again, for example, 'October 8 at 9 30 A M'."
-    )
-    VOICE_NEXT_AVAILABLE_INTRO = "Here are the next available times."
-    VOICE_NEXT_AVAILABLE_OUTRO = (
-        "Please say the option number, or tell me another date and time."
-    )
-
-    # ----------------------------------------------------------------------
-    # 🗂️ SESSION SETUP
-    # ----------------------------------------------------------------------
-    session_data.setdefault(call_sid, {})
-    sd = session_data[call_sid]
-    sd.setdefault("stage", "ask_time_date")
-
-    doctor_name = sd.get("doctor_name")
-    if not doctor_name:
-        # Doctor not selected — redirect to collect_dr_info
-        resp.append(make_gather("Please tell me which doctor you'd like to see."))
-        sd["stage"] = "collect_dr_info"
-        save_session(call_sid)
-        return str(resp)
-
-    # ----------------------------------------------------------------------
-    # 🔇 HANDLE SILENCE
-    # ----------------------------------------------------------------------
-    if not speech_result and not request.values.get("Digits"):
-        sd["silence_retry"] = sd.get("silence_retry", 0) + 1
-
-        # If 2 silent retries → end call politely
-        if sd["silence_retry"] >= 2:
-            resp.say(gpt_speak(VOICE_NO_DECISION_MSG), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            return str(resp)
-
-        # Otherwise, re-prompt with clarity
-        g = make_gather(
-            VOICE_SILENCE_MSG,
-            input="speech dtmf",
-            timeout=10,
-            speech_timeout="auto",
-            barge_in=True,
-            action="/voice",
-            method="POST"
+        # ----------------------------------------------------------------------
+        # 💬 VOICE MESSAGES — centralized for maintainability & localization
+        # ----------------------------------------------------------------------
+        VOICE_OLD_DATE_MSG = (
+            "That time has already passed. Let me suggest the next available appointment times."
         )
-        resp.append(g)
-        save_session(call_sid)
-        return str(resp)
+        VOICE_NO_DECISION_MSG = (
+            "It seems you’re not ready right now. Please call us back when you’re ready. Goodbye."
+        )
+        VOICE_SILENCE_MSG = (
+            "I didn’t hear anything. Please say the date and time clearly, "
+            "for example, 'October 10 at 9 A M'."
+        )
+        VOICE_REASK_TIME_MSG = "Please tell me another time that works for you."
+        VOICE_NO_AVAILABLE_SLOTS_MSG = "Sorry, there are no upcoming available appointments."
+        VOICE_NO_RESPONSE_MSG = (
+            "I didn’t hear from you. Please call us again when you're ready. Goodbye."
+        )
+        VOICE_ASK_AGAIN_MSG = (
+            "Please say the date and time again, for example, 'October 8 at 9 30 A M'."
+        )
+        VOICE_NEXT_AVAILABLE_INTRO = "Here are the next available times."
+        VOICE_NEXT_AVAILABLE_OUTRO = (
+            "Please say the option number, or tell me another date and time."
+        )
 
-    # ----------------------------------------------------------------------
-    # 🧠 PARSE INPUT
-    # ----------------------------------------------------------------------
-    raw = (speech_result or request.values.get("Digits") or "").strip()
-    debug_print(f"[ask_time_date][parse] raw='{raw}'")
+        # ----------------------------------------------------------------------
+        # 🗂️ SESSION SETUP
+        # ----------------------------------------------------------------------
+        session_data.setdefault(call_sid, {})
+        sd = session_data[call_sid]
+        sd.setdefault("stage", "ask_time_date")
 
-    # Handle spoken “Option one / two / three” responses
-    if sd.get("alts_list"):
-        spoken = raw.lower().strip()
-        num_map = {
-            "one": "1",
-            "first": "1",
-            "two": "2",
-            "second": "2",
-            "three": "3",
-            "third": "3",
-        }
-
-        for k, v in num_map.items():
-            if k in spoken:
-                raw = v
-
-        if raw.isdigit() and 1 <= int(raw) <= len(sd["alts_list"]):
-            choice = sd["alts_list"][int(raw) - 1]
-            debug_print(f"[ask_time_date] 🎯 User selected Option {raw}: {choice['friendly']}")
-            sd["appointment_time"] = {"start": choice["start"], "end": choice["end"]}
-            sd["stage"] = "book_appt_confirm"
+        doctor_name = sd.get("doctor_name")
+        if not doctor_name:
+            # Doctor not selected — redirect to collect_dr_info
+            resp.append(make_gather("Please tell me which doctor you'd like to see."))
+            sd["stage"] = "collect_dr_info"
             save_session(call_sid)
-            resp.redirect("/voice")
             return str(resp)
-
-    # Try parsing full spoken date/time
-    try:
-        result = smart_parse_time(raw)
-    except Exception as e:
-        debug_print(f"[ask_time_date][parse] error: {e}")
-        result = None
-
-    # ----------------------------------------------------------------------
-    # ❌ INVALID OR UNPARSEABLE INPUT
-    # ----------------------------------------------------------------------
-    if not result:
-        sd["retry_time"] = sd.get("retry_time", 0) + 1
-        if sd["retry_time"] >= 3:
-            resp.say(gpt_speak(VOICE_NO_DECISION_MSG), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            return str(resp)
-
-        # Ask user again with example format
-        g = make_gather(
-            VOICE_ASK_AGAIN_MSG,
-            input="speech dtmf",
-            timeout=10,
-            barge_in=True,
-            action="/voice",
-            method="POST"
-        )
-        resp.append(g)
-        save_session(call_sid)
-        return str(resp)
-
-    # ----------------------------------------------------------------------
-    # ✅ PARSED SUCCESSFULLY
-    # ----------------------------------------------------------------------
-    appointment_start = result["start"]
-    appointment_end = result["end"]
-    friendly = result["friendly"]
-    is_past = result.get("is_past", False)
-
-    now_utc = _pytz.UTC.localize(_dt.utcnow())
-    limit_end_utc = now_utc + timedelta(days=30 * MAX_ADVANCE_MONTHS)
-
-    # ----------------------------------------------------------------------
-    # ⏰ HANDLE OLD OR OUT-OF-RANGE DATE → SUGGEST ALTERNATIVES
-    # ----------------------------------------------------------------------
-    if is_past or isoparse(appointment_start) <= now_utc or isoparse(appointment_start) > limit_end_utc:
-        resp.say(gpt_speak(VOICE_OLD_DATE_MSG), VOICE)
-        alts = get_doctor_next_available_slots(doctor_name, from_start_iso=now_utc.isoformat(), limit=3)
-
-        if not alts:
-            resp.say(gpt_speak(VOICE_NO_AVAILABLE_SLOTS_MSG), VOICE)
-            resp.hangup()
-            return str(resp)
-
-        # 🕒 Build SSML with 500 ms pauses between each option
-        
-
-        # 🗣️ Build spoken options with 500 ms pause between each
-        #
-        # ──────────────────────────────────────────────────────────────
-        # 🔍 PURPOSE:
-        #   This line dynamically builds a natural-sounding spoken list of
-        #   appointment options (Option 1, Option 2, etc.) that Twilio’s
-        #   voice engine will read aloud with half-second pauses between them.
-        #
-        # 🧠 HOW IT WORKS:
-        #   1️⃣  The variable `alts` is a list of dictionaries like:
-        #       alts = [
-        #           {"friendly": "Monday, October 28 at 9 A M"},
-        #           {"friendly": "Tuesday, October 29 at 2 P M"},
-        #           {"friendly": "Wednesday, October 30 at 11 A M"}
-        #       ]
-        #
-        #   2️⃣  The list comprehension:
-        #           [f"Option {i}: {a['friendly']}." for i, a in enumerate(alts, start=1)]
-        #       Iterates through `alts`, numbering each one:
-        #           → ["Option 1: Monday, October 28 at 9 A M.",
-        #              "Option 2: Tuesday, October 29 at 2 P M.",
-        #              "Option 3: Wednesday, October 30 at 11 A M."]
-        #
-        #   3️⃣  The .join() call:
-        #           " <break time=\"500ms\"/> ".join([...])
-        #       Combines all strings into a single sentence, inserting
-        #       an SSML <break> tag (pause) between each one:
-        #           → "Option 1: Monday, October 28 at 9 A M.
-        #              <break time=\"500ms\"/>
-        #              Option 2: Tuesday, October 29 at 2 P M.
-        #              <break time=\"500ms\"/>
-        #              Option 3: Wednesday, October 30 at 11 A M."
-        #
-        #   4️⃣  The <break time="500ms"/> tag is SSML (Speech Synthesis
-        #       Markup Language). It tells Twilio to pause 0.5 seconds before
-        #       speaking the next option — making the dialogue more natural.
-        #
-        # 🗣️ FINAL SPOKEN OUTPUT:
-        #   “Option 1: Monday, October 28 at 9 A M.” [pause 0.5s]
-        #   “Option 2: Tuesday, October 29 at 2 P M.” [pause 0.5s]
-        #   “Option 3: Wednesday, October 30 at 11 A M.” [pause 0.5s]
-        #
-        # ──────────────────────────────────────────────────────────────
 
         # ----------------------------------------------------------------------
-        # 🧩 This f-string builds a single spoken option line for Twilio.
-        # Each iteration of the loop generates one sentence like:
-        #    "Option 1: Monday, October 28 at 9 A M."
-        #
-        # Let's break down the inner parts:
-        #
-        # • f"..."  →  This is an f-string (formatted string literal) in Python.
-        #              It allows embedding variable values directly inside curly braces { }.
-        #
-        # • {i}     →  Inserts the option number provided by enumerate(alts, start=1).
-        #              For example, if i = 2, this part becomes "Option 2".
-        #
-        # • {a['friendly']} →
-        #     - `a` is the current dictionary in the `alts` list.
-        #     - `a['friendly']` accesses the value stored under the key "friendly".
-        #       For example, if a = {"friendly": "Monday, October 28 at 9 A M"},
-        #       then a['friendly'] returns the string:
-        #           "Monday, October 28 at 9 A M"
-        #     - This value represents a human-readable description of the appointment time,
-        #       which Twilio will speak aloud to the caller.
-        #
-        # So putting it all together:
-        #    f"Option {i}: {a['friendly']}."
-        # becomes for each iteration:
-        #    "Option 1: Monday, October 28 at 9 A M."
-        #    "Option 2: Tuesday, October 29 at 2 P M."
-        #    "Option 3: Wednesday, October 30 at 11 A M."
-        #
-        # This results in a clean, friendly voice prompt that enumerates the
-        # next available appointment times to the caller.
+        # 🔇 HANDLE SILENCE
         # ----------------------------------------------------------------------
+        if not speech_result and not request.values.get("Digits"):
+            sd["silence_retry"] = sd.get("silence_retry", 0) + 1
+
+            # If 2 silent retries → end call politely
+            if sd["silence_retry"] >= 2:
+                resp.say(gpt_speak(VOICE_NO_DECISION_MSG), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            # Otherwise, re-prompt with clarity
+            g = make_gather(
+                VOICE_SILENCE_MSG,
+                input="speech dtmf",
+                timeout=10,
+                speech_timeout="auto",
+                barge_in=True,
+                action="/voice",
+                method="POST"
+            )
+            resp.append(g)
+            save_session(call_sid)
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # 🧠 PARSE INPUT
+        # ----------------------------------------------------------------------
+        raw = (speech_result or request.values.get("Digits") or "").strip()
+        debug_print(f"[ask_time_date][parse] raw='{raw}'")
+
+        # Handle spoken “Option one / two / three” responses
+        if sd.get("alts_list"):
+            spoken = raw.lower().strip()
+            num_map = {
+                "one": "1",
+                "first": "1",
+                "two": "2",
+                "second": "2",
+                "three": "3",
+                "third": "3",
+            }
+
+            for k, v in num_map.items():
+                if k in spoken:
+                    raw = v
+
+            if raw.isdigit() and 1 <= int(raw) <= len(sd["alts_list"]):
+                choice = sd["alts_list"][int(raw) - 1]
+                debug_print(f"[ask_time_date] 🎯 User selected Option {raw}: {choice['friendly']}")
+                sd["appointment_time"] = {"start": choice["start"], "end": choice["end"]}
+                sd["stage"] = "book_appt_confirm"
+                save_session(call_sid)
+                resp.redirect("/voice")
+                return str(resp)
+
+        # Try parsing full spoken date/time
+        try:
+            result = smart_parse_time(raw)
+        except Exception as e:
+            debug_print(f"[ask_time_date][parse] error: {e}")
+            result = None
+
+        # ----------------------------------------------------------------------
+        # ❌ INVALID OR UNPARSEABLE INPUT
+        # ----------------------------------------------------------------------
+        if not result:
+            sd["retry_time"] = sd.get("retry_time", 0) + 1
+            if sd["retry_time"] >= 3:
+                resp.say(gpt_speak(VOICE_NO_DECISION_MSG), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            # Ask user again with example format
+            g = make_gather(
+                VOICE_ASK_AGAIN_MSG,
+                input="speech dtmf",
+                timeout=10,
+                barge_in=True,
+                action="/voice",
+                method="POST"
+            )
+            resp.append(g)
+            save_session(call_sid)
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # ✅ PARSED SUCCESSFULLY
+        # ----------------------------------------------------------------------
+        appointment_start = result["start"]
+        appointment_end = result["end"]
+        friendly = result["friendly"]
+        is_past = result.get("is_past", False)
+
+        now_utc = _pytz.UTC.localize(_dt.utcnow())
+        limit_end_utc = now_utc + timedelta(days=30 * MAX_ADVANCE_MONTHS)
+
+        # ----------------------------------------------------------------------
+        # ⏰ HANDLE OLD OR OUT-OF-RANGE DATE → SUGGEST ALTERNATIVES
+        # ----------------------------------------------------------------------
+        if is_past or isoparse(appointment_start) <= now_utc or isoparse(appointment_start) > limit_end_utc:
+            resp.say(gpt_speak(VOICE_OLD_DATE_MSG), VOICE)
+            alts = get_doctor_next_available_slots(doctor_name, from_start_iso=now_utc.isoformat(), limit=3)
+
+            if not alts:
+                resp.say(gpt_speak(VOICE_NO_AVAILABLE_SLOTS_MSG), VOICE)
+                resp.hangup()
+                return str(resp)
+
+            # 🕒 Build SSML with 500 ms pauses between each option
+            
+
+            # 🗣️ Build spoken options with 500 ms pause between each
+            #
+            # ──────────────────────────────────────────────────────────────
+            # 🔍 PURPOSE:
+            #   This line dynamically builds a natural-sounding spoken list of
+            #   appointment options (Option 1, Option 2, etc.) that Twilio’s
+            #   voice engine will read aloud with half-second pauses between them.
+            #
+            # 🧠 HOW IT WORKS:
+            #   1️⃣  The variable `alts` is a list of dictionaries like:
+            #       alts = [
+            #           {"friendly": "Monday, October 28 at 9 A M"},
+            #           {"friendly": "Tuesday, October 29 at 2 P M"},
+            #           {"friendly": "Wednesday, October 30 at 11 A M"}
+            #       ]
+            #
+            #   2️⃣  The list comprehension:
+            #           [f"Option {i}: {a['friendly']}." for i, a in enumerate(alts, start=1)]
+            #       Iterates through `alts`, numbering each one:
+            #           → ["Option 1: Monday, October 28 at 9 A M.",
+            #              "Option 2: Tuesday, October 29 at 2 P M.",
+            #              "Option 3: Wednesday, October 30 at 11 A M."]
+            #
+            #   3️⃣  The .join() call:
+            #           " <break time=\"500ms\"/> ".join([...])
+            #       Combines all strings into a single sentence, inserting
+            #       an SSML <break> tag (pause) between each one:
+            #           → "Option 1: Monday, October 28 at 9 A M.
+            #              <break time=\"500ms\"/>
+            #              Option 2: Tuesday, October 29 at 2 P M.
+            #              <break time=\"500ms\"/>
+            #              Option 3: Wednesday, October 30 at 11 A M."
+            #
+            #   4️⃣  The <break time="500ms"/> tag is SSML (Speech Synthesis
+            #       Markup Language). It tells Twilio to pause 0.5 seconds before
+            #       speaking the next option — making the dialogue more natural.
+            #
+            # 🗣️ FINAL SPOKEN OUTPUT:
+            #   “Option 1: Monday, October 28 at 9 A M.” [pause 0.5s]
+            #   “Option 2: Tuesday, October 29 at 2 P M.” [pause 0.5s]
+            #   “Option 3: Wednesday, October 30 at 11 A M.” [pause 0.5s]
+            #
+            # ──────────────────────────────────────────────────────────────
+
+            # ----------------------------------------------------------------------
+            # 🧩 This f-string builds a single spoken option line for Twilio.
+            # Each iteration of the loop generates one sentence like:
+            #    "Option 1: Monday, October 28 at 9 A M."
+            #
+            # Let's break down the inner parts:
+            #
+            # • f"..."  →  This is an f-string (formatted string literal) in Python.
+            #              It allows embedding variable values directly inside curly braces { }.
+            #
+            # • {i}     →  Inserts the option number provided by enumerate(alts, start=1).
+            #              For example, if i = 2, this part becomes "Option 2".
+            #
+            # • {a['friendly']} →
+            #     - `a` is the current dictionary in the `alts` list.
+            #     - `a['friendly']` accesses the value stored under the key "friendly".
+            #       For example, if a = {"friendly": "Monday, October 28 at 9 A M"},
+            #       then a['friendly'] returns the string:
+            #           "Monday, October 28 at 9 A M"
+            #     - This value represents a human-readable description of the appointment time,
+            #       which Twilio will speak aloud to the caller.
+            #
+            # So putting it all together:
+            #    f"Option {i}: {a['friendly']}."
+            # becomes for each iteration:
+            #    "Option 1: Monday, October 28 at 9 A M."
+            #    "Option 2: Tuesday, October 29 at 2 P M."
+            #    "Option 3: Wednesday, October 30 at 11 A M."
+            #
+            # This results in a clean, friendly voice prompt that enumerates the
+            # next available appointment times to the caller.
+            # ----------------------------------------------------------------------
 
 
 
-        options_with_pauses = " <break time=\"500ms\"/> ".join(
-            [f"Option {i}: {a['friendly']}." for i, a in enumerate(alts, start=1)]
-        )
+            options_with_pauses = " <break time=\"500ms\"/> ".join(
+                [f"Option {i}: {a['friendly']}." for i, a in enumerate(alts, start=1)]
+            )
 
-        combined = (
-            f"{VOICE_NEXT_AVAILABLE_INTRO} "
-            f"<break time=\"500ms\"/> {options_with_pauses} "
-            f"<break time=\"500ms\"/> {VOICE_NEXT_AVAILABLE_OUTRO}"
-        )
+            combined = (
+                f"{VOICE_NEXT_AVAILABLE_INTRO} "
+                f"<break time=\"500ms\"/> {options_with_pauses} "
+                f"<break time=\"500ms\"/> {VOICE_NEXT_AVAILABLE_OUTRO}"
+            )
 
-        # Create SSML-enabled <Gather> block
-        g = make_gather(
-            combined,
-            input="speech dtmf",
-            timeout=15,
-            speech_timeout="auto",
-            barge_in=True,
-            action="/voice",
-            method="POST",
-            ssml=True  # ✅ Enables <break> pauses
-        )
-        resp.append(g)
-        sd["alts_list"] = alts
-        sd["stage"] = "ask_time_date"
+            # Create SSML-enabled <Gather> block
+            g = make_gather(
+                combined,
+                input="speech dtmf",
+                timeout=15,
+                speech_timeout="auto",
+                barge_in=True,
+                action="/voice",
+                method="POST",
+                ssml=True  # ✅ Enables <break> pauses
+            )
+            resp.append(g)
+            sd["alts_list"] = alts
+            sd["stage"] = "ask_time_date"
+            save_session(call_sid)
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # 🕓 CHECK AVAILABILITY
+        # ----------------------------------------------------------------------
+        if not is_doctor_slot_available(doctor_name, appointment_start, appointment_end):
+            g = make_gather(
+                f"That time is not available. {VOICE_REASK_TIME_MSG}",
+                input="speech dtmf",
+                timeout=10,
+                barge_in=True,
+                action="/voice",
+                method="POST"
+            )
+            resp.append(g)
+            save_session(call_sid)
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # ✅ SUCCESS → MOVE TO CONFIRMATION STAGE
+        # ----------------------------------------------------------------------
+        sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
+        sd["stage"] = "book_appt_confirm"
         save_session(call_sid)
+        resp.redirect("/voice")
         return str(resp)
-
-    # ----------------------------------------------------------------------
-    # 🕓 CHECK AVAILABILITY
-    # ----------------------------------------------------------------------
-    if not is_doctor_slot_available(doctor_name, appointment_start, appointment_end):
-        g = make_gather(
-            f"That time is not available. {VOICE_REASK_TIME_MSG}",
-            input="speech dtmf",
-            timeout=10,
-            barge_in=True,
-            action="/voice",
-            method="POST"
-        )
-        resp.append(g)
-        save_session(call_sid)
-        return str(resp)
-
-    # ----------------------------------------------------------------------
-    # ✅ SUCCESS → MOVE TO CONFIRMATION STAGE
-    # ----------------------------------------------------------------------
-    sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
-    sd["stage"] = "book_appt_confirm"
-    save_session(call_sid)
-    resp.redirect("/voice")
-    return str(resp)
 
 
 
