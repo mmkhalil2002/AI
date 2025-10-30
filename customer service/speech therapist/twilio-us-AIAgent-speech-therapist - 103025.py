@@ -4025,7 +4025,6 @@ def voice():
                 # ----------------------------------------------------------------------
 
                 t = _re.sub(r"[.,;:]+$", "", speech_text)
-
                 # 🔹 Removes punctuation at the *end* of the spoken text.
                 #   - Pattern: [.,;:]+$
                 #       • [.,;:]  → matches period (.), comma (,), semicolon (;), or colon (:)
@@ -4034,14 +4033,12 @@ def voice():
                 #   ✅ Example: "July 3rd, 1956." → "July 3rd, 1956"
 
                 t = _re.sub(r"[,\.;:]", " ", t)
-
                 # 🔹 Replaces punctuation *inside* the string with spaces.
                 #   - Pattern: [,\.;:]
                 #       • Matches commas, periods, semicolons, or colons.
                 #   ✅ Example: "July 3rd, 1956" → "July 3rd 1956"
 
                 t = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=_re.IGNORECASE)
-
                 # 🔹 Removes ordinal suffixes (st, nd, rd, th) from day numbers.
                 #   - Pattern: \b(\d{1,2})(st|nd|rd|th)\b
                 #       • \b → **word boundary**, ensures match only at word edges.
@@ -4051,7 +4048,6 @@ def voice():
                 #   ✅ Example: "July 3rd 1956" → "July 3 1956"
 
                 t = _re.sub(r"\s+", " ", t).strip()
-                
                 # 🔹 Collapses multiple whitespace characters into one space and trims edges.
                 #   - Pattern: \s+
                 #       • \s → **whitespace** (spaces, tabs, newlines)
