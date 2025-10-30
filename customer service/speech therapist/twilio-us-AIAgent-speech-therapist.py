@@ -4577,6 +4577,10 @@ def voice():
         return str(resp)
 
 
+
+
+
+
     elif stage == "collect_dr_info":
         # ----------------------------------------------------------------------
         # 🩺 Stage: collect_dr_info
@@ -4587,7 +4591,31 @@ def voice():
         #   - Supports partial/fuzzy speech match and retries.
         #   - On success → move to collect_book_time_date (for appointment scheduling).
         # ----------------------------------------------------------------------
-        #global doctor_names
+
+        # ----------------------------------------------------------------------
+        # 💬 VOICE MESSAGES — centralized for maintainability & localization
+        # ----------------------------------------------------------------------
+        VOICE_INTRO_MSG = (
+            "Please choose your doctor from the following list. "
+            "You may either press the corresponding number on your keypad or say the doctor’s name."
+        )
+        VOICE_REPROMPT_MSG = (
+            "I didn’t catch that. Please say the name of your doctor or press the number associated with them."
+        )
+        VOICE_NO_MATCH_MSG = (
+            "I'm sorry, I couldn't match that name with any doctor in our clinic. Please try again."
+        )
+        VOICE_FINAL_FAIL_MSG = (
+            "I'm sorry, I still couldn't match that name with any doctor in our clinic. Please call us again later."
+        )
+        VOICE_SUCCESS_MSG = (
+            "Great, your appointment will be with {doctor_name}. "
+            "Please say the appointment date and time, for example, 'October 8 at 9 30 A M'."
+        )
+
+        # ----------------------------------------------------------------------
+        # 🧭 Session Initialization
+        # ----------------------------------------------------------------------
         session_data.setdefault(call_sid, {}).setdefault("retry_booking", 0)
         session_data[call_sid]["origin_stage"] = "book"
 
@@ -4619,9 +4647,7 @@ def voice():
 
             # 🗣️ Prompt user with available doctors
             doctor_prompt = (
-                "Please choose your doctor. "
-                + " ".join(prompt_lines)
-                + " You can also say the doctor's name."
+                f"{VOICE_INTRO_MSG} " + " ".join(prompt_lines)
             )
 
             g = make_gather(
@@ -4665,9 +4691,7 @@ def voice():
 
                 prompt_lines = [f"Press {k} for {v}." for k, v in doctor_map.items()]
                 doctor_prompt = (
-                    "Please say the name of the doctor you'd like to book with, "
-                    "or press the number on your keypad. "
-                    + " ".join(prompt_lines)
+                    f"{VOICE_REPROMPT_MSG} " + " ".join(prompt_lines)
                 )
 
                 g = make_gather(
@@ -4718,22 +4742,14 @@ def voice():
             debug_print(f"❌ No doctor match for '{spoken_clean or dtmf_digits}' retry={retries}")
 
             if retries >= 3:
-                resp.say(
-                    gpt_speak(
-                        "I'm sorry, I still couldn't match that name with any doctor in our clinic. "
-                        "Please call us again later."
-                    ),
-                    VOICE
-                )
+                resp.say(gpt_speak(VOICE_FINAL_FAIL_MSG), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
             prompt_lines = [f"Press {k} for {v}." for k, v in doctor_map.items()]
             doctor_prompt = (
-                "I couldn't match that to a doctor. "
-                + " ".join(prompt_lines)
-                + " You can also say the doctor's name."
+                f"{VOICE_NO_MATCH_MSG} " + " ".join(prompt_lines)
             )
 
             g = make_gather(
@@ -4755,9 +4771,9 @@ def voice():
         session_data[call_sid]["doctor_name"] = matched_name
         session_data[call_sid]["stage"] = "collect_book_time_date"
 
+        # 🗣️ Announce the doctor and move to time collection
         g = make_gather(
-            f"Great, your appointment will be with {matched_name}. "
-            "Please say the appointment date and time, for example, 'October 8 at 9 30 A M'.",
+            VOICE_SUCCESS_MSG.format(doctor_name=matched_name),
             input="speech dtmf",
             timeout=10,
             speech_timeout="auto",
