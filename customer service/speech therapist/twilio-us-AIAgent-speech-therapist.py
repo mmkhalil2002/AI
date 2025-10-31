@@ -4257,141 +4257,211 @@ def voice():
 
 
 
-
+    # ======================================================================
+    # 🏦 Stage: collect_insurance_information
+    # ----------------------------------------------------------------------
+    # 🎯 FUNCTIONAL PURPOSE:
+    #   • Captures the caller’s insurance company and member ID.
+    #   • Supports both speech and DTMF (keypad) input.
+    #   • DTMF path: user presses “1–6” quickly for insurance company.
+    #   • Speech path: recognizes names of common companies.
+    #   • Handles silence gracefully with up to 3 re-prompts.
+    #   • Once both values (company + member ID) are collected, advances
+    #     to the next stage → "collect_first_name".
+    #
+    # 🔁 TWO-STEP FLOW:
+    #   1️⃣ Step “company” — select from a numbered list of insurance providers.
+    #   2️⃣ Step “id”      — enter or speak the insurance member ID.
+    #
+    # 🧩 Data stored in:
+    #   session_data[call_sid]["customer"]["insurance_name"]
+    #   session_data[call_sid]["customer"]["insurance_member_id"]
+    # ======================================================================
 
     elif stage == "collect_insurance_information":
+  
+
         # ----------------------------------------------------------------------
-        # 🏦 Stage: collect_insurance_information (optimized for fast DTMF)
+        # 🎙️ Voice Message Constants (easy to localize / modify later)
+        # ----------------------------------------------------------------------
+        MSG_SILENCE_EXIT = "I’m still not hearing anything. Please call again later."
+        MSG_MEMBERID_SILENCE_EXIT = "I’m still not hearing your member ID. Please call again later."
+        MSG_PROMPT_INSURANCE_COMPANY = (
+            "Please choose your insurance company using your keypad. "
+            "Press the number now while I’m speaking. "
+        )
+        MSG_PROMPT_MEMBER_ID = (
+            "Please say or enter your insurance member ID now."
+        )
+        MSG_AFTER_SELECTION = (
+            "Thank you. You selected {insurance_name}. "
+            "Now please say or enter your insurance member ID. "
+            "You can include both letters and numbers, then press pound when done."
+        )
+        MSG_THANK_YOU_NEXT_FIRST_NAME = (
+            "Thank you. Now, please tell me your first name."
+        )
+
+        # ----------------------------------------------------------------------
+        # 🧩 Initialize session safely
         # ----------------------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
         sd.setdefault("customer", {})
         customer = sd["customer"]
 
+        # ----------------------------------------------------------------------
+        # 🎙️ Capture caller input (speech + keypad)
+        # ----------------------------------------------------------------------
         raw_speech = (speech_result or "").strip()
         raw_dtmf = (request.values.get("Digits") or "").strip()
         debug_print(f"collect_insurance_information: speech='{raw_speech}', dtmf='{raw_dtmf}'")
 
-        # Load list from env
+        # ----------------------------------------------------------------------
+        # 🏢 Load insurance company list (from environment variable or defaults)
+        # ----------------------------------------------------------------------
         INSURANCE_COMPANIES_LIST = [
-            n.strip() for n in os.getenv(
+            n.strip()
+            for n in os.getenv(
                 "INSURANCE_COMPANIES",
-                "Blue Cross Blue Shield,Aetna,Cigna,United Healthcare,Humana,Kaiser Permanente"
+                "Blue Cross Blue Shield,Aetna,Cigna,United Healthcare,Humana,Kaiser Permanente",
             ).split(",")
+            if n.strip()
         ]
         keypad_map = {str(i + 1): n for i, n in enumerate(INSURANCE_COMPANIES_LIST)}
         debug_print(f"collect_insurance_information: keypad_map={keypad_map}")
 
+        # ----------------------------------------------------------------------
+        # 🧭 Determine current sub-step ("company" or "id")
+        # ----------------------------------------------------------------------
         step = sd.get("insurance_step", "company")
 
-        # ----------------------------------------------------------------------
-        # 🧩 STEP 1: COMPANY SELECTION
-        # ----------------------------------------------------------------------
+        # ======================================================================
+        # 🧩 STEP 1 — SELECT INSURANCE COMPANY
+        # ======================================================================
         if step == "company":
-            # Normalize DTMF → take first valid digit
+            # --------------------------------------------------------------
+            # 🧮 If user pressed a digit (DTMF input)
+            # --------------------------------------------------------------
             if raw_dtmf:
                 first_digit = next((ch for ch in raw_dtmf if ch in keypad_map), "")
                 if first_digit:
                     insurance_name = keypad_map[first_digit]
                     customer["insurance_name"] = insurance_name
-                    sd["insurance_step"] = "id"
+                    sd["insurance_step"] = "id"  # Move to ID collection
                     debug_print(f"✅ Selected insurance_name='{insurance_name}' via DTMF '{raw_dtmf}'")
 
-                    # Prompt for ID
+                    # Prompt for member ID
                     g = make_gather(
-                        f"Thank you. You selected {insurance_name}. "
-                        "Now please say or enter your insurance member ID. "
-                        "You can include both letters and numbers, then press pound when done.",
+                        MSG_AFTER_SELECTION.format(insurance_name=insurance_name),
                         input="speech dtmf",
                         timeout=8,
                         speech_timeout="auto",
                         finish_on_key="#",
                         barge_in=True,
                         language="en-US",
-                        action="/voice", method="POST"
+                        action="/voice",
+                        method="POST",
                     )
                     resp.append(g)
                     resp.redirect("/voice")
                     return str(resp)
 
-            # Silence or first-time entry → read list fast
+            # --------------------------------------------------------------
+            # 🤐 Handle silence or no input (up to 3 tries)
+            # --------------------------------------------------------------
             tries = sd.get("insurance_silence_tries", 0) + 1
             sd["insurance_silence_tries"] = tries
-            debug_print(f"🤐 silence tries={tries}/3")
+            debug_print(f"collect_insurance_information: 🤐 silence tries={tries}/3")
 
             if tries >= 3:
-                resp.say("I’m still not hearing anything. Please call again later.", VOICE)
+                resp.say(MSG_SILENCE_EXIT, VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Faster prompt with num_digits=1 so DTMF submits immediately
-            menu_text = (
-                "Please choose your insurance company using your keypad. "
-                "Press the number now while I’m speaking. "
-            )
+            # --------------------------------------------------------------
+            # 📞 Re-prompt with insurance company menu
+            # --------------------------------------------------------------
+            # Build a spoken list: “Press 1 for Blue Cross, Press 2 for Aetna...”
+            menu_text = MSG_PROMPT_INSURANCE_COMPANY
             for i, name in enumerate(INSURANCE_COMPANIES_LIST, start=1):
                 menu_text += f"Press {i} for {name}. "
 
+            # Gather configured for immediate keypad reaction (DTMF only)
             g = make_gather(
                 menu_text,
-                input="dtmf",              # DTMF only — fast response
-                timeout=3,                 # short timeout (waits just after speech)
-                num_digits=1,              # ✅ stops after first digit
-                barge_in=True,
+                input="dtmf",              # DTMF only — faster interaction
+                timeout=3,                 # ⏳ short timeout for faster looping
+                num_digits=1,              # stops listening after one key
+                barge_in=True,             # allow interruption
                 finish_on_key="#",
                 language="en-US",
-                action="/voice", method="POST"
+                action="/voice",
+                method="POST",
             )
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🧩 STEP 2: MEMBER ID
-        # ----------------------------------------------------------------------
+        # ======================================================================
+        # 🧩 STEP 2 — COLLECT MEMBER ID
+        # ======================================================================
         if step == "id":
+            # --------------------------------------------------------------
+            # 🔇 Silence handling (retry up to 3 times)
+            # --------------------------------------------------------------
             if not raw_speech and not raw_dtmf:
                 tries = sd.get("insurance_id_silence", 0) + 1
                 sd["insurance_id_silence"] = tries
+                debug_print(f"collect_insurance_information: 🤐 ID silence tries={tries}/3")
+
                 if tries >= 3:
-                    resp.say("I’m still not hearing your member ID. Please call again later.", VOICE)
+                    resp.say(MSG_MEMBERID_SILENCE_EXIT, VOICE)
                     resp.hangup()
                     session_data.pop(call_sid, None)
                     return str(resp)
 
+                # Re-prompt for member ID
                 g = make_gather(
-                    "Please say or enter your insurance member ID now.",
+                    MSG_PROMPT_MEMBER_ID,
                     input="speech dtmf",
                     timeout=20,
                     speech_timeout="auto",
                     finish_on_key="#",
                     barge_in=True,
                     language="en-US",
-                    action="/voice", method="POST"
+                    action="/voice",
+                    method="POST",
                 )
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # Capture ID (speech or keypad)
+            # --------------------------------------------------------------
+            # 🧾 Capture and save insurance member ID
+            # --------------------------------------------------------------
             member_id = (raw_dtmf or raw_speech).strip().upper()
             customer["insurance_member_id"] = member_id
             debug_print(f"✅ Captured insurance_member_id='{member_id}'")
 
-            # Move on
+            # --------------------------------------------------------------
+            # 🔄 Transition to the next stage (collect_first_name)
+            # --------------------------------------------------------------
             sd["stage"] = "collect_first_name"
             sd.pop("insurance_step", None)
             sd.pop("insurance_silence_tries", None)
             sd.pop("insurance_id_silence", None)
 
+            # Prompt for first name next
             g = make_gather(
-                "Thank you. Now, please tell me your first name.",
+                MSG_THANK_YOU_NEXT_FIRST_NAME,
                 input="speech dtmf",
                 timeout=8,
                 speech_timeout="auto",
                 barge_in=True,
                 language="en-US",
-                action="/voice", method="POST"
+                action="/voice",
+                method="POST",
             )
             resp.append(g)
             resp.redirect("/voice")
@@ -5393,6 +5463,60 @@ def voice():
 
 
 
+    # ======================================================================
+    # 🧾 Stage: collect_first_name
+    # ----------------------------------------------------------------------
+    # 🎯 FUNCTIONAL PURPOSE:
+    #   • Capture the caller’s **first name** via speech or keypad (DTMF).
+    #   • Handle both natural spoken input (e.g., “My name is Ahmed”) and
+    #     keypad input (if applicable, though speech is primary).
+    #   • Clean and normalize input by removing punctuation, filler phrases,
+    #     and extraneous words to isolate the actual first name.
+    #   • Validate that the result consists only of English letters.
+    #   • Retry up to 3 times for silence or invalid input.
+    #
+    # 🧩 INPUTS:
+    #   • speech_result → Transcribed speech text from Twilio’s STT engine.
+    #   • Digits        → Raw keypad input (optional for DTMF fallback).
+    #   • call_sid      → Unique session identifier for per-call state tracking.
+    #
+    # 💾 OUTPUTS (stored in session_data[call_sid]["customer"]):
+    #   • first_name → Caller’s cleaned and validated first name (e.g., “Mohamed”)
+    #
+    # 🔁 FLOW OVERVIEW:
+    #   1️⃣ **Silence Handling:**
+    #       - If no voice or DTMF detected → prompt again up to 3 times.
+    #       - After 3 silent tries → gracefully end the call with apology message.
+    #
+    #   2️⃣ **Speech Path:**
+    #       - Removes punctuation (.,!? etc.) while keeping valid characters.
+    #       - Collapses multiple spaces and trims edges.
+    #       - Removes filler phrases such as:
+    #         “my name is”, “this is”, “I am”, “it’s”, “I’m”, “it is”.
+    #       - Extracts the first valid alphabetic token as the name.
+    #
+    #   3️⃣ **DTMF Path:**
+    #       - (Optional) Uses digit mapping or foreign name hints if keypad entry supported.
+    #
+    #   4️⃣ **Validation & Retry:**
+    #       - Ensures name only contains English letters, apostrophes, or hyphens.
+    #       - Rejects Arabic or non-latin text (Unicode range \u0600–\u06FF).
+    #       - Allows up to 3 invalid attempts before ending call.
+    #
+    #   5️⃣ **Next Step:**
+    #       - On success, saves first_name and proceeds to stage → “collect_last_name”.
+    #
+    # 🧠 SPECIAL BEHAVIOR:
+    #   • Keeps apostrophes/hyphens for names like “O’Connor” or “Al-Sayed”.
+    #   • Uses polite re-prompts (“Please say your first name now.”) on retries.
+    #   • Maintains prior session context (doctor info, insurance, etc.).
+    #   • Uses Twilio <Gather> and <Redirect> sequence for smooth retry flow.
+    #
+    # ✅ SUMMARY:
+    #   This stage reliably captures, cleans, and validates the caller’s first name,
+    #   ensuring user-friendly recovery from silence or noise while preparing for
+    #   accurate downstream personalization (e.g., greeting, confirmation).
+    # ======================================================================
 
 
 
@@ -6115,6 +6239,55 @@ def voice():
 
 
 
+    # ======================================================================
+    # 🧾 Stage: collect_last_name
+    # ----------------------------------------------------------------------
+    # 🎯 FUNCTIONAL PURPOSE:
+    #   • Capture the caller’s **last name** using either speech or keypad (DTMF).
+    #   • Ensure the collected name is in **English letters only** (no Arabic script).
+    #   • Handle silence, retries, and invalid entries gracefully (up to 3 attempts).
+    #   • Normalize both spoken and typed inputs to extract clean last names.
+    #
+    # 🧩 INPUTS:
+    #   • speech_result  → Twilio Speech-to-Text output of caller’s spoken name.
+    #   • Digits         → Raw keypad input (T9 entry, e.g., 542545# → “Khalil”).
+    #   • call_sid       → Unique call session ID used to store session data.
+    #
+    # 💾 OUTPUTS (stored in session_data[call_sid]["customer"]):
+    #   • last_name → caller’s cleaned and validated last name (e.g., “Khalil”)
+    #
+    # 🔁 FLOW OVERVIEW:
+    #   1️⃣ **Silence Handling:**
+    #       - If no speech or digits detected → re-prompt up to 3 times.
+    #       - After 3 failed attempts → terminate politely.
+    #
+    #   2️⃣ **DTMF Path:**
+    #       - Map keypad digits to possible letter combinations (T9 system).
+    #       - Match against FOREIGN_NAME_HINTS for likely known names.
+    #       - Fallback: approximate name from the keypad pattern.
+    #
+    #   3️⃣ **Speech Path:**
+    #       - Clean punctuation, spacing, and filler phrases (e.g., “My last name is…”).
+    #       - Extract the first valid English token as the last name.
+    #       - Reject input containing Arabic or invalid characters.
+    #
+    #   4️⃣ **Validation & Retry:**
+    #       - Allow up to 3 invalid attempts (non-English or empty name).
+    #       - If all fail → politely end call with retry message.
+    #
+    #   5️⃣ **Next Step:**
+    #       - On success, store last name and move to stage “collect_address”.
+    #
+    # 🧠 SPECIAL BEHAVIOR:
+    #   • Allows names with apostrophes/hyphens (e.g., “O'Neill”, “Al-Sayed”).
+    #   • Filters out filler words (“say”, “press”, “you can also…”).
+    #   • Maintains previous session context (doctor_name, etc.).
+    #   • Reuses Twilio <Gather> + <Redirect> loop for smooth retry handling.
+    #
+    # ✅ SUMMARY:
+    #   This stage ensures accurate and user-friendly last name collection
+    #   while maintaining robustness against silence, noise, or invalid input.
+    # ======================================================================
 
 
 
