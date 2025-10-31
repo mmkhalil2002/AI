@@ -271,7 +271,7 @@ CREATE_NEW_CUSTOMER = bool(os.getenv("CREATE_NEW_CUSTOMER", True))  # d
 #       500 → half-second pause
 #      1000 → one-second pause (recommended for clearer spacing)
 # ----------------------------------------------------------------------
-PAUSE_MS = int(os.getenv("PAUSE_MS", 4000))  # pause time btween messages
+PAUSE_MS = int(os.getenv("PAUSE_MS", 2000))  # pause time btween messages
 
 
 DB_FOLDER = "appointment_data"
@@ -5400,6 +5400,27 @@ def voice():
     # ===== collect_first_name (stage) =====
     elif stage == "collect_first_name":
         # ----------------------------------------------------------------------
+        # 🎙️ Voice Messages — declared up-front for easy editing/localization
+        # ----------------------------------------------------------------------
+        MSG_SILENCE_REPROMPT = (
+            "I didn’t hear your first name. Please say your first name. "
+            "You can also type it and press pound."
+        )
+        MSG_MAX_SILENCE_EXIT = (
+            "I’m still not hearing anything. Please call again later."
+        )
+        MSG_T9_NO_MATCH_REPROMPT = (
+            "I couldn’t match that keypad entry to a name. "
+            "Please say your first name, or type it again and press pound."
+        )
+        MSG_INVALID_NAME_REPROMPT = (
+            "Please say your first name using English letters only. "
+            "You can also type it on the keypad and press pound."
+        )
+        # Will be formatted with the detected first name before prompting for last name:
+        MSG_THANK_YOU_NEXT_LASTNAME = "Thank you {first_name}. Now, what is your last name?"
+
+        # ----------------------------------------------------------------------
         # 🎯 Goal:
         #   - Capture FIRST name via speech or keypad (DTMF).
         #   - Handle silence locally (up to 3 retries) so we don’t rely on the
@@ -5426,9 +5447,7 @@ def voice():
         #   - Allow only English letters plus apostrophe/hyphen/space; first char must be a letter.
         #   - Reject Arabic-script characters (U+0600–U+06FF).
         # ----------------------------------------------------------------------
-        
 
-       
         sd = session_data.setdefault(call_sid, {})
         sd.setdefault("customer", {})
         raw_speech = (speech_result or "").strip()
@@ -5442,12 +5461,41 @@ def voice():
             debug_print("collect_first_name: ⏹️ Raw DTMF '#' received alone — skipping false silence (via raw)")
             return str(resp)
 
-        # silence handling...
+        # -------------------------------
+        # 🔇 Silence Handling (local)
+        # -------------------------------
+        if not raw_speech and not raw_dtmf:
+            tries = sd.get("silence_first_name", 0) + 1
+            sd["silence_first_name"] = tries
+            sd["stage"] = "collect_first_name"  # ensure we come back here next webhook
+            debug_print(f"collect_first_name: 🤐 silence; tries={tries}/3")
 
+            if tries >= 3:
+                resp.say(gpt_speak(MSG_MAX_SILENCE_EXIT), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            gather = make_gather(
+                MSG_SILENCE_REPROMPT,
+                input="speech dtmf",
+                language="en-US",
+                hints=FOREIGN_NAME_HINTS,  # helps speech ASR
+                timeout=6,
+                speech_timeout="auto",
+                finish_on_key="#",
+                barge_in=True,
+                action="/voice", method="POST",
+            )
+            resp.append(gather)
+            resp.redirect("/voice")  # safety net if still silent
+            return str(resp)
+
+        # ✅ Some input arrived → clear the local silence counter
+        sd.pop("silence_first_name", None)
 
         # -- small helpers (local to this stage) --------------------------------
         #import string, unicodedata as _uni
-
         def _t9_digit_for_char(ch: str) -> str:
             # Normalize, encode, decode, and uppercase a character for uniform text processing
             ch = (
@@ -5472,8 +5520,6 @@ def voice():
             if ch in "TUV":   return "8"
             if ch in "WXYZ":  return "9"
             return ""  # ignore non A–Z for T9
-
-        
 
         def _t9_code(name: str) -> str:
             """
@@ -5504,7 +5550,6 @@ def voice():
                 E → 3
                 D → 3
             """
-
             # 1. Remove accents/diacritics by converting to ASCII characters
             base = _uni.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
 
@@ -5514,15 +5559,13 @@ def voice():
             # This regular expression replaces any character that is NOT a letter with an empty string.
             # - `[^A-Za-z]` means "any character that is NOT between A–Z or a–z"
             # - This strips out digits, punctuation, whitespace, and special characters.
-
+            #
             # Example transformations:
             #   "Jose Andres"          → "JoseAndres"     (removes the space)
             #   "M@h@m0ud!"            → "Mhmoud"         (removes symbols and digits)
             #   "Abd_el-Rahman"        → "AbdelRahman"    (removes underscore and hyphen)
             #   "123Hello_There!"      → "HelloThere"     (removes numbers and symbols)
-
             base = _re.sub(r"[^A-Za-z]", "", base)
-
 
             # 3. Convert each letter to its T9 digit equivalent
             # Step 5: Convert each character in the cleaned name into its T9 digit
@@ -5533,19 +5576,14 @@ def voice():
             # This line iterates over each character in the preprocessed name (`base`)
             # and converts it to its corresponding T9 digit using `_t9_digit_for_char(c)`.
             # All resulting digits are then concatenated into a single string using `"".join(...)`.
-
+            #
             # Example:
             #   Input name: "Mohamed"
             #   After cleaning: base = "MOHAMED"
             #   T9 digits: M→6, O→6, H→4, A→2, M→6, E→3, D→3
             #   Output: "6642633"
-
             return "".join(_t9_digit_for_char(c) for c in base)
 
-
-
-        
-        
         def _build_t9_index_from_hints(hints: str) -> dict:
             """
             Build a T9 lookup index from a comma-separated list of name hints.
@@ -5587,7 +5625,6 @@ def voice():
             3. Convert each name to its T9 keypad code using `_t9_code()`.
             4. Group names by the T9 code in a dictionary.
             """
-
             # Step 1: Split the input string into individual names
             names = [n.strip() for n in hints.split(",") if n.strip()]
 
@@ -5632,48 +5669,10 @@ def voice():
                     #       nm = "Muhamed"  → also has code = "6642633"
                     #   Then the dictionary becomes:
                     #       idx = {"6642633": ["Mohamed", "Muhamed"]}
-
                     idx.setdefault(code, []).append(nm)
-
 
             # Step 4: Return the final index mapping T9 → list of matching names
             return idx
-
-
-
-        # -------------------------------
-        # 🔇 Silence Handling (local)
-        # -------------------------------
-        if not raw_speech and not raw_dtmf:
-            tries = sd.get("silence_first_name", 0) + 1
-            sd["silence_first_name"] = tries
-            sd["stage"] = "collect_first_name"  # ensure we come back here next webhook
-            debug_print(f"collect_first_name: 🤐 silence; tries={tries}/3")
-
-            if tries >= 3:
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            gather = make_gather(
-                "I didn’t hear your first name. Please say your first name. "
-                "You can also type it and press pound.",
-                input="speech dtmf",
-                language="en-US",
-                hints=FOREIGN_NAME_HINTS,  # helps speech ASR
-                timeout=6,
-                speech_timeout="auto",
-                finish_on_key="#",
-                barge_in=True,
-                action="/voice", method="POST",
-            )
-            resp.append(gather)
-            resp.redirect("/voice")  # safety net if still silent
-            return str(resp)
-
-        # ✅ Some input arrived → clear the local silence counter
-        sd.pop("silence_first_name", None)
 
         # -------------------------------
         # 🧾 Parse & Clean Input
@@ -5702,7 +5701,6 @@ def voice():
             #   raw_dtmf = "abc123xyz"        →  "123"
             #
             # ✅ Result: digits = clean numeric string ready for E.164 normalization
-
             digits = _re.sub(r"\D", "", raw_dtmf)
 
             debug_print(f"collect_first_name: 🔢 keypad digits='{digits}'")
@@ -5725,9 +5723,7 @@ def voice():
                 #   t9_index = {"43556": ["HELLO", "GELLO"], "4663": ["GOOD", "HOME", "GONE"]}
                 #   digits = "4663"  → matches = ["GOOD", "HOME", "GONE"]
                 #   digits = "1234"  → matches = []   (no match found)
-
                 matches = t9_index.get(digits, [])
-
 
                 if len(matches) == 1:
                     first_name = matches[0]
@@ -5750,8 +5746,7 @@ def voice():
                         return str(resp)
 
                     gather = make_gather(
-                        "I couldn’t match that keypad entry to a name. "
-                        "Please say your first name, or type it again and press pound.",
+                        MSG_T9_NO_MATCH_REPROMPT,
                         input="speech dtmf",
                         language="en-US",
                         hints=FOREIGN_NAME_HINTS,
@@ -5863,7 +5858,6 @@ def voice():
             #   • Punctuation marks are fully removed.
             #   • Text is clean and consistent for further regex processing.
             #   • Helps the next steps extract first name tokens correctly.
-
             cleaned = raw_speech.translate(str.maketrans('', '', string.punctuation)).strip()
 
             # ----------------------------------------------------------------------
@@ -5925,11 +5919,9 @@ def voice():
             #   - Keeps spacing consistent before tokenizing.
             #   - Prevents empty tokens or mismatched name extraction.
             #   - Makes "split()" behavior predictable in the next step.
-
-
             cleaned = _re.sub(r"\s+", " ", cleaned)
 
-                    # ----------------------------------------------------------------------
+            # ----------------------------------------------------------------------
             # 🧠 STEP 3: Remove filler phrases like "my name is", "this is", "I'm"
             # ----------------------------------------------------------------------
             # In natural speech, callers often begin with introductions such as:
@@ -6026,8 +6018,6 @@ def voice():
                 flags=_re.IGNORECASE,
             )
 
-
-           
             # ---------------------------------------------------------------
             # ✂️ 3. Split and pick the first token
             # ---------------------------------------------------------------
@@ -6052,7 +6042,6 @@ def voice():
         #   - Must contain English letters only (A-Z or a-z)
         #   - Can contain apostrophes, hyphens, or spaces
         #   - Must not contain Arabic script or foreign Unicode letters
-
         english_only_pattern = r"^[A-Za-z][A-Za-z'\-\s]{0,39}$"
         contains_foreign = bool(_re.search(r"[\u0600-\u06FF]", first_name))
         # \u0600-\u06FF = Arabic Unicode range → detect Arabic names like "خليل"
@@ -6067,7 +6056,6 @@ def voice():
             #   first_name = ""          → invalid (silence)
             #   first_name = "خليل"      → invalid (Arabic)
             #   first_name = "123John"   → invalid (numbers)
-
             r = sd.get("retry_first_name", 0) + 1
             sd["retry_first_name"] = r
             sd["stage"] = "collect_first_name"
@@ -6086,8 +6074,7 @@ def voice():
 
             # Prompt the user again to re-enter/speak their name
             gather = make_gather(
-                "Please say your first name using English letters only. "
-                "You can also type it on the keypad and press pound.",
+                MSG_INVALID_NAME_REPROMPT,
                 input="speech dtmf",
                 language="en-US",
                 hints=FOREIGN_NAME_HINTS,
@@ -6111,7 +6098,7 @@ def voice():
 
         # Next prompt: ask for last name
         gather = make_gather(
-            f"Thank you {first_name}. Now, what is your last name?",
+            MSG_THANK_YOU_NEXT_LASTNAME.format(first_name=first_name),
             input="speech dtmf",
             language="en-US",
             hints=FOREIGN_NAME_HINTS,   # help recognize family names like 'Ng', 'Lopez', 'Al-Sayed'
@@ -6124,6 +6111,7 @@ def voice():
         resp.append(gather)
         resp.redirect("/voice")  # If silent on last-name stage → re-prompt
         return str(resp)
+
 
 
 
