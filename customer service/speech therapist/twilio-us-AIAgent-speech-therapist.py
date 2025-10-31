@@ -1,5 +1,5 @@
 #=======
-# update  10/30/2025 time_saved 
+# update  10/31/2025 time_saved 
 #  
 # =========================
 # Standard library imports
@@ -3638,43 +3638,78 @@ def voice():
         return str(resp)
     
 
+
+
+
+
+
+     # ----------------------------------------------------------------------
+    # 📅 Stage: book_appointment
+    # ----------------------------------------------------------------------
+    # 🎯 PURPOSE:
+    #   • Acts as the entry point for appointment booking.
+    #   • Initializes session data for booking flow.
+    #   • Redirects caller to `collect_phone` to capture their phone number.
+    # ----------------------------------------------------------------------
     elif stage == "book_appointment":
-        # ----------------------------------------------------------------------
-        # 📅 Stage: book_appointment
-        # ----------------------------------------------------------------------
-        # 🎯 Purpose:
-        #   - Entry point for appointment booking.
-        #   - Immediately routes to collect_phone to capture caller’s phone number.
-        # ----------------------------------------------------------------------
+   
         debug_print("book_appointment: entered → redirecting to collect_phone")
 
-        sd = session_data.setdefault(call_sid, {})
-        sd["stage"] = "collect_phone"
-        sd["retry_booking"] = 0
-        sd["origin_stage"] = "book"
-
-        # ✅ Optional: store available doctors in session (for later use)
-        doctor_names = list(doctor_names.values())
-        dtmf_map = {str(i): name for i, name in enumerate(doctor_names, start=1)}
-        sd["doctor_dtmf_map"] = dtmf_map
-
         # ----------------------------------------------------------------------
-        # 📞 Prompt user for phone number
+        # 💬 VOICE MESSAGES — centralized for maintainability & localization
         # ----------------------------------------------------------------------
-        prompt = (
+        VOICE_BOOKING_INTRO_MSG = (
             "Let's get started with your booking. "
             "Please say or enter your phone number, including the area code, then press pound."
         )
-
-        g = make_gather(
-            prompt,
-            input="speech dtmf",
-            timeout=8,
-            speech_timeout="auto",
-            barge_in=True,
-            finish_on_key="#",
-            num_digits=10
+        VOICE_INVALID_INPUT_MSG = (
+            "I'm sorry, I didn't get that. Please say or enter your phone number again, then press pound."
         )
+
+        # ----------------------------------------------------------------------
+        # 🧩 SESSION INITIALIZATION
+        # ----------------------------------------------------------------------
+        # Ensure the call has a valid session in memory.
+        # Sets initial booking metadata to track user flow.
+        sd = session_data.setdefault(call_sid, {})
+        sd["stage"] = "collect_phone"       # Next stage to capture phone number
+        sd["retry_booking"] = 0             # Counter for booking retries
+        sd["origin_stage"] = "book"         # Identify booking origin for PIN flow, etc.
+
+        # ----------------------------------------------------------------------
+        # 🩺 Store available doctors for later doctor selection
+        # ----------------------------------------------------------------------
+        # Convert doctor list into a DTMF map (1 → Dr. Smith, 2 → Dr. Lee, etc.)
+        # This map will be reused in `collect_dr_info` to present choices.
+        if isinstance(doctor_names, dict):
+            doctor_list = list(doctor_names.values())
+        else:
+            doctor_list = doctor_names
+
+        dtmf_map = {str(i): name for i, name in enumerate(doctor_list, start=1)}
+        sd["doctor_dtmf_map"] = dtmf_map
+        debug_print(f"book_appointment: 🩺 loaded doctor map → {dtmf_map}")
+
+        # ----------------------------------------------------------------------
+        # 📞 Prompt caller to provide phone number
+        # ----------------------------------------------------------------------
+        # Uses make_gather() to capture speech or keypad input.
+        #   - input="speech dtmf"  → supports both speaking and typing.
+        #   - timeout=8            → waits up to 8 seconds for a response.
+        #   - finish_on_key="#"    → '#' key ends input early.
+        #   - num_digits=10        → expects 10-digit phone numbers (U.S. style).
+        # After prompt, control passes to `/voice` for next processing.
+        g = make_gather(
+            VOICE_BOOKING_INTRO_MSG,        # spoken prompt to caller
+            input="speech dtmf",            # allow both speech and keypad input
+            timeout=8,                      # wait up to 8 seconds
+            speech_timeout="auto",          # auto-detect end of speech
+            barge_in=True,                  # allow interrupting prompt
+            finish_on_key="#",              # '#' ends input
+            num_digits=10                   # expect 10 digits
+        )
+
+        # Append gather block to Twilio <Response> and redirect
         resp.append(g)
         resp.redirect("/voice")
         return str(resp)
@@ -3683,19 +3718,46 @@ def voice():
 
 
 
+
+    # ======================================================================
+    # 📞 Stage: collect_phone — Capture customer phone number via speech or DTMF
+    # ======================================================================
+    # 🎯 PURPOSE:
+    #   • Capture and normalize caller’s phone number.
+    #   • Support both speech and keypad (DTMF) input.
+    #   • Handle silence and invalid input with polite retry prompts.
+    #   • Maintain doctor context and booking continuity.
+    # ======================================================================
+
+
     
     elif stage == "collect_phone":
-        
-        # ======================================================================
-        # 📞 Stage: collect_phone — capture customer phone number via speech/DTMF
-        # ----------------------------------------------------------------------
-        # PURPOSE:
-        #   - Capture and normalize caller’s phone number.
-        #   - Avoid resetting session data (doctor_name, etc.).
-        #   - Maintain strong logging and minimal error loss.
-        # ======================================================================
+    
 
         debug_print("[collect_phone] 📍 Stage entered")
+
+        # ----------------------------------------------------------------------
+        # 💬 VOICE MESSAGES — centralized for maintainability & localization
+        # ----------------------------------------------------------------------
+        VOICE_NO_INPUT_MSG = (
+            "I didn’t hear your phone number. Please say or enter your 10-digit number, then press pound."
+        )
+        VOICE_TOO_MANY_SILENCES_MSG = (
+            "I'm sorry, I still didn't get your phone number. Please call again later."
+        )
+        VOICE_INVALID_PHONE_MSG = (
+            "That doesn’t sound complete. Please say or enter your 10-digit phone number including area code, then press pound."
+        )
+        VOICE_TOO_MANY_INVALID_MSG = (
+            "I'm sorry, I couldn’t capture your phone number. Please call again later."
+        )
+        VOICE_RESCHEDULE_MSG = (
+            "Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 A M'."
+        )
+        VOICE_ASK_DOB_MSG = (
+            "Thanks. What’s your date of birth? You can say it, or enter two digits for month, "
+            "two for day, and four for year, then press pound."
+        )
 
         # ----------------------------------------------------------------------
         # 🔁 Load session safely (never overwrite)
@@ -3705,7 +3767,7 @@ def voice():
         cancel_ctx = sd.setdefault("cancel", {})
         debug_print(f"[collect_phone] session keys before: {list(sd.keys())}")
 
-        # 👁️ Diagnostic: confirm doctor_name persists
+        # 👁️ Diagnostic: ensure doctor_name context persists between stages
         if "doctor_name" in sd:
             debug_print(f"[collect_phone] ✅ doctor_name still active: {sd['doctor_name']}")
         else:
@@ -3720,52 +3782,61 @@ def voice():
             debug_print(f"[collect_phone] 🌐 phone_country={sd['phone_country']}")
 
         # ----------------------------------------------------------------------
-        # 🗣 Capture inputs from Twilio
+        # 🗣 Capture inputs from Twilio (speech + DTMF)
         # ----------------------------------------------------------------------
         dtmf_digits = (request.values.get("Digits") or "").strip()
         speech_text = (speech_result or "").strip()
         debug_print(f"[collect_phone] 🗣 speech='{speech_text}'  🔢 DTMF='{dtmf_digits}'")
 
         # ----------------------------------------------------------------------
-        # 🔇 Silence handling (no speech or digits)
+        # 🔇 Silence handling (no speech or digits received)
         # ----------------------------------------------------------------------
         if not (speech_text or dtmf_digits):
             tries = sd.get("silence_collect_phone", 0) + 1
             sd["silence_collect_phone"] = tries
             debug_print(f"[collect_phone] 🤐 No input (tries={tries}/3)")
 
+            # 🗣 Retry up to 2 times politely
             if tries < 3:
                 g = make_gather(
-                    prompt="I didn’t hear your phone number. "
-                        "Please say or enter your 10-digit number, then press pound.",
-                    input="speech dtmf", timeout=4, speech_timeout="auto",
-                    barge_in=True, finish_on_key="#"
+                    VOICE_NO_INPUT_MSG,
+                    input="speech dtmf",
+                    timeout=4,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    finish_on_key="#"
                 )
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # ❌ Too many silences → hang up
-            resp.say(gpt_speak("I'm sorry, I still didn't get your phone number. Please call again later."), VOICE)
+            # ❌ After 3 failed attempts, terminate politely
+            resp.say(gpt_speak(VOICE_TOO_MANY_SILENCES_MSG), VOICE)
             resp.hangup()
-            save_session(call_sid)   # ✅ persist logs for debugging
+            save_session(call_sid)  # ✅ persist logs for debugging
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # Clear silence counter since we received input
+        # ✅ Clear silence counter since input received
         sd.pop("silence_collect_phone", None)
 
         # ----------------------------------------------------------------------
         # 🔢 Convert spoken input to digits if needed
         # ----------------------------------------------------------------------
         def _spoken_to_digits(raw: str) -> str:
+            """
+            Converts spoken numbers like “two one four five five” → “21455”.
+            Handles common words, including “double” and “triple” cases.
+            """
             if not raw:
                 return ""
+            # Normalize input text: lowercase and remove punctuation
             words = (
                 raw.lower()
                 .replace("-", " ").replace(",", " ").replace(".", " ")
                 .replace("(", " ").replace(")", " ").split()
             )
+            # Map spoken words to digits
             mapping = {
                 "zero": "0", "oh": "0", "o": "0",
                 "one": "1", "two": "2", "to": "2", "too": "2",
@@ -3773,46 +3844,52 @@ def voice():
                 "five": "5", "six": "6", "seven": "7",
                 "eight": "8", "ate": "8", "nine": "9",
             }
+
             out = []
             i = 0
             while i < len(words):
                 w = words[i]
+                # Handle "double five" → "55", "triple six" → "666"
                 if w in ("double", "triple") and i + 1 < len(words):
                     nxt = words[i + 1]
                     if nxt in mapping:
                         out.extend([mapping[nxt]] * (2 if w == "double" else 3))
                         i += 2
                         continue
+                # Regular mapping
                 if w in mapping:
                     out.append(mapping[w])
                 else:
+                    # Extract digits directly from any alphanumeric speech artifacts
                     out.extend([c for c in w if c.isdigit()])
                 i += 1
             return "".join(out)
 
+        # 🧩 Combine DTMF digits (if pressed) or convert speech
         raw_digits = _re.sub(r"\D", "", dtmf_digits or _spoken_to_digits(speech_text))
         debug_print(f"[collect_phone] 🔍 raw_digits='{raw_digits}'")
 
         # ----------------------------------------------------------------------
-        # 🌐 Normalize to E.164
+        # 🌐 Normalize number to E.164 format (+14155552671)
         # ----------------------------------------------------------------------
         country = sd.get("phone_country", (COUNTRY or "US")).upper()
         try:
             phone_e164 = normalize_phone_e164(raw_digits, country)
             debug_print(f"[collect_phone] ✅ normalized → {phone_e164}")
         except Exception as e:
+            # Fallback for U.S.-style numbers if normalization fails
             debug_print(f"[collect_phone] ⚠️ normalize_phone_e164 failed: {e}")
             d = raw_digits
             if country == "US":
                 if len(d) == 11 and d.startswith("1"):
-                    d = d[1:]
+                    d = d[1:]  # remove leading “1” if present
                 phone_e164 = f"+1{d}" if len(d) == 10 else ""
             else:
                 phone_e164 = ""
             debug_print(f"[collect_phone] ⚙️ fallback normalize → '{phone_e164}'")
 
         # ----------------------------------------------------------------------
-        # ❌ Retry for invalid numbers
+        # ❌ Retry if invalid or incomplete number
         # ----------------------------------------------------------------------
         if not phone_e164:
             r = sd.get("retry_phone", 0) + 1
@@ -3821,24 +3898,26 @@ def voice():
 
             if r < 3:
                 g = make_gather(
-                    prompt="That doesn’t sound complete. "
-                        "Please say or enter your 10-digit phone number including area code, then press pound.",
-                    input="speech dtmf", timeout=5, speech_timeout="auto",
-                    barge_in=True, finish_on_key="#"
+                    VOICE_INVALID_PHONE_MSG,
+                    input="speech dtmf",
+                    timeout=5,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    finish_on_key="#"
                 )
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # ❌ Max invalid → hangup
-            resp.say(gpt_speak("I'm sorry, I couldn’t capture your phone number. Please call again later."), VOICE)
+            # ❌ Max retries exceeded → hang up politely
+            resp.say(gpt_speak(VOICE_TOO_MANY_INVALID_MSG), VOICE)
             resp.hangup()
             save_session(call_sid)
             session_data.pop(call_sid, None)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ Save & mirror across contexts
+        # ✅ Save phone number across contexts (for booking, cancellation, etc.)
         # ----------------------------------------------------------------------
         cust["phone_e164"] = phone_e164
         cust["phone"] = phone_e164
@@ -3848,7 +3927,7 @@ def voice():
         debug_print(f"[collect_phone] 💾 saved phone_e164={phone_e164}")
 
         # ----------------------------------------------------------------------
-        # 🔁 Return stage handling (if pre-specified)
+        # 🔁 Return stage handling (if caller is coming back from another flow)
         # ----------------------------------------------------------------------
         return_stage = sd.pop("return_stage", None)
         if return_stage:
@@ -3864,31 +3943,36 @@ def voice():
         if sd.get("reschedule_after_cancel"):
             sd["stage"] = "collect_book_time_date"
             g = make_gather(
-                prompt="Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 A M'.",
-                input="speech dtmf", timeout=5, speech_timeout="auto",
-                barge_in=True, finish_on_key="#"
+                VOICE_RESCHEDULE_MSG,
+                input="speech dtmf",
+                timeout=5,
+                speech_timeout="auto",
+                barge_in=True,
+                finish_on_key="#"
             )
             resp.append(g)
             resp.redirect("/voice")
-            debug_print("[collect_phone] 🔁 reschedule →  collect_book_time_date")
+            debug_print("[collect_phone] 🔁 reschedule → collect_book_time_date")
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🗓️ Normal flow → ask DOB next
+        # 🗓️ Normal flow → Proceed to collect date of birth
         # ----------------------------------------------------------------------
         sd["stage"] = "collect_dob"
         g = make_gather(
-            prompt="Thanks. What’s your date of birth? You can say it, or enter two digits for month, "
-                "two for day, and four for year, then press pound.",
-            input="speech dtmf", timeout=5, speech_timeout="auto",
-            barge_in=True, finish_on_key="#"
+            VOICE_ASK_DOB_MSG,
+            input="speech dtmf",
+            timeout=5,
+            speech_timeout="auto",
+            barge_in=True,
+            finish_on_key="#"
         )
         resp.append(g)
         resp.redirect("/voice")
         debug_print(f"[collect_phone] ➡️ next stage → collect_dob (doctor_name={sd.get('doctor_name')})")
 
-        # ✅ persist state
+        # ✅ Persist session state for continuity
         save_session(call_sid)
         return str(resp)
 
@@ -4051,7 +4135,7 @@ def voice():
                 #   ✅ Example: "July 3rd 1956" → "July 3 1956"
 
                 t = _re.sub(r"\s+", " ", t).strip()
-                
+
                 # 🔹 Collapses multiple whitespace characters into one space and trims edges.
                 #   - Pattern: \s+
                 #       • \s → **whitespace** (spaces, tabs, newlines)
@@ -7762,25 +7846,44 @@ def voice():
 
 
 
-
+# ----------------------------------------------------------------------
+    # 🎯 Stage: book_appt_confirm
+    # ----------------------------------------------------------------------
+    # PURPOSE:
+    #   Final confirmation step for appointment or new customer record.
+    #
+    #   NEW CUSTOMER:
+    #       • Inserts record (including insurance info)
+    #       • Instructs caller to verify info with clinic
+    #
+    #   CURRENT CUSTOMER:
+    #       • Confirms appointment slot
+    #       • Persists locally via book_appointment_for_dr_name()
+    #       • Sends SMS confirmation
+    # ----------------------------------------------------------------------
 
 
     elif stage == "book_appt_confirm":
-        # ----------------------------------------------------------------------
-        # 🎯 Purpose:
-        #   Final confirmation step for appointment or new customer record.
-        #
-        #   NEW CUSTOMER:
-        #       • Inserts record (including insurance info)
-        #       • Instructs caller to verify info with clinic
-        #
-        #   CURRENT CUSTOMER:
-        #       • Confirms appointment slot
-        #       • Persists locally via book_appointment_for_dr_name()
-        #       • Sends SMS confirmation
-        # ----------------------------------------------------------------------
+    
+
         t_stage_start = _time_mod.perf_counter()
         debug_print("book_appt_confirm: 📍 Stage entered")
+
+        # ----------------------------------------------------------------------
+        # 💬 VOICE MESSAGES — centralized for maintainability & localization
+        # ----------------------------------------------------------------------
+        VOICE_NEW_CUSTOMER_MSG = (
+            "Thank you {name}. You need to verify your information with the clinic "
+            "before scheduling an appointment. Please contact the clinic to complete "
+            "your registration. Goodbye!"
+        )
+        VOICE_MISSING_APPT_MSG = "Sorry, appointment time is missing. Please try again."
+        VOICE_CONFIRMATION_ERROR_MSG = "Sorry, we couldn't confirm the appointment time."
+        VOICE_SLOT_TAKEN_MSG = "Sorry, that slot was just taken. Please choose another time."
+        VOICE_APPT_CONFIRMED_MSG = (
+            "Your appointment with {doctor} has been booked on {time}. "
+            "We look forward to seeing you. Goodbye!"
+        )
 
         # ----------------------------------------------------------------------
         # 🧩 Retrieve session data
@@ -7790,7 +7893,7 @@ def voice():
         debug_print(f"book_appt_confirm: 🧾 customer_status={customer_status}")
 
         # ----------------------------------------------------------------------
-        # 🧩 Customer Info
+        # 👤 Customer Info
         # ----------------------------------------------------------------------
         customer = sd.get("customer", {}) or {}
         first_name       = (customer.get("first_name") or "").strip()
@@ -7827,11 +7930,8 @@ def voice():
             except Exception as e:
                 debug_print(f"book_appt_confirm: ❌ insert_customer failed for new customer → {e}")
 
-            msg = (
-                f"Thank you {first_name or 'there'}. "
-                "You need to verify your information with the clinic before scheduling an appointment. "
-                "Please contact the clinic to complete your registration. Goodbye!"
-            )
+            # 🗣 Speak polite final message and end the call
+            msg = VOICE_NEW_CUSTOMER_MSG.format(name=first_name or "there")
             resp.say(gpt_speak(msg), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
@@ -7847,14 +7947,17 @@ def voice():
         appointment_start = appt.get("start")
         appointment_end   = appt.get("end")
 
+        # ----------------------------------------------------------------------
+        # ❌ Missing appointment time → terminate early
+        # ----------------------------------------------------------------------
         if not appointment_start:
             debug_print("book_appt_confirm: ❌ appointment_start missing for current customer")
-            resp.say(gpt_speak("Sorry, appointment time is missing. Please try again."), VOICE)
+            resp.say(gpt_speak(VOICE_MISSING_APPT_MSG), VOICE)
             resp.hangup()
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🕒 Convert UTC → Local timezone
+        # 🕒 Convert UTC → Local timezone for spoken format
         # ----------------------------------------------------------------------
         tz_name = globals().get("CLINIC_TZ", "America/Chicago")
         try:
@@ -7865,14 +7968,17 @@ def voice():
         try:
             dt_utc   = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
             dt_local = dt_utc.astimezone(tz)
+            # Convert to readable format, e.g., "Monday, October 28 at 9:00 AM"
             formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
         except Exception as e:
             debug_print(f"book_appt_confirm: time format error → {e}")
-            resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+            resp.say(gpt_speak(VOICE_CONFIRMATION_ERROR_MSG), VOICE)
             resp.hangup()
             return str(resp)
 
-        # Compute missing end time if needed
+        # ----------------------------------------------------------------------
+        # 🕓 Compute missing end time if needed
+        # ----------------------------------------------------------------------
         if not appointment_end:
             try:
                 dur = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
@@ -7880,12 +7986,12 @@ def voice():
                 appointment_end = end_dt.astimezone(_pytz.UTC).isoformat()
             except Exception as e:
                 debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
-                resp.say(gpt_speak("Sorry, we couldn't confirm the appointment time."), VOICE)
+                resp.say(gpt_speak(VOICE_CONFIRMATION_ERROR_MSG), VOICE)
                 resp.hangup()
                 return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ Verify slot availability (local JSON)
+        # ✅ Verify slot availability
         # ----------------------------------------------------------------------
         try:
             slot_ok = is_doctor_slot_available(doctor_name, appointment_start, appointment_end)
@@ -7895,11 +8001,11 @@ def voice():
 
         if not slot_ok:
             sd["stage"] = "collect_book_time_date"
-            resp.append(make_gather("Sorry, that slot was just taken. Please choose another time."))
+            resp.append(make_gather(VOICE_SLOT_TAKEN_MSG))
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 💾 Insert or Update Customer Locally
+        # 💾 Insert or Update Customer Record Locally
         # ----------------------------------------------------------------------
         try:
             inserted_ok = insert_customer(
@@ -7942,9 +8048,9 @@ def voice():
             debug_print(f"book_appt_confirm: ⚠️ failed to log appointment locally → {e}")
 
         # ----------------------------------------------------------------------
-        # ✅ Confirm + SMS Notification
+        # ✅ Confirm appointment + send SMS
         # ----------------------------------------------------------------------
-        msg = f"Your appointment with {doctor_name} has been booked on {formatted_time}. We look forward to seeing you. Goodbye!"
+        msg = VOICE_APPT_CONFIRMED_MSG.format(doctor=doctor_name, time=formatted_time)
         resp.say(gpt_speak(msg), VOICE)
 
         try:
@@ -7958,7 +8064,7 @@ def voice():
             debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
 
         # ----------------------------------------------------------------------
-        # ✅ Cleanup and hang up
+        # 🧹 Cleanup and hang up
         # ----------------------------------------------------------------------
         resp.hangup()
         session_data.pop(call_sid, None)
