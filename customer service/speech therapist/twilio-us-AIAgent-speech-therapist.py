@@ -4009,8 +4009,7 @@ def voice():
             "Please enter 2 digits for month, 2 for day, and 4 for year, then press #."
         )
         VOICE_NOT_FOUND_MSG = (
-            "We couldn’t find a record with that phone number and date of birth. "
-            "If you are a new customer, press 1. If you are an existing customer, press 2."
+            "are u a new customer?, if you are a new customer, press 1. If you are an existing customer, press 2."
         )
         VOICE_NEW_CUSTOMER_MSG = (
             "We found your record, but your registration with the clinic is not complete. "
@@ -4508,7 +4507,7 @@ def voice():
             debug_print("verify_customer_type: not found & CREATE_NEW_CUSTOMER=False → hang up")
             resp.say(
                 gpt_speak(
-                    "We couldn’t find a record with that phone number and date of birth. "
+                    "We couldn’t customer with that phone number and date of birth. "
                     "Please contact the clinic to create your customer record, then call us again."
                 ),
                 VOICE,
