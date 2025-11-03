@@ -4261,17 +4261,16 @@ def voice():
     # 🏦 Stage: collect_insurance_information
     # ----------------------------------------------------------------------
     # 🎯 FUNCTIONAL PURPOSE:
-    #   • Captures the caller’s insurance company and member ID.
+    #   • Captures caller’s insurance company and member ID.
     #   • Supports both speech and DTMF (keypad) input.
-    #   • DTMF path: user presses “1–6” quickly for insurance company.
-    #   • Speech path: recognizes names of common companies.
-    #   • Handles silence gracefully with up to 3 re-prompts.
-    #   • Once both values (company + member ID) are collected, advances
-    #     to the next stage → "collect_first_name".
+    #   • Step 1 → “company” selection from numbered list.
+    #   • Step 2 → “id” entry via speech or keypad.
+    #   • Handles silence with 3 retries before hanging up.
+    #   • Once both collected → advances to collect_first_name.
     #
-    # 🔁 TWO-STEP FLOW:
-    #   1️⃣ Step “company” — select from a numbered list of insurance providers.
-    #   2️⃣ Step “id”      — enter or speak the insurance member ID.
+    # 🔁 FLOW SUMMARY:
+    #   1️⃣ Company selection — DTMF or silence re-prompt.
+    #   2️⃣ Member ID capture — extended wait for speech.
     #
     # 🧩 Data stored in:
     #   session_data[call_sid]["customer"]["insurance_name"]
@@ -4279,10 +4278,9 @@ def voice():
     # ======================================================================
 
     elif stage == "collect_insurance_information":
-  
 
         # ----------------------------------------------------------------------
-        # 🎙️ Voice Message Constants (easy to localize / modify later)
+        # 🎙️ VOICE MESSAGES (centralized for easier maintenance)
         # ----------------------------------------------------------------------
         MSG_SILENCE_EXIT = "I’m still not hearing anything. Please call again later."
         MSG_MEMBERID_SILENCE_EXIT = "I’m still not hearing your member ID. Please call again later."
@@ -4291,7 +4289,8 @@ def voice():
             "Press the number now while I’m speaking. "
         )
         MSG_PROMPT_MEMBER_ID = (
-            "Please say or enter your insurance member ID now."
+            "Please say or enter your insurance member ID now. "
+            "You can include both letters and numbers, then press pound when done."
         )
         MSG_AFTER_SELECTION = (
             "Thank you. You selected {insurance_name}. "
@@ -4303,21 +4302,21 @@ def voice():
         )
 
         # ----------------------------------------------------------------------
-        # 🧩 Initialize session safely
+        # 🧭 Initialize session safely
         # ----------------------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
         sd.setdefault("customer", {})
         customer = sd["customer"]
 
         # ----------------------------------------------------------------------
-        # 🎙️ Capture caller input (speech + keypad)
+        # 🎙️ Capture caller input
         # ----------------------------------------------------------------------
         raw_speech = (speech_result or "").strip()
         raw_dtmf = (request.values.get("Digits") or "").strip()
         debug_print(f"collect_insurance_information: speech='{raw_speech}', dtmf='{raw_dtmf}'")
 
         # ----------------------------------------------------------------------
-        # 🏢 Load insurance company list (from environment variable or defaults)
+        # 🏢 Load insurance companies list
         # ----------------------------------------------------------------------
         INSURANCE_COMPANIES_LIST = [
             n.strip()
@@ -4331,7 +4330,7 @@ def voice():
         debug_print(f"collect_insurance_information: keypad_map={keypad_map}")
 
         # ----------------------------------------------------------------------
-        # 🧭 Determine current sub-step ("company" or "id")
+        # 🧭 Determine current sub-step
         # ----------------------------------------------------------------------
         step = sd.get("insurance_step", "company")
 
@@ -4340,24 +4339,25 @@ def voice():
         # ======================================================================
         if step == "company":
             # --------------------------------------------------------------
-            # 🧮 If user pressed a digit (DTMF input)
+            # 🔢 Handle keypad (DTMF) input
             # --------------------------------------------------------------
             if raw_dtmf:
                 first_digit = next((ch for ch in raw_dtmf if ch in keypad_map), "")
                 if first_digit:
                     insurance_name = keypad_map[first_digit]
                     customer["insurance_name"] = insurance_name
-                    sd["insurance_step"] = "id"  # Move to ID collection
+                    sd["insurance_step"] = "id"  # proceed to ID collection
                     debug_print(f"✅ Selected insurance_name='{insurance_name}' via DTMF '{raw_dtmf}'")
 
-                    # Prompt for member ID
+                    # 🕐 FIXED: make Twilio wait longer for voice-based ID entry
                     g = make_gather(
                         MSG_AFTER_SELECTION.format(insurance_name=insurance_name),
                         input="speech dtmf",
-                        timeout=8,
-                        speech_timeout="auto",
-                        finish_on_key="#",
-                        barge_in=True,
+                        timeout=25,                  # ⏳ longer total timeout
+                        speech_timeout="auto",        # waits until actual silence
+                        speech_model="phone_call",    # optimized for phone speech
+                        barge_in=False,               # ⛔ prevents cutting off mid-ID
+                        finish_on_key="#",            # lets user end DTMF input manually
                         language="en-US",
                         action="/voice",
                         method="POST",
@@ -4379,21 +4379,18 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # --------------------------------------------------------------
-            # 📞 Re-prompt with insurance company menu
-            # --------------------------------------------------------------
-            # Build a spoken list: “Press 1 for Blue Cross, Press 2 for Aetna...”
+            # Build the spoken menu list dynamically
             menu_text = MSG_PROMPT_INSURANCE_COMPANY
             for i, name in enumerate(INSURANCE_COMPANIES_LIST, start=1):
                 menu_text += f"Press {i} for {name}. "
 
-            # Gather configured for immediate keypad reaction (DTMF only)
+            # Faster DTMF-only gather for menu
             g = make_gather(
                 menu_text,
-                input="dtmf",              # DTMF only — faster interaction
-                timeout=3,                 # ⏳ short timeout for faster looping
-                num_digits=1,              # stops listening after one key
-                barge_in=True,             # allow interruption
+                input="dtmf",
+                timeout=4,
+                num_digits=1,
+                barge_in=True,
                 finish_on_key="#",
                 language="en-US",
                 action="/voice",
@@ -4408,7 +4405,7 @@ def voice():
         # ======================================================================
         if step == "id":
             # --------------------------------------------------------------
-            # 🔇 Silence handling (retry up to 3 times)
+            # 🔇 Handle silence (with retry counter)
             # --------------------------------------------------------------
             if not raw_speech and not raw_dtmf:
                 tries = sd.get("insurance_id_silence", 0) + 1
@@ -4421,14 +4418,15 @@ def voice():
                     session_data.pop(call_sid, None)
                     return str(resp)
 
-                # Re-prompt for member ID
+                # Re-prompt clearly, allow longer time for caller
                 g = make_gather(
                     MSG_PROMPT_MEMBER_ID,
                     input="speech dtmf",
-                    timeout=20,
+                    timeout=30,                 # give plenty of time for speech
                     speech_timeout="auto",
+                    speech_model="phone_call",
+                    barge_in=False,             # prevents premature end
                     finish_on_key="#",
-                    barge_in=True,
                     language="en-US",
                     action="/voice",
                     method="POST",
@@ -4445,18 +4443,18 @@ def voice():
             debug_print(f"✅ Captured insurance_member_id='{member_id}'")
 
             # --------------------------------------------------------------
-            # 🔄 Transition to the next stage (collect_first_name)
+            # 🔄 Transition to next stage
             # --------------------------------------------------------------
             sd["stage"] = "collect_first_name"
             sd.pop("insurance_step", None)
             sd.pop("insurance_silence_tries", None)
             sd.pop("insurance_id_silence", None)
 
-            # Prompt for first name next
+            # Prompt for next step (first name)
             g = make_gather(
                 MSG_THANK_YOU_NEXT_FIRST_NAME,
                 input="speech dtmf",
-                timeout=8,
+                timeout=10,
                 speech_timeout="auto",
                 barge_in=True,
                 language="en-US",
@@ -4466,8 +4464,6 @@ def voice():
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
-
-
 
 
 
