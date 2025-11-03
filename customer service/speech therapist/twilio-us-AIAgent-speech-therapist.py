@@ -1,5 +1,5 @@
 #=======
-# update  10/31/2025 time_saved 
+# update  11/03/2025 time_saved 
 #  
 # =========================
 # Standard library imports
@@ -4852,19 +4852,46 @@ def voice():
 
 
 
+    # ======================================================================
+    # 🩺 Stage: collect_dr_info
+    # ----------------------------------------------------------------------
+    # 🎯 FUNCTIONAL PURPOSE:
+    #   • Present a numbered list of doctors to the caller.
+    #   • Accept selection either by speech (name recognition) or keypad (DTMF).
+    #   • Handle partial/fuzzy speech matches and retry gracefully.
+    #   • Save the chosen doctor in session_data for subsequent booking steps.
+    #   • Transition to the next stage: collect_book_time_date.
+    #
+    # 🧩 INPUTS:
+    #   • speech_result → Caller’s spoken response (“Doctor Alfred”).
+    #   • Digits        → DTMF keypad input (e.g., “1” for Dr. Smith).
+    #   • doctor_names  → List or dict of doctor names (from global or config).
+    #   • call_sid      → Call session identifier.
+    #
+    # 💾 OUTPUTS:
+    #   • session_data[call_sid]["doctor_name"] = selected doctor.
+    #   • session_data[call_sid]["stage"] = "collect_book_time_date".
+    #
+    # 🔁 FLOW OVERVIEW:
+    #   1️⃣ Announce all doctors (Press 1 for X, Press 2 for Y).
+    #   2️⃣ Wait for speech or DTMF input.
+    #   3️⃣ Try to match exact DTMF → fuzzy/partial name → retry or hang up.
+    #   4️⃣ On success, announce chosen doctor and move to time collection.
+    #
+    # 🧠 SPECIAL BEHAVIOR:
+    #   • Filters out junk speech like “hello”, “okay”, etc. to avoid false matches.
+    #   • Retries up to 3 times before ending call politely.
+    #   • Supports doctor_names as list or dict for flexible loading.
+    #   • Uses make_gather() for Twilio <Gather> with /voice redirect.
+    #
+    # ✅ SUMMARY:
+    #   This stage connects caller intent (“which doctor?”) with internal booking
+    #   logic, ensuring the right doctor is selected through robust recognition.
+    # ======================================================================
+
     elif stage == "collect_dr_info":
         # ----------------------------------------------------------------------
-        # 🩺 Stage: collect_dr_info
-        # ----------------------------------------------------------------------
-        # 🎯 Purpose:
-        #   - Read out a numbered list of doctors ("Press 1 for Dr. Smith").
-        #   - Capture doctor selection by speech or keypad (DTMF).
-        #   - Supports partial/fuzzy speech match and retries.
-        #   - On success → move to collect_book_time_date (for appointment scheduling).
-        # ----------------------------------------------------------------------
-
-        # ----------------------------------------------------------------------
-        # 💬 VOICE MESSAGES — centralized for maintainability & localization
+        # 💬 VOICE PROMPTS — centralized for easy editing & localization
         # ----------------------------------------------------------------------
         VOICE_INTRO_MSG = (
             "Please choose your doctor from the following list. "
@@ -4885,42 +4912,51 @@ def voice():
         )
 
         # ----------------------------------------------------------------------
-        # 🧭 Session Initialization
+        # 🧭 SESSION INITIALIZATION
         # ----------------------------------------------------------------------
         session_data.setdefault(call_sid, {}).setdefault("retry_booking", 0)
         session_data[call_sid]["origin_stage"] = "book"
 
-        # Clean punctuation from speech input
+        # ----------------------------------------------------------------------
+        # 🧹 CLEAN INPUTS (speech + DTMF)
+        # ----------------------------------------------------------------------
+        # Define punctuation characters to remove from speech text.
         _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
+
+        # Retrieve keypad digits (if any)
         dtmf_digits = (request.values.get("Digits") or "").strip()
+
+        # Retrieve speech result (case-insensitive and punctuation-free)
         spoken_text = (speech_result or "").strip().lower()
         spoken_clean = spoken_text.translate(str.maketrans('', '', _PUNCT)).strip()
-        print(f"[collect_dr_info] speech='{spoken_clean}' DTMF='{dtmf_digits}'")
+
+        debug_print(f"[collect_dr_info] 🗣 speech='{spoken_clean}' 🔢 DTMF='{dtmf_digits}'")
 
         # ----------------------------------------------------------------------
-        # 🗂️ Build doctor keypad map on first entry
+        # 🗂️ INITIALIZE DOCTOR MAP (if not yet built)
         # ----------------------------------------------------------------------
         if "doctor_dtmf_map" not in session_data[call_sid]:
             doctor_dtmf_map = {}
             prompt_lines = []
 
-            # doctor_names should be a dict or list of names (local JSON / config)
+            # doctor_names can be either dict or list depending on config
             if isinstance(doctor_names, dict):
                 doctor_list = list(doctor_names.values())
             else:
                 doctor_list = doctor_names
 
+            # Build DTMF mapping and corresponding prompt text
             for i, friendly in enumerate(doctor_list, start=1):
                 doctor_dtmf_map[str(i)] = friendly
                 prompt_lines.append(f"Press {i} for {friendly}.")
 
+            # Save mapping in session for later reference
             session_data[call_sid]["doctor_dtmf_map"] = doctor_dtmf_map
 
-            # 🗣️ Prompt user with available doctors
-            doctor_prompt = (
-                f"{VOICE_INTRO_MSG} " + " ".join(prompt_lines)
-            )
+            # Build the combined speech prompt message
+            doctor_prompt = f"{VOICE_INTRO_MSG} " + " ".join(prompt_lines)
 
+            # Generate Twilio <Gather> prompt for both speech & keypad
             g = make_gather(
                 doctor_prompt,
                 input="speech dtmf",
@@ -4935,35 +4971,35 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧭 Retrieve the map for later selections
+        # 🧭 RETRIEVE EXISTING DOCTOR MAP
         # ----------------------------------------------------------------------
         doctor_map = session_data[call_sid]["doctor_dtmf_map"]
         matched_name = None
 
         # ----------------------------------------------------------------------
-        # 🔢 DTMF Matching
+        # 🔢 STEP 1 — DTMF MATCHING
         # ----------------------------------------------------------------------
+        # Example: Caller presses “2” → maps to Dr. Johnson
         if dtmf_digits and dtmf_digits in doctor_map:
             matched_name = doctor_map[dtmf_digits]
-            print(f"✅ DTMF matched doctor: {matched_name}")
+            debug_print(f"✅ DTMF matched doctor → {matched_name}")
 
         # ----------------------------------------------------------------------
-        # 🎙️ Speech Matching (Partial / Fuzzy)
+        # 🗣️ STEP 2 — SPEECH MATCHING (Partial / Fuzzy)
         # ----------------------------------------------------------------------
         if matched_name is None:
+            # Define filler words to ignore (common misrecognitions)
             junk_inputs = {
                 "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
                 "yo", "test", "1", "yes", "no", "i know", "huh", "what", "okay", "ok",
                 "bye", "goodbye", ""
             }
 
+            # Skip if recognized junk, short, or empty
             if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
-                print(f"⏩ Skipping junk doctor input: '{spoken_clean}' — re-prompting")
-
+                debug_print(f"⏩ Skipping junk doctor input → '{spoken_clean}' (re-prompting)")
                 prompt_lines = [f"Press {k} for {v}." for k, v in doctor_map.items()]
-                doctor_prompt = (
-                    f"{VOICE_REPROMPT_MSG} " + " ".join(prompt_lines)
-                )
+                doctor_prompt = f"{VOICE_REPROMPT_MSG} " + " ".join(prompt_lines)
 
                 g = make_gather(
                     doctor_prompt,
@@ -4978,10 +5014,11 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
-            # 🔍 Partial name matching
-            partial_matches = []
+            # Tokenize spoken input for partial/fuzzy matching
             spoken_tokens = set(spoken_clean.split())
+            partial_matches = []
 
+            # Normalize doctor names to lowercase, punctuation-free
             if isinstance(doctor_names, dict):
                 doctor_list = list(doctor_names.values())
             else:
@@ -4990,6 +5027,11 @@ def voice():
             for friendly in doctor_list:
                 friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
                 friendly_tokens = set(friendly_clean.split())
+
+                # Match if:
+                #   • Entire phrase matches (“alfred hitchcock”)
+                #   • Partial overlap (“alfred” vs “dr alfred hitchcock”)
+                #   • Token overlap (intersection between word sets)
                 if (
                     spoken_clean in friendly_clean
                     or friendly_clean in spoken_clean
@@ -4997,15 +5039,17 @@ def voice():
                 ):
                     partial_matches.append(friendly)
 
+            # If one match → accept directly
             if len(partial_matches) == 1:
                 matched_name = partial_matches[0]
-                print(f"✅ Partial match with: {matched_name}")
+                debug_print(f"✅ Partial speech match → {matched_name}")
             elif len(partial_matches) > 1:
-                print(f"🔍 Multiple matches: {partial_matches}")
+                # If multiple → take the first (or could present later)
+                debug_print(f"🔍 Multiple doctor matches found → {partial_matches}")
                 matched_name = partial_matches[0]
 
         # ----------------------------------------------------------------------
-        # ❌ Retry on Failure
+        # ❌ STEP 3 — HANDLE NO MATCH FOUND
         # ----------------------------------------------------------------------
         if matched_name is None:
             session_data[call_sid]["retry_booking"] += 1
@@ -5013,15 +5057,15 @@ def voice():
             debug_print(f"❌ No doctor match for '{spoken_clean or dtmf_digits}' retry={retries}")
 
             if retries >= 3:
+                # After 3 failed attempts → end call politely
                 resp.say(gpt_speak(VOICE_FINAL_FAIL_MSG), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
+            # Re-prompt caller to try again with the available list
             prompt_lines = [f"Press {k} for {v}." for k, v in doctor_map.items()]
-            doctor_prompt = (
-                f"{VOICE_NO_MATCH_MSG} " + " ".join(prompt_lines)
-            )
+            doctor_prompt = f"{VOICE_NO_MATCH_MSG} " + " ".join(prompt_lines)
 
             g = make_gather(
                 doctor_prompt,
@@ -5037,14 +5081,17 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ Success — Store & Move On
+        # ✅ STEP 4 — SUCCESS: SAVE & ADVANCE TO NEXT STAGE
         # ----------------------------------------------------------------------
         session_data[call_sid]["doctor_name"] = matched_name
         session_data[call_sid]["stage"] = "collect_book_time_date"
 
-        # 🗣️ Announce the doctor and move to time collection
+        # Build confirmation voice message dynamically
+        success_msg = VOICE_SUCCESS_MSG.format(doctor_name=matched_name)
+
+        # Prompt user to provide date and time
         g = make_gather(
-            VOICE_SUCCESS_MSG.format(doctor_name=matched_name),
+            success_msg,
             input="speech dtmf",
             timeout=10,
             speech_timeout="auto",
@@ -5054,6 +5101,7 @@ def voice():
         resp.append(g)
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
@@ -5393,65 +5441,257 @@ def voice():
 
 
 
+    # ======================================================================
+    # 📅 Stage: collect_book_time_date
+    # ----------------------------------------------------------------------
+    # 🎯 FUNCTIONAL PURPOSE:
+    #   • Capture and validate the caller’s spoken or keypad appointment date/time.
+    #   • Handle silence, invalid entries, or past/unavailable time slots gracefully.
+    #   • Suggest up to 3 alternative appointment slots when necessary.
+    #   • Use SSML <break> tags to create natural speech pauses between options.
+    #   • Maintain all voice messages as editable variables for localization.
+    #
+    # 🧩 INPUTS:
+    #   • speech_result → Speech-to-text transcription from Twilio.
+    #   • Digits        → Keypad input for option selection.
+    #   • call_sid      → Unique call session identifier.
+    #   • doctor_name   → Previously selected doctor’s name from session_data.
+    #
+    # 💾 OUTPUTS:
+    #   • session_data[call_sid]["appointment_time"] → dict with "start"/"end" ISO strings.
+    #   • session_data[call_sid]["stage"] → next stage ("book_appt_confirm").
+    #
+    # 🔁 FLOW OVERVIEW:
+    #   1️⃣ Handle silence or missing input → prompt again or end politely.
+    #   2️⃣ Parse the spoken text into a datetime (via smart_parse_time).
+    #   3️⃣ If time is past or invalid → suggest next 3 available slots.
+    #   4️⃣ Present options using SSML <break> pauses for natural voice output.
+    #   5️⃣ Validate final choice and proceed to confirmation stage.
+    #
+    # 🧠 SPECIAL BEHAVIOR:
+    #   • Uses localized VOICE_* constants for easy editing and translation.
+    #   • Automatically re-prompts up to 3 times before hang-up.
+    #   • Uses Google-style fuzzy date/time parsing (smart_parse_time).
+    #   • Supports “Option one/two/three” or numeric DTMF input for slot choice.
+    #
+    # ✅ SUMMARY:
+    #   This stage ensures robust and natural collection of appointment times.
+    #   It improves user experience by re-prompting gently, offering alternatives,
+    #   and speaking them in a human-like cadence with SSML-based pauses.
+    # ======================================================================
 
-# ----------------------------------------------------------------------
-# 🧩 Stage: ask_time_date_select_alt — Handle alternative slot choice
-# ----------------------------------------------------------------------
-    elif stage == "ask_time_date_select_alt":
-        debug_print(f"[ask_time_date_select_alt] speech='{speech_result}' dtmf='{request.values.get('Digits')}'")
-        sd = session_data.get(call_sid, {})
-        alts = sd.get("alt_slots", [])
-        choice = (speech_result or request.values.get("Digits") or "").lower().strip()
+    elif stage == "collect_book_time_date":
+        debug_print(f"[collect_book_time_date] 🗣️ Received speech: {speech_result}")
 
-        # 🚫 Handle refusal (“none”, “no”, “no thanks”)
-        if any(x in choice for x in ["none", "no", "nope", "no thanks", "nothing", "nah"]):
-            debug_print("[ask_time_date_select_alt] 📴 User declined all options — ending call")
-            resp.say("Okay, no problem. You can call us anytime to book another appointment. Goodbye!", VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
+        # ----------------------------------------------------------------------
+        # 💬 VOICE MESSAGES — centralized for readability & localization
+        # ----------------------------------------------------------------------
+        VOICE_OLD_DATE_MSG = (
+            "That time has already passed. Let me suggest the next available appointment times."
+        )
+        VOICE_NO_DECISION_MSG = (
+            "It seems you’re not ready right now. Please call us back when you’re ready. Goodbye."
+        )
+        VOICE_SILENCE_MSG = (
+            "I didn’t hear anything. Please say the date and time clearly, "
+            "for example, 'October 10 at 9 A M'."
+        )
+        VOICE_REASK_TIME_MSG = "Please tell me another time that works for you."
+        VOICE_NO_AVAILABLE_SLOTS_MSG = "Sorry, there are no upcoming available appointments."
+        VOICE_NO_RESPONSE_MSG = "I didn’t hear from you. Please call us again when you're ready. Goodbye."
+        VOICE_ASK_AGAIN_MSG = "Please say the date and time again, for example, 'October 8 at 9 30 A M'."
+        VOICE_NEXT_AVAILABLE_INTRO = "Here are the next available times."
+        VOICE_NEXT_AVAILABLE_OUTRO = "Please say the option number, or tell me another date and time."
+
+        # ----------------------------------------------------------------------
+        # 🗂️ SESSION SETUP
+        # ----------------------------------------------------------------------
+        session_data.setdefault(call_sid, {})
+        sd = session_data[call_sid]
+        sd.setdefault("stage", "collect_book_time_date")
+
+        # Ensure a doctor has been selected; otherwise redirect to collect_dr_info
+        doctor_name = sd.get("doctor_name")
+        if not doctor_name:
+            g = make_gather("Please tell me which doctor you'd like to see.")
+            sd["stage"] = "collect_dr_info"
+            resp.append(g)
+            save_session(call_sid)
             return str(resp)
 
-        # ✅ Handle valid selection
-        selected = None
-        if any(x in choice for x in ["1", "first", "one", "yes", "yeah", "sure", "ok", "okay"]):
-            selected = 0
-        elif any(x in choice for x in ["2", "second", "two"]):
-            selected = 1
-        elif any(x in choice for x in ["3", "third", "three"]):
-            selected = 2
+        # ----------------------------------------------------------------------
+        # 🔇 HANDLE SILENCE
+        # ----------------------------------------------------------------------
+        if not speech_result and not request.values.get("Digits"):
+            sd["silence_retry"] = sd.get("silence_retry", 0) + 1
+            debug_print(f"[collect_book_time_date] 🤐 silence_retry={sd['silence_retry']}")
 
-        if selected is not None and selected < len(alts):
-            chosen = alts[selected]
-            debug_print(f"[ask_time_date_select_alt] ✅ selected slot → {chosen['friendly']}")
-            sd["appointment_time"] = {"start": chosen["start"], "end": chosen["end"]}
-            sd["stage"] = "book_appt_confirm"
-            save_session(call_sid)
+            # If repeated silence → end the call politely
+            if sd["silence_retry"] >= 2:
+                resp.say(gpt_speak(VOICE_NO_DECISION_MSG), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            # Otherwise, re-prompt the user to speak clearly
             g = make_gather(
-                f"Great! I’ve selected {chosen['friendly']}. Let’s confirm your appointment details.",
-                input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True
+                VOICE_SILENCE_MSG,
+                input="speech dtmf",
+                timeout=10,
+                speech_timeout="auto",
+                barge_in=True,
+                action="/voice",
+                method="POST"
             )
             resp.append(g)
-            resp.redirect("/voice")
+            save_session(call_sid)
             return str(resp)
 
-        # ❌ Invalid or unclear input (retry)
-        retries = sd.get("retry_alt", 0) + 1
-        sd["retry_alt"] = retries
-        if retries >= 3:
-            resp.say("I didn’t get a valid selection. Let’s start again. Goodbye!", VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
+        # ----------------------------------------------------------------------
+        # 🧠 PARSE INPUT (Speech or Keypad)
+        # ----------------------------------------------------------------------
+        raw = (speech_result or request.values.get("Digits") or "").strip()
+        debug_print(f"[collect_book_time_date][parse] raw='{raw}'")
+
+        # If user was previously offered alternative slots, detect if they said “Option 1/2/3”
+        if sd.get("alts_list"):
+            spoken = raw.lower().strip()
+
+            # Map spoken words (“one”, “first”) to their numeric equivalents
+            num_map = {
+                "one": "1", "first": "1",
+                "two": "2", "second": "2",
+                "three": "3", "third": "3",
+            }
+
+            # Replace spoken numbers with digits if found
+            for k, v in num_map.items():
+                if k in spoken:
+                    raw = v
+
+            # If valid numeric selection → pick corresponding slot
+            if raw.isdigit() and 1 <= int(raw) <= len(sd["alts_list"]):
+                choice = sd["alts_list"][int(raw) - 1]
+                debug_print(f"[collect_book_time_date] 🎯 Option {raw} selected → {choice['friendly']}")
+                sd["appointment_time"] = {"start": choice["start"], "end": choice["end"]}
+                sd["stage"] = "book_appt_confirm"
+                save_session(call_sid)
+                resp.redirect("/voice")
+                return str(resp)
+
+        # Attempt to parse a spoken date/time string using NLP parser
+        try:
+            result = smart_parse_time(raw)
+        except Exception as e:
+            debug_print(f"[collect_book_time_date][parse] error: {e}")
+            result = None
+
+        # ----------------------------------------------------------------------
+        # ❌ INVALID OR UNPARSEABLE INPUT
+        # ----------------------------------------------------------------------
+        if not result:
+            sd["retry_time"] = sd.get("retry_time", 0) + 1
+            debug_print(f"[collect_book_time_date] ⚠️ Invalid time → retry={sd['retry_time']}")
+            if sd["retry_time"] >= 3:
+                resp.say(gpt_speak(VOICE_NO_DECISION_MSG), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            # Ask again with example formatting
+            g = make_gather(
+                VOICE_ASK_AGAIN_MSG,
+                input="speech dtmf",
+                timeout=10,
+                barge_in=True,
+                action="/voice",
+                method="POST"
+            )
+            resp.append(g)
+            save_session(call_sid)
             return str(resp)
 
-        options_text = ", ".join([a["friendly"] for a in alts[:-1]]) + f", or {alts[-1]['friendly']}"
-        g = make_gather(
-            f"Please say 'first', 'second', or 'third' to choose from {options_text}. "
-            "Or say 'none' if you don't want to book right now.",
-            input="speech dtmf", timeout=8, speech_timeout="auto", barge_in=True
-        )
-        resp.append(g)
-        sd["stage"] = "ask_time_date_select_alt"
+        # ----------------------------------------------------------------------
+        # ✅ PARSED SUCCESSFULLY — EXTRACT FIELDS
+        # ----------------------------------------------------------------------
+        appointment_start = result["start"]
+        appointment_end = result["end"]
+        friendly = result["friendly"]
+        is_past = result.get("is_past", False)
+
+        # Define time bounds (UTC)
+        now_utc = _pytz.UTC.localize(_dt.utcnow())
+        limit_end_utc = now_utc + timedelta(days=30 * MAX_ADVANCE_MONTHS)
+
+        # ----------------------------------------------------------------------
+        # ⏰ HANDLE OLD OR OUT-OF-RANGE DATE → SUGGEST ALTERNATIVES
+        # ----------------------------------------------------------------------
+        if is_past or isoparse(appointment_start) <= now_utc or isoparse(appointment_start) > limit_end_utc:
+            resp.say(gpt_speak(VOICE_OLD_DATE_MSG), VOICE)
+
+            # Fetch next 3 available slots for this doctor
+            alts = get_doctor_next_available_slots(doctor_name, from_start_iso=now_utc.isoformat(), limit=3)
+            if not alts:
+                resp.say(gpt_speak(VOICE_NO_AVAILABLE_SLOTS_MSG), VOICE)
+                resp.hangup()
+                return str(resp)
+
+            # 🗣️ Build spoken list of options with SSML <break> pauses
+            options_ssml = f" <break time=\"{PAUSE_MS}ms\"/> ".join(
+                [f"Option {i}: {a['friendly']}." for i, a in enumerate(alts, start=1)]
+            )
+
+            # Wrap the message inside <speak>...</speak> for Twilio SSML rendering
+            combined = (
+                f"<speak>{VOICE_NEXT_AVAILABLE_INTRO}"
+                f"<break time=\"{PAUSE_MS}ms\"/>{options_ssml}"
+                f"<break time=\"{PAUSE_MS}ms\"/>{VOICE_NEXT_AVAILABLE_OUTRO}</speak>"
+            )
+
+            debug_print(f"[collect_book_time_date] 🗣️ SSML built for {len(alts)} options with {PAUSE_MS}ms pauses")
+
+            # Send as a gather prompt (Twilio will pause between each <break>)
+            g = make_gather(
+                combined,
+                input="speech dtmf",
+                timeout=15,
+                speech_timeout="auto",
+                barge_in=True,
+                action="/voice",
+                method="POST"
+            )
+            resp.append(g)
+            sd["alts_list"] = alts
+            sd["stage"] = "collect_book_time_date"
+            save_session(call_sid)
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # 🕓 CHECK AVAILABILITY OF SELECTED SLOT
+        # ----------------------------------------------------------------------
+        if not is_doctor_slot_available(doctor_name, appointment_start, appointment_end):
+            debug_print(f"[collect_book_time_date] ⛔ Slot not available for {doctor_name} at {friendly}")
+            g = make_gather(
+                f"That time is not available. {VOICE_REASK_TIME_MSG}",
+                input="speech dtmf",
+                timeout=10,
+                barge_in=True,
+                action="/voice",
+                method="POST"
+            )
+            resp.append(g)
+            save_session(call_sid)
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # ✅ SUCCESS → SAVE SLOT AND MOVE TO CONFIRMATION
+        # ----------------------------------------------------------------------
+        sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
+        sd["stage"] = "book_appt_confirm"
+        debug_print(f"[collect_book_time_date] ✅ Slot accepted → {friendly}")
+
         save_session(call_sid)
+        resp.redirect("/voice")
         return str(resp)
 
 
@@ -6549,20 +6789,201 @@ def voice():
 
 
 
+# ======================================================================
+# 🏠 Stage: collect_address
+# ----------------------------------------------------------------------
+# 🎯 FUNCTIONAL PURPOSE:
+#   • Capture the caller’s complete mailing address using speech input.
+#   • Normalize the text (spacing, punctuation) for clean storage.
+#   • Handle silence gracefully with up to 3 retries before hanging up.
+#   • Validate the address to ensure it contains letters and reasonable length.
+#   • Save under session_data[call_sid]["customer"]["address"].
+#   • Advance to the next stage (collect_cc) after success.
+#
+# 🧩 INPUTS:
+#   • speech_result → Caller’s spoken address (transcribed by Twilio).
+#   • Digits        → Optional keypad input (not primary here).
+#   • call_sid      → Call session identifier used to maintain state.
+#
+# 💾 OUTPUTS:
+#   • session_data[call_sid]["customer"]["address"] = normalized address text.
+#
+# 🔁 FLOW OVERVIEW:
+#   1️⃣ Prompt caller for address.
+#   2️⃣ Retry up to 3 times for silence.
+#   3️⃣ Normalize spacing/punctuation for cleaner text.
+#   4️⃣ Validate for alphabetic content and minimum length.
+#   5️⃣ Save and continue to the payment (collect_cc) stage.
+#
+# 🧠 SPECIAL BEHAVIOR:
+#   • Uses `_re` (alias for `re`) to avoid import conflicts.
+#   • Keeps conversational tone in voice prompts.
+#   • Ensures Twilio posts back after <Gather> via redirect.
+#
+# ✅ SUMMARY:
+#   This stage robustly collects and cleans the caller’s spoken address,
+#   preventing hangs from silence and guaranteeing normalized text for
+#   downstream use (e.g., confirmation or billing).
+# ======================================================================
 
-
-
-    elif stage == "collect_dr_info":
+    elif stage == "collect_address":
         # ----------------------------------------------------------------------
-        # 🩺 Stage: collect_dr_info
+        # 🎙️ ALL VOICE PROMPTS — DECLARED AT THE BEGINNING
         # ----------------------------------------------------------------------
-        # 🎯 PURPOSE:
-        #   - Present a list of available doctors (by keypad or speech).
+        PROMPT_INTRO = (
+            "Please tell me your full address, including street number, city, and ZIP code. "
+            "For example, say one one eight Briar Oak, Murphy, Texas seven five zero nine four."
+        )
+
+        PROMPT_RETRY_SILENCE = (
+            "I didn't catch that. Please say your street address, city, and ZIP. "
+            "For example, one one eight Briar Oak, Murphy, Texas seven five zero nine four."
+        )
+
+        PROMPT_INVALID_ADDRESS = (
+            "Please repeat your full mailing address — street, city, state, and ZIP. "
+            "For example, one one eight Briar Oak, Murphy, Texas seven five zero nine four."
+        )
+
+        PROMPT_CONFIRM_NEXT = (
+            "Thank you. Now, please enter your card number, then press pound."
+        )
+
+        # ----------------------------------------------------------------------
+        # 🔧 Initialize or retrieve session context
+        # ----------------------------------------------------------------------
+        session_data.setdefault(call_sid, {}).setdefault("customer", {})
+
+        # ----------------------------------------------------------------------
+        # 🗣️ Retrieve caller’s speech safely
+        # ----------------------------------------------------------------------
+        try:
+            raw = (speech_result or request.values.get("SpeechResult") or "").strip()
+        except Exception:
+            raw = (speech_result or "").strip()
+
+        debug_print(f"collect_address: 📬 Collected address (raw): {raw}")
+
+        # ----------------------------------------------------------------------
+        # 🔇 Handle silence (nothing heard)
+        # ----------------------------------------------------------------------
+        if not raw:
+            # Increment silence counter for this stage
+            tries = session_data[call_sid].get("silence_address", 0) + 1
+            session_data[call_sid]["silence_address"] = tries
+            debug_print(f"collect_address: 🤐 silence; tries={tries}")
+
+            if tries >= 3:
+                # After 3 failed attempts → politely end call
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            # Re-prompt caller to try again
+            gather = make_gather(PROMPT_RETRY_SILENCE)
+            resp.append(gather)
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))  # redirect ensures Twilio posts back
+            except Exception:
+                resp.redirect("/voice")
+            return str(resp)
+
+        # ✅ Some input received → reset silence counter
+        session_data[call_sid].pop("silence_address", None)
+
+        # ----------------------------------------------------------------------
+        # 🧹 Normalize and clean address text
+        # ----------------------------------------------------------------------
+        addr = raw
+
+        # 1️⃣ Collapse multiple spaces (e.g., “Murphy   Texas” → “Murphy Texas”)
+        addr = _re.sub(r"\s+", " ", addr)
+
+        # 2️⃣ Normalize spacing around commas, hashes, and periods
+        #     Example: "Murphy , Texas . 75094" → "Murphy, Texas. 75094"
+        addr = _re.sub(r"\s*([,#\.])\s*", r"\1 ", addr)
+
+        # 3️⃣ Remove repeated punctuation (“..” or “,,,” → single instance)
+        addr = _re.sub(r"\.{2,}", ".", addr)
+        addr = _re.sub(r",\s*,+", ", ", addr)
+
+        # 4️⃣ Trim stray punctuation and whitespace at edges
+        addr = addr.strip(" .,")
+
+        # 5️⃣ Final pass — collapse any spaces introduced during cleanup
+        addr = _re.sub(r"\s+", " ", addr).strip()
+
+        debug_print(f"collect_address: 🧽 Normalized → '{addr}'")
+
+        # ----------------------------------------------------------------------
+        # ✅ Basic validation for readability
+        # ----------------------------------------------------------------------
+        # Require at least one alphabetic character and a reasonable length.
+        # This filters out blank or nonsensical STT artifacts.
+        if (not addr) or (_re.search(r"[A-Za-z]", addr) is None) or (len(addr) < 6):
+            r = session_data[call_sid].get("retry_address", 0) + 1
+            session_data[call_sid]["retry_address"] = r
+            debug_print(f"collect_address: ❌ looks invalid/too short → retry={r}")
+
+            if r >= 3:
+                # After 3 invalid attempts → hang up politely
+                resp.say(gpt_speak("Sorry, I couldn’t capture your address. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            # Re-prompt for valid address
+            gather = make_gather(PROMPT_INVALID_ADDRESS)
+            resp.append(gather)
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # 💾 Persist valid address
+        # ----------------------------------------------------------------------
+        session_data[call_sid]["customer"]["address"] = addr
+        session_data[call_sid].pop("retry_address", None)  # reset retry counter
+        debug_print(f"collect_address: ✅ Saved address='{addr}'")
+
+        # ----------------------------------------------------------------------
+        # 🔁 Advance to next stage
+        # ----------------------------------------------------------------------
+        session_data[call_sid]["stage"] = "collect_cc"
+
+        # Prompt user for credit card (or next data item)
+        gather = make_gather(PROMPT_CONFIRM_NEXT)
+        resp.append(gather)
+        try:
+            from flask import url_for
+            resp.redirect(url_for("voice"))
+        except Exception:
+            resp.redirect("/voice")
+
+        return str(resp)
+
+
+
+
+    # ----------------------------------------------------------------------
+    # 🩺 Stage: collect_dr_info
+    # ----------------------------------------------------------------------
+    # 🎯 PURPOSE:
+    #   - Present a list of available doctors (by keypad or speech).
         #   - Capture the user’s selection using DTMF (1, 2, 3...) or speech.
         #   - Perform fuzzy matching on spoken names (partial word matches).
         #   - Retry up to 3 times if no valid match is found.
         #   - On success → move to stage "collect_book_time_date" for time selection.
         # ----------------------------------------------------------------------
+
+
+    elif stage == "collect_dr_info":
+        
 
         # ----------------------------------------------------------------------
         # 💬 Voice Prompts — all text in variables for easy maintenance
@@ -8040,7 +8461,7 @@ def voice():
 
 
 
-# ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
     # 🎯 Stage: book_appt_confirm
     # ----------------------------------------------------------------------
     # PURPOSE:
