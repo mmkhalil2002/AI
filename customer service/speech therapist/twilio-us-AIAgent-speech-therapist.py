@@ -5146,18 +5146,7 @@ def voice():
     #   → "book_appt_confirm"  (confirmation and SMS dispatch)
     # ======================================================================
 
-    elif stage == "collect_book_time_date":
-        # ----------------------------------------------------------------------
-        # 📅 Stage: collect_book_time_date
-        # ----------------------------------------------------------------------
-        # 🎯 PURPOSE:
-        #   - Capture and validate spoken or keypad date/time.
-        #   - Handle silence, invalid input, and past times.
-        #   - Offer up to 3 alternative appointment times if needed.
-        #   - Insert controlled SSML pauses between proposed appointment options.
-        #   - Keep all voice messages in easily editable variables.
-        # ----------------------------------------------------------------------
-
+    
 
     elif stage == "collect_book_time_date":
         # ----------------------------------------------------------------------
