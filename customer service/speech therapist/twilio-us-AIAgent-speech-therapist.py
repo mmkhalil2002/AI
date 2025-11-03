@@ -6805,42 +6805,42 @@ def voice():
 
 
 
-# ======================================================================
-# 🏠 Stage: collect_address
-# ----------------------------------------------------------------------
-# 🎯 FUNCTIONAL PURPOSE:
-#   • Capture the caller’s complete mailing address using speech input.
-#   • Normalize the text (spacing, punctuation) for clean storage.
-#   • Handle silence gracefully with up to 3 retries before hanging up.
-#   • Validate the address to ensure it contains letters and reasonable length.
-#   • Save under session_data[call_sid]["customer"]["address"].
-#   • Advance to the next stage (collect_cc) after success.
-#
-# 🧩 INPUTS:
-#   • speech_result → Caller’s spoken address (transcribed by Twilio).
-#   • Digits        → Optional keypad input (not primary here).
-#   • call_sid      → Call session identifier used to maintain state.
-#
-# 💾 OUTPUTS:
-#   • session_data[call_sid]["customer"]["address"] = normalized address text.
-#
-# 🔁 FLOW OVERVIEW:
-#   1️⃣ Prompt caller for address.
-#   2️⃣ Retry up to 3 times for silence.
-#   3️⃣ Normalize spacing/punctuation for cleaner text.
-#   4️⃣ Validate for alphabetic content and minimum length.
-#   5️⃣ Save and continue to the payment (collect_cc) stage.
-#
-# 🧠 SPECIAL BEHAVIOR:
-#   • Uses `_re` (alias for `re`) to avoid import conflicts.
-#   • Keeps conversational tone in voice prompts.
-#   • Ensures Twilio posts back after <Gather> via redirect.
-#
-# ✅ SUMMARY:
-#   This stage robustly collects and cleans the caller’s spoken address,
-#   preventing hangs from silence and guaranteeing normalized text for
-#   downstream use (e.g., confirmation or billing).
-# ======================================================================
+    # ======================================================================
+    # 🏠 Stage: collect_address
+    # ----------------------------------------------------------------------
+    # 🎯 FUNCTIONAL PURPOSE:
+    #   • Capture the caller’s complete mailing address using speech input.
+    #   • Normalize the text (spacing, punctuation) for clean storage.
+    #   • Handle silence gracefully with up to 3 retries before hanging up.
+    #   • Validate the address to ensure it contains letters and reasonable length.
+    #   • Save under session_data[call_sid]["customer"]["address"].
+    #   • Advance to the next stage (collect_cc) after success.
+    #
+    # 🧩 INPUTS:
+    #   • speech_result → Caller’s spoken address (transcribed by Twilio).
+    #   • Digits        → Optional keypad input (not primary here).
+    #   • call_sid      → Call session identifier used to maintain state.
+    #
+    # 💾 OUTPUTS:
+    #   • session_data[call_sid]["customer"]["address"] = normalized address text.
+    #
+    # 🔁 FLOW OVERVIEW:
+    #   1️⃣ Prompt caller for address.
+    #   2️⃣ Retry up to 3 times for silence.
+    #   3️⃣ Normalize spacing/punctuation for cleaner text.
+    #   4️⃣ Validate for alphabetic content and minimum length.
+    #   5️⃣ Save and continue to the payment (collect_cc) stage.
+    #
+    # 🧠 SPECIAL BEHAVIOR:
+    #   • Uses `_re` (alias for `re`) to avoid import conflicts.
+    #   • Keeps conversational tone in voice prompts.
+    #   • Ensures Twilio posts back after <Gather> via redirect.
+    #
+    # ✅ SUMMARY:
+    #   This stage robustly collects and cleans the caller’s spoken address,
+    #   preventing hangs from silence and guaranteeing normalized text for
+    #   downstream use (e.g., confirmation or billing).
+    # ======================================================================
 
     elif stage == "collect_address":
         # ----------------------------------------------------------------------
@@ -6896,8 +6896,17 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-prompt caller to try again
-            gather = make_gather(PROMPT_RETRY_SILENCE)
+            # 🕓 FIX: Give the caller more time to speak the full address
+            gather = make_gather(
+                PROMPT_RETRY_SILENCE,
+                input="speech dtmf",
+                language="en-US",
+                timeout=15,              # ⏱ total listening time before timeout
+                speech_timeout="auto",   # ⏳ automatically waits for pause completion
+                barge_in=False,          # prevents premature cutoff mid-sentence
+                finish_on_key="#",
+                action="/voice", method="POST",
+            )
             resp.append(gather)
             try:
                 from flask import url_for
@@ -6950,8 +6959,17 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-prompt for valid address
-            gather = make_gather(PROMPT_INVALID_ADDRESS)
+            # 🕓 FIX: use extended listening window for retries too
+            gather = make_gather(
+                PROMPT_INVALID_ADDRESS,
+                input="speech dtmf",
+                language="en-US",
+                timeout=15,
+                speech_timeout="auto",
+                barge_in=False,
+                finish_on_key="#",
+                action="/voice", method="POST",
+            )
             resp.append(gather)
             try:
                 from flask import url_for
@@ -6973,7 +6991,16 @@ def voice():
         session_data[call_sid]["stage"] = "collect_cc"
 
         # Prompt user for credit card (or next data item)
-        gather = make_gather(PROMPT_CONFIRM_NEXT)
+        gather = make_gather(
+            PROMPT_CONFIRM_NEXT,
+            input="speech dtmf",
+            language="en-US",
+            timeout=6,
+            speech_timeout="auto",
+            barge_in=True,
+            finish_on_key="#",
+            action="/voice", method="POST",
+        )
         resp.append(gather)
         try:
             from flask import url_for
@@ -6982,6 +7009,7 @@ def voice():
             resp.redirect("/voice")
 
         return str(resp)
+
 
 
 
