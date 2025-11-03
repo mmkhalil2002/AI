@@ -421,23 +421,26 @@ def save_session(call_sid: str):
 #   (e.g. “October 29th at 2 p.m.”, “2000 p.m.”) into a normalized,
 #   timezone-aware UTC structure for scheduling logic.
 #
-# ✅ Fix added:
-#   Corrects false “past=True” flags for same-day future times
-#   (e.g., “today at 11 AM” spoken before 11 AM local).
+# ✅ Fixes:
+#   • Corrects false “past=True” results for same-day future times.
+#   • Uses real clinic timezone (e.g., America/Chicago) with DST.
 # ==============================================================
 
 def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: int = 30):
     """Parses spoken or typed date/time text into structured UTC data."""
 
+    # ------------------------------------------------------------------
+    # 🧩 Debug print wrapper
+    # ------------------------------------------------------------------
     def _dbg(msg):
         try:
             debug_print(msg)
         except Exception:
             print(msg)
 
-    # --------------------------------------------------------------
-    # 1️⃣ Validate input
-    # --------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🚫 Validate input
+    # ------------------------------------------------------------------
     if not raw or not str(raw).strip():
         _dbg("[smart_parse_time] ⚠️ Empty input")
         return None
@@ -445,25 +448,25 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
     s = str(raw).strip().lower()
     _dbg(f"[smart_parse_time] 🧠 raw input='{s}'")
 
-    # --------------------------------------------------------------
-    # 2️⃣ Normalize common speech-to-text artifacts
-    # --------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🧹 Normalize text and repair STT artifacts
+    # ------------------------------------------------------------------
     s = _re.sub(r"o['’]?clock", "", s)
     s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s)
     s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s)
     s = _re.sub(r"[^\w\s:]", " ", s)
     s = _re.sub(r"\s+", " ", s).strip()
 
-    # Fix “2000 pm” → “2 00 pm”
+    # Fix “2000 pm”, “20 00 pm”, “twenty hundred pm” → “2 00 pm”
     s = _re.sub(r"\b20\s?00\s*pm\b", "2 00 pm", s)
     s = _re.sub(r"\b2000\s*pm\b", "2 00 pm", s)
     s = _re.sub(r"\btwenty hundred\s*pm\b", "2 00 pm", s)
 
     _dbg(f"[smart_parse_time] 🧹 normalized='{s}'")
 
-    # --------------------------------------------------------------
-    # 3️⃣ Extract month / day / time
-    # --------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🗓️ Extract month / day / time tokens
+    # ------------------------------------------------------------------
     months = {
         "january":1,"february":2,"march":3,"april":4,"may":5,"june":6,
         "july":7,"august":8,"september":9,"october":10,"november":11,"december":12
@@ -472,13 +475,15 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
 
     for m in months:
         if m in s:
-            month = months[m]; _dbg(f"[smart_parse_time] 🗓️ found month='{m}' → {month}"); break
+            month = months[m]
+            _dbg(f"[smart_parse_time] 🗓️ found month='{m}' → {month}")
+            break
 
     m_time = _re.search(r"\b(\d{1,2})(?:[: ](\d{2}))?\s*(am|pm)?\b", s)
     if m_time:
-        hour   = int(m_time.group(1))
+        hour = int(m_time.group(1))
         minute = int(m_time.group(2) or 0)
-        ampm   = m_time.group(3) or "am"
+        ampm = m_time.group(3) or "am"
         _dbg(f"[smart_parse_time] ⏰ time → {hour}:{minute:02d} {ampm}")
 
     m_day = _re.search(r"\b([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?\b(?=.*\bat\b)", s)
@@ -486,54 +491,69 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
         day = int(m_day.group(1))
         _dbg(f"[smart_parse_time] 📅 day → {day}")
 
-    # --------------------------------------------------------------
-    # 4️⃣ Build localized datetime (default −5 h = America/Chicago)
-    # --------------------------------------------------------------
-    tz_local = _pytz.FixedOffset(tz_offset_hours * 60)
+    # ------------------------------------------------------------------
+    # 🌎 Resolve clinic timezone (handles DST properly)
+    # ------------------------------------------------------------------
+    tz_name = globals().get("CLINIC_TZ", "America/Chicago")
+    try:
+        tz_local = _pytz.timezone(tz_name)
+    except Exception:
+        _dbg(f"[smart_parse_time] ⚠️ Invalid TZ '{tz_name}', fallback to FixedOffset({tz_offset_hours})")
+        tz_local = _pytz.FixedOffset(tz_offset_hours * 60)
+
     now_local = datetime.now(tz_local)
-    month = month or now_local.month
-    day   = day   or now_local.day
 
-    if ampm == "pm" and hour < 12: hour += 12
-    if ampm == "am" and hour == 12: hour = 0
+    # ------------------------------------------------------------------
+    # 📅 Fill missing date parts and adjust 12h clock
+    # ------------------------------------------------------------------
+    if not month:
+        month = now_local.month
+    if not day:
+        day = now_local.day
 
+    if ampm == "pm" and hour < 12:
+        hour += 12
+    if ampm == "am" and hour == 12:
+        hour = 0
+
+    # ------------------------------------------------------------------
+    # 🧮 Build datetime and correct rollover if needed
+    # ------------------------------------------------------------------
     try:
         dt_local = tz_local.localize(datetime(now_local.year, month, day, hour, minute))
     except Exception as e:
         _dbg(f"[smart_parse_time] ❌ invalid date → {e}")
         return None
 
-    # --------------------------------------------------------------
-    # 5️⃣ Determine if past (local comparison, not UTC)
-    # --------------------------------------------------------------
-    is_past = dt_local < now_local - timedelta(minutes=2)
-    if dt_local.month < now_local.month or (dt_local.month == now_local.month and dt_local.day < now_local.day):
-        is_past = True
+    # If the date has already passed more than half a year, assume next year
     if dt_local < now_local and (now_local.month - dt_local.month) > 6:
         _dbg("[smart_parse_time] ⏩ rolling to next year (month wraparound)")
         dt_local = tz_local.localize(datetime(now_local.year + 1, month, day, hour, minute))
-        is_past = False
 
-    # ✅ FIX: if it’s today and still in the future locally → not past
-    try:
-        if dt_local.date() == now_local.date() and dt_local >= now_local:
-            _dbg("[smart_parse_time] 🔧 same-day future time detected → marking not past")
+    # ------------------------------------------------------------------
+    # 🧭 Determine if the parsed time is past or future
+    # ------------------------------------------------------------------
+    is_past = False
+    # Check if truly before current local time (with 2-min tolerance)
+    if dt_local < (now_local - timedelta(minutes=2)):
+        is_past = True
+        # ✅ Fix: same-day future check
+        if dt_local.date() == now_local.date() and dt_local > now_local:
+            _dbg("[smart_parse_time] 🔧 same-day future time detected — marking as not past")
             is_past = False
-    except Exception as e:
-        _dbg(f"[smart_parse_time] ⚠️ today-check failed → {e}")
 
-    # --------------------------------------------------------------
-    # 6️⃣ Check booking horizon (e.g., 6 months max)
-    # --------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 📏 Booking horizon limit
+    # ------------------------------------------------------------------
     max_months = int(globals().get("MAX_ADVANCE_MONTHS", 6))
     limit_local = now_local + timedelta(days=30 * max_months)
     if dt_local > limit_local:
         _dbg(f"[smart_parse_time] 🚫 beyond booking window ({max_months} mo)")
         return None
 
-    # --------------------------------------------------------------
-    # 7️⃣ Convert to UTC + build result dictionary
-    # --------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🕒 Convert to UTC + friendly output
+    # ------------------------------------------------------------------
     dt_utc = dt_local.astimezone(_pytz.UTC)
     dt_end = dt_utc + timedelta(minutes=default_duration_min)
     friendly = dt_local.strftime("%A, %B %-d at %-I:%M %p").replace(" 0", " ")
