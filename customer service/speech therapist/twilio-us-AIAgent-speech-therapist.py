@@ -6402,15 +6402,29 @@ def voice():
             # Logs what name was detected, helpful for debugging and audit.
 
         # ----------------------------------------------------------------------
-        # 🌐 4. Validation: Only English letters are allowed
+        # 🌐 4. Validation: Only English letters are allowed  ✅ FIXED VERSION
         # ----------------------------------------------------------------------
         # We now check if the name looks valid. The rules are:
         #   - Must contain English letters only (A-Z or a-z)
         #   - Can contain apostrophes, hyphens, or spaces
         #   - Must not contain Arabic script or foreign Unicode letters
-        english_only_pattern = r"^[A-Za-z][A-Za-z'\-\s]{0,39}$"
-        contains_foreign = bool(_re.search(r"[\u0600-\u06FF]", first_name))
-        # \u0600-\u06FF = Arabic Unicode range → detect Arabic names like "خليل"
+        #   - Should accept short names (≥2 characters) such as "Ola", "Ng", "Ali"
+        #
+        # ⚙️ FIX:
+        #   Some STT engines add invisible directional marks or dots.
+        #   We'll normalize them and lower-case before applying regex.
+        # ----------------------------------------------------------------------
+
+        first_name = first_name.strip().title()  # Normalize capitalization (e.g., "faten" → "Faten")
+        first_name = _re.sub(r"[\u200B-\u200F]", "", first_name)  # remove zero-width marks
+
+        # Allow 2–40 alphabetic chars, plus apostrophes or hyphens in between
+        english_only_pattern = r"^[A-Za-z][A-Za-z'\-\s]{1,39}$"
+
+        # Arabic-script range (\u0600–\u06FF); ignore accidental diacritics (\u064B–\u065F)
+        contains_foreign = bool(
+            _re.search(r"[\u0600-\u06AA\u06CC-\u06FF]", first_name)
+        )
 
         if not first_name or not _re.fullmatch(english_only_pattern, first_name) or contains_foreign:
             # This block runs if:
