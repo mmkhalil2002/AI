@@ -1018,20 +1018,7 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
 
 
 
-
-
-def get_doctor_next_available_slots(
-    doctor_name: str,
-    *,
-    from_start_iso: str,
-    duration_minutes: int = None,
-    limit: int = 3,
-    tz_name: str = None,
-    work_hours=None,
-    slot_step_minutes: int = None,
-    search_days: int = None
-) -> list:
-    """
+"""
     🩺 PURPOSE:
         Generate a list of the next available appointment slots for a given doctor.
 
@@ -1053,6 +1040,19 @@ def get_doctor_next_available_slots(
             ...
         ]
     """
+
+def get_doctor_next_available_slots(
+    doctor_name: str,
+    *,
+    from_start_iso: str,
+    duration_minutes: int = None,
+    limit: int = 3,
+    tz_name: str = None,
+    work_hours=None,
+    slot_step_minutes: int = None,
+    search_days: int = None
+) -> list:
+    
 
     # ----------------------------------------------------------------------
     # 🧩 Local debug helper — wraps debug_print safely
@@ -1087,6 +1087,7 @@ def get_doctor_next_available_slots(
         _dbg("[get_doctor_next_available_slots] ⚠️ Invalid timezone, using America/Chicago")
         tz_local = _pytz.timezone("America/Chicago")
 
+    # Working hours and days
     WSTART = int(globals().get("WORKING_HOURS_START", 8))
     WEND   = int(globals().get("WORKING_HOURS_END", 17))
     if not work_hours:
@@ -1216,6 +1217,15 @@ def get_doctor_next_available_slots(
                         cur_local = _align_up_to_window_grid(cur_local, slot_step_minutes, wstart, now_local=now_loc)
                         continue
 
+                # ----------------------------------------------------------------------
+                # 🕘 Enforce working hours strictly (skip anything outside work window)
+                # ----------------------------------------------------------------------
+                local_hour = cur_local.hour + cur_local.minute / 60.0
+                if local_hour < WSTART or local_hour >= WEND:
+                    _dbg(f"[get_doctor_next_available_slots] ⛔ {cur_local.strftime('%I:%M %p')} outside working hours ({WSTART}:00–{WEND}:00)")
+                    cur_local = cur_local + timedelta(minutes=slot_step_minutes)
+                    continue
+
                 # Stop if beyond 6-month horizon
                 if cur_local.astimezone(_pytz.UTC) > limit_end_utc:
                     _dbg(f"[get_doctor_next_available_slots] 🚫 Beyond {MAX_ADVANCE_MONTHS}-month limit — stop")
@@ -1247,6 +1257,8 @@ def get_doctor_next_available_slots(
 
     _dbg(f"[get_doctor_next_available_slots] ✅ Finished — found {len(results)} slot(s)")
     return results
+
+
 
 
 
@@ -5105,25 +5117,48 @@ def voice():
 
 
 
+# ======================================================================
+    # 📅 Stage: collect_book_time_date
+    # ----------------------------------------------------------------------
+    # 🎯 FUNCTIONAL PURPOSE:
+    #   • Captures, parses, and validates the date/time spoken or entered by the caller.
+    #   • Uses natural-language parsing via `smart_parse_time()` for flexibility.
+    #   • Detects silence, invalid, or past/future-out-of-range input.
+    #   • Suggests the next available appointment times if the chosen slot is invalid.
+    #   • Provides SSML-based spoken options (with pauses) for natural dialog.
+    #   • Maintains full debug traceability and session continuity.
+    #
+    # 🧠 HOW IT WORKS:
+    #   1️⃣ Handles silence → re-prompts up to 2 times before hangup.
+    #   2️⃣ Parses input using `smart_parse_time()`.
+    #   3️⃣ If time is in the past or beyond limit → suggests up to 3 available options.
+    #   4️⃣ Builds <speak> + <break> SSML for natural pauses between options.
+    #   5️⃣ Waits for user selection (Option 1, 2, or 3) or alternate spoken time.
+    #   6️⃣ Confirms and advances to `book_appt_confirm`.
+    #
+    # 📦 DATA STORAGE:
+    #   session_data[call_sid]["stage"]              = "collect_book_time_date"
+    #   session_data[call_sid]["alts_list"]          = [ {start, end, friendly, tz}, ... ]
+    #   session_data[call_sid]["appointment_time"]   = { "start": ISO8601, "end": ISO8601 }
+    #   session_data[call_sid]["doctor_name"]        = "Dr. Alfred Hitchcock"
+    #
+    # 🔄 NEXT STAGE:
+    #   → "book_appt_confirm"  (confirmation and SMS dispatch)
+    # ======================================================================
+
+    elif stage == "collect_book_time_date":
+        # ----------------------------------------------------------------------
+        # 📅 Stage: collect_book_time_date
+        # ----------------------------------------------------------------------
+        # 🎯 PURPOSE:
+        #   - Capture and validate spoken or keypad date/time.
+        #   - Handle silence, invalid input, and past times.
+        #   - Offer up to 3 alternative appointment times if needed.
+        #   - Insert controlled SSML pauses between proposed appointment options.
+        #   - Keep all voice messages in easily editable variables.
+        # ----------------------------------------------------------------------
 
 
-
-
-     # ----------------------------------------------------------------------
-     # 📅 Stage: collect_book_time_date
-     # Purpose:
-     #   - Parse spoken date/time (e.g., “September 12 at 10 AM”) without external helpers.
-     #   - Build a concrete UTC timeslot (start/end) using clinic TZ and duration.
-     #   - Check availability via is_time_slot_available(calendar_id, start_iso, end_iso, creds).
-     #   - If the slot is busy or has fully passed, suggest the next 3 free slots
-     #     AFTER the requested *end* via get_next_available_slots(...).
-     #   - If free, persist slot and advance the flow.
-     #
-     # Notes:
-     #   - Uses absolute times only (no ±1s padding in this stage).
-     #   - We never assign to `_re`, so it stays global and safe.
-     #   - Every code path returns `str(resp)` (Flask requirement).
-     # ----------------------------------------------------------------------
     elif stage == "collect_book_time_date":
         # ----------------------------------------------------------------------
         # 📅 Stage: collect_book_time_date
@@ -5138,7 +5173,6 @@ def voice():
 
         debug_print(f"[collect_book_time_date] 🗣️ Received speech: {speech_result}")
 
-        
         # ----------------------------------------------------------------------
         # 💬 VOICE MESSAGES — centralized for maintainability & localization
         # ----------------------------------------------------------------------
@@ -5430,267 +5464,6 @@ def voice():
         # ----------------------------------------------------------------------
         sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
         sd["stage"] = "book_appt_confirm"
-        save_session(call_sid)
-        resp.redirect("/voice")
-        return str(resp)
-
-        
-
-
-
-
-
-
-
-    # ======================================================================
-    # 📅 Stage: collect_book_time_date
-    # ----------------------------------------------------------------------
-    # 🎯 FUNCTIONAL PURPOSE:
-    #   • Capture and validate the caller’s spoken or keypad appointment date/time.
-    #   • Handle silence, invalid entries, or past/unavailable time slots gracefully.
-    #   • Suggest up to 3 alternative appointment slots when necessary.
-    #   • Use SSML <break> tags to create natural speech pauses between options.
-    #   • Maintain all voice messages as editable variables for localization.
-    #
-    # 🧩 INPUTS:
-    #   • speech_result → Speech-to-text transcription from Twilio.
-    #   • Digits        → Keypad input for option selection.
-    #   • call_sid      → Unique call session identifier.
-    #   • doctor_name   → Previously selected doctor’s name from session_data.
-    #
-    # 💾 OUTPUTS:
-    #   • session_data[call_sid]["appointment_time"] → dict with "start"/"end" ISO strings.
-    #   • session_data[call_sid]["stage"] → next stage ("book_appt_confirm").
-    #
-    # 🔁 FLOW OVERVIEW:
-    #   1️⃣ Handle silence or missing input → prompt again or end politely.
-    #   2️⃣ Parse the spoken text into a datetime (via smart_parse_time).
-    #   3️⃣ If time is past or invalid → suggest next 3 available slots.
-    #   4️⃣ Present options using SSML <break> pauses for natural voice output.
-    #   5️⃣ Validate final choice and proceed to confirmation stage.
-    #
-    # 🧠 SPECIAL BEHAVIOR:
-    #   • Uses localized VOICE_* constants for easy editing and translation.
-    #   • Automatically re-prompts up to 3 times before hang-up.
-    #   • Uses Google-style fuzzy date/time parsing (smart_parse_time).
-    #   • Supports “Option one/two/three” or numeric DTMF input for slot choice.
-    #
-    # ✅ SUMMARY:
-    #   This stage ensures robust and natural collection of appointment times.
-    #   It improves user experience by re-prompting gently, offering alternatives,
-    #   and speaking them in a human-like cadence with SSML-based pauses.
-    # ======================================================================
-
-    elif stage == "collect_book_time_date":
-        debug_print(f"[collect_book_time_date] 🗣️ Received speech: {speech_result}")
-
-        # ----------------------------------------------------------------------
-        # 💬 VOICE MESSAGES — centralized for readability & localization
-        # ----------------------------------------------------------------------
-        VOICE_OLD_DATE_MSG = (
-            "That time has already passed. Let me suggest the next available appointment times."
-        )
-        VOICE_NO_DECISION_MSG = (
-            "It seems you’re not ready right now. Please call us back when you’re ready. Goodbye."
-        )
-        VOICE_SILENCE_MSG = (
-            "I didn’t hear anything. Please say the date and time clearly, "
-            "for example, 'October 10 at 9 A M'."
-        )
-        VOICE_REASK_TIME_MSG = "Please tell me another time that works for you."
-        VOICE_NO_AVAILABLE_SLOTS_MSG = "Sorry, there are no upcoming available appointments."
-        VOICE_NO_RESPONSE_MSG = "I didn’t hear from you. Please call us again when you're ready. Goodbye."
-        VOICE_ASK_AGAIN_MSG = "Please say the date and time again, for example, 'October 8 at 9 30 A M'."
-        VOICE_NEXT_AVAILABLE_INTRO = "Here are the next available times."
-        VOICE_NEXT_AVAILABLE_OUTRO = "Please say the option number, or tell me another date and time."
-
-        # ----------------------------------------------------------------------
-        # 🗂️ SESSION SETUP
-        # ----------------------------------------------------------------------
-        session_data.setdefault(call_sid, {})
-        sd = session_data[call_sid]
-        sd.setdefault("stage", "collect_book_time_date")
-
-        # Ensure a doctor has been selected; otherwise redirect to collect_dr_info
-        doctor_name = sd.get("doctor_name")
-        if not doctor_name:
-            g = make_gather("Please tell me which doctor you'd like to see.")
-            sd["stage"] = "collect_dr_info"
-            resp.append(g)
-            save_session(call_sid)
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # 🔇 HANDLE SILENCE
-        # ----------------------------------------------------------------------
-        if not speech_result and not request.values.get("Digits"):
-            sd["silence_retry"] = sd.get("silence_retry", 0) + 1
-            debug_print(f"[collect_book_time_date] 🤐 silence_retry={sd['silence_retry']}")
-
-            # If repeated silence → end the call politely
-            if sd["silence_retry"] >= 2:
-                resp.say(gpt_speak(VOICE_NO_DECISION_MSG), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            # Otherwise, re-prompt the user to speak clearly
-            g = make_gather(
-                VOICE_SILENCE_MSG,
-                input="speech dtmf",
-                timeout=10,
-                speech_timeout="auto",
-                barge_in=True,
-                action="/voice",
-                method="POST"
-            )
-            resp.append(g)
-            save_session(call_sid)
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # 🧠 PARSE INPUT (Speech or Keypad)
-        # ----------------------------------------------------------------------
-        raw = (speech_result or request.values.get("Digits") or "").strip()
-        debug_print(f"[collect_book_time_date][parse] raw='{raw}'")
-
-        # If user was previously offered alternative slots, detect if they said “Option 1/2/3”
-        if sd.get("alts_list"):
-            spoken = raw.lower().strip()
-
-            # Map spoken words (“one”, “first”) to their numeric equivalents
-            num_map = {
-                "one": "1", "first": "1",
-                "two": "2", "second": "2",
-                "three": "3", "third": "3",
-            }
-
-            # Replace spoken numbers with digits if found
-            for k, v in num_map.items():
-                if k in spoken:
-                    raw = v
-
-            # If valid numeric selection → pick corresponding slot
-            if raw.isdigit() and 1 <= int(raw) <= len(sd["alts_list"]):
-                choice = sd["alts_list"][int(raw) - 1]
-                debug_print(f"[collect_book_time_date] 🎯 Option {raw} selected → {choice['friendly']}")
-                sd["appointment_time"] = {"start": choice["start"], "end": choice["end"]}
-                sd["stage"] = "book_appt_confirm"
-                save_session(call_sid)
-                resp.redirect("/voice")
-                return str(resp)
-
-        # Attempt to parse a spoken date/time string using NLP parser
-        try:
-            result = smart_parse_time(raw)
-        except Exception as e:
-            debug_print(f"[collect_book_time_date][parse] error: {e}")
-            result = None
-
-        # ----------------------------------------------------------------------
-        # ❌ INVALID OR UNPARSEABLE INPUT
-        # ----------------------------------------------------------------------
-        if not result:
-            sd["retry_time"] = sd.get("retry_time", 0) + 1
-            debug_print(f"[collect_book_time_date] ⚠️ Invalid time → retry={sd['retry_time']}")
-            if sd["retry_time"] >= 3:
-                resp.say(gpt_speak(VOICE_NO_DECISION_MSG), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            # Ask again with example formatting
-            g = make_gather(
-                VOICE_ASK_AGAIN_MSG,
-                input="speech dtmf",
-                timeout=10,
-                barge_in=True,
-                action="/voice",
-                method="POST"
-            )
-            resp.append(g)
-            save_session(call_sid)
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # ✅ PARSED SUCCESSFULLY — EXTRACT FIELDS
-        # ----------------------------------------------------------------------
-        appointment_start = result["start"]
-        appointment_end = result["end"]
-        friendly = result["friendly"]
-        is_past = result.get("is_past", False)
-
-        # Define time bounds (UTC)
-        now_utc = _pytz.UTC.localize(_dt.utcnow())
-        limit_end_utc = now_utc + timedelta(days=30 * MAX_ADVANCE_MONTHS)
-
-        # ----------------------------------------------------------------------
-        # ⏰ HANDLE OLD OR OUT-OF-RANGE DATE → SUGGEST ALTERNATIVES
-        # ----------------------------------------------------------------------
-        if is_past or isoparse(appointment_start) <= now_utc or isoparse(appointment_start) > limit_end_utc:
-            resp.say(gpt_speak(VOICE_OLD_DATE_MSG), VOICE)
-
-            # Fetch next 3 available slots for this doctor
-            alts = get_doctor_next_available_slots(doctor_name, from_start_iso=now_utc.isoformat(), limit=3)
-            if not alts:
-                resp.say(gpt_speak(VOICE_NO_AVAILABLE_SLOTS_MSG), VOICE)
-                resp.hangup()
-                return str(resp)
-
-            # 🗣️ Build spoken list of options with SSML <break> pauses
-            options_ssml = f" <break time=\"{PAUSE_MS}ms\"/> ".join(
-                [f"Option {i}: {a['friendly']}." for i, a in enumerate(alts, start=1)]
-            )
-
-            # Wrap the message inside <speak>...</speak> for Twilio SSML rendering
-            combined = (
-                f"<speak>{VOICE_NEXT_AVAILABLE_INTRO}"
-                f"<break time=\"{PAUSE_MS}ms\"/>{options_ssml}"
-                f"<break time=\"{PAUSE_MS}ms\"/>{VOICE_NEXT_AVAILABLE_OUTRO}</speak>"
-            )
-
-            debug_print(f"[collect_book_time_date] 🗣️ SSML built for {len(alts)} options with {PAUSE_MS}ms pauses")
-
-            # Send as a gather prompt (Twilio will pause between each <break>)
-            g = make_gather(
-                combined,
-                input="speech dtmf",
-                timeout=15,
-                speech_timeout="auto",
-                barge_in=True,
-                action="/voice",
-                method="POST"
-            )
-            resp.append(g)
-            sd["alts_list"] = alts
-            sd["stage"] = "collect_book_time_date"
-            save_session(call_sid)
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # 🕓 CHECK AVAILABILITY OF SELECTED SLOT
-        # ----------------------------------------------------------------------
-        if not is_doctor_slot_available(doctor_name, appointment_start, appointment_end):
-            debug_print(f"[collect_book_time_date] ⛔ Slot not available for {doctor_name} at {friendly}")
-            g = make_gather(
-                f"That time is not available. {VOICE_REASK_TIME_MSG}",
-                input="speech dtmf",
-                timeout=10,
-                barge_in=True,
-                action="/voice",
-                method="POST"
-            )
-            resp.append(g)
-            save_session(call_sid)
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # ✅ SUCCESS → SAVE SLOT AND MOVE TO CONFIRMATION
-        # ----------------------------------------------------------------------
-        sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
-        sd["stage"] = "book_appt_confirm"
-        debug_print(f"[collect_book_time_date] ✅ Slot accepted → {friendly}")
-
         save_session(call_sid)
         resp.redirect("/voice")
         return str(resp)
