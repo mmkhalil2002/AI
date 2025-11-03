@@ -7013,16 +7013,52 @@ def voice():
 
 
 
+        # ======================================================================
+    # 🧾 Stage: collect_dr_info
     # ----------------------------------------------------------------------
-    # 🩺 Stage: collect_dr_info
-    # ----------------------------------------------------------------------
-    # 🎯 PURPOSE:
-    #   - Present a list of available doctors (by keypad or speech).
-        #   - Capture the user’s selection using DTMF (1, 2, 3...) or speech.
-        #   - Perform fuzzy matching on spoken names (partial word matches).
-        #   - Retry up to 3 times if no valid match is found.
-        #   - On success → move to stage "collect_book_time_date" for time selection.
-        # ----------------------------------------------------------------------
+    # 🎯 FUNCTIONAL PURPOSE:
+    #   • Capture and identify the doctor with whom the caller wants to book
+    #     an appointment, using either keypad (DTMF) input or spoken name.
+    #   • Supports fuzzy speech matching to handle variations in pronunciation.
+    #   • Handles invalid or junk speech (e.g., “hello”, “ok”) gracefully with retries.
+    #
+    # 🧩 INPUTS:
+    #   • speech_result → Transcribed doctor name (from Twilio Speech-to-Text).
+    #   • Digits        → Keypad selection (e.g., “1” for Dr. Smith).
+    #   • call_sid      → Unique call identifier for session tracking.
+    #
+    # 💾 OUTPUTS (saved to session_data[call_sid]):
+    #   • doctor_name → Selected doctor’s friendly name.
+    #   • stage       → Advances to “collect_book_time_date” upon success.
+    #
+    # 🔁 FLOW OVERVIEW:
+    #   1️⃣ First interaction:
+    #       - Builds a keypad map (Press 1 for Dr. X, etc.).
+    #       - Plays menu prompt via <Gather> (accepts speech or DTMF).
+    #
+    #   2️⃣ User response:
+    #       - DTMF → Direct doctor selection.
+    #       - Speech → Fuzzy matching between spoken tokens and known doctor names.
+    #
+    #   3️⃣ Retry handling:
+    #       - Ignores junk words like “hello”, “ok”, “yes”, etc.
+    #       - Allows up to 3 failed attempts before ending politely.
+    #
+    #   4️⃣ Success:
+    #       - Stores selected doctor name in session.
+    #       - Prompts for next stage → “collect_book_time_date”.
+    #
+    # 🧠 SPECIAL BEHAVIOR:
+    #   • Handles both keypad and spoken inputs dynamically.
+    #   • Maintains persistent doctor list and retry count in session.
+    #   • Uses clear, friendly reprompts for speech or DTMF mismatches.
+    #
+    # ✅ SUMMARY:
+    #   This stage reliably collects the intended doctor name by combining
+    #   DTMF-based selection with fuzzy speech matching, ensuring smooth and
+    #   user-friendly handling of voice or keypad input.
+    # ======================================================================
+
 
 
     elif stage == "collect_dr_info":
@@ -7230,10 +7266,60 @@ def voice():
 
 
 
-   
-
-
-
+       # ======================================================================
+    # 🧾 Stage: collect_cc
+    # ----------------------------------------------------------------------
+    # 🎯 FUNCTIONAL PURPOSE:
+    #   • Collects and validates credit card information from the caller
+    #     across three sequential steps using either speech or DTMF input.
+    #   • Ensures all data passes strict formatting and validation rules,
+    #     including Luhn checksum for card numbers and future-date check
+    #     for expiration dates.
+    #
+    # 🧩 INPUTS:
+    #   • SpeechResult → Transcribed spoken digits or card info.
+    #   • Digits       → Keypad (DTMF) input for numeric entry.
+    #   • call_sid     → Unique call identifier for session persistence.
+    #
+    # 💾 OUTPUTS (stored in session_data[call_sid]["customer"]):
+    #   • cc_number → Card number (13–19 digits, Luhn validated).
+    #   • cc_exp    → Expiration date (MM/YY format, non-expired).
+    #   • cc_cvv    → Security code (3–4 digits).
+    #   • cc_name   → Derived from first and last name if available.
+    #
+    # 🔁 FLOW OVERVIEW:
+    #   1️⃣ **Step 1 – Card Number:**
+    #        - Accepts 13–19 digits via speech or DTMF.
+    #        - Normalizes spoken words (“one two three four”) to digits.
+    #        - Validates using the Luhn algorithm.
+    #        - On success → advances to Step 2 (Expiration).
+    #
+    #   2️⃣ **Step 2 – Expiration Date:**
+    #        - Accepts MMYY or MMYYYY via DTMF or spoken input.
+    #        - Validates month range (1–12) and ensures the date is in the future.
+    #        - On success → advances to Step 3 (CVV).
+    #
+    #   3️⃣ **Step 3 – CVV:**
+    #        - Accepts 3–4 digit security code via DTMF or speech.
+    #        - On success → stores data and advances to “book_appt_confirm”
+    #          or “update_customer_cc” depending on session context.
+    #
+    # 🧠 SPECIAL BEHAVIOR:
+    #   • Graceful silence handling with up to 3 re-prompts per step.
+    #   • Automatic fallback to DTMF if speech parsing is uncertain.
+    #   • Strips punctuation and converts “double/triple” speech terms correctly.
+    #   • Immediate step advancement via “#” key.
+    #
+    # ⚙️ TECHNICAL DETAILS:
+    #   • Uses `_normalize_spoken_digits()` to convert word-based input to digits.
+    #   • `_luhn_ok()` performs credit card checksum validation.
+    #   • `_mask()` used for secure logging of sensitive card info.
+    #   • Twilio `<Gather>` waits for speech or DTMF input; `<Redirect>` triggers next step immediately.
+    #
+    # ✅ SUMMARY:
+    #   This stage ensures secure, flexible, and user-friendly credit card capture
+    #   with robust normalization, validation, and retry control across all inputs.
+    # ======================================================================
     # ----------------------------------------------------------------------
     # collect_cc - complete stage (robust digit normalization + strict Luhn)
     # ----------------------------------------------------------------------
@@ -7264,6 +7350,17 @@ def voice():
         #   ⚠️ Never use append(gather) + redirect() together — redirect will
         #     cancel the gather before the user can respond.
         # ----------------------------------------------------------------------
+
+        # ----------------------------------------------------------------------
+        # 🎙️ VOICE MESSAGE CONSTANTS (centralized for easy editing/localization)
+        # ----------------------------------------------------------------------
+        MSG_SILENCE_EXIT = "I’m still not hearing anything. Please call again later."
+        MSG_CARD_PROMPT = "Please enter or say your card number now, then press pound."
+        MSG_EXP_PROMPT = "Please enter or say the expiration date, for example, zero nine two seven, then press pound."
+        MSG_CVV_PROMPT = "Please enter or say the three or four digit security code, then press pound."
+        MSG_INVALID_CARD = "That card number doesn't look right. Please re-enter or say the full card number, then press pound."
+        MSG_EXP_INVALID = "That doesn’t look valid. Please enter month and year as M M Y Y, then press pound."
+        MSG_EXP_FORMAT = "Please say or enter the expiration date as month and year, for example, zero nine two seven, then press pound."
 
         # --- helpers ------------------------------------------------------------
         def _luhn_ok(pan: str) -> bool:
@@ -7344,16 +7441,16 @@ def voice():
             debug_print(f"collect_cc: 🤐 silence on step {cc_step}; tries={tries}")
 
             if tries >= 3:
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.say(gpt_speak(MSG_SILENCE_EXIT), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
             prompt = {
-                1: "Please enter or say your card number now, then press pound.",
-                2: "Please enter or say the expiration date, for example, zero nine two seven, then press pound.",
-                3: "Please enter or say the three or four digit security code, then press pound."
-            }.get(cc_step, "Please enter or say your card details, then press pound.")
+                1: MSG_CARD_PROMPT,
+                2: MSG_EXP_PROMPT,
+                3: MSG_CVV_PROMPT
+            }.get(cc_step, MSG_CARD_PROMPT)
 
             # Use append() so Twilio will WAIT for input and only post back after user responds
             gather = make_gather(
@@ -7382,7 +7479,7 @@ def voice():
             if not (13 <= len(pan) <= 19):
                 debug_print("collect_cc: ❌ invalid card length")
                 gather = make_gather(
-                    "That card number doesn't look right. Please re-enter or say the full card number, then press pound.",
+                    MSG_INVALID_CARD,
                     input="speech dtmf",
                     timeout=20,
                     speech_timeout="auto",
@@ -7410,6 +7507,9 @@ def voice():
         # -------------------------------
         # Step 2: Expiration (MMYY/MMYYYY)
         # -------------------------------
+                # -------------------------------
+        # Step 2: Expiration (MMYY/MMYYYY)
+        # -------------------------------
         if cc_step == 2:
             session_data[call_sid]["no_input_expected"] = True
             digits = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=True)
@@ -7432,7 +7532,7 @@ def voice():
                 #  - action="/voice" tells Twilio to POST the results of this gather back to your /voice
                 #    webhook when the gather completes (either by #, by the timeout, or by speech result).
                 gather = make_gather(
-                    "Please say or enter the expiration date as month and year, for example, zero nine two seven, then press pound.",
+                    MSG_EXP_FORMAT,
                     input="speech dtmf",
                     timeout=10,
                     finish_on_key="#",
@@ -7454,35 +7554,6 @@ def voice():
                 return str(resp)
             # --------------------------------------------------------------------------
 
-            try:
-                mm = int(digits[:2])
-                yy = digits[-2:]
-                if not (1 <= mm <= 12):
-                    raise ValueError("invalid month")
-                now = datetime.now(tz=_pytz.UTC)
-                exp_year = 2000 + int(yy)
-                expiry_boundary = datetime(exp_year, mm, 1, 0, 0, 0, tzinfo=_pytz.UTC) + timedelta(days=31)
-                if now >= expiry_boundary:
-                    raise ValueError("expired")
-
-                customer["cc_exp"] = f"{mm:02d}/{yy}"
-                debug_print(f"collect_cc: ✅ Expiration saved → {customer['cc_exp']}")
-            except Exception as e:
-                debug_print(f"collect_cc: ❌ Expiration parse failed → {e}")
-                gather = make_gather(
-                    "That doesn’t look valid. Please enter month and year as M M Y Y, then press pound.",
-                    input="speech dtmf",
-                    timeout=8,
-                    finish_on_key="#",
-                    action="/voice",
-                )
-                resp.append(gather)
-                return str(resp)
-
-            # Advance immediately
-            session_data[call_sid]["cc_step"] = 3
-            resp.redirect("/voice")
-            return str(resp)
 
         # -------------------------------
         # Step 3: CVV (3–4 digits)
@@ -7494,7 +7565,7 @@ def voice():
 
             if not (3 <= len(digits) <= 4 and digits.isdigit()):
                 gather = make_gather(
-                    "Please enter or say the three or four digit security code, then press pound.",
+                    MSG_CVV_PROMPT,
                     input="speech dtmf",
                     timeout=6,
                     finish_on_key="#",
@@ -7523,7 +7594,6 @@ def voice():
             debug_print(f"collect_cc: ➡️ Auto-advancing to {next_stage}")
             resp.redirect("/voice")
             return str(resp)
-
 
 
     
