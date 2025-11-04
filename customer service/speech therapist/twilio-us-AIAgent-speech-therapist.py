@@ -3243,6 +3243,7 @@ def voice():
         "collect_last_name",
         "collect_insurance_information",
         "collect_dr_info",
+        "collect_cancel_dob"
         "collect_cancel_time_date",
     )
     debug_print(f"[voice] 🔇 skip_silence={skip_silence}")
@@ -4949,7 +4950,7 @@ def voice():
         #   • Ensure origin_stage (“book”, “cancel”, etc.) is retained.
         #
         # FLOW:
-        #   collect_cancel_phone_number → cancel_appt_get_dob → collect_pin_number
+        #   collect_cancel_phone_number → collect_cancel_dob → collect_pin_number
         #       → collect_dr_info (origin_stage=cancel)
         #
         # ----------------------------------------------------------------------
@@ -7430,7 +7431,7 @@ def voice():
     #     - Leverages GPT fallback extraction for ambiguous phrases.
     #     - Includes configurable retry limits via MAX_NUMBER_DR_RETRY.
     #     - Tags this flow with origin_stage="cancel" for later steps
-    #       (used by `collect_cancel_phone_number` and `cancel_appt_get_dob`).
+    #       (used by `collect_cancel_phone_number` and `collect_cancel_dob`).
     #
     # 💾 OUTPUTS:
     #     session_data[call_sid]["cancel"]["doctor_name"]
@@ -7688,12 +7689,12 @@ def voice():
     #     • Converts spoken number words (“double five”, “three”, etc.) to digits
     #     • Normalizes all phone numbers to E.164 format (US / Egypt supported)
     #     • Stores result in both `cancel` and `customer` sections of session
-    #     • Advances flow → next stage: `cancel_appt_get_dob`
+    #     • Advances flow → next stage: `collect_cancel_dob`
     #
     # 🧱 OUTPUTS:
     #     session_data[call_sid]["cancel"]["phone_e164"]  = normalized E.164
     #     session_data[call_sid]["customer"]["phone_e164"] = same (mirror)
-    #     session_data[call_sid]["stage"] = "cancel_appt_get_dob"
+    #     session_data[call_sid]["stage"] = "collect_cancel_dob"
     #
     # ⚙️ DEPENDENCIES:
     #     - normalize_phone_e164()
@@ -7710,7 +7711,7 @@ def voice():
         #  - Accepts DTMF or speech
         #  - Normalizes to E.164 ONLY (US/Egypt supported)
         #  - Stores under cancel + mirrors into customer for reschedule flows
-        #  - Next stage: cancel_appt_get_dob
+        #  - Next stage: collect_cancel_dob
         # ----------------------------------------------------------------------
          # ----------------------------------------------------------------------
         # 📞 Collect phone number used when booking, then move to DOB check.
@@ -7718,7 +7719,7 @@ def voice():
         #  - Accepts DTMF or speech
         #  - Normalizes to E.164 ONLY (US/Egypt supported)
         #  - Stores under cancel + mirrors into customer for reschedule flows
-        #  - Next stage: cancel_appt_get_dob
+        #  - Next stage: collect_cancel_dob
         # ----------------------------------------------------------------------
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("cancel", {})
@@ -7865,7 +7866,7 @@ def voice():
         # ------------------------------------------------------------------
         # ⏭️ 7️⃣ TRANSITION — advance to DOB verification stage
         # ------------------------------------------------------------------
-        session_data[call_sid]["stage"] = "cancel_appt_get_dob"
+        session_data[call_sid]["stage"] = "collect_cancel_dob"
         gather = make_gather(
             "Thanks. Now, please tell me your date of birth to verify your identity. "
             "For example, say July third 1990, or type it as 07031990 then press pound."
@@ -7884,7 +7885,7 @@ def voice():
 
 
     # ======================================================================
-    # 🎂 STAGE: cancel_appt_get_dob
+    # 🎂 STAGE: collect_cancel_dob
     # ======================================================================
     # 🎯 FUNCTIONAL DESCRIPTION:
     #     Collects and validates the customer's **Date of Birth (DOB)** during
@@ -7914,9 +7915,9 @@ def voice():
     #
     # ======================================================================
 
-    elif stage == "cancel_appt_get_dob":
-        ## ----------------------------------------------------------------------
-        # 🎂 Stage: cancel_appt_get_dob
+    elif stage == "collect_cancel_dob":
+        # ----------------------------------------------------------------------
+        # 🎂 Stage: collect_cancel_dob
         #
         # PURPOSE:
         #   • Capture and validate the customer's date of birth (DOB) via speech or DTMF.
@@ -7930,7 +7931,7 @@ def voice():
         #   ✅ Full retry and silence logic
         # ----------------------------------------------------------------------
 
-        debug_print("cancel_appt_get_dob: 📍 Stage entered")
+        debug_print("collect_cancel_dob: 📍 Stage entered")
 
         # ------------------------------------------------------------------
         # 🧱 Initialize session structures for this call if missing
@@ -7942,23 +7943,23 @@ def voice():
         if "origin_stage" not in session_data[call_sid]:
             session_data[call_sid]["origin_stage"] = "cancel"
 
-            # ------------------------------------------------------------------
-            # 🎧 INPUT CAPTURE — get speech and DTMF data
-            # ------------------------------------------------------------------
-            try:
-                dtmf_digits = (request.values.get("Digits") or "").strip()
-            except Exception:
-                dtmf_digits = ""
-            speech_text = (speech_result or "").strip()
-            debug_print(f"cancel_appt_get_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
+        # ------------------------------------------------------------------
+        # 🎧 INPUT CAPTURE — get speech and DTMF data
+        # ------------------------------------------------------------------
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
+        speech_text = (speech_result or "").strip()
+        debug_print(f"collect_cancel_dob: 🎙️ speech_text='{speech_text}', 🔢 dtmf_digits='{dtmf_digits}'")
 
         # ------------------------------------------------------------------
         # 🔇 SILENCE / NO INPUT HANDLING — retry up to 3 times
         # ------------------------------------------------------------------
         if not dtmf_digits and not speech_text:
-            tries = session_data[call_sid].get("silence_cancel_dob", 0) + 1
-            session_data[call_sid]["silence_cancel_dob"] = tries
-            debug_print(f"cancel_appt_get_dob: 🤐 silence count={tries}")
+            tries = session_data[call_sid].get("silence_collect_cancel_dob", 0) + 1
+            session_data[call_sid]["silence_collect_cancel_dob"] = tries
+            debug_print(f"collect_cancel_dob: 🤐 silence count={tries}")
 
             # After 3 silent attempts → end call politely
             if tries >= 3:
@@ -7972,7 +7973,7 @@ def voice():
                 "Please say your birth date — for example, July third nineteen fifty six. "
                 "Or type two digits for month, two digits for day, and four digits for year, then press pound."
             )
-            session_data[call_sid]["stage"] = "cancel_appt_get_dob"
+            session_data[call_sid]["stage"] = "collect_cancel_dob"
             gather = make_gather(
                 prompt_text,
                 hints="zero one two three four five six seven eight nine",
@@ -7985,7 +7986,7 @@ def voice():
             return str(resp)
 
         # Clear silence counter on valid input
-        session_data[call_sid].pop("silence_cancel_dob", None)
+        session_data[call_sid].pop("silence_collect_cancel_dob", None)
 
         # ------------------------------------------------------------------
         # 🧩 PARSE INPUT — convert spoken or DTMF to valid datetime
@@ -7995,7 +7996,7 @@ def voice():
             # 🧮 Numeric (DTMF) path
             if dtmf_digits:
                 clean = _re.sub(r"\D", "", dtmf_digits)
-                debug_print(f"cancel_appt_get_dob: 🧮 cleaned DTMF='{clean}'")
+                debug_print(f"collect_cancel_dob: 🧮 cleaned DTMF='{clean}'")
 
                 # Handle 8-digit input (MMDDYYYY)
                 if len(clean) == 8:
@@ -8004,28 +8005,27 @@ def voice():
 
                 # Handle 7-digit input (missing leading 0 → auto-pad)
                 elif len(clean) == 7:
-                    # 👇 Auto-pad single-digit month/day to 8 digits (e.g., 7031956 → 07031956)
                     clean = clean.zfill(8)
                     m, d, y = int(clean[0:2]), int(clean[2:4]), int(clean[4:8])
                     dt = datetime(y, m, d)
                 else:
-                    debug_print(f"cancel_appt_get_dob: ⚠️ DTMF not 8 digits → {clean}")
+                    debug_print(f"collect_cancel_dob: ⚠️ DTMF not 8 digits → {clean}")
 
             # 🗣️ Speech path — natural language DOB parsing via dateutil
             if not dt and speech_text:
                 dt = dp.parse(speech_text, fuzzy=True)
 
         except Exception as e:
-            debug_print(f"cancel_appt_get_dob: ❌ parse error {e}")
+            debug_print(f"collect_cancel_dob: ❌ parse error {e}")
             dt = None
 
         # ------------------------------------------------------------------
         # ❌ INVALID OR UNPARSED DOB → re-prompt up to 3 times
         # ------------------------------------------------------------------
         if not dt:
-            retries = session_data[call_sid].get("retry_cancel_dob", 0) + 1
-            session_data[call_sid]["retry_cancel_dob"] = retries
-            debug_print(f"cancel_appt_get_dob: ❌ Parse failed. Retry={retries}")
+            retries = session_data[call_sid].get("retry_collect_cancel_dob", 0) + 1
+            session_data[call_sid]["retry_collect_cancel_dob"] = retries
+            debug_print(f"collect_cancel_dob: ❌ Parse failed. Retry={retries}")
 
             if retries >= 3:
                 resp.say(gpt_speak("Sorry, I couldn’t understand your date of birth. Please call again later."), VOICE)
@@ -8057,18 +8057,16 @@ def voice():
             dob_date = dt.date()
 
             if not (min_date <= dob_date <= today):
-                retries = session_data[call_sid].get("retry_cancel_dob", 0) + 1
-                session_data[call_sid]["retry_cancel_dob"] = retries
-                debug_print(f"cancel_appt_get_dob: ⚠️ DOB out of range → {dob_date.isoformat()} Retry={retries}")
+                retries = session_data[call_sid].get("retry_collect_cancel_dob", 0) + 1
+                session_data[call_sid]["retry_collect_cancel_dob"] = retries
+                debug_print(f"collect_cancel_dob: ⚠️ DOB out of range → {dob_date.isoformat()} Retry={retries}")
 
-                # Give up after 3 invalid attempts
                 if retries >= 3:
                     resp.say(gpt_speak("Sorry, that birth date still doesn’t look valid. Please call again later."), VOICE)
                     resp.hangup()
                     session_data.pop(call_sid, None)
                     return str(resp)
 
-                # Otherwise re-prompt with format example
                 prompt_text = (
                     "That doesn't sound like a valid birth date. Please say it again, "
                     "or type two digits for month, two for day, and four for year, then press pound. "
@@ -8086,7 +8084,7 @@ def voice():
                 return str(resp)
 
         except Exception as e:
-            debug_print(f"cancel_appt_get_dob: ⚠️ Validation error → {e}")
+            debug_print(f"collect_cancel_dob: ⚠️ Validation error → {e}")
             gather = make_gather(
                 "Please repeat your birth date — for example, July third nineteen fifty six. "
                 "Or type two digits for month, two digits for day, and four digits for year, then press pound.",
@@ -8105,8 +8103,8 @@ def voice():
         iso_dob = dt.strftime("%Y-%m-%d")
         session_data[call_sid]["customer"]["dob"] = iso_dob
         session_data[call_sid]["cancel"]["dob"] = iso_dob
-        session_data[call_sid].pop("retry_cancel_dob", None)
-        debug_print(f"cancel_appt_get_dob: ✅ Stored DOB → {iso_dob}")
+        session_data[call_sid].pop("retry_collect_cancel_dob", None)
+        debug_print(f"collect_cancel_dob: ✅ Stored DOB → {iso_dob}")
 
         # ------------------------------------------------------------------
         # 🔜 NEXT STAGE → collect_pin_number (PIN verification)
@@ -8121,7 +8119,7 @@ def voice():
         )
         resp.append(gather)
         resp.redirect("/voice")
-        debug_print("cancel_appt_get_dob: 🔀 Proceeding to collect_pin_number for verification")
+        debug_print("collect_cancel_dob: 🔀 Proceeding to collect_pin_number for verification")
         return str(resp)
 
 
@@ -8187,11 +8185,11 @@ def voice():
             # Increment silence retry counter
             tries = cancel_ctx.get("silence_cancel_dt", 0) + 1
             cancel_ctx["silence_cancel_dt"] = tries
-            debug_print(f"cancel_appt_get_time_date: 🤐 silence count={tries}")
+            debug_print(f"collect_cancel_time_date: 🤐 silence count={tries}")
 
             # After 3 failed attempts, move to appointment listing
             if tries >= 3:
-                debug_print("cancel_appt_get_time_date: 🚫 too many silent attempts → iterate")
+                debug_print("collect_cancel_time_date: 🚫 too many silent attempts → iterate")
                 cancel_ctx.pop("silence_cancel_dt", None)
                 cancel_ctx["awaiting_input"] = False
                 session_data[call_sid]["stage"] = "cancel_appt_iterate"
