@@ -1,5 +1,5 @@
 #=======
-# update  11/03/2025 time_saved 
+# update  11/04/2025 time_saved 
 #  
 # =========================
 # Standard library imports
@@ -3233,6 +3233,8 @@ def voice():
         "book_appt_confirm",
         "cancel_appt_iterate",
         "collect_phone",
+        "cancel_appointment"
+        "cancel_appt_get_phone_number"
         "cancel_appt_confirm",
         "collect_dob",
         "collect_first_name",
@@ -3360,7 +3362,6 @@ def voice():
 
 
 
-
     elif stage == "intent":
         # ----------------------------------------------------------------------
         # 🎯 Intent detection stage: figure out what the caller wants:
@@ -3426,28 +3427,35 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
-            # 2️⃣ Cancel Appointment
+            # 2️⃣ Cancel Appointment (🔒 secure path)
             if choice == "2":
-                print("❌ DTMF=2 → cancel flow")
+                print("❌ DTMF=2 → cancel flow (secure verification first)")
                 session_data[call_sid] = {
-                    "stage": "cancel_appointment",
+                    "stage": "cancel_appt_get_phone_number",  # start with phone number
                     "cancel": {},
                     "retry_booking": 0
                 }
 
-                # Use local doctor name list
-                doctor_list = list(doctor_names.values()) if isinstance(doctor_names, dict) else doctor_names
-                dtmf_map = {str(i): name for i, name in enumerate(doctor_list, start=1)}
-                session_data[call_sid]["doctor_dtmf_map"] = dtmf_map
-
-                doctor_list_with_keys = ", ".join([f"{name} (press {i})" for i, name in enumerate(doctor_list, start=1)])
+                # Step 1: ask for phone number first
                 prompt = (
-                    f"Sure, I can help you cancel your appointment. "
-                    f"Available doctors are: {doctor_list_with_keys}. "
-                    "Please say the doctor's name or press the number."
+                    "Sure, I can help you cancel your appointment. "
+                    "To verify your identity, please say or enter the phone number you used when booking, then press pound."
                 )
-                gather = make_gather(prompt, hints=", ".join(doctor_list), num_digits=1)
+
+                gather = make_gather(
+                    prompt,
+                    input="speech dtmf",
+                    num_digits=10,
+                    finish_on_key="#",
+                    timeout=10,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    language="en-US",
+                )
+
                 resp.append(gather)
+                resp.redirect("/voice")
+                save_session(call_sid)
                 return str(resp)
 
             # 3️⃣ Reschedule Appointment
@@ -3460,18 +3468,9 @@ def voice():
                     "reschedule_after_cancel": True
                 }
 
-                doctor_list = list(doctor_names.values()) if isinstance(doctor_names, dict) else doctor_names
-                dtmf_map = {str(i): name for i, name in enumerate(doctor_list, start=1)}
-                session_data[call_sid]["doctor_dtmf_map"] = dtmf_map
-
-                doctor_list_with_keys = ", ".join([f"{name} (press {i})" for i, name in enumerate(doctor_list, start=1)])
-                prompt = (
-                    f"Sure, let's reschedule your appointment. First, we'll cancel your current one. "
-                    f"Available doctors are: {doctor_list_with_keys}. "
-                    "Please say the doctor's name or press the number."
-                )
-                gather = make_gather(prompt, hints=", ".join(doctor_list), num_digits=1)
-                resp.append(gather)
+                # Reschedule flow uses the same cancel chain but adds reschedule flag
+                resp.say(gpt_speak("Sure, let's reschedule your appointment. We'll cancel your current one first."), VOICE)
+                resp.redirect("/voice")
                 return str(resp)
 
             # 4️⃣ Update Credit Card
@@ -3540,6 +3539,7 @@ def voice():
             )
             resp.append(gather)
             return str(resp)
+
 
 
 
@@ -4826,7 +4826,7 @@ def voice():
                 next_stage = "collect_dr_info"  # Proceed to doctor selection
                 msg = VOICE_CORRECT_PIN_BOOK_MSG
             elif origin_stage == "cancel":
-                next_stage = "cancel_appt_get_time_date"
+                next_stage = "cancel_appointment"
                 msg = VOICE_CORRECT_PIN_CANCEL_MSG
             elif origin_stage == "update_cc":
                 next_stage = "collect_cc"
@@ -7618,7 +7618,7 @@ def voice():
         # ----------------------------------------------------------------------
         sd["cancel"]["doctor_name"] = matched_name
         sd["doctor_name"] = matched_name
-        sd["stage"] = "cancel_appt_get_phone_number"
+        sd["stage"] = "cancel_appt_get_time_date"
 
         # Prompt user to provide phone number associated with booking
         g = make_gather(
