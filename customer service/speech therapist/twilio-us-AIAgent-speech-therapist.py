@@ -4827,7 +4827,7 @@ def voice():
                 next_stage = "collect_dr_info"  # Proceed to doctor selection
                 msg = VOICE_CORRECT_PIN_BOOK_MSG
             elif origin_stage == "cancel":
-                next_stage = "cancel_appointment"
+                next_stage = "collect_dr_info"
                 msg = VOICE_CORRECT_PIN_CANCEL_MSG
             elif origin_stage == "update_cc":
                 next_stage = "collect_cc"
