@@ -8359,7 +8359,7 @@ def voice():
 
 
 
-       # ======================================================================
+    # ======================================================================
     # 🔁 STAGE: cancel_appt_iterate
     # ======================================================================
     # 🎯 FUNCTIONAL DESCRIPTION:
@@ -8395,26 +8395,22 @@ def voice():
         # 🎯 Stage: cancel_appt_iterate
         #
         # PURPOSE:
-        #   • Iterate through the doctor’s local appointment file.
-        #   • Filter all records matching caller’s phone number + DOB.
-        #   • Allow the user to confirm which appointment to cancel.
+        #   • Iterate through the doctor’s appointment file located under DB_FOLDER.
+        #   • Match appointments by phone number + DOB.
+        #   • Let user confirm which appointment to cancel.
         # ======================================================================
 
         t_stage_start = _time_mod.perf_counter()
         debug_print("cancel_appt_iterate: 📍 Stage entered")
 
         # ----------------------------------------------------------------------
-        # 💬 VOICE MESSAGES — Centralized for clarity & localization
+        # 💬 VOICE MESSAGES — centralized for clarity & localization
         # ----------------------------------------------------------------------
         VOICE_NO_FILE_MSG = "Sorry, I couldn’t find any appointment records for your doctor."
         VOICE_JSON_ERROR_MSG = "Sorry, there was a problem reading the appointment list."
         VOICE_MISSING_DOCTOR_MSG = "Sorry, I couldn’t identify which doctor your appointment was with."
         VOICE_NO_MATCH_MSG = "I couldn’t find any appointments matching your phone number and date of birth."
         VOICE_LAST_APPT_MSG = "That was the last appointment. Goodbye."
-        VOICE_PROMPT_YES_NO = (
-            "Do you want to cancel this one? Say yes or no. "
-            "Press 1 for yes, or 2 for no."
-        )
         VOICE_APPT_PROMPT_TEMPLATE = (
             "Appointment with {doctor_name} on {friendly}. "
             "Do you want to cancel this one? Say yes or no. "
@@ -8424,19 +8420,12 @@ def voice():
         # ----------------------------------------------------------------------
         # 🧭 Retrieve session and cancellation context
         # ----------------------------------------------------------------------
-        #   The 'cancel' dict stores all temporary info for the cancel flow.
-        #   It should include doctor name, phone, and DOB from prior stages.
-        # ----------------------------------------------------------------------
         cancel_ctx = session_data[call_sid].setdefault("cancel", {})
-
-        # Retrieve doctor name from either cancel context or root session
         doctor = (
             cancel_ctx.get("doctor")
             or session_data[call_sid].get("doctor_name")
             or ""
         ).strip()
-
-        # Retrieve phone number and DOB (normalize formatting)
         phone_e164 = (cancel_ctx.get("phone_e164") or "").replace("+", "").lstrip("0")
         dob = (cancel_ctx.get("dob") or "").strip()
 
@@ -8444,8 +8433,6 @@ def voice():
 
         # ----------------------------------------------------------------------
         # 🚨 Validate doctor field
-        # ----------------------------------------------------------------------
-        #   Without a doctor name, we can’t load the correct JSON file.
         # ----------------------------------------------------------------------
         if not doctor:
             debug_print("cancel_appt_iterate: ⚠️ doctor name missing from context")
@@ -8455,36 +8442,28 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 📂 Load the doctor's appointment JSON file from DB_FOLDER
-        # ----------------------------------------------------------------------
-        #   Each doctor’s file is stored in:
-        #       ./DB_FOLDER/<doctor_name>.json
-        #   Example:
-        #       Alfred Hitchcock → DB_FOLDER/alfred_hitchcock.json
+        # 📂 Locate the doctor's appointment file under DB_FOLDER
         # ----------------------------------------------------------------------
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-        DB_FOLDER = os.path.join(BASE_DIR, "DB_FOLDER")
-
-        # Normalize the doctor’s name to a filesystem-safe filename
+        APPT_FOLDER = os.path.join(BASE_DIR, DB_FOLDER)  # ✅ Use DB_FOLDER
         safe_name = doctor.lower().replace(" ", "_")
-        doc_path = os.path.join(DB_FOLDER, f"{safe_name}.json")
-
+        doc_path = os.path.join(APPT_FOLDER, f"{safe_name}.json")
         debug_print(f"cancel_appt_iterate: 🧭 normalized doctor='{doctor}' → file='{doc_path}'")
 
-        # Try to load JSON data; handle file errors gracefully
+        # ----------------------------------------------------------------------
+        # 🔍 Load doctor's JSON file
+        # ----------------------------------------------------------------------
         try:
             with open(doc_path, "r", encoding="utf-8") as f:
                 appointments = json.load(f)
             debug_print(f"cancel_appt_iterate: 📁 Loaded {len(appointments)} appointments from {doc_path}")
         except FileNotFoundError:
-            # Doctor file missing → likely no appointments yet created
             debug_print(f"cancel_appt_iterate: ❌ file not found for doctor '{doctor}'")
             resp.say(gpt_speak(VOICE_NO_FILE_MSG), VOICE)
             resp.hangup()
             save_session(call_sid)
             return str(resp)
         except Exception as e:
-            # Unexpected JSON read or parsing error
             debug_print(f"cancel_appt_iterate: ⚠️ JSON loading error → {e}")
             resp.say(gpt_speak(VOICE_JSON_ERROR_MSG), VOICE)
             resp.hangup()
@@ -8492,48 +8471,39 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Filter appointments based on phone + DOB
-        # ----------------------------------------------------------------------
-        #   Compare caller’s normalized phone and DOB against stored values.
-        #   Only appointments that match both will be offered for cancellation.
+        # 🧩 Filter appointments by phone + DOB
         # ----------------------------------------------------------------------
         candidates = []
         normalized_phone = _re.sub(r"\D", "", phone_e164)
         normalized_dob = _re.sub(r"[^0-9a-z]+", "", dob.replace("-", "").replace("/", ""))
 
         for appt in appointments:
-            # Normalize appointment phone and DOB formats
             appt_phone = _re.sub(r"\D", "", appt.get("phone_e164", appt.get("phone", "")))
             appt_dob = _re.sub(r"[^0-9a-z]+", "", (appt.get("dob", "") or "").replace("-", "").replace("/", ""))
 
-            # Match logic
             phone_match = normalized_phone == appt_phone
             dob_match = not dob or normalized_dob == appt_dob
 
-            # Extract UTC time value (supports both start_utc and utc_start)
-            start_utc = appt.get("start_utc", appt.get("utc_start", ""))
-            end_utc = appt.get("end_utc", appt.get("utc_end", ""))
-
             debug_print("------------------------------------------------")
+            debug_print(f"👤 Name: {appt.get('first_name', '')} {appt.get('last_name', '')}")
             debug_print(f"📞 Phone: {appt.get('phone_e164', '(none)')} → match={phone_match}")
             debug_print(f"🎂 DOB: {appt.get('dob', '(none)')} → match={dob_match}")
-            debug_print(f"🕓 Start: {start_utc}")
+            debug_print(f"🕓 Start: {appt.get('utc_start', '(none)')}")
 
             if not (phone_match and dob_match):
                 debug_print("🚫 Skipped (no match)")
                 continue
 
-            # Format friendly date string for speech output
+            start_iso = appt.get("utc_start", "")
             try:
-                friendly = _dt.fromisoformat(start_utc.replace("Z", "+00:00")).strftime("%A, %B %d at %I:%M %p")
+                friendly = _dt.fromisoformat(start_iso.replace("Z", "+00:00")).strftime("%A, %B %d at %I:%M %p")
             except Exception:
-                friendly = appt.get("friendly_local", "unknown time")
+                friendly = start_iso or "unknown time"
 
-            # Add matching appointment candidate to list
             candidates.append({
                 "doctor_name": doctor,
-                "start_utc": start_utc,
-                "end_utc": end_utc,
+                "start_utc": start_iso,
+                "end_utc": appt.get("utc_end", ""),
                 "friendly": friendly,
                 "phone_e164": phone_e164,
                 "dob": dob,
@@ -8541,7 +8511,6 @@ def voice():
             })
             debug_print(f"✅ Added matching appointment → {friendly}")
 
-        # Save candidate list for iteration in session
         cancel_ctx["candidates"] = candidates
         cancel_ctx["iter_index"] = 0
         debug_print(f"cancel_appt_iterate: ✅ Prepared {len(candidates)} candidate(s)")
@@ -8557,7 +8526,7 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🎤 Gather user confirmation for each appointment
+        # 🎤 Handle user confirmation
         # ----------------------------------------------------------------------
         dtmf = (request.values.get("Digits") or "").strip()
         utter = (speech_result or "").strip().lower()
@@ -8569,7 +8538,6 @@ def voice():
         idx = int(cancel_ctx.get("iter_index", 0))
         total = len(candidates)
 
-        # If user already reached end of list, end politely
         if idx >= total:
             resp.say(gpt_speak(VOICE_LAST_APPT_MSG), VOICE)
             resp.hangup()
@@ -8577,12 +8545,9 @@ def voice():
             save_session(call_sid)
             return str(resp)
 
-        # Current candidate being reviewed
         cand = candidates[idx]
 
-        # ----------------------------------------------------------------------
-        # ✅ YES — Confirm cancellation and remove record
-        # ----------------------------------------------------------------------
+        # ✅ YES → Delete appointment
         if utter in YES or dtmf == "1":
             debug_print(f"cancel_appt_iterate: ✅ User confirmed cancel #{idx+1}/{total}")
 
@@ -8594,22 +8559,18 @@ def voice():
             except Exception as e:
                 debug_print(f"⚠️ Could not delete appointment → {e}")
 
-            # Save current event and move to confirmation stage
             cancel_ctx["matching_event"] = cand
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
             resp.redirect("/voice")
             save_session(call_sid)
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # ↪️ NO — Skip to next appointment
-        # ----------------------------------------------------------------------
+        # ↪️ NO → Move to next appointment
         if utter in NO or dtmf == "2":
             debug_print(f"cancel_appt_iterate: ↪️ User skipped #{idx+1}/{total}")
             idx += 1
             cancel_ctx["iter_index"] = idx
 
-            # If reached end of list, end call politely
             if idx >= total:
                 resp.say(gpt_speak(VOICE_LAST_APPT_MSG), VOICE)
                 resp.hangup()
@@ -8617,14 +8578,12 @@ def voice():
                 save_session(call_sid)
                 return str(resp)
 
-            # Move to next appointment candidate
             cand = candidates[idx]
 
         # ----------------------------------------------------------------------
-        # 🗣️ Present next appointment candidate to caller
+        # 🗣️ Present next appointment
         # ----------------------------------------------------------------------
         debug_print(f"cancel_appt_iterate: 🗣️ Presenting appointment #{idx+1}/{total}")
-
         say_line = VOICE_APPT_PROMPT_TEMPLATE.format(
             doctor_name=cand["doctor_name"],
             friendly=cand["friendly"]
@@ -8634,15 +8593,13 @@ def voice():
             say_line,
             hints="yes no one two",
             input="speech dtmf",
-            timeout=4,
+            timeout=5,
             speech_timeout="auto",
             finish_on_key="#",
             action="/voice",
             barge_in=True,
         )
         resp.append(gather)
-
-        # Log performance info and persist session
         debug_print(f"cancel_appt_iterate: ✅ Runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
         save_session(call_sid)
         return str(resp)
@@ -8959,7 +8916,6 @@ def voice():
     #     → Hangup                 (after final confirmation)
     #
     # ======================================================================
-
     elif stage == "cancel_appt_confirm":
         
         # Start performance timer for debugging and metrics
@@ -9023,12 +8979,12 @@ def voice():
         # 📂 Locate the doctor's appointment JSON file
         # ----------------------------------------------------------------------
         #   Each doctor’s file is named using their normalized name.
-        #   e.g. “Alfred Hitchcock” → DB_FOLDER/alfred_hitchcock.json
+        #   e.g. “Alfred Hitchcock” → appointment_data/alfred_hitchcock.json
         # ----------------------------------------------------------------------
-        BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # absolute directory of this script
-        DB_FOLDER = os.path.join(BASE_DIR, "DB_FOLDER")         # main DB directory for all doctors
-        safe_name = doctor_name.lower().replace(" ", "_")       # normalize doctor name
-        doc_path = os.path.join(DB_FOLDER, f"{safe_name}.json") # full path to the doctor’s JSON file
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # absolute directory of this script
+        DB_FOLDER = os.path.join(BASE_DIR, "appointment_data")   # ✅ correct main DB directory for all doctors
+        safe_name = doctor_name.lower().replace(" ", "_")        # normalize doctor name
+        doc_path = os.path.join(DB_FOLDER, f"{safe_name}.json")  # full path to the doctor’s JSON file
 
         # ----------------------------------------------------------------------
         # 🔍 Load all existing appointments from JSON
@@ -9151,6 +9107,8 @@ def voice():
         debug_print(f"cancel_appt_confirm: ✅ total runtime {_time_mod.perf_counter() - t0:.3f}s")
         save_session(call_sid)
         return str(resp)
+
+
 
 
 
