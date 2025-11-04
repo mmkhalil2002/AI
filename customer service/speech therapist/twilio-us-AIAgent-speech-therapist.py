@@ -8394,23 +8394,24 @@ def voice():
         # 🎯 Stage: cancel_appt_iterate
         #
         # PURPOSE:
-        #   • Iterate through the doctor’s local appointment file.
-        #   • Filter all records matching caller’s phone number + DOB.
-        #   • Ask user one-by-one whether to cancel each appointment.
+        #   • Iterate through the doctor’s local JSON file.
+        #   • Files are stored under DB_FOLDER/<doctor_name>.json
+        #   • Match by caller’s phone number + DOB.
+        #   • Ask user which appointments to cancel (YES/NO loop).
         # ======================================================================
 
+        #import os, json, re, glob, unicodedata
+        #from datetime import datetime as _dt
         t_stage_start = _time_mod.perf_counter()
         debug_print("cancel_appt_iterate: 📍 Stage entered")
 
         # ----------------------------------------------------------------------
-        # 💬 VOICE MESSAGES — Centralized for clarity & localization
+        # 💬 Voice messages — centralized for maintainability
         # ----------------------------------------------------------------------
         VOICE_NO_FILE_MSG = "Sorry, I couldn’t find any appointment records for your doctor."
         VOICE_JSON_ERROR_MSG = "Sorry, there was a problem reading the appointment list."
-        VOICE_MISSING_DOCTOR_MSG = "Sorry, I couldn’t identify which doctor your appointment was with."
         VOICE_NO_MATCH_MSG = "I couldn’t find any appointments matching your phone number and date of birth."
         VOICE_LAST_APPT_MSG = "That was the last appointment. Goodbye."
-        VOICE_PROMPT_YES_NO = "Do you want to cancel this one? Say yes or no. Press 1 for yes, or 2 for no."
         VOICE_APPT_PROMPT_TEMPLATE = (
             "Appointment with {doctor_name} on {friendly}. "
             "Do you want to cancel this one? Say yes or no. "
@@ -8418,79 +8419,82 @@ def voice():
         )
 
         # ----------------------------------------------------------------------
-        # 🧭 Retrieve session + cancellation context
+        # 🧭 Retrieve session + cancel context
         # ----------------------------------------------------------------------
         cancel_ctx = session_data[call_sid].setdefault("cancel", {})
 
-        # Get doctor name (from context or root)
+        # Retrieve doctor, phone, DOB
         doctor = (
             cancel_ctx.get("doctor")
             or session_data[call_sid].get("doctor_name")
             or ""
         ).strip()
-
         phone_e164 = (cancel_ctx.get("phone_e164") or "").replace("+", "").lstrip("0")
         dob = (cancel_ctx.get("dob") or "").strip()
 
         debug_print(f"cancel_appt_iterate: inputs → doctor='{doctor}', phone='{phone_e164}', dob='{dob}'")
 
         # ----------------------------------------------------------------------
-        # 🧹 Normalize doctor name → file pattern name_name.json
+        # 🧹 Normalize doctor name → file format name_name.json
         # ----------------------------------------------------------------------
-        import unicodedata, re, glob, os
-
-        doctor_raw = doctor.strip()
-        doctor_norm = unicodedata.normalize("NFKD", doctor_raw)
-        # Replace any non-alphanumeric with underscore
-        doctor_norm = re.sub(r"[^a-zA-Z0-9]+", "_", doctor_norm)
-        doctor_norm = doctor_norm.lower().strip("_")
-        safe_name = doctor_norm  # e.g. "Alfred Hitchcock" → "alfred_hitchcock"
-
-        doc_path = f"appointments/{safe_name}.json"
-        debug_print(f"cancel_appt_iterate: 🧭 normalized doctor='{doctor}' → file='{doc_path}'")
+        doctor_norm = unicodedata.normalize("NFKD", doctor)
+        doctor_norm = re.sub(r"[^a-zA-Z0-9]+", "_", doctor_norm).lower().strip("_")
+        safe_name = doctor_norm  # e.g. Alfred Hitchcock → alfred_hitchcock
+        debug_print(f"cancel_appt_iterate: 🧭 normalized doctor='{doctor}' → safe='{safe_name}'")
 
         # ----------------------------------------------------------------------
-        # 📂 Load the doctor's appointment JSON file
+        # 📂 Build full absolute path (DB_FOLDER used)
+        # ----------------------------------------------------------------------
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        DB_FOLDER = os.path.join(BASE_DIR, "DB_FOLDER")   # ✅ your actual DB directory
+        doc_path = os.path.join(DB_FOLDER, f"{safe_name}.json")
+
+        debug_print(f"cancel_appt_iterate: 🔍 looking for file → {doc_path}")
+
+        # ----------------------------------------------------------------------
+        # 🧩 Validate file existence or use fallback
         # ----------------------------------------------------------------------
         if not os.path.exists(doc_path):
-            # Try fallback match using partial substring search
-            matches = glob.glob(f"appointments/*{safe_name.split('_')[-1]}*.json")
+            matches = glob.glob(os.path.join(DB_FOLDER, f"*{safe_name.split('_')[-1]}*.json"))
             if matches:
                 doc_path = matches[0]
                 debug_print(f"cancel_appt_iterate: 🧩 fallback match → {doc_path}")
             else:
-                debug_print(f"cancel_appt_iterate: ❌ file not found for doctor '{doctor}'")
+                debug_print(f"cancel_appt_iterate: ❌ file not found → {doc_path}")
                 resp.say(gpt_speak(VOICE_NO_FILE_MSG), VOICE)
                 resp.hangup()
                 save_session(call_sid)
                 return str(resp)
 
+        # ----------------------------------------------------------------------
+        # 📖 Load JSON data from doctor file
+        # ----------------------------------------------------------------------
         try:
             with open(doc_path, "r", encoding="utf-8") as f:
                 appointments = json.load(f)
-            debug_print(f"cancel_appt_iterate: 📁 Loaded {len(appointments)} appointments from {doc_path}")
+            debug_print(f"cancel_appt_iterate: 📁 loaded {len(appointments)} appointments")
         except Exception as e:
-            debug_print(f"cancel_appt_iterate: ⚠️ JSON loading error → {e}")
+            debug_print(f"cancel_appt_iterate: ⚠️ JSON read error → {e}")
             resp.say(gpt_speak(VOICE_JSON_ERROR_MSG), VOICE)
             resp.hangup()
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Filter appointments by phone + DOB
+        # 🔎 Filter appointments by phone + DOB
         # ----------------------------------------------------------------------
         candidates = []
         normalized_phone = re.sub(r"\D", "", phone_e164)
         normalized_dob = re.sub(r"[^0-9a-z]+", "", dob.replace("-", "").replace("/", ""))
 
         for appt in appointments:
-            # Accept either phone_e164 or phone
+            # Use either phone or phone_e164 keys
             appt_phone = re.sub(r"\D", "", appt.get("phone_e164", appt.get("phone", "")))
             appt_dob = re.sub(
                 r"[^0-9a-z]+", "", (appt.get("dob", "") or "").replace("-", "").replace("/", "")
             )
 
-            # Match either utc_start or start_utc
+            # Match utc_start / start_utc compatibility
             start_iso = appt.get("start_utc", appt.get("utc_start", ""))
             end_iso = appt.get("end_utc", appt.get("utc_end", ""))
 
@@ -8503,9 +8507,10 @@ def voice():
             debug_print(f"🕓 Start: {start_iso}")
 
             if not (phone_match and dob_match):
-                debug_print("🚫 skipped (no match)")
+                debug_print("🚫 Skipped (no match)")
                 continue
 
+            # Derive friendly string
             friendly = appt.get("friendly_local", "")
             if not friendly:
                 try:
@@ -8528,10 +8533,10 @@ def voice():
 
         cancel_ctx["candidates"] = candidates
         cancel_ctx["iter_index"] = 0
-        debug_print(f"cancel_appt_iterate: ✅ {len(candidates)} candidate(s) prepared")
+        debug_print(f"cancel_appt_iterate: ✅ prepared {len(candidates)} candidate(s)")
 
         # ----------------------------------------------------------------------
-        # 🚫 No matches
+        # 🚫 No matches → end call gracefully
         # ----------------------------------------------------------------------
         if not candidates:
             resp.say(gpt_speak(VOICE_NO_MATCH_MSG), VOICE)
@@ -8541,7 +8546,7 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🎤 Read user input
+        # 🎤 User input processing
         # ----------------------------------------------------------------------
         dtmf = (request.values.get("Digits") or "").strip()
         utter = (speech_result or "").strip().lower()
@@ -8553,6 +8558,7 @@ def voice():
         idx = int(cancel_ctx.get("iter_index", 0))
         total = len(candidates)
 
+        # End of list
         if idx >= total:
             resp.say(gpt_speak(VOICE_LAST_APPT_MSG), VOICE)
             resp.hangup()
@@ -8563,15 +8569,16 @@ def voice():
         cand = candidates[idx]
 
         # ----------------------------------------------------------------------
-        # ✅ YES — cancel this appointment
+        # ✅ YES — delete appointment
         # ----------------------------------------------------------------------
         if utter in YES or dtmf == "1":
             debug_print(f"cancel_appt_iterate: ✅ user confirmed cancel #{idx+1}/{total}")
+
             try:
                 del appointments[cand["index_in_file"]]
                 with open(doc_path, "w", encoding="utf-8") as f:
                     json.dump(appointments, f, indent=2)
-                debug_print(f"🗑️ deleted appt from {doc_path}")
+                debug_print(f"🗑️ deleted appointment from {doc_path}")
             except Exception as e:
                 debug_print(f"⚠️ delete failed → {e}")
 
@@ -8583,7 +8590,7 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ↪️ NO — move to next
+        # ↪️ NO — skip to next
         # ----------------------------------------------------------------------
         if utter in NO or dtmf == "2":
             debug_print(f"cancel_appt_iterate: ↪️ user skipped #{idx+1}/{total}")
@@ -8598,10 +8605,9 @@ def voice():
             cand = candidates[idx]
 
         # ----------------------------------------------------------------------
-        # 🗣️ Present next appointment to caller
+        # 🗣️ Present next appointment
         # ----------------------------------------------------------------------
-        debug_print(f"cancel_appt_iterate: 🗣️ presenting appt #{idx+1}/{total}")
-
+        debug_print(f"cancel_appt_iterate: 🗣️ presenting appointment #{idx+1}/{total}")
         say_line = VOICE_APPT_PROMPT_TEMPLATE.format(
             doctor_name=cand["doctor_name"],
             friendly=cand["friendly"]
@@ -8611,7 +8617,7 @@ def voice():
             say_line,
             hints="yes no one two",
             input="speech dtmf",
-            timeout=4,
+            timeout=5,
             speech_timeout="auto",
             finish_on_key="#",
             action="/voice",
@@ -8622,6 +8628,7 @@ def voice():
         debug_print(f"cancel_appt_iterate: ✅ runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
         save_session(call_sid)
         return str(resp)
+
 
 
 
