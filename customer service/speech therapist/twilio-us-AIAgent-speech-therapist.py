@@ -8921,6 +8921,7 @@ def voice():
     #
     # ======================================================================
     elif stage == "cancel_appt_confirm":
+        global DB_FOLDER
         
         # Start performance timer for debugging and metrics
         t0 = _time_mod.perf_counter()
@@ -8985,7 +8986,7 @@ def voice():
         #   Each doctor’s file is named using their normalized name.
         #   e.g. “Alfred Hitchcock” → appointment_data/alfred_hitchcock.json
         # ----------------------------------------------------------------------
-        
+
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # absolute directory of this script
         safe_name = doctor_name.lower().replace(" ", "_")       # normalize doctor name
         doc_path = os.path.join(BASE_DIR, DB_FOLDER, f"{safe_name}.json")  # ✅ use global DB_FOLDER (no reassignment)
