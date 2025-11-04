@@ -6840,18 +6840,8 @@ def voice():
 
 
     elif stage == "collect_dr_info":
-        # ======================================================================
-        # 🧩 Stage: collect_dr_info
         # ----------------------------------------------------------------------
-        # PURPOSE:
-        #   • Prompts the caller to choose a doctor by name or keypad.
-        #   • Supports both "book" and "cancel" origins.
-        #   • In booking flow → continues to collect_book_time_date.
-        #   • In cancel flow  → continues to cancel_appt_get_time_date.
-        # ======================================================================
-
-        # ----------------------------------------------------------------------
-        # 💬 VOICE PROMPTS
+        # 💬 VOICE PROMPTS — centralized for easy editing & localization
         # ----------------------------------------------------------------------
         VOICE_BOOK_INTRO_MSG = (
             "Please choose your doctor from the following list. "
@@ -6883,9 +6873,8 @@ def voice():
         # 🧭 SESSION INITIALIZATION
         # ----------------------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
-        origin_stage = sd.get("origin_stage", "book")  # 🔍 detect if this is 'book' or 'cancel'
+        origin_stage = sd.get("origin_stage", "book")  # detect if this is booking or cancel flow
         sd.setdefault("retry_booking", 0)
-
         debug_print(f"[collect_dr_info] 📍 Stage entered (origin={origin_stage})")
 
         # ----------------------------------------------------------------------
@@ -6904,24 +6893,20 @@ def voice():
             doctor_dtmf_map = {}
             prompt_lines = []
 
-            # doctor_names can be dict or list depending on config
             if isinstance(doctor_names, dict):
                 doctor_list = list(doctor_names.values())
             else:
                 doctor_list = doctor_names
 
-            # Build DTMF mapping and voice lines
             for i, friendly in enumerate(doctor_list, start=1):
                 doctor_dtmf_map[str(i)] = friendly
                 prompt_lines.append(f"Press {i} for {friendly}.")
 
             sd["doctor_dtmf_map"] = doctor_dtmf_map
 
-            # Choose intro based on mode (book or cancel)
-            if origin_stage == "cancel":
-                doctor_prompt = f"{VOICE_CANCEL_INTRO_MSG} " + " ".join(prompt_lines)
-            else:
-                doctor_prompt = f"{VOICE_BOOK_INTRO_MSG} " + " ".join(prompt_lines)
+            # Pick intro message based on flow type
+            intro_msg = VOICE_CANCEL_INTRO_MSG if origin_stage == "cancel" else VOICE_BOOK_INTRO_MSG
+            doctor_prompt = f"{intro_msg} " + " ".join(prompt_lines)
 
             g = make_gather(
                 doctor_prompt,
@@ -6937,7 +6922,7 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧭 RETRIEVE DOCTOR MAP
+        # 🧭 RETRIEVE EXISTING DOCTOR MAP
         # ----------------------------------------------------------------------
         doctor_map = sd["doctor_dtmf_map"]
         matched_name = None
@@ -6950,7 +6935,7 @@ def voice():
             debug_print(f"✅ DTMF matched doctor → {matched_name}")
 
         # ----------------------------------------------------------------------
-        # 🗣️ STEP 2 — SPEECH MATCHING
+        # 🗣️ STEP 2 — SPEECH MATCHING (Partial / Fuzzy)
         # ----------------------------------------------------------------------
         if matched_name is None:
             junk_inputs = {
@@ -6958,11 +6943,12 @@ def voice():
                 "yo", "test", "1", "yes", "no", "i know", "huh", "what", "okay", "ok",
                 "bye", "goodbye", ""
             }
+
             if not spoken_clean or spoken_clean in junk_inputs or len(spoken_clean) < 3:
                 debug_print(f"⏩ Skipping junk doctor input → '{spoken_clean}' (re-prompting)")
                 prompt_lines = [f"Press {k} for {v}." for k, v in doctor_map.items()]
-                intro = VOICE_CANCEL_INTRO_MSG if origin_stage == "cancel" else VOICE_REPROMPT_MSG
-                doctor_prompt = f"{intro} " + " ".join(prompt_lines)
+                intro_msg = VOICE_CANCEL_INTRO_MSG if origin_stage == "cancel" else VOICE_REPROMPT_MSG
+                doctor_prompt = f"{intro_msg} " + " ".join(prompt_lines)
                 g = make_gather(
                     doctor_prompt,
                     input="speech dtmf",
@@ -6987,7 +6973,6 @@ def voice():
             for friendly in doctor_list:
                 friendly_clean = friendly.lower().translate(str.maketrans('', '', _PUNCT)).strip()
                 friendly_tokens = set(friendly_clean.split())
-
                 if (
                     spoken_clean in friendly_clean
                     or friendly_clean in spoken_clean
@@ -6999,8 +6984,8 @@ def voice():
                 matched_name = partial_matches[0]
                 debug_print(f"✅ Partial speech match → {matched_name}")
             elif len(partial_matches) > 1:
-                matched_name = partial_matches[0]
                 debug_print(f"🔍 Multiple doctor matches found → {partial_matches}")
+                matched_name = partial_matches[0]
 
         # ----------------------------------------------------------------------
         # ❌ STEP 3 — HANDLE NO MATCH FOUND
@@ -7009,6 +6994,7 @@ def voice():
             sd["retry_booking"] += 1
             retries = sd["retry_booking"]
             debug_print(f"❌ No doctor match for '{spoken_clean or dtmf_digits}' retry={retries}")
+
             if retries >= 3:
                 resp.say(gpt_speak(VOICE_FINAL_FAIL_MSG), VOICE)
                 resp.hangup()
@@ -7031,16 +7017,15 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ STEP 4 — SUCCESS
+        # ✅ STEP 4 — SUCCESS: SAVE & ADVANCE TO NEXT STAGE
         # ----------------------------------------------------------------------
         sd["doctor_name"] = matched_name
 
+        # ✅ Branch correctly based on flow
         if origin_stage == "cancel":
-            # Branch to cancellation chain
-            sd["stage"] = "cancel_appt_get_time_date"
+            sd["stage"] = "collect_cancel_time_date"
             success_msg = VOICE_CANCEL_SUCCESS_MSG.format(doctor_name=matched_name)
         else:
-            # Continue booking chain
             sd["stage"] = "collect_book_time_date"
             success_msg = VOICE_BOOK_SUCCESS_MSG.format(doctor_name=matched_name)
 
@@ -7055,6 +7040,7 @@ def voice():
         resp.append(g)
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
