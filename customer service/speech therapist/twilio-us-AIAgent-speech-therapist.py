@@ -6873,7 +6873,8 @@ def voice():
         # 🧭 SESSION INITIALIZATION
         # ----------------------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
-        origin_stage = sd.get("origin_stage", "book")  # detect if this is booking or cancel flow
+        # ⚠️ Preserve previously set origin_stage (cancel/book)
+        origin_stage = sd.get("origin_stage", "book")  
         sd.setdefault("retry_booking", 0)
         debug_print(f"[collect_dr_info] 📍 Stage entered (origin={origin_stage})")
 
@@ -7021,7 +7022,6 @@ def voice():
         # ----------------------------------------------------------------------
         sd["doctor_name"] = matched_name
 
-        # ✅ Branch correctly based on flow
         if origin_stage == "cancel":
             sd["stage"] = "collect_cancel_time_date"
             success_msg = VOICE_CANCEL_SUCCESS_MSG.format(doctor_name=matched_name)
@@ -7040,6 +7040,7 @@ def voice():
         resp.append(g)
         resp.redirect("/voice")
         return str(resp)
+
 
 
 
