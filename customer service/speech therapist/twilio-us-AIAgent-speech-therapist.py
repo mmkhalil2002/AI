@@ -7706,26 +7706,34 @@ def voice():
 
     elif stage == "collect_cancel_phone_number":
         # ----------------------------------------------------------------------
-        # 📞 Collect phone number used when booking, then move to DOB check.
-        #  - Silent-mode aware (re-prompts up to 3x if nothing is heard)
-        #  - Accepts DTMF or speech
-        #  - Normalizes to E.164 ONLY (US/Egypt supported)
-        #  - Stores under cancel + mirrors into customer for reschedule flows
-        #  - Next stage: collect_cancel_dob
+        # 📞 Stage: collect_cancel_phone_number
+        #
+        # PURPOSE:
+        #   • Collect phone number used when booking, then move to DOB check.
+        #   • Silent-mode aware (re-prompts up to 3x if nothing is heard)
+        #   • Accepts DTMF or speech
+        #   • Normalizes to E.164 ONLY (US/Egypt supported)
+        #   • Stores under cancel + mirrors into customer for reschedule flows
+        #   • Next stage: collect_cancel_dob
         # ----------------------------------------------------------------------
-         # ----------------------------------------------------------------------
-        # 📞 Collect phone number used when booking, then move to DOB check.
-        #  - Silent-mode aware (re-prompts up to 3x if nothing is heard)
-        #  - Accepts DTMF or speech
-        #  - Normalizes to E.164 ONLY (US/Egypt supported)
-        #  - Stores under cancel + mirrors into customer for reschedule flows
-        #  - Next stage: collect_cancel_dob
-        # ----------------------------------------------------------------------
+
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("cancel", {})
         session_data[call_sid].setdefault("customer", {})  # ✅ mirror for reschedule
 
+        # ----------------------------------------------------------------------
+        # 💬 Friendly intro if user just cancelled and is now rescheduling
+        # ----------------------------------------------------------------------
+        reschedule_flag = session_data[call_sid].get("reschedule_after_cancel", False)
+        if reschedule_flag:
+            debug_print("collect_cancel_phone_number: 🔁 reschedule_after_cancel detected → greeting user")
+            resp.say(gpt_speak("I can help you reschedule your appointment."), VOICE)
+            # Optional small pause to sound more natural
+            resp.pause(length=0.8)
+
+        # ----------------------------------------------------------------------
         # 🔒 Preserve origin_stage across cancel chain
+        # ----------------------------------------------------------------------
         if "origin_stage" not in session_data[call_sid]:
             session_data[call_sid]["origin_stage"] = "cancel"
 
