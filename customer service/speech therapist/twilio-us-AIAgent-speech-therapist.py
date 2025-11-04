@@ -3209,14 +3209,14 @@ def voice():
             hints = doctor_list
             return ("Please say the name of the doctor whose appointment you want to cancel.", hints)
 
-        if st in ("cancel_appt_by_phone_number",):
+        if st in ("collect_cancel_phone_number",):
             hints = "zero one two three four five six seven eight nine double triple"
             return ("Please say the phone number used when booking, including area code.", hints)
 
-        if st in ("cancel_appt_by_time_date", "cancel_appt_by_date_time"):
+        if st in ("collect_cancel__time_date"):
             return ("Please say the date and time of the appointment you want to cancel, for example, 'July third at nine AM'.", hints)
 
-        if st == "cancel_appt_get_dob":
+        if st == "collect_cancel_get_dob":
             return ("Please say your birth date, for example 'July third nineteen fifty six'. "
                     "Or type 2 digits for month 2 digits for day and 4 digits for year then press pound.", hints)
 
@@ -3463,9 +3463,9 @@ def voice():
 
             # 3️⃣ Reschedule Appointment
             if choice == "3":
-                print("🔁 DTMF=3 → reschedule (cancel then rebook)")
+                debug_print("🔁 DTMF=3 → reschedule (cancel then rebook)")
                 session_data[call_sid] = {
-                    "stage": "cancel_appointment",
+                    "stage": "collect_cancel_phone_number",
                     "cancel": {},
                     "retry_booking": 0,
                     "reschedule_after_cancel": True
@@ -8392,7 +8392,6 @@ def voice():
     #     → End call gracefully (after last iteration)
     #
     elif stage == "cancel_appt_iterate":
-        global DB_FOLDER
         # ======================================================================
         # 🎯 Stage: cancel_appt_iterate
         #
@@ -8921,7 +8920,6 @@ def voice():
     #
     # ======================================================================
     elif stage == "cancel_appt_confirm":
-        global DB_FOLDER
         
         # Start performance timer for debugging and metrics
         t0 = _time_mod.perf_counter()
