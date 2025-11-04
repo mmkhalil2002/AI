@@ -8550,20 +8550,15 @@ def voice():
 
         cand = candidates[idx]
 
-        # ✅ YES → Delete appointment
+        # ✅ YES → Mark appointment for confirmation (do not delete yet)
         if utter in YES or dtmf == "1":
             debug_print(f"cancel_appt_iterate: ✅ User confirmed cancel #{idx+1}/{total}")
-
-            try:
-                del appointments[cand["index_in_file"]]
-                with open(doc_path, "w", encoding="utf-8") as f:
-                    json.dump(appointments, f, indent=2)
-                debug_print(f"🗑️ Deleted appointment from file: {doc_path}")
-            except Exception as e:
-                debug_print(f"⚠️ Could not delete appointment → {e}")
-
+            
+            # Store the matching event for next stage
             cancel_ctx["matching_event"] = cand
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
+
+            # Forward to confirm stage (actual deletion happens there)
             resp.redirect("/voice")
             save_session(call_sid)
             return str(resp)
@@ -8606,6 +8601,7 @@ def voice():
         debug_print(f"cancel_appt_iterate: ✅ Runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
         save_session(call_sid)
         return str(resp)
+
 
 
 
