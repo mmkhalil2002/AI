@@ -275,7 +275,7 @@ CREATE_NEW_CUSTOMER = bool(os.getenv("CREATE_NEW_CUSTOMER", True))  # d
 PAUSE_MS = int(os.getenv("PAUSE_MS", 2000))  # pause time btween messages
 
 
-DB_FOLDER = os.getenv (DB_FOLDER,"appointment_data")
+DB_FOLDER = os.getenv ("DB_FOLDER","appointment_data")
 
 DB_FILE   = os.path.join(DB_FOLDER, "customers.json")  # human-readable, not JSON
 # Global working config
