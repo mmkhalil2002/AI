@@ -275,7 +275,8 @@ CREATE_NEW_CUSTOMER = bool(os.getenv("CREATE_NEW_CUSTOMER", True))  # d
 PAUSE_MS = int(os.getenv("PAUSE_MS", 2000))  # pause time btween messages
 
 
-DB_FOLDER = "appointment_data"
+DB_FOLDER = os.getenv (DB_FOLDER,"appointment_data")
+
 DB_FILE   = os.path.join(DB_FOLDER, "customers.json")  # human-readable, not JSON
 # Global working config
 # 2) Read from env, with a safe default
@@ -8984,10 +8985,11 @@ def voice():
         #   Each doctor’s file is named using their normalized name.
         #   e.g. “Alfred Hitchcock” → appointment_data/alfred_hitchcock.json
         # ----------------------------------------------------------------------
+        
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # absolute directory of this script
-        DB_FOLDER = os.path.join(BASE_DIR, "appointment_data")   # ✅ correct main DB directory for all doctors
-        safe_name = doctor_name.lower().replace(" ", "_")        # normalize doctor name
-        doc_path = os.path.join(DB_FOLDER, f"{safe_name}.json")  # full path to the doctor’s JSON file
+        safe_name = doctor_name.lower().replace(" ", "_")       # normalize doctor name
+        doc_path = os.path.join(BASE_DIR, DB_FOLDER, f"{safe_name}.json")  # ✅ use global DB_FOLDER (no reassignment)
+
 
         # ----------------------------------------------------------------------
         # 🔍 Load all existing appointments from JSON
