@@ -8391,6 +8391,7 @@ def voice():
     #     → End call gracefully (after last iteration)
     #
     elif stage == "cancel_appt_iterate":
+        global DB_FOLDER
         # ======================================================================
         # 🎯 Stage: cancel_appt_iterate
         #
