@@ -86,6 +86,7 @@ import traceback
 import dateutil.parser as dp
 import string, unicodedata as _uni
 import random  # local import for clarity
+import unicodedata
 
 
 
