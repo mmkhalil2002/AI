@@ -3431,10 +3431,11 @@ def voice():
             if choice == "2":
                 print("❌ DTMF=2 → cancel flow (secure verification first)")
                 session_data[call_sid] = {
-                    "stage": "cancel_appt_get_phone_number",  # start with phone number
-                    "cancel": {},
-                    "retry_booking": 0
-                }
+                      "stage": "cancel_appt_get_phone_number",
+                      "origin_stage": "cancel",        # 🔥 mark this as a cancel flow
+                      "cancel": {},
+                      "retry_booking": 0
+                    }
 
                 # Step 1: ask for phone number first
                 prompt = (
