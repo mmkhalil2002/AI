@@ -8961,6 +8961,9 @@ def voice():
         # ----------------------------------------------------------------------
         # 🚫 Safety check — ensure we have a valid appointment candidate
         # ----------------------------------------------------------------------
+        #   If the "matching_event" is missing, the user may have reached this
+        #   stage accidentally (or after timeout). In such case, end gracefully.
+        # ----------------------------------------------------------------------
         if not cand:
             debug_print("cancel_appt_confirm: ⚠️ No candidate found in session (nothing to cancel).")
             resp.say(gpt_speak("Sorry, I couldn’t find that appointment to cancel."), VOICE)
@@ -8969,6 +8972,8 @@ def voice():
             if reschedule_flag:
                 session_data[call_sid]["stage"] = "collect_book_time_date"
                 session_data[call_sid]["reschedule_after_cancel"] = False
+
+                # Prompt user to specify a new date and time for the rescheduled slot
                 resp.append(make_gather(
                     "Please say the new date and time for your appointment, for example, 'October 12th at 9 a.m.'"
                 ))
@@ -9000,13 +9005,18 @@ def voice():
         # 📂 Locate the doctor's appointment JSON file
         # ----------------------------------------------------------------------
         #   Each doctor’s file is named using their normalized name.
-        #   e.g. “Alfred Hitchcock” → appointments/alfred_hitchcock.json
+        #   e.g. “Alfred Hitchcock” → DB_FOLDER/alfred_hitchcock.json
         # ----------------------------------------------------------------------
-        safe_name = doctor_name.lower().replace(" ", "_")
-        doc_path = f"appointments/{safe_name}.json"
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # absolute directory of this script
+        DB_FOLDER = os.path.join(BASE_DIR, "DB_FOLDER")         # main DB directory for all doctors
+        safe_name = doctor_name.lower().replace(" ", "_")       # normalize doctor name
+        doc_path = os.path.join(DB_FOLDER, f"{safe_name}.json") # full path to the doctor’s JSON file
 
         # ----------------------------------------------------------------------
         # 🔍 Load all existing appointments from JSON
+        # ----------------------------------------------------------------------
+        #   The JSON file contains all appointments for that doctor.
+        #   We open it safely and log any file or format errors.
         # ----------------------------------------------------------------------
         try:
             with open(doc_path, "r", encoding="utf-8") as f:
@@ -9032,35 +9042,47 @@ def voice():
         # 🧩 Find the matching appointment record (by start, phone, and DOB)
         # ----------------------------------------------------------------------
         #   We perform a full match to ensure we delete the correct entry.
+        #   All comparisons are normalized (phone digits, DOB format).
         # ----------------------------------------------------------------------
         deleted = False
         for appt in list(appointments):  # iterate over copy to avoid concurrent modification
-            appt_phone = _re.sub(r"\D", "", appt.get("phone_e164", ""))
+            # Normalize stored and candidate phone numbers (digits only)
+            appt_phone = _re.sub(r"\D", "", appt.get("phone_e164", appt.get("phone", "")))
             cand_phone = _re.sub(r"\D", "", phone_e164)
             appt_dob = (appt.get("dob", "") or "").strip()
 
-            # Determine matching criteria
-            start_match = appt.get("start_utc", "") == start_utc
+            # Determine matching criteria for unique record deletion
+            start_match = appt.get("start_utc", appt.get("utc_start", "")) == start_utc
             phone_match = appt_phone == cand_phone
             dob_match = not dob or appt_dob == dob
 
             # Delete appointment if all matching conditions satisfied
             if start_match and phone_match and dob_match:
                 debug_print(f"cancel_appt_confirm: ✅ Found matching appointment → {appt}")
-                appointments.remove(appt)
+                appointments.remove(appt)  # remove matching entry from memory
                 deleted = True
                 break
 
         # ----------------------------------------------------------------------
         # 💾 Save updated appointment list back to file
         # ----------------------------------------------------------------------
+        #   If deletion succeeded, write the modified list back to disk.
+        #   Otherwise, inform the user that no matching record was found.
+        # ----------------------------------------------------------------------
         if deleted:
             try:
+                # Overwrite JSON file with updated appointment list
                 with open(doc_path, "w", encoding="utf-8") as f:
                     json.dump(appointments, f, indent=2)
                 debug_print(f"cancel_appt_confirm: 🗑️ Appointment successfully removed from {doc_path}")
-                resp.say(gpt_speak(f"Your appointment with {doctor_name} on {friendly} has been cancelled."), VOICE)
+
+                # Verbally confirm cancellation to user using natural phrasing
+                resp.say(gpt_speak(
+                    f"Your appointment with {doctor_name} on {friendly} has been cancelled."
+                ), VOICE)
+
             except Exception as e:
+                # Handle file I/O issues during save
                 debug_print(f"cancel_appt_confirm: ⚠️ Could not update JSON file → {e}")
                 resp.say("Sorry, there was an error while removing your appointment.", VOICE)
         else:
@@ -9070,6 +9092,9 @@ def voice():
 
         # ----------------------------------------------------------------------
         # 🔁 Handle optional reschedule flow (if flag set)
+        # ----------------------------------------------------------------------
+        #   If the user is cancelling to reschedule, jump directly to
+        #   the booking time/date collection stage, keeping their info.
         # ----------------------------------------------------------------------
         if reschedule_flag:
             debug_print("cancel_appt_confirm: 🔄 Reschedule-after-cancel detected → forwarding to collect_book_time_date")
@@ -9100,14 +9125,15 @@ def voice():
         # ----------------------------------------------------------------------
         # ✅ Normal end of flow — hang up politely and clean session
         # ----------------------------------------------------------------------
+        #   Once the appointment is cancelled, we close the call politely
+        #   and remove session data from memory to free resources.
+        # ----------------------------------------------------------------------
         resp.hangup()
         session_data.pop(call_sid, None)
         debug_print(f"cancel_appt_confirm: ✅ total runtime {_time_mod.perf_counter() - t0:.3f}s")
         save_session(call_sid)
         return str(resp)
 
-
-   
 
 
 
