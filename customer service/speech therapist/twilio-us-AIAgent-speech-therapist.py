@@ -8442,12 +8442,14 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 📂 Locate the doctor's appointment file under DB_FOLDER
+        # 📂 Locate the doctor's appointment file inside global DB_FOLDER
+        # ----------------------------------------------------------------------
+        #   DB_FOLDER is defined globally, e.g. DB_FOLDER = "appointment_data"
+        #   Each doctor’s file:  <project_root>/appointment_data/alfred_hitchcock.json
         # ----------------------------------------------------------------------
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-        APPT_FOLDER = os.path.join(BASE_DIR, DB_FOLDER)  # ✅ Use DB_FOLDER
         safe_name = doctor.lower().replace(" ", "_")
-        doc_path = os.path.join(APPT_FOLDER, f"{safe_name}.json")
+        doc_path = os.path.join(BASE_DIR, DB_FOLDER, f"{safe_name}.json")
         debug_print(f"cancel_appt_iterate: 🧭 normalized doctor='{doctor}' → file='{doc_path}'")
 
         # ----------------------------------------------------------------------
