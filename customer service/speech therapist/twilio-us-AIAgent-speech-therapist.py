@@ -3114,6 +3114,17 @@ def voice():
     debug_print(f"[voice] inputs → speech='{speech_result}' dtmf='{dtmf_digits}'")
 
     # ----------------------------------------------------------------------
+    # 🧩 NEW BLOCK START — Ignore Twilio's first empty Gather ping
+    # ----------------------------------------------------------------------
+    if not speech_result and not dtmf_digits:
+        stage_tmp = session_data.get(call_sid, {}).get("stage", "intro")
+        debug_print(f"[voice] ⚙️ Ignoring Twilio empty gather ping at stage='{stage_tmp}'")
+        # Return same response silently — Twilio will post again when real input arrives
+        return str(resp)
+    # 🧩 NEW BLOCK END
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
     # 🌍 Country / Caller Initialization
     # ----------------------------------------------------------------------
     session_data.setdefault(call_sid, {})
@@ -3292,6 +3303,7 @@ def voice():
     # ----------------------------------------------------------------------
     # ↓ add your existing stage-handling code below this point
     # e.g. intro / intent / collect_dr_info / collect_book_time_date / etc.
+
 
 
 
