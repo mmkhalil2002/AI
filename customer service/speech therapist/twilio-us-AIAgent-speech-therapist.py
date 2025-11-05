@@ -3085,7 +3085,7 @@ def safe_twiml_route(func):
 @app.route("/voice/", methods=["POST"])  # Accepts trailing slash
 @safe_twiml_route
 def voice():
-    global session_data,doctor_names
+    global session_data, doctor_names
     # ----------------------------------------------------------------------
     # 🎙️ Twilio Voice Entry Point
     # ----------------------------------------------------------------------
@@ -3114,14 +3114,36 @@ def voice():
     debug_print(f"[voice] inputs → speech='{speech_result}' dtmf='{dtmf_digits}'")
 
     # ----------------------------------------------------------------------
-    # 🧩 NEW BLOCK START — Ignore Twilio's first empty Gather ping
+    # 🧩 FIXED BLOCK — Ignore Twilio's first empty Gather ping SAFELY
     # ----------------------------------------------------------------------
     if not speech_result and not dtmf_digits:
         stage_tmp = session_data.get(call_sid, {}).get("stage", "intro")
         debug_print(f"[voice] ⚙️ Ignoring Twilio empty gather ping at stage='{stage_tmp}'")
-        # Return same response silently — Twilio will post again when real input arrives
+
+        # ✅ On very first entry, still greet the caller
+        if stage_tmp in ("intro", "", None):
+            prompt = (
+                "Welcome to Epic Therapist Clinic. "
+                "You can say 'book appointment', 'cancel appointment', or 'leave voicemail'. "
+                "Please say your choice after the tone."
+            )
+            gather = make_gather(
+                prompt,
+                input="speech dtmf",
+                timeout=8,
+                speech_timeout="auto",
+                num_digits=1,
+                barge_in=True,
+            )
+            resp.append(gather)
+            debug_print("[voice] 🗣️ Intro greeting gather sent while ignoring first ping.")
+            return str(resp)
+
+        # For mid-call blank pings, just keep Twilio waiting
+        resp.pause(length=2)
         return str(resp)
-    # 🧩 NEW BLOCK END
+    # ----------------------------------------------------------------------
+    # 🧩 END FIXED BLOCK
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
@@ -3302,7 +3324,7 @@ def voice():
     # Continue with main conversation logic (other stages)
     # ----------------------------------------------------------------------
     # ↓ add your existing stage-handling code below this point
-    # e.g. intro / intent / collect_dr_info / collect_book_time_date / etc.
+
 
 
 
