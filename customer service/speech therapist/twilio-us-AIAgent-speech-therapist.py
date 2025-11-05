@@ -3244,6 +3244,7 @@ def voice():
         "collect_insurance_information",
         "collect_dr_info",
         "collect_cancel_dob",
+        "collect_pin_number",
         "collect_cancel_time_date",
     )
     debug_print(f"[voice] 🔇 skip_silence={skip_silence}")
