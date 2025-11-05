@@ -7990,7 +7990,7 @@ def voice():
                 finish_on_key="#"
             )
             resp.append(gather)
-            resp.redirect("/voice")
+            #resp.redirect("/voice")
             return str(resp)
 
         # Clear silence counter on valid input
@@ -8053,7 +8053,7 @@ def voice():
                 finish_on_key="#"
             )
             resp.append(gather)
-            resp.redirect("/voice")
+            #resp.redirect("/voice")
             return str(resp)
 
         # ------------------------------------------------------------------
@@ -8088,7 +8088,7 @@ def voice():
                     finish_on_key="#"
                 )
                 resp.append(gather)
-                resp.redirect("/voice")
+                #resp.redirect("/voice")
                 return str(resp)
 
         except Exception as e:
@@ -8102,7 +8102,7 @@ def voice():
                 finish_on_key="#"
             )
             resp.append(gather)
-            resp.redirect("/voice")
+            #resp.redirect("/voice")
             return str(resp)
 
         # ------------------------------------------------------------------
@@ -8126,7 +8126,7 @@ def voice():
             finish_on_key="#"
         )
         resp.append(gather)
-        resp.redirect("/voice")
+        #resp.redirect("/voice")
         debug_print("collect_cancel_dob: 🔀 Proceeding to collect_pin_number for verification")
         return str(resp)
 
