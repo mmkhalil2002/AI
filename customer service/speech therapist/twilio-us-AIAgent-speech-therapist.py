@@ -7954,12 +7954,13 @@ def voice():
     #
     # ======================================================================
 
-    elif stage == "collect_cancel_dob":
+    
 
+    elif stage == "collect_cancel_dob":
         debug_print("collect_cancel_dob: 📍 Stage entered")
 
         # ------------------------------------------------------------------
-        # 💬 VOICE MESSAGES — centralized text for all spoken prompts
+        # 💬 MESSAGE CONSTANTS — all spoken text
         # ------------------------------------------------------------------
         MSG_INITIAL = (
             "Please say your birth date — for example, July third nineteen fifty six. "
@@ -7975,7 +7976,7 @@ def voice():
         )
         MSG_REPEAT = (
             "Please repeat your birth date — for example, July third nineteen fifty six. "
-            "Or type two digits for month, two for day, and four digits for year, then press pound."
+            "Or type two digits for month, two digits for day, and four digits for year, then press pound."
         )
         MSG_MAX_SILENCE = "I’m still not hearing anything. Please call again later."
         MSG_MAX_RETRIES = "Sorry, I couldn’t understand your date of birth. Please call again later."
@@ -7985,21 +7986,16 @@ def voice():
         )
 
         # ------------------------------------------------------------------
-        # 🧱 SESSION INITIALIZATION
+        # 🧱 INITIALIZE SESSION STRUCTURE
         # ------------------------------------------------------------------
         session_data.setdefault(call_sid, {}).setdefault("customer", {})
         session_data[call_sid].setdefault("cancel", {})
-
-        # Ensure origin_stage is marked (used later for flow routing)
         session_data[call_sid].setdefault("origin_stage", "cancel")
 
         # ------------------------------------------------------------------
-        # 🎧 CAPTURE INPUT — read speech & DTMF sent by Twilio
+        # 🎧 CAPTURE INPUT
         # ------------------------------------------------------------------
-        try:
-            dtmf_digits = (request.values.get("Digits") or "").strip()
-        except Exception:
-            dtmf_digits = ""
+        dtmf_digits = (request.values.get("Digits") or "").strip()
         speech_text = (speech_result or "").strip()
         debug_print(f"collect_cancel_dob: 🎙️ speech='{speech_text}', 🔢 dtmf='{dtmf_digits}'")
 
@@ -8012,35 +8008,32 @@ def voice():
             debug_print(f"collect_cancel_dob: 🤐 silence count={tries}")
 
             if tries >= 3:
-                # Too many silences → end call politely
                 resp.say(gpt_speak(MSG_MAX_SILENCE), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-prompt with automatic silence & response detection
             gather = make_gather(
                 MSG_INITIAL,
                 input="speech dtmf",
                 hints="zero one two three four five six seven eight nine",
                 num_digits=8,
-                timeout=15,                  # hard cap if no input
-                speech_timeout="auto",       # ⏱ stop when user pauses naturally
-                response_timeout="auto",     # ⏳ adapt how long to wait for speech start
+                timeout=25,              # hard cap if user stays silent
+                speech_timeout="auto",   # end automatically on natural pause
+                response_timeout="auto", # Twilio adjusts wait dynamically
                 finish_on_key="#"
             )
             resp.append(gather)
             return str(resp)
 
-        # Reset silence counter once input is received
+        # Reset silence counter
         session_data[call_sid].pop("silence_collect_cancel_dob", None)
 
         # ------------------------------------------------------------------
-        # 🧩 PARSE INPUT — convert to valid date
+        # 🧩 PARSE INPUT
         # ------------------------------------------------------------------
         dt = None
         try:
-            # 🧮 DTMF path (e.g., 07031956)
             if dtmf_digits:
                 clean = _re.sub(r"\D", "", dtmf_digits)
                 debug_print(f"collect_cancel_dob: 🧮 cleaned DTMF='{clean}'")
@@ -8048,28 +8041,23 @@ def voice():
                 if len(clean) == 8:  # MMDDYYYY
                     m, d, y = int(clean[0:2]), int(clean[2:4]), int(clean[4:8])
                     dt = datetime(y, m, d)
-                elif len(clean) == 7:  # pad missing leading zero
+                elif len(clean) == 7:
                     clean = clean.zfill(8)
                     m, d, y = int(clean[0:2]), int(clean[2:4]), int(clean[4:8])
                     dt = datetime(y, m, d)
-                else:
-                    debug_print(f"collect_cancel_dob: ⚠️ unexpected DTMF length ({len(clean)}) → {clean}")
-
-            # 🗣️ Speech path — parse natural language (e.g. “July third 1956”)
-            if not dt and speech_text:
+            elif speech_text:
                 dt = dp.parse(speech_text, fuzzy=True)
-
         except Exception as e:
             debug_print(f"collect_cancel_dob: ❌ parse error → {e}")
             dt = None
 
         # ------------------------------------------------------------------
-        # ❌ PARSING FAILED — retry up to 3 times
+        # ❌ PARSING FAILED — retry logic
         # ------------------------------------------------------------------
         if not dt:
             retries = session_data[call_sid].get("retry_collect_cancel_dob", 0) + 1
             session_data[call_sid]["retry_collect_cancel_dob"] = retries
-            debug_print(f"collect_cancel_dob: ❌ Parse failed → Retry={retries}")
+            debug_print(f"collect_cancel_dob: ❌ parse failed → Retry={retries}")
 
             if retries >= 3:
                 resp.say(gpt_speak(MSG_MAX_RETRIES), VOICE)
@@ -8077,12 +8065,11 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-prompt caller with same instructions
             gather = make_gather(
                 MSG_RETRY,
                 hints="zero one two three four five six seven eight nine",
                 num_digits=8,
-                timeout=15,
+                timeout=25,
                 speech_timeout="auto",
                 response_timeout="auto",
                 finish_on_key="#"
@@ -8091,7 +8078,7 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # 📆 RANGE VALIDATION — DOB must be within 1900 and today
+        # 📆 RANGE VALIDATION — must be between 1900 and today
         # ------------------------------------------------------------------
         try:
             today = date.today()
@@ -8109,12 +8096,11 @@ def voice():
                     session_data.pop(call_sid, None)
                     return str(resp)
 
-                # Ask user to retry
                 gather = make_gather(
                     MSG_INVALID_RANGE,
                     hints="zero one two three four five six seven eight nine",
                     num_digits=8,
-                    timeout=15,
+                    timeout=25,
                     speech_timeout="auto",
                     response_timeout="auto",
                     finish_on_key="#"
@@ -8123,12 +8109,12 @@ def voice():
                 return str(resp)
 
         except Exception as e:
-            debug_print(f"collect_cancel_dob: ⚠️ Validation error → {e}")
+            debug_print(f"collect_cancel_dob: ⚠️ validation error → {e}")
             gather = make_gather(
                 MSG_REPEAT,
                 hints="zero one two three four five six seven eight nine",
                 num_digits=8,
-                timeout=15,
+                timeout=25,
                 speech_timeout="auto",
                 response_timeout="auto",
                 finish_on_key="#"
@@ -8137,15 +8123,15 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # ✅ SUCCESS — save and advance
+        # ✅ SUCCESS — store DOB and continue
         # ------------------------------------------------------------------
         iso_dob = dt.strftime("%Y-%m-%d")
         session_data[call_sid]["customer"]["dob"] = iso_dob
         session_data[call_sid]["cancel"]["dob"] = iso_dob
         session_data[call_sid].pop("retry_collect_cancel_dob", None)
-        debug_print(f"collect_cancel_dob: ✅ Stored DOB={iso_dob}")
+        debug_print(f"collect_cancel_dob: ✅ stored DOB={iso_dob}")
 
-        # Move to next verification step (PIN)
+        # Advance to next step
         session_data[call_sid]["stage"] = "collect_pin_number"
 
         gather = make_gather(
@@ -8158,7 +8144,7 @@ def voice():
             finish_on_key="#"
         )
         resp.append(gather)
-        debug_print("collect_cancel_dob: 🔀 Proceeding to collect_pin_number")
+        debug_print("collect_cancel_dob: 🔀 proceeding to collect_pin_number")
 
         return str(resp)
 
@@ -8968,7 +8954,7 @@ def voice():
     #
     # ======================================================================
     elif stage == "cancel_appt_confirm":
-        
+            
         # Start performance timer for debugging and metrics
         t0 = _time_mod.perf_counter()
         debug_print("cancel_appt_confirm: 📍 Stage entered")
@@ -8981,22 +8967,19 @@ def voice():
         # ----------------------------------------------------------------------
         cancel_ctx = session_data[call_sid].get("cancel", {})
         cand = cancel_ctx.get("matching_event")  # The appointment the user confirmed to cancel
-        reschedule_flag = session_data.get(call_sid, {}).get("reschedule_after_cancel", False)
+        origin_stage = session_data.get(call_sid, {}).get("origin_stage", "").lower()
 
         # ----------------------------------------------------------------------
         # 🚫 Safety check — ensure we have a valid appointment candidate
-        # ----------------------------------------------------------------------
-        #   If the "matching_event" is missing, the user may have reached this
-        #   stage accidentally (or after timeout). In such case, end gracefully.
         # ----------------------------------------------------------------------
         if not cand:
             debug_print("cancel_appt_confirm: ⚠️ No candidate found in session (nothing to cancel).")
             resp.say(gpt_speak("Sorry, I couldn’t find that appointment to cancel."), VOICE)
 
             # If this is a reschedule flow, redirect to time selection stage
-            if reschedule_flag:
+            if origin_stage == "reschedule":
                 session_data[call_sid]["stage"] = "collect_book_time_date"
-                session_data[call_sid]["reschedule_after_cancel"] = False
+                session_data[call_sid]["origin_stage"] = ""  # clear marker after use
 
                 # Prompt user to specify a new date and time for the rescheduled slot
                 resp.append(make_gather(
@@ -9015,8 +8998,6 @@ def voice():
         # ----------------------------------------------------------------------
         # 🧩 Extract parameters from the confirmed appointment
         # ----------------------------------------------------------------------
-        #   These values are used to locate and remove the exact record.
-        # ----------------------------------------------------------------------
         doctor_name = cand.get("doctor_name", "")
         start_utc   = cand.get("start_utc", "")
         end_utc     = cand.get("end_utc", "")
@@ -9029,27 +9010,18 @@ def voice():
         # ----------------------------------------------------------------------
         # 📂 Locate the doctor's appointment JSON file
         # ----------------------------------------------------------------------
-        #   Each doctor’s file is named using their normalized name.
-        #   e.g. “Alfred Hitchcock” → appointment_data/alfred_hitchcock.json
-        # ----------------------------------------------------------------------
-
-        BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # absolute directory of this script
-        safe_name = doctor_name.lower().replace(" ", "_")       # normalize doctor name
-        doc_path = os.path.join(BASE_DIR, DB_FOLDER, f"{safe_name}.json")  # ✅ use global DB_FOLDER (no reassignment)
-
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        safe_name = doctor_name.lower().replace(" ", "_")
+        doc_path = os.path.join(BASE_DIR, DB_FOLDER, f"{safe_name}.json")
 
         # ----------------------------------------------------------------------
         # 🔍 Load all existing appointments from JSON
-        # ----------------------------------------------------------------------
-        #   The JSON file contains all appointments for that doctor.
-        #   We open it safely and log any file or format errors.
         # ----------------------------------------------------------------------
         try:
             with open(doc_path, "r", encoding="utf-8") as f:
                 appointments = json.load(f)
             debug_print(f"cancel_appt_confirm: 📁 Loaded {len(appointments)} appointments from {doc_path}")
         except FileNotFoundError:
-            # No appointment file exists for this doctor
             debug_print(f"cancel_appt_confirm: ❌ Doctor JSON not found: {doc_path}")
             resp.say(f"I couldn’t find any appointment records for {doctor_name}.", VOICE)
             resp.hangup()
@@ -9057,7 +9029,6 @@ def voice():
             save_session(call_sid)
             return str(resp)
         except Exception as e:
-            # Unexpected I/O or format error
             debug_print(f"cancel_appt_confirm: ⚠️ Error reading doctor JSON → {e}")
             resp.say("Sorry, something went wrong while accessing the appointment list.", VOICE)
             resp.hangup()
@@ -9067,67 +9038,51 @@ def voice():
         # ----------------------------------------------------------------------
         # 🧩 Find the matching appointment record (by start, phone, and DOB)
         # ----------------------------------------------------------------------
-        #   We perform a full match to ensure we delete the correct entry.
-        #   All comparisons are normalized (phone digits, DOB format).
-        # ----------------------------------------------------------------------
         deleted = False
-        for appt in list(appointments):  # iterate over copy to avoid concurrent modification
-            # Normalize stored and candidate phone numbers (digits only)
+        for appt in list(appointments):  # iterate over copy
             appt_phone = _re.sub(r"\D", "", appt.get("phone_e164", appt.get("phone", "")))
             cand_phone = _re.sub(r"\D", "", phone_e164)
             appt_dob = (appt.get("dob", "") or "").strip()
 
-            # Determine matching criteria for unique record deletion
             start_match = appt.get("start_utc", appt.get("utc_start", "")) == start_utc
             phone_match = appt_phone == cand_phone
             dob_match = not dob or appt_dob == dob
 
-            # Delete appointment if all matching conditions satisfied
             if start_match and phone_match and dob_match:
                 debug_print(f"cancel_appt_confirm: ✅ Found matching appointment → {appt}")
-                appointments.remove(appt)  # remove matching entry from memory
+                appointments.remove(appt)
                 deleted = True
                 break
 
         # ----------------------------------------------------------------------
         # 💾 Save updated appointment list back to file
         # ----------------------------------------------------------------------
-        #   If deletion succeeded, write the modified list back to disk.
-        #   Otherwise, inform the user that no matching record was found.
-        # ----------------------------------------------------------------------
         if deleted:
             try:
-                # Overwrite JSON file with updated appointment list
                 with open(doc_path, "w", encoding="utf-8") as f:
                     json.dump(appointments, f, indent=2)
                 debug_print(f"cancel_appt_confirm: 🗑️ Appointment successfully removed from {doc_path}")
 
-                # Verbally confirm cancellation to user using natural phrasing
                 resp.say(gpt_speak(
                     f"Your appointment with {doctor_name} on {friendly} has been cancelled."
                 ), VOICE)
 
             except Exception as e:
-                # Handle file I/O issues during save
                 debug_print(f"cancel_appt_confirm: ⚠️ Could not update JSON file → {e}")
                 resp.say("Sorry, there was an error while removing your appointment.", VOICE)
         else:
-            # No match found in doctor’s file — possibly already deleted
             debug_print("cancel_appt_confirm: ❌ No matching record found in JSON (nothing removed).")
             resp.say("Sorry, I couldn’t find that appointment to cancel.", VOICE)
 
         # ----------------------------------------------------------------------
-        # 🔁 Handle optional reschedule flow (if flag set)
+        # 🔁 Handle optional reschedule flow (based on origin_stage)
         # ----------------------------------------------------------------------
-        #   If the user is cancelling to reschedule, jump directly to
-        #   the booking time/date collection stage, keeping their info.
-        # ----------------------------------------------------------------------
-        if reschedule_flag:
-            debug_print("cancel_appt_confirm: 🔄 Reschedule-after-cancel detected → forwarding to collect_book_time_date")
+        if origin_stage == "reschedule":
+            debug_print("cancel_appt_confirm: 🔄 origin_stage='reschedule' → forwarding to collect_book_time_date")
 
-            # Update next stage and reset the flag
+            # Update next stage and clear the marker
             session_data[call_sid]["stage"] = "collect_book_time_date"
-            session_data[call_sid]["reschedule_after_cancel"] = False
+            session_data[call_sid]["origin_stage"] = ""
 
             # Retain customer info (phone, DOB) for reuse during rebooking
             cust = session_data[call_sid].setdefault("customer", {})
@@ -9143,16 +9098,12 @@ def voice():
             ))
             resp.redirect("/voice")
 
-            # Log completion and persist session data
             debug_print(f"cancel_appt_confirm: ⏱️ total stage time {_time_mod.perf_counter() - t0:.3f}s")
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
         # ✅ Normal end of flow — hang up politely and clean session
-        # ----------------------------------------------------------------------
-        #   Once the appointment is cancelled, we close the call politely
-        #   and remove session data from memory to free resources.
         # ----------------------------------------------------------------------
         resp.hangup()
         session_data.pop(call_sid, None)
