@@ -7896,7 +7896,7 @@ def voice():
             gather = make_gather(
                 VOICE_RESCHEDULE_DOB_MSG,
                 input="speech dtmf",
-                timeout=8,
+                timeout=30,
                 speech_timeout="auto",
                 barge_in=True,
                 finish_on_key="#"
@@ -7908,7 +7908,7 @@ def voice():
         gather = make_gather(
             VOICE_CANCEL_DOB_MSG,
             input="speech dtmf",
-            timeout=10,
+            timeout=30,
             speech_timeout="auto",
             barge_in=True,
             finish_on_key="#"
