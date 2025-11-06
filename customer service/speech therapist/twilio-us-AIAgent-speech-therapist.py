@@ -7882,7 +7882,7 @@ def voice():
         )
         resp.append(gather)
         debug_print("collect_cancel_dob: 🔀 proceeding to collect_pin_number")
-
+        resp.redirect("/voice")  # 👈 causes a second POST
         return str(resp)
 
 
