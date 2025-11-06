@@ -7899,9 +7899,8 @@ def voice():
                 timeout=30,
                 speech_timeout="auto",
                 barge_in=True,
-                finish_on_key="#",
-                action=url_for("voice", _external=False)  # ✅ ensures Twilio posts back to /voice
-            )
+                finish_on_key="#"
+             )
             resp.append(gather)
             resp.redirect("/voice")  # 👈 causes a second POST
             return str(resp)
@@ -7914,8 +7913,7 @@ def voice():
             speech_timeout="auto",
             barge_in=True,
             finish_on_key="#"
-            action=url_for("voice", _external=False)  # ✅ ensures Twilio posts back to /voice
-        )
+         )
         resp.append(gather)
         resp.redirect("/voice")  # 👈 causes a second POST
         return str(resp)
