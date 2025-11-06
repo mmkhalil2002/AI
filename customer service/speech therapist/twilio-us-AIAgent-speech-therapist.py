@@ -7416,267 +7416,7 @@ def voice():
 
 
     
-    # ======================================================================
-    # 🩺 STAGE: cancel_appointment
-    # ======================================================================
-    # 🎯 FUNCTIONAL DESCRIPTION:
-    #     Handles the first step of the appointment cancellation process.
-    #     At this point, the caller has said which doctor they booked with.
-    #
-    # 🔍 GOAL:
-    #     1. Capture and normalize speech or DTMF input.
-    #     2. Match it to an existing doctor name (fuzzy or numeric).
-    #     3. Handle silence, junk input, or ambiguous matches gracefully.
-    #     4. When matched → move to phone number collection stage.
-    #
-    # ⚙️ TECHNICAL DETAILS:
-    #     - Accepts both spoken and DTMF (keypad) input.
-    #     - Uses fuzzy substring and token-based matching.
-    #     - Leverages GPT fallback extraction for ambiguous phrases.
-    #     - Includes configurable retry limits via MAX_NUMBER_DR_RETRY.
-    #     - Tags this flow with origin_stage="cancel" for later steps
-    #       (used by `collect_cancel_phone_number` and `collect_cancel_dob`).
-    #
-    # 💾 OUTPUTS:
-    #     session_data[call_sid]["cancel"]["doctor_name"]
-    #     session_data[call_sid]["doctor_name"]
-    #     session_data[call_sid]["stage"] = "collect_cancel_phone_number"
-    #
-    # ======================================================================
-
-    elif stage == "cancel_appointment":
-        # ----------------------------------------------------------------------
-        # 🔄 Stage: Cancel Appointment — after the caller says the doctor’s name
-        #
-        # PURPOSE:
-        #   1. Identify the doctor from speech or keypad input.
-        #   2. If matched → proceed to phone number verification.
-        #   3. If not → retry up to MAX_NUMBER_DR_RETRY.
-        #
-        # FEATURES:
-        #   • Handles silence, retries, and junk input.
-        #   • Supports both speech and DTMF input.
-        #   • Uses GPT extraction as fallback for ambiguous speech.
-        #   • Tags this flow with origin_stage="cancel" for downstream use
-        #     (e.g., collect_cancel_phone_number).
-        # ----------------------------------------------------------------------
-
-        # Initialize session data for this stage and mark its origin
-        sd = session_data.setdefault(call_sid, {})
-        sd.setdefault("cancel", {})
-        sd["origin_stage"] = "cancel"
-
-        # ----------------------------------------------------------------------
-        # 🧹 Helper setup — punctuation normalization and GPT extractor
-        # ----------------------------------------------------------------------
-        try:
-            _PUNCT = string.punctuation
-        except Exception:
-            _PUNCT = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
-
-        def _clean(s: str) -> str:
-            """Normalize and strip punctuation for fuzzy string matching."""
-            s = (s or "").lower().translate(str.maketrans("", "", _PUNCT)).strip()
-            return " ".join(s.split())
-
-        def _extract_doctor_name(speech_text):
-            """
-            Use GPT as a fallback to extract a doctor’s name from unclear speech.
-            Example: "I had an appointment with Doctor Smith" → "Smith"
-            """
-            if not speech_text.strip():
-                return ""
-            prompt = (
-                f"From this sentence: \"{speech_text}\", extract only the doctor's name "
-                f"mentioned. Return only the name without titles like 'Dr.' or punctuation. "
-                f"If no name is mentioned, return an empty string."
-            )
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "You extract doctor names from user speech."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=0,
-                )
-                extracted = response.choices[0].message.content.strip()
-                debug_print(f"[cancel_appointment] 🤖 GPT extracted doctor name → '{extracted}'")
-                return extracted
-            except Exception as e:
-                debug_print(f"[cancel_appointment] ⚠️ GPT fallback failed → {type(e).__name__}: {e}")
-                return speech_text.strip()
-
-        # ----------------------------------------------------------------------
-        # 🔊 Input capture — get both speech and keypad input if available
-        # ----------------------------------------------------------------------
-        dtmf_digits = (request.values.get("Digits") or "").strip()
-        spoken_text = (speech_result or "").strip()
-        spoken_clean = _clean(spoken_text)
-
-        # Build DTMF map like {"1": "Dr. Adams", "2": "Dr. Hitchcock"}
-        doctor_list = list(doctor_names.values())
-        doctor_dtmf_map = {str(i + 1): doc for i, doc in enumerate(doctor_list)}
-        sd["doctor_dtmf_map"] = doctor_dtmf_map
-
-        debug_print(f"[cancel_appointment] 🎙 speech='{spoken_clean}' 🔢 DTMF='{dtmf_digits}'")
-
-        # ----------------------------------------------------------------------
-        # 🔇 Silence handling — retry up to 3 times if user says nothing
-        # ----------------------------------------------------------------------
-        if not spoken_clean and not dtmf_digits:
-            tries = sd.get("silence_cancel_doc", 0) + 1
-            sd["silence_cancel_doc"] = tries
-            debug_print(f"[cancel_appointment] 🤐 silence count={tries}/3")
-
-            # End call after 3 silent retries
-            if tries >= 3:
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            # Otherwise re-prompt with doctor list
-            options = ". ".join([f"{name} (press {k})" for k, name in doctor_dtmf_map.items()])
-            retry_prompt = (
-                f"I didn't hear the doctor's name. Available doctors are: {options}. "
-                "Please say the doctor's name or press the corresponding number."
-            )
-            sd["stage"] = "cancel_appointment"
-            resp.append(make_gather(
-                retry_prompt,
-                hints=", ".join(doctor_list),
-                num_digits=1,
-                language="en-US",
-            ))
-            return str(resp)
-
-        # Reset silence counter once valid input is heard
-        sd.pop("silence_cancel_doc", None)
-
-        # ----------------------------------------------------------------------
-        # 🔢 DTMF direct match — user pressed 1, 2, etc.
-        # ----------------------------------------------------------------------
-        matched_name = None
-        if dtmf_digits and dtmf_digits in doctor_dtmf_map:
-            matched_name = doctor_dtmf_map[dtmf_digits]
-            debug_print(f"[cancel_appointment] ✅ DTMF matched doctor → {matched_name}")
-
-        # ----------------------------------------------------------------------
-        # 🎙 Speech match — fuzzy comparison of spoken name to known doctors
-        # ----------------------------------------------------------------------
-        if not matched_name:
-            # Skip greetings or junk speech that isn’t a name
-            junk_inputs = {
-                "", "yes", "no", "yeah", "nope", "ok", "okay", "hello", "hi", "hey",
-                "good morning", "good afternoon", "good evening", "test", "i know", "what"
-            }
-            if (not spoken_clean) or (spoken_clean in junk_inputs) or len(spoken_clean) < 2:
-                options = ". ".join([f"{name} (press {k})" for k, name in doctor_dtmf_map.items()])
-                retry_prompt = (
-                    f"I didn't recognize that as a doctor's name. Available doctors are: {options}. "
-                    "Please say the name or press the number."
-                )
-                sd["stage"] = "cancel_appointment"
-                resp.append(make_gather(
-                    retry_prompt,
-                    hints=", ".join(doctor_list),
-                    num_digits=1,
-                    language="en-US",
-                ))
-                return str(resp)
-
-            # Compare token sets of user speech vs doctor names
-            partial_matches = []
-            spoken_tokens = set(spoken_clean.split())
-            for friendly_name in doctor_names.values():
-                friendly_clean = _clean(friendly_name)
-                friendly_tokens = set(friendly_clean.split())
-                if (
-                    spoken_clean in friendly_clean
-                    or friendly_clean in spoken_clean
-                    or (spoken_tokens & friendly_tokens)
-                ):
-                    partial_matches.append(friendly_name)
-
-            # Choose first unique match (if one)
-            if len(partial_matches) == 1:
-                matched_name = partial_matches[0]
-                debug_print(f"[cancel_appointment] ✅ Partial match → {matched_name}")
-            elif len(partial_matches) > 1:
-                matched_name = partial_matches[0]
-                debug_print(f"[cancel_appointment] 🔍 Multiple possible matches, defaulting to → {matched_name}")
-
-            # 🤖 GPT fallback — when fuzzy logic fails
-            if not matched_name:
-                try:
-                    extracted_name = _extract_doctor_name(spoken_text)
-                    extracted_clean = _clean(extracted_name)
-                    for friendly_name in doctor_names.values():
-                        friendly_clean = _clean(friendly_name)
-                        if extracted_clean in friendly_clean or friendly_clean in extracted_clean:
-                            matched_name = friendly_name
-                            debug_print(f"[cancel_appointment] ✅ GPT matched doctor → {matched_name}")
-                            break
-                except Exception as e:
-                    debug_print(f"[cancel_appointment] ⚠️ GPT fallback error → {e}")
-
-        # ----------------------------------------------------------------------
-        # ❌ Retry if still no match — increment counter and re-prompt
-        # ----------------------------------------------------------------------
-        if not matched_name:
-            retries = sd.get("retry_booking", 0) + 1
-            sd["retry_booking"] = retries
-            max_retries = globals().get("MAX_NUMBER_DR_RETRY", 3)
-            debug_print(f"[cancel_appointment] ❌ No doctor match retry={retries}/{max_retries}")
-
-            # After max retries → end call gracefully
-            if retries >= max_retries:
-                resp.say(gpt_speak(
-                    "I'm sorry, I still couldn't match that name with any doctor in our clinic. Please try again later. Goodbye."
-                ), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            # Otherwise show available doctors again
-            options = ". ".join([f"{name} (press {k})" for k, name in doctor_dtmf_map.items()])
-            retry_prompt = (
-                f"I didn't recognize that name. Available doctors are: {options}. "
-                "Please say the name or press the number."
-            )
-            sd["stage"] = "cancel_appointment"
-            resp.append(make_gather(
-                retry_prompt,
-                hints=", ".join(doctor_list),
-                num_digits=1,
-                language="en-US",
-            ))
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # ✅ SUCCESS — store matched doctor and transition to phone number stage
-        # ----------------------------------------------------------------------
-        sd["cancel"]["doctor_name"] = matched_name
-        sd["doctor_name"] = matched_name
-        sd["stage"] = "collect_cancel_time_date"
-
-        # Prompt user to provide phone number associated with booking
-        g = make_gather(
-            f"Thanks. What phone number did you use when booking your appointment with {matched_name}?",
-            input="speech dtmf",
-            language="en-US",
-            num_digits=10,
-            timeout=8,
-            speech_timeout="6",
-            barge_in=True,
-        )
-        resp.append(g)
-        save_session(call_sid)
-
-        debug_print(f"[cancel_appointment] ✅ Stored doctor_name={matched_name} → next stage collect_cancel_phone_number")
-        return str(resp)
-
+   
 
     # ======================================================================
     # 🧩 STAGE: collect_cancel_phone_number
@@ -8022,7 +7762,6 @@ def voice():
                 num_digits=8,
                 timeout=25,              # hard cap if user stays silent
                 speech_timeout="auto",   # end automatically on natural pause
-                response_timeout="auto", # Twilio adjusts wait dynamically
                 finish_on_key="#"
             )
             resp.append(gather)
@@ -8073,7 +7812,6 @@ def voice():
                 num_digits=8,
                 timeout=25,
                 speech_timeout="auto",
-                response_timeout="auto",
                 finish_on_key="#"
             )
             resp.append(gather)
@@ -8104,7 +7842,6 @@ def voice():
                     num_digits=8,
                     timeout=25,
                     speech_timeout="auto",
-                    response_timeout="auto",
                     finish_on_key="#"
                 )
                 resp.append(gather)
@@ -8118,7 +7855,6 @@ def voice():
                 num_digits=8,
                 timeout=25,
                 speech_timeout="auto",
-                response_timeout="auto",
                 finish_on_key="#"
             )
             resp.append(gather)
@@ -8142,7 +7878,6 @@ def voice():
             num_digits=6,
             timeout=10,
             speech_timeout="auto",
-            response_timeout="auto",
             finish_on_key="#"
         )
         resp.append(gather)
