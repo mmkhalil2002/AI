@@ -7899,7 +7899,8 @@ def voice():
                 timeout=30,
                 speech_timeout="auto",
                 barge_in=True,
-                finish_on_key="#"
+                finish_on_key="#",
+                action=url_for("voice", _external=False)  # ✅ ensures Twilio posts back to /voice
             )
             resp.append(gather)
             return str(resp)
@@ -7912,6 +7913,7 @@ def voice():
             speech_timeout="auto",
             barge_in=True,
             finish_on_key="#"
+            action=url_for("voice", _external=False)  # ✅ ensures Twilio posts back to /voice
         )
         resp.append(gather)
         return str(resp)
