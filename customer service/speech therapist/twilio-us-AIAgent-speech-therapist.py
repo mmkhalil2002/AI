@@ -7903,6 +7903,7 @@ def voice():
                 action=url_for("voice", _external=False)  # ✅ ensures Twilio posts back to /voice
             )
             resp.append(gather)
+            resp.redirect("/voice")  # 👈 causes a second POST
             return str(resp)
 
         # Regular cancel flow → ask for DOB verification
@@ -7916,6 +7917,7 @@ def voice():
             action=url_for("voice", _external=False)  # ✅ ensures Twilio posts back to /voice
         )
         resp.append(gather)
+        resp.redirect("/voice")  # 👈 causes a second POST
         return str(resp)
 
 
