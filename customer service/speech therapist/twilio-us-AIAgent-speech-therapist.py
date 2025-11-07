@@ -7824,6 +7824,8 @@ def voice():
         # ------------------------------------------------------------------
         # ⏳ PARTIAL INPUT HANDLING
         # ------------------------------------------------------------------
+        debug_print(f"[collect_cancel_phone_number] 🧭 origin_stage={origin_stage} | speech='{speech_text}' | dtmf='{dtmf_digits}'")
+
         if dtmf_digits and len(_re.sub(r'\D', '', dtmf_digits)) < 7:
             debug_print(f"collect_cancel_phone_number: ⏸️ partial digits → waiting for continuation ({dtmf_digits})")
 
@@ -7947,6 +7949,7 @@ def voice():
                 session_data.pop(call_sid, None)
                 return str(resp)
 
+            debug_print(f"[collect_cancel_phone_number] 🧭 origin_stage={origin_stage} | speech='{speech_text}' | dtmf='{dtmf_digits}'")
             gather = make_gather(
                 VOICE_SILENCE_MSG,
                 hints="zero one two three four five six seven eight nine double triple",
