@@ -7500,7 +7500,7 @@ def voice():
             gather = make_gather(
                 "",                     # no spoken prompt; just extend listening
                 input="dtmf speech",
-                timeout=25,             # ⏳ max time before gather ends
+                timeout=40,           # ⏳ max time before gather ends
                 num_digits=15,          # allow up to 15 digits (international)
                 speech_timeout="auto",  # 🔊 auto-end when user stops talking
                 barge_in=True,
