@@ -5133,7 +5133,7 @@ def voice():
             if origin_stage == "book":
                 next_stage = "collect_dr_info"
                 msg = VOICE_CORRECT_PIN_BOOK_MSG
-            elif origin_stage == "cancel":
+            elif origin_stage in ("cancel", "reschedule"):
                 next_stage = "collect_dr_info"
                 msg = VOICE_CORRECT_PIN_CANCEL_MSG
             elif origin_stage == "update_cc":
@@ -7081,7 +7081,7 @@ def voice():
         # ----------------------------------------------------------------------
         sd["doctor_name"] = matched_name
 
-        if origin_stage == "cancel":
+        if origin_stage in ("cancel", "reschedule"):
             sd["stage"] = "collect_cancel_time_date"
             success_msg = VOICE_CANCEL_SUCCESS_MSG.format(doctor_name=matched_name)
         else:
