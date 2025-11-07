@@ -3471,15 +3471,35 @@ def voice():
                 debug_print("🔁 DTMF=3 → reschedule (cancel then rebook)")
                 session_data[call_sid] = {
                     "stage": "collect_cancel_phone_number",
+                    "origin_stage": "reschedule",          # ✅ add explicit origin_stage
                     "cancel": {},
                     "retry_booking": 0,
                     "reschedule_after_cancel": True
                 }
 
-                # Reschedule flow uses the same cancel chain but adds reschedule flag
-                resp.say(gpt_speak("Sure, let's reschedule your appointment. We'll cancel your current one first."), VOICE)
+                # ✅ Use the same behavior as cancel — include a <Gather> so Twilio listens
+                prompt = (
+                    "Sure, let's reschedule your appointment. "
+                    "We'll cancel your current one first. "
+                    "To verify your identity, please say or enter the phone number you used when booking, then press pound."
+                )
+
+                gather = make_gather(
+                    prompt,
+                    input="speech dtmf",
+                    num_digits=10,
+                    finish_on_key="#",
+                    timeout=10,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    language="en-US",
+                )
+
+                resp.append(gather)
                 resp.redirect("/voice")
+                save_session(call_sid)
                 return str(resp)
+
 
             # 4️⃣ Update Credit Card
             if choice == "4":
