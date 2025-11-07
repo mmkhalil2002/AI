@@ -790,7 +790,8 @@ Purpose: Loads a dictionary mapping Google Calendar IDs to spoken-friendly docto
 #openai.api_key = "YOUR_OPENAI_API_KEY"
 
 # ---------------- Google Calendar Auth -----------------
-
+"""
+this not used any more because it diesnt use google calender any more
 
 if not os.path.exists("token.pkl"):
     flow = InstalledAppFlow.from_client_secrets_file(
@@ -811,6 +812,8 @@ else:
 #service = build("calendar", "v3", credentials=creds)
 
 # Calendar IDs are loaded from doctors.txt
+"""
+
 
 # State memory for active calls
 """

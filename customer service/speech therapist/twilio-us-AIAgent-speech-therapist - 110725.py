@@ -1,5 +1,5 @@
 #=======
-# update  11/05/2025 time_saved  12:01
+# update  11/05/2025 time_saved  100725
 #  
 # =========================
 # Standard library imports
@@ -3471,15 +3471,35 @@ def voice():
                 debug_print("🔁 DTMF=3 → reschedule (cancel then rebook)")
                 session_data[call_sid] = {
                     "stage": "collect_cancel_phone_number",
+                    "origin_stage": "reschedule",          # ✅ add explicit origin_stage
                     "cancel": {},
                     "retry_booking": 0,
                     "reschedule_after_cancel": True
                 }
 
-                # Reschedule flow uses the same cancel chain but adds reschedule flag
-                resp.say(gpt_speak("Sure, let's reschedule your appointment. We'll cancel your current one first."), VOICE)
+                # ✅ Use the same behavior as cancel — include a <Gather> so Twilio listens
+                prompt = (
+                    "Sure, let's reschedule your appointment. "
+                    "We'll cancel your current one first. "
+                    "To verify your identity, please say or enter the phone number you used when booking, then press pound."
+                )
+
+                gather = make_gather(
+                    prompt,
+                    input="speech dtmf",
+                    num_digits=10,
+                    finish_on_key="#",
+                    timeout=10,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    language="en-US",
+                )
+
+                resp.append(gather)
                 resp.redirect("/voice")
+                save_session(call_sid)
                 return str(resp)
+
 
             # 4️⃣ Update Credit Card
             if choice == "4":
@@ -7497,19 +7517,110 @@ def voice():
 
             # Using speech_timeout='auto' lets Twilio stop automatically after the caller pauses,
             # instead of a fixed 3 s delay. This gives a smoother experience.
-            gather = make_gather(
-                "",                     # no spoken prompt; just extend listening
-                input="dtmf speech",
-                timeout=25,             # ⏳ max time before gather ends
-                num_digits=15,          # allow up to 15 digits (international)
-                speech_timeout="auto",  # 🔊 auto-end when user stops talking
-                barge_in=True,
-                finish_on_key="#"
-            )
-            resp.append(gather)
-            return str(resp)
 
-        # ------------------------------------------------------------------
+            # ----------------------------------------------------------------------
+            # 🧩 Create a <Gather> instruction — tells Twilio to listen for user input
+            # ----------------------------------------------------------------------
+            gather = make_gather(
+                "",                     # 🗣️ No spoken prompt — Twilio will *not* play any message.
+                                        #    The line is intentionally empty because we only want
+                                        #    to keep listening (e.g., caller is already mid-entry).
+
+                input="dtmf speech",    # 🎙️ Accept both keypad (DTMF) and voice input.
+                                        #    Twilio will automatically capture either type.
+
+                timeout=40,             # ⏳ Maximum time (in seconds) Twilio will wait for input.
+                                        #    If the user remains *completely silent* for 40 seconds,
+                                        #    the <Gather> automatically ends (timeout event triggers).
+
+                num_digits=15,          # 🔢 Maximum number of digits Twilio will collect if user presses keys.
+
+                speech_timeout="auto",  # 🧠 Voice auto-detection:
+                                        #    - Twilio listens until the user stops speaking naturally.
+                                        #    - There’s no fixed silence window — it uses Voice Activity Detection (VAD).
+                                        #    - When the user finishes talking, Twilio ends the <Gather> automatically.
+
+                barge_in=True,          # ⚡ (Usually relevant when a prompt is playing.)
+                                        #    Here, since we have no spoken message, it’s harmless.
+                                        #    If a prompt were playing, user input could interrupt it.
+
+                finish_on_key="#"       # 🔚 Caller can press "#" to manually end input early.
+                                        #    Useful if the user knows they’re done entering digits.
+            )
+
+            # ----------------------------------------------------------------------
+            # 🧱 Add the <Gather> instruction to the TwiML <Response> object
+            # ----------------------------------------------------------------------
+            resp.append(gather)
+            #
+            # 💡 This does **not** execute any call logic yet — it just builds the XML response
+            #    that Flask will send back to Twilio.
+            #
+            # 🧱 Internally, the XML now looks like:
+            #    <Response>
+            #       <Gather input="speech dtmf" timeout="40" speechTimeout="auto" ... />
+            #    </Response>
+            #
+            # Twilio will execute this as:
+            #   1️⃣ Start listening immediately (no prompt).
+            #   2️⃣ Wait up to 40 seconds for user input.
+            #   3️⃣ If user speaks → auto-stop when speech ends.
+            #   4️⃣ If user presses digits → stop when done or "#" pressed.
+            #   5️⃣ If user stays silent for 40 seconds → timeout triggers.
+            #
+            # 🧩 At this moment, Flask has *not* returned anything yet.
+            # ----------------------------------------------------------------------
+
+            # ----------------------------------------------------------------------
+            # ⚙️ Add <Redirect> instruction — handles silence timeout
+            # ----------------------------------------------------------------------
+            resp.redirect("/voice")
+            #
+            # 🧠 PURPOSE:
+            #   - After the <Gather> finishes (either user input *or* timeout),
+            #     Twilio needs to know *what to do next*.
+            #
+            # ✅ When user *speaks or presses digits*:
+            #   - Twilio immediately POSTs SpeechResult or Digits to /voice.
+            #   - The redirect is ignored because input was already captured.
+            #
+            # 🔇 When user *stays silent* (no input for 40 seconds):
+            #   - The <Gather> times out.
+            #   - Twilio sees <Redirect /voice> and automatically POSTs to /voice again.
+            #   - This lets your Flask app re-enter and handle the "silence retry" logic.
+            #
+            # ⚠️ WITHOUT THIS LINE:
+            #   - Twilio would not call your app again after silence.
+            #   - The call would appear to "hang" or do nothing after 1 timeout.
+            #
+            # 💡 So this <Redirect> is what makes multi-silence retry logic possible.
+            # ----------------------------------------------------------------------
+
+            # ----------------------------------------------------------------------
+            # 🚀 Return the TwiML response to Twilio for execution
+            # ----------------------------------------------------------------------
+            return str(resp)
+            #
+            # 🧩 PURPOSE:
+            #   - Converts the VoiceResponse (`resp`) object into TwiML XML text.
+            #   - Sends that XML back to Twilio as the HTTP response.
+            #
+            # 🧭 Twilio immediately executes it:
+            #   - Starts the <Gather> listener.
+            #   - Waits for user action.
+            #   - If user responds → Twilio POSTs the result (SpeechResult or Digits) to /voice.
+            #   - If user silent → waits 40s → follows <Redirect /voice> and POSTs again.
+            #
+            # 🧠 KEY POINTS:
+            #   - append() → adds the instruction to the XML.
+            #   - redirect() → defines fallback when timeout happens.
+            #   - return str(resp) → actually *sends* that XML back to Twilio.
+            #
+            # ✅ So in both cases (speaking or silence), your /voice route gets re-triggered.
+            # ----------------------------------------------------------------------
+
+
+        #------------------------------------------------------------------
         # 🤐 SILENCE HANDLING
         # ------------------------------------------------------------------
         if not (speech_text or dtmf_digits):
@@ -7534,6 +7645,7 @@ def voice():
                 finish_on_key="#"
             )
             resp.append(gather)
+            resp.redirect("/voice")
             return str(resp)
 
         # ✅ Reset silence counter
@@ -7614,6 +7726,7 @@ def voice():
                 finish_on_key="#"
             )
             resp.append(gather)
+            resp.redirect("/voice")  # 👈 causes a second POST
             return str(resp)
 
         # ------------------------------------------------------------------
@@ -7659,7 +7772,322 @@ def voice():
         return str(resp)
 
 
+
+    # ======================================================================
+    # 🧩 STAGE: collect_cancel_phone_number
+    # ======================================================================
+    # 🎯 FUNCTIONAL PURPOSE:
+    #     Collect the caller’s phone number (via speech or DTMF keypad)
+    #     so the system can find an existing appointment for cancellation
+    #     or rescheduling.
+    #
+    # 💡 BEHAVIOR SUMMARY:
+    #     • Accepts both speech and keypad input seamlessly.
+    #     • Waits longer (25 s) for keypad digits; ends speech earlier (~3 s silence).
+    #     • Handles silence (3 retries) before ending politely.
+    #     • Converts spoken words (“double five”) → digits.
+    #     • Normalizes to E.164 format (US / Egypt).
+    #     • Saves to both cancel and customer session dicts.
+    #     • Transitions → collect_cancel_dob.
+    #
+    # 🧾 OUTPUTS:
+    #     session_data[call_sid]["cancel"]["phone_e164"]
+    #     session_data[call_sid]["customer"]["phone_e164"]
+    #     session_data[call_sid]["stage"] = "collect_cancel_dob"
+    #
+    # ⚙️ DEPENDENCIES:
+    #     normalize_phone_e164(), make_gather(), gpt_speak(), resp.say()
+    # ======================================================================
+
+
     
+
+    elif stage == "collect_cancel_phone_number":
+
+        # ------------------------------------------------------------------
+        # 💬 STANDARD PROMPTS
+        # ------------------------------------------------------------------
+        VOICE_SILENCE_MSG = (
+            "I didn’t hear your phone number. Please say or type your phone number including area code, then press pound."
+        )
+        VOICE_TOO_MANY_SILENCES_MSG = (
+            "I’m still not hearing anything. Please call again later."
+        )
+        VOICE_INVALID_MSG = (
+            "That doesn’t sound like a valid phone number. Please say or type your full phone number including area code, then press pound."
+        )
+        VOICE_DOB_MSG = (
+            "Thanks. Now, please tell me your date of birth to verify your identity. "
+            "For example, say July third nineteen ninety, or type it as 07031990 then press pound."
+        )
+
+        # ------------------------------------------------------------------
+        # 🧱 SESSION INITIALIZATION
+        # ------------------------------------------------------------------
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid].setdefault("cancel", {})
+        session_data[call_sid].setdefault("customer", {})
+
+        origin_stage = session_data[call_sid].get("origin_stage", "").lower()
+        from_e164 = (request.values.get("From") or session_data[call_sid].get("from_e164", "")).strip()
+
+        # ------------------------------------------------------------------
+        # 🎧 CAPTURE INPUT — speech or keypad
+        # ------------------------------------------------------------------
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
+        speech_text = (speech_result or "").strip()
+        debug_print(f"collect_cancel_phone_number: 🎙️ speech='{speech_text}', 🔢 dtmf='{dtmf_digits}'")
+
+        # ------------------------------------------------------------------
+        # ⏳ PARTIAL INPUT HANDLING
+        # ------------------------------------------------------------------
+        debug_print(f"[collect_cancel_phone_number] 🧭 origin_stage={origin_stage} | speech='{speech_text}' | dtmf='{dtmf_digits}'")
+
+        if dtmf_digits and len(_re.sub(r'\D', '', dtmf_digits)) < 7:
+            debug_print(f"collect_cancel_phone_number: ⏸️ partial digits → waiting for continuation ({dtmf_digits})")
+
+            
+            # ----------------------------------------------------------------------
+            # 🧩 Create a <Gather> instruction — tells Twilio to listen for user input
+            # ----------------------------------------------------------------------
+            gather = make_gather(
+                "",                     # 🗣️ No spoken prompt — Twilio will *not* play any message.
+                                        #    The line is intentionally empty because we only want
+                                        #    to keep listening (e.g., caller is already mid-entry).
+
+                input="dtmf speech",    # 🎙️ Accept both keypad (DTMF) and voice input.
+                                        #    Twilio will automatically capture either type.
+
+                timeout=40,             # ⏳ Maximum time (in seconds) Twilio will wait for input.
+                                        #    If the user remains *completely silent* for 40 seconds,
+                                        #    the <Gather> automatically ends (timeout event triggers).
+
+                num_digits=15,          # 🔢 Maximum number of digits Twilio will collect if user presses keys.
+
+                speech_timeout="auto",  # 🧠 Voice auto-detection:
+                                        #    - Twilio listens until the user stops speaking naturally.
+                                        #    - There’s no fixed silence window — it uses Voice Activity Detection (VAD).
+                                        #    - When the user finishes talking, Twilio ends the <Gather> automatically.
+
+                barge_in=True,          # ⚡ (Usually relevant when a prompt is playing.)
+                                        #    Here, since we have no spoken message, it’s harmless.
+                                        #    If a prompt were playing, user input could interrupt it.
+
+                finish_on_key="#"       # 🔚 Caller can press "#" to manually end input early.
+                                        #    Useful if the user knows they’re done entering digits.
+            )
+
+            # ----------------------------------------------------------------------
+            # 🧱 Add the <Gather> instruction to the TwiML <Response> object
+            # ----------------------------------------------------------------------
+            resp.append(gather)
+            #
+            # 💡 This does **not** execute any call logic yet — it just builds the XML response
+            #    that Flask will send back to Twilio.
+            #
+            # 🧱 Internally, the XML now looks like:
+            #    <Response>
+            #       <Gather input="speech dtmf" timeout="40" speechTimeout="auto" ... />
+            #    </Response>
+            #
+            # Twilio will execute this as:
+            #   1️⃣ Start listening immediately (no prompt).
+            #   2️⃣ Wait up to 40 seconds for user input.
+            #   3️⃣ If user speaks → auto-stop when speech ends.
+            #   4️⃣ If user presses digits → stop when done or "#" pressed.
+            #   5️⃣ If user stays silent for 40 seconds → timeout triggers.
+            #
+            # 🧩 At this moment, Flask has *not* returned anything yet.
+            # ----------------------------------------------------------------------
+
+            # ----------------------------------------------------------------------
+            # ⚙️ Add <Redirect> instruction — handles silence timeout
+            # ----------------------------------------------------------------------
+            resp.redirect("/voice")
+            #
+            # 🧠 PURPOSE:
+            #   - After the <Gather> finishes (either user input *or* timeout),
+            #     Twilio needs to know *what to do next*.
+            #
+            # ✅ When user *speaks or presses digits*:
+            #   - Twilio immediately POSTs SpeechResult or Digits to /voice.
+            #   - The redirect is ignored because input was already captured.
+            #
+            # 🔇 When user *stays silent* (no input for 40 seconds):
+            #   - The <Gather> times out.
+            #   - Twilio sees <Redirect /voice> and automatically POSTs to /voice again.
+            #   - This lets your Flask app re-enter and handle the "silence retry" logic.
+            #
+            # ⚠️ WITHOUT THIS LINE:
+            #   - Twilio would not call your app again after silence.
+            #   - The call would appear to "hang" or do nothing after 1 timeout.
+            #
+            # 💡 So this <Redirect> is what makes multi-silence retry logic possible.
+            # ----------------------------------------------------------------------
+
+            # ----------------------------------------------------------------------
+            # 🚀 Return the TwiML response to Twilio for execution
+            # ----------------------------------------------------------------------
+            return str(resp)
+            #
+            # 🧩 PURPOSE:
+            #   - Converts the VoiceResponse (`resp`) object into TwiML XML text.
+            #   - Sends that XML back to Twilio as the HTTP response.
+            #
+            # 🧭 Twilio immediately executes it:
+            #   - Starts the <Gather> listener.
+            #   - Waits for user action.
+            #   - If user responds → Twilio POSTs the result (SpeechResult or Digits) to /voice.
+            #   - If user silent → waits 40s → follows <Redirect /voice> and POSTs again.
+            #
+            # 🧠 KEY POINTS:
+            #   - append() → adds the instruction to the XML.
+            #   - redirect() → defines fallback when timeout happens.
+            #   - return str(resp) → actually *sends* that XML back to Twilio.
+            #
+            # ✅ So in both cases (speaking or silence), your /voice route gets re-triggered.
+            # ----------------------------------------------------------------------
+
+
+
+
+
+        #------------------------------------------------------------------
+        # 🤐 SILENCE HANDLING
+        # ------------------------------------------------------------------
+        if not (speech_text or dtmf_digits):
+            tries = session_data[call_sid].get("silence_cancel_phone", 0) + 1
+            session_data[call_sid]["silence_cancel_phone"] = tries
+            debug_print(f"collect_cancel_phone_number: 🤐 silence count={tries}")
+
+            if tries >= 3:
+                resp.say(gpt_speak(VOICE_TOO_MANY_SILENCES_MSG), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            debug_print(f"[collect_cancel_phone_number] 🧭 origin_stage={origin_stage} | speech='{speech_text}' | dtmf='{dtmf_digits}'")
+            gather = make_gather(
+                VOICE_SILENCE_MSG,
+                hints="zero one two three four five six seven eight nine double triple",
+                input="speech dtmf",
+                timeout=40,             # increased for longer user response window
+                speech_timeout="auto",
+                barge_in=True,
+                finish_on_key="#"
+            )
+            resp.append(gather)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # ✅ Reset silence counter
+        session_data[call_sid].pop("silence_cancel_phone", None)
+
+        # ------------------------------------------------------------------
+        # 🔢 SPEECH → DIGIT CONVERSION
+        # ------------------------------------------------------------------
+        def _spoken_to_digits(raw: str) -> str:
+            """Convert spoken words like 'double five one eight' → '5518'."""
+            if not raw:
+                return ""
+            words = (
+                raw.lower()
+                .replace("-", " ").replace(",", " ").replace(".", " ")
+                .replace("(", " ").replace(")", " ").split()
+            )
+            mapping = {
+                "zero": "0", "oh": "0", "o": "0",
+                "one": "1", "two": "2", "to": "2", "too": "2",
+                "three": "3", "four": "4", "for": "4",
+                "five": "5", "six": "6", "seven": "7",
+                "eight": "8", "ate": "8", "nine": "9"
+            }
+            out, i = [], 0
+            while i < len(words):
+                w = words[i]
+                if w in ("double", "triple") and i + 1 < len(words):
+                    nxt = words[i + 1]
+                    if nxt in mapping:
+                        out.extend([mapping[nxt]] * (2 if w == "double" else 3))
+                        i += 2
+                        continue
+                if w in mapping:
+                    out.append(mapping[w])
+                else:
+                    out.extend([c for c in w if c.isdigit()])
+                i += 1
+            return "".join(out)
+
+        # ------------------------------------------------------------------
+        # 🌎 NORMALIZATION → E.164 (+14155552671)
+        # ------------------------------------------------------------------
+        raw_digits = _re.sub(r"\D", "", dtmf_digits) if dtmf_digits else _re.sub(r"\D", "", _spoken_to_digits(speech_text))
+        default_country = (session_data[call_sid].get("country") or COUNTRY or "US").upper()
+        raw_for_e164 = (speech_text or raw_digits or "").strip()
+        phone_e164 = ""
+
+        try:
+            # ✅ Unified logic: both cancel & reschedule require explicit user number
+            if raw_for_e164.startswith("+"):
+                digits = "".join(ch for ch in raw_for_e164[1:] if ch.isdigit())
+                if 8 <= len(digits) <= 15:
+                    phone_e164 = "+" + digits
+            else:
+                debug_print(f"collect_cancel_phone_number: normalizing via {default_country} from='{raw_for_e164}'")
+                phone_e164 = normalize_phone_e164(raw_for_e164 or raw_digits, default_country) or ""
+        except Exception as e:
+            debug_print(f"collect_cancel_phone_number: ⚠️ normalize_phone_e164 error → {e}")
+            phone_e164 = ""
+
+        debug_print(f"collect_cancel_phone_number: 🧪 parsed digits='{raw_digits}' default_country='{default_country}' → e164='{phone_e164 or '∅'}'")
+
+        # ------------------------------------------------------------------
+        # 🧾 VALIDATION — re-prompt if invalid
+        # ------------------------------------------------------------------
+        if not phone_e164:
+            gather = make_gather(
+                VOICE_INVALID_MSG,
+                hints="zero one two three four five six seven eight nine double triple",
+                input="speech dtmf",
+                timeout=40,
+                speech_timeout="auto",  # natural speech end detection
+                barge_in=True,
+                finish_on_key="#"
+            )
+            resp.append(gather)
+            resp.redirect("/voice")  # 👈 causes a second POST
+            return str(resp)
+
+        # ------------------------------------------------------------------
+        # 💾 SAVE PHONE NUMBER
+        # ------------------------------------------------------------------
+        session_data[call_sid]["cancel"]["phone_e164"] = phone_e164
+        session_data[call_sid]["customer"]["phone_e164"] = phone_e164
+        session_data[call_sid]["phone_e164"] = phone_e164
+        session_data[call_sid]["from_e164"] = phone_e164
+        debug_print(f"collect_cancel_phone_number: ✅ saved phone_e164={phone_e164}")
+
+        # ------------------------------------------------------------------
+        # ⏭️ NEXT STAGE — move to DOB collection (same for both flows)
+        # ------------------------------------------------------------------
+        session_data[call_sid]["stage"] = "collect_cancel_dob"
+
+        gather = make_gather(
+            VOICE_DOB_MSG,
+            input="speech dtmf",
+            timeout=30,
+            speech_timeout="auto",
+            barge_in=True,
+            finish_on_key="#"
+        )
+        resp.append(gather)
+        resp.redirect("/voice")  # 👈 causes a second POST
+        return str(resp)
+
+
 
 
 
@@ -7765,6 +8193,7 @@ def voice():
                 finish_on_key="#"
             )
             resp.append(gather)
+            resp.redirect("/voice")  # 👈 causes a second POST
             return str(resp)
 
         # Reset silence counter
@@ -7800,12 +8229,91 @@ def voice():
             session_data[call_sid]["retry_collect_cancel_dob"] = retries
             debug_print(f"collect_cancel_dob: ❌ parse failed → Retry={retries}")
 
+           # ----------------------------------------------------------------------
+            # ❌ INVALID OR UNPARSED INPUT — handle user retry logic
+            # ----------------------------------------------------------------------
             if retries >= 3:
+                # 🎯 CONDITION:
+                #   User failed three times to give a valid input (e.g., invalid date or phone number).
+
+                # 🗣️ Twilio will speak this final apology message — no input collection here.
                 resp.say(gpt_speak(MSG_MAX_RETRIES), VOICE)
+
+                # ☎️ Immediately hang up the call after speaking.
                 resp.hangup()
+
+                # 🧹 Clean up session data on server side.
                 session_data.pop(call_sid, None)
+
+                # 🚀 Return TwiML to Twilio (no input collected, call ends).
                 return str(resp)
 
+
+            # ----------------------------------------------------------------------
+            # 🔁 OTHERWISE — re-prompt the user for another attempt
+            # ----------------------------------------------------------------------
+
+            # 🧩 STEP 1: Create a new <Gather> element
+            # ----------------------------------------------------------------------
+            # The <Gather> element tells Twilio to:
+            #   1️⃣ Play a message (MSG_RETRY)
+            #   2️⃣ Wait for speech or keypad input (Digits)
+            #
+            # ⚙️ IMPORTANT BEHAVIOR ABOUT `action`:
+            #   - If make_gather() specifies an action like:
+            #         action="/voice"
+            #     then, after the user responds, Twilio POSTs the collected
+            #     SpeechResult or Digits back to that /voice URL.
+            #
+            #   - ⚠️ If NO action is provided:
+            #         (for example, make_gather(..., action=None))
+            #     then Twilio automatically POSTs the result back to the
+            #     *same URL that served this TwiML response*.
+            #     That means:
+            #         → If this came from POST /voice,
+            #           Twilio will automatically call /voice again
+            #           after the user finishes speaking.
+            #
+            #   - ✅ So, even if you omit the `action` argument,
+            #     Twilio will still return the input to your current route
+            #     (which is your Flask `@app.route("/voice")`).
+            #
+            #   - ❗BUT: If you later move this Gather into another endpoint
+            #     (like /collect_dob), and you don’t define an action,
+            #     then Twilio will POST back to that *new* endpoint instead.
+            #
+            # TL;DR:
+            #   • action=None → POSTs back to the *same route* that sent the Gather.
+            #   • action="/voice" → explicitly POSTs back to /voice.
+            #   • action="/next_stage" → POSTs back to that URL instead.
+            #
+            #   In your code, both result in the same behavior because
+            #   the Gather was created inside the /voice route.
+            #
+
+
+            #---------------------------------------------------------------------
+            # 🔁 OTHERWISE — re-prompt the user for another attempt
+            # ----------------------------------------------------------------------
+
+            # 🧩 STEP 1 — Create a <Gather> block:
+            # -------------------------------------------------------------
+            # make_gather() builds a Twilio <Gather> element, which tells
+            # Twilio:
+            #   → “Play this prompt to the caller”
+            #   → “Then start listening for voice or keypad input”
+            #
+            # ⚙️ The parameters define how Twilio will listen:
+            #   MSG_RETRY         → spoken prompt message
+            #   hints=...         → helps Twilio's speech model recognize digits/words
+            #   num_digits=8      → accept up to 8 digits
+            #   timeout=25        → wait up to 25 seconds before timeout
+            #   speech_timeout=auto → automatically stop after silence
+            #   finish_on_key="#" → user can press # to end early
+            #
+            # 🧠 This line *creates* the instruction — but doesn't yet
+            #     attach it to the TwiML response.
+            #     (So far, Flask only built a Python object.)
             gather = make_gather(
                 MSG_RETRY,
                 hints="zero one two three four five six seven eight nine",
@@ -7814,8 +8322,79 @@ def voice():
                 speech_timeout="auto",
                 finish_on_key="#"
             )
+
+            # ----------------------------------------------------------------------
+            # 📎 STEP 2 — Append the <Gather> element to the VoiceResponse
+            # ----------------------------------------------------------------------
+            # resp.append(gather)
+            #
+            # 🧩 PURPOSE:
+            #   Adds the <Gather> block (and its prompt) to the Twilio
+            #   VoiceResponse XML structure being built in memory.
+            #
+            # 🧠 Think of `resp` as a container (like <Response>...</Response>)
+            #   that Twilio expects to receive.
+            #
+            # 🧱 Example TwiML after this line:
+            #     <Response>
+            #         <Gather input="speech dtmf" timeout="25">
+            #             <Say>Please say your date of birth...</Say>
+            #         </Gather>
+            #     </Response>
+            #
+            # 💡 Note:
+            #   • This does NOT send anything yet.
+            #   • Twilio has NOT received this XML.
+            #   • It’s just being built in Python memory.
+            #
+            # ✅ This step defines what Twilio will later execute.
             resp.append(gather)
+
+            # ----------------------------------------------------------------------
+            # 🚀 STEP 3 — Return TwiML to Twilio (return str(resp))
+            # ----------------------------------------------------------------------
+            # return str(resp)
+            #
+            # 🧩 PURPOSE:
+            #   Converts the `resp` object into an XML string (TwiML)
+            #   and sends it back to Twilio as the HTTP response.
+            #
+            # 🧭 WHAT HAPPENS NEXT:
+            #   1️⃣ Twilio receives the TwiML (XML instructions).
+            #   2️⃣ Twilio *executes* them in real time:
+            #         → Speaks the message inside <Say>.
+            #         → Activates the <Gather> to listen for voice or digits.
+            #   3️⃣ When the user responds, Twilio automatically sends
+            #       a new POST request back to your Flask route (/voice)
+            #       containing SpeechResult or Digits.
+            #
+            # 🔁 EFFECT:
+            #   - `append()` builds the structure of the response.
+            #   - `return str(resp)` sends it back to Twilio for execution.
+            #
+            # 💬 Analogy:
+            #   - append() = “write instructions on paper”
+            #   - return str(resp) = “hand the paper to Twilio to act on it”
+            #
+            # 🧠 Without `return str(resp)`, Twilio never receives the XML,
+            #   so it can’t play or gather anything — the call would hang.
+            # 🚫 DO NOT NEED THIS:
+            # resp.redirect("/voice")
+
+            # 🔍 WHY:
+            #   • By default, Twilio posts the user’s response (SpeechResult or Digits)
+            #     back to the *same endpoint* that generated this TwiML.
+            #   • In this case, that’s /voice.
+            #   • So even without redirect(), your code will receive the response again
+            #     in the same function via:
+            #         speech_result = request.values.get("SpeechResult")
+            #         dtmf_digits   = request.values.get("Digits")
+            #
+            # ✅ This single return is enough — Twilio automatically calls /voice again.
+            resp.redirect("/voice")  # 👈 causes a second POST
             return str(resp)
+
+
 
         # ------------------------------------------------------------------
         # 📆 RANGE VALIDATION — must be between 1900 and today
@@ -7845,6 +8424,7 @@ def voice():
                     finish_on_key="#"
                 )
                 resp.append(gather)
+                resp.redirect("/voice")  # 👈 causes a second POST
                 return str(resp)
 
         except Exception as e:
@@ -7858,6 +8438,7 @@ def voice():
                 finish_on_key="#"
             )
             resp.append(gather)
+            resp.redirect("/voice")  # 👈 causes a second POST
             return str(resp)
 
         # ------------------------------------------------------------------
