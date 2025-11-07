@@ -9431,8 +9431,13 @@ def voice():
             # Prompt the user to specify a new date and time
             resp.append(make_gather(
                 "Your previous appointment has been cancelled. "
-                "Please say the new date and time for your appointment, for example, 'October 12th at 9 a.m.'"
+                "Let us go and book your new appointment, say for example, 'October 12th at 9 a.m.'"
             ))
+            msg = (
+                    "Your previous appointment has been cancelled. "
+                    "Let us go and book your new appointment, say for example, 'October 12th at 9 a.m.'"
+                )
+            debug_print(f"🗣️ Prompt → {msg}")
             resp.redirect("/voice")
 
             debug_print(f"cancel_appt_confirm: ⏱️ total stage time {_time_mod.perf_counter() - t0:.3f}s")
