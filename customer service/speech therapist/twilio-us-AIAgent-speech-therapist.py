@@ -4875,7 +4875,7 @@ def voice():
             if origin_stage == "book":
                 next_stage = "collect_dr_info"     # Booking flow
                 msg = VOICE_CORRECT_PIN_BOOK_MSG
-            elif origin_stage == "cancel":
+            elif origin_stage in ("cancel", "reschedule"):
                 next_stage = "collect_dr_info"     # Cancel flow (later leads to collect_cancel_time_date)
                 msg = VOICE_CORRECT_PIN_CANCEL_MSG
             elif origin_stage == "update_cc":
