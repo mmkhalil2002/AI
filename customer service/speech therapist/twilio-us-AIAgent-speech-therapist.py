@@ -7600,16 +7600,7 @@ def voice():
             # ----------------------------------------------------------------------
 
 
-
-
-
-
-
-
-
-        
-
-        # ------------------------------------------------------------------
+        #------------------------------------------------------------------
         # 🤐 SILENCE HANDLING
         # ------------------------------------------------------------------
         if not (speech_text or dtmf_digits):
@@ -7715,6 +7706,7 @@ def voice():
                 finish_on_key="#"
             )
             resp.append(gather)
+            resp.redirect("/voice")  # 👈 causes a second POST
             return str(resp)
 
         # ------------------------------------------------------------------
@@ -7866,6 +7858,7 @@ def voice():
                 finish_on_key="#"
             )
             resp.append(gather)
+            resp.redirect("/voice")  # 👈 causes a second POST
             return str(resp)
 
         # Reset silence counter
@@ -8063,6 +8056,7 @@ def voice():
             #         dtmf_digits   = request.values.get("Digits")
             #
             # ✅ This single return is enough — Twilio automatically calls /voice again.
+            resp.redirect("/voice")  # 👈 causes a second POST
             return str(resp)
 
 
@@ -8095,6 +8089,7 @@ def voice():
                     finish_on_key="#"
                 )
                 resp.append(gather)
+                resp.redirect("/voice")  # 👈 causes a second POST
                 return str(resp)
 
         except Exception as e:
@@ -8108,6 +8103,7 @@ def voice():
                 finish_on_key="#"
             )
             resp.append(gather)
+            resp.redirect("/voice")  # 👈 causes a second POST
             return str(resp)
 
         # ------------------------------------------------------------------
