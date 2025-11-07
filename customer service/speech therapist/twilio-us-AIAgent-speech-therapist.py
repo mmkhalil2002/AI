@@ -7497,17 +7497,117 @@ def voice():
 
             # Using speech_timeout='auto' lets Twilio stop automatically after the caller pauses,
             # instead of a fixed 3 s delay. This gives a smoother experience.
+
+            # ----------------------------------------------------------------------
+            # 🧩 Create a <Gather> instruction — tells Twilio to listen for user input
+            # ----------------------------------------------------------------------
             gather = make_gather(
-                "",                     # no spoken prompt; just extend listening
-                input="dtmf speech",
-                timeout=40,           # ⏳ max time before gather ends
-                num_digits=15,          # allow up to 15 digits (international)
-                speech_timeout="auto",  # 🔊 auto-end when user stops talking
-                barge_in=True,
-                finish_on_key="#"
+                "",                     # 🗣️ No spoken prompt — Twilio will *not* play any message.
+                                        #    The line is intentionally empty because we only want
+                                        #    to keep listening (e.g., caller is already mid-entry).
+
+                input="dtmf speech",    # 🎙️ Accept both keypad (DTMF) and voice input.
+                                        #    Twilio will automatically capture either type.
+
+                timeout=40,             # ⏳ Maximum time (in seconds) Twilio will wait for input.
+                                        #    If the user remains *completely silent* for 40 seconds,
+                                        #    the <Gather> automatically ends (timeout event triggers).
+
+                num_digits=15,          # 🔢 Maximum number of digits Twilio will collect if user presses keys.
+
+                speech_timeout="auto",  # 🧠 Voice auto-detection:
+                                        #    - Twilio listens until the user stops speaking naturally.
+                                        #    - There’s no fixed silence window — it uses Voice Activity Detection (VAD).
+                                        #    - When the user finishes talking, Twilio ends the <Gather> automatically.
+
+                barge_in=True,          # ⚡ (Usually relevant when a prompt is playing.)
+                                        #    Here, since we have no spoken message, it’s harmless.
+                                        #    If a prompt were playing, user input could interrupt it.
+
+                finish_on_key="#"       # 🔚 Caller can press "#" to manually end input early.
+                                        #    Useful if the user knows they’re done entering digits.
             )
+
+            # ----------------------------------------------------------------------
+            # 🧱 Add the <Gather> instruction to the TwiML <Response> object
+            # ----------------------------------------------------------------------
             resp.append(gather)
+            #
+            # 💡 This does **not** execute any call logic yet — it just builds the XML response
+            #    that Flask will send back to Twilio.
+            #
+            # 🧱 Internally, the XML now looks like:
+            #    <Response>
+            #       <Gather input="speech dtmf" timeout="40" speechTimeout="auto" ... />
+            #    </Response>
+            #
+            # Twilio will execute this as:
+            #   1️⃣ Start listening immediately (no prompt).
+            #   2️⃣ Wait up to 40 seconds for user input.
+            #   3️⃣ If user speaks → auto-stop when speech ends.
+            #   4️⃣ If user presses digits → stop when done or "#" pressed.
+            #   5️⃣ If user stays silent for 40 seconds → timeout triggers.
+            #
+            # 🧩 At this moment, Flask has *not* returned anything yet.
+            # ----------------------------------------------------------------------
+
+            # ----------------------------------------------------------------------
+            # ⚙️ Add <Redirect> instruction — handles silence timeout
+            # ----------------------------------------------------------------------
+            resp.redirect("/voice")
+            #
+            # 🧠 PURPOSE:
+            #   - After the <Gather> finishes (either user input *or* timeout),
+            #     Twilio needs to know *what to do next*.
+            #
+            # ✅ When user *speaks or presses digits*:
+            #   - Twilio immediately POSTs SpeechResult or Digits to /voice.
+            #   - The redirect is ignored because input was already captured.
+            #
+            # 🔇 When user *stays silent* (no input for 40 seconds):
+            #   - The <Gather> times out.
+            #   - Twilio sees <Redirect /voice> and automatically POSTs to /voice again.
+            #   - This lets your Flask app re-enter and handle the "silence retry" logic.
+            #
+            # ⚠️ WITHOUT THIS LINE:
+            #   - Twilio would not call your app again after silence.
+            #   - The call would appear to "hang" or do nothing after 1 timeout.
+            #
+            # 💡 So this <Redirect> is what makes multi-silence retry logic possible.
+            # ----------------------------------------------------------------------
+
+            # ----------------------------------------------------------------------
+            # 🚀 Return the TwiML response to Twilio for execution
+            # ----------------------------------------------------------------------
             return str(resp)
+            #
+            # 🧩 PURPOSE:
+            #   - Converts the VoiceResponse (`resp`) object into TwiML XML text.
+            #   - Sends that XML back to Twilio as the HTTP response.
+            #
+            # 🧭 Twilio immediately executes it:
+            #   - Starts the <Gather> listener.
+            #   - Waits for user action.
+            #   - If user responds → Twilio POSTs the result (SpeechResult or Digits) to /voice.
+            #   - If user silent → waits 40s → follows <Redirect /voice> and POSTs again.
+            #
+            # 🧠 KEY POINTS:
+            #   - append() → adds the instruction to the XML.
+            #   - redirect() → defines fallback when timeout happens.
+            #   - return str(resp) → actually *sends* that XML back to Twilio.
+            #
+            # ✅ So in both cases (speaking or silence), your /voice route gets re-triggered.
+            # ----------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+        
 
         # ------------------------------------------------------------------
         # 🤐 SILENCE HANDLING
@@ -7534,6 +7634,7 @@ def voice():
                 finish_on_key="#"
             )
             resp.append(gather)
+            resp.redirect("/voice")
             return str(resp)
 
         # ✅ Reset silence counter
