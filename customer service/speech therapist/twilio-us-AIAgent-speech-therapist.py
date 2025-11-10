@@ -5688,13 +5688,14 @@ def voice():
             gather = make_gather(
                 MSG_SILENCE_REPROMPT,
                 input="speech dtmf",
-                language="en-US",
+                language="en-GB",   # it was before en-US
                 hints=FOREIGN_NAME_HINTS,  # helps speech ASR
                 timeout=6,
                 speech_timeout="auto",
                 finish_on_key="#",
                 barge_in=True,
                 action="/voice", method="POST",
+                hints=FOREIGN_NAME_HINTS
             )
             resp.append(gather)
             resp.redirect("/voice")  # safety net if still silent
@@ -5957,13 +5958,14 @@ def voice():
                     gather = make_gather(
                         MSG_T9_NO_MATCH_REPROMPT,
                         input="speech dtmf",
-                        language="en-US",
+                        language="en-GB",    # was en-US
                         hints=FOREIGN_NAME_HINTS,
                         timeout=6,
                         speech_timeout="auto",
                         finish_on_key="#",
                         barge_in=True,
                         action="/voice", method="POST",
+                        hints=FOREIGN_NAME_HINTS
                     )
                     resp.append(gather)
                     resp.redirect("/voice")
@@ -6299,13 +6301,14 @@ def voice():
             gather = make_gather(
                 MSG_INVALID_NAME_REPROMPT,
                 input="speech dtmf",
-                language="en-US",
+                language="en-GB",   # wasen-US
                 hints=FOREIGN_NAME_HINTS,
                 timeout=6,
                 speech_timeout="5",
                 finish_on_key="#",
                 barge_in=True,
                 action="/voice", method="POST",
+                hints=FOREIGN_NAME_HINTS
             )
             resp.append(gather)
             resp.redirect("/voice")  # Retry loop for silence or invalid input
@@ -6323,13 +6326,14 @@ def voice():
         gather = make_gather(
             MSG_THANK_YOU_NEXT_LASTNAME.format(first_name=first_name),
             input="speech dtmf",
-            language="en-US",
+            language="en-GB",   # was en-US
             hints=FOREIGN_NAME_HINTS,   # help recognize family names like 'Ng', 'Lopez', 'Al-Sayed'
             timeout=6,
             speech_timeout="5",
             finish_on_key="#",
             barge_in=True,
             action="/voice", method="POST",
+            hints=FOREIGN_NAME_HINTS
         )
         resp.append(gather)
         resp.redirect("/voice")  # If silent on last-name stage → re-prompt
@@ -6457,6 +6461,7 @@ def voice():
                 barge_in=True,
                 action="/voice",
                 method="POST",
+                hints=FOREIGN_NAME_HINTS
             )
             gather.say(gpt_speak(MSG_SILENCE_REPROMPT), VOICE)
             resp.append(gather)
@@ -6612,6 +6617,7 @@ def voice():
                 barge_in=True,
                 action="/voice",
                 method="POST",
+                hints=FOREIGN_NAME_HINTS
             )
             gather.say(gpt_speak(MSG_INVALID_NAME_REPROMPT), VOICE)
             resp.append(gather)
@@ -6641,6 +6647,7 @@ def voice():
             barge_in=True,
             action="/voice",
             method="POST",
+            hints=FOREIGN_NAME_HINTS
         )
         resp.append(gather)
         resp.redirect("/voice")
