@@ -6616,7 +6616,6 @@ def voice():
                 barge_in=True,
                 action="/voice",
                 method="POST",
-                hints=FOREIGN_NAME_HINTS
             )
             gather.say(gpt_speak(MSG_INVALID_NAME_REPROMPT), VOICE)
             resp.append(gather)
