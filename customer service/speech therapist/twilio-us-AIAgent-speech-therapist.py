@@ -1,5 +1,5 @@
 #=======
-# update  11/05/2025 time_saved  100725
+# update  11/08/2025
 #  
 # =========================
 # Standard library imports
@@ -3158,10 +3158,14 @@ def voice():
             hints = "book,cancel,change,reschedule,update,update card,voicemail,leave message"
             return (
                 "I didn’t hear anything. Say 'book appointment' or press 1. "
-                "Say 'cancel appointment' or press 2. "
-                "Say 'change appointment' or press 3. "
-                "Say 'update credit card' or press 4. "
-                "Say 'leave voicemail' or press 5.",
+                 "Say 'book appointment' or press 1. "
+                 "Say 'cancel appointment' or press 2. "
+                 "say 'new customer' or press 3."
+                 "Say 'change appointment' or press 4. "
+                 "Say 'update credit card' or press 5. "
+                 "Say 'update pin number. or press 6 "
+                 "Say 'update insurance info. or press 7 "
+                 "Say 'leave voicemail' or press 8."
                 hints
             )
 
@@ -3340,9 +3344,12 @@ def voice():
             "Thank you for calling EPIC therapist. "
             "Say 'book appointment' or press 1. "
             "Say 'cancel appointment' or press 2. "
-            "Say 'change appointment' or press 3. "
-            "Say 'update credit card' or press 4. "
-            "Say 'leave voicemail' or press 5."
+            "say 'new customer' or press 3."
+            "Say 'change appointment' or press 4. "
+            "Say 'update credit card' or press 5. "
+            "Say 'update pin number. or press 6 "
+            "Say 'update insurance info. or press 7 "
+            "Say 'leave voicemail' or press 8."
         )
 
         # Build a Twilio <Gather> block:
@@ -3393,7 +3400,7 @@ def voice():
         choice = None
         if dtmf_digits and len(dtmf_digits) == 1 and dtmf_digits in "1234567":
             choice = dtmf_digits
-        elif lower in {"1", "2", "3", "4", "5", "6", "7"}:
+        elif lower in {"1", "2", "3", "4", "5", "6", "7","8"}:
             choice = lower
 
         # ----------------------------------------------------------------------
@@ -3403,16 +3410,18 @@ def voice():
             choice = "1"
         elif any(word in lower for word in ["cancel", "delete", "remove"]):
             choice = "2"
-        elif any(word in lower for word in ["reschedule", "change", "move"]):
+        elif any(word in lower for word in ["new", "user", "new customer"]):
             choice = "3"
-        elif any(word in lower for word in ["credit", "card", "payment"]):
+        elif any(word in lower for word in ["reschedule", "change", "move"]):
             choice = "4"
-        elif any(word in lower for word in ["pin", "password", "pin number"]):
+        elif any(word in lower for word in ["credit", "card", "payment"]):
             choice = "5"
-        elif any(word in lower for word in ["insurance", "health", "medical"]):
+        elif any(word in lower for word in ["pin", "password", "pin number"]):
             choice = "6"
-        elif any(word in lower for word in ["voicemail", "message", "record"]):
+        elif any(word in lower for word in ["insurance", "health", "medical"]):
             choice = "7"
+        elif any(word in lower for word in ["voicemail", "message", "record"]):
+            choice = "8"
 
         # ----------------------------------------------------------------------
         # ✅ Route user choice (speech or keypad)
@@ -3470,7 +3479,27 @@ def voice():
                 return str(resp)
 
             # 3️⃣ Reschedule Appointment
+             # 1️⃣ new customer
             if choice == "3":
+                print("📅 DTMF=1 → booking (start with phone collection)")
+                session_data.setdefault(call_sid, {})
+                session_data[call_sid].update({
+                    "stage": "collect_phone",
+                    "origin_stage": "register",
+                    "booking": {},
+                    "retry_booking": 0,
+                    "retry_time": 0
+                })
+                prompt = "Please say or enter your ten-digit phone number, then press pound."
+                gather = make_gather(prompt, input="speech dtmf", timeout=6,
+                                    speech_timeout="auto", barge_in=True,
+                                    finish_on_key="#", num_digits=10)
+                resp.append(gather)
+                resp.redirect("/voice")
+                return str(resp)
+
+            # 2️⃣ Cancel Appointment (🔒 secure path)
+            if choice == "4":
                 debug_print("🔁 DTMF=3 → reschedule (cancel then rebook)")
                 session_data[call_sid] = {
                     "stage": "collect_cancel_phone_number",
@@ -3505,7 +3534,7 @@ def voice():
 
 
             # 4️⃣ Update Credit Card
-            if choice == "4":
+            if choice == "5":
                 print("💳 DTMF=4 → update credit card")
                 session_data.setdefault(call_sid, {})
                 session_data[call_sid].update({
@@ -3513,12 +3542,32 @@ def voice():
                     "cc_update": {"active": True},
                     "retry_booking": 0
                 })
-                resp.say(gpt_speak("You said you want to update your credit card information. Please hold while we process this request."), VOICE)
+
+                
+                prompt = (
+                            "You said you want to update your credit card information. Please hold while we process this request."
+                         )
+                gather = make_gather(
+                    prompt,
+                    input="speech dtmf",
+                    num_digits=10,
+                    finish_on_key="#",
+                    timeout=10,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    language="en-US",
+                )
+
+                resp.append(gather)
                 resp.redirect("/voice")
+                save_session(call_sid)
                 return str(resp)
 
+
+                
+
             # 5️⃣ Update PIN Number
-            if choice == "5":
+            if choice == "6":
                 print("🔢 DTMF=5 → update PIN number")
                 session_data.setdefault(call_sid, {})
                 session_data[call_sid]["stage"] = "update_pin_number"
@@ -3526,7 +3575,7 @@ def voice():
                 return str(resp)
 
             # 6️⃣ Update Insurance Info
-            if choice == "6":
+            if choice == "7":
                 print("🏥 DTMF=6 → update insurance information")
                 session_data.setdefault(call_sid, {})
                 session_data[call_sid]["stage"] = "update_insurance_information"
@@ -3534,7 +3583,7 @@ def voice():
                 return str(resp)
 
             # 7️⃣ Leave Voicemail
-            if choice == "7":
+            if choice == "8":
                 print("📩 DTMF=7 → voicemail")
                 session_data.setdefault(call_sid, {})
                 session_data[call_sid]["stage"] = "voicemail"
@@ -4042,6 +4091,12 @@ def voice():
 
 
 
+  
+
+
+
+
+
     elif stage == "collect_dob":
         # ----------------------------------------------------------------------
         # 🎂 Stage: collect_dob — capture and validate date of birth
@@ -4068,7 +4123,8 @@ def voice():
             "Please enter 2 digits for month, 2 for day, and 4 for year, then press #."
         )
         VOICE_NOT_FOUND_MSG = (
-            "are u a new customer?, if you are a new customer, press 1. If you are an existing customer, press 2."
+            "We could not find your record. "
+            "You must register first as a new customer with the clinic before booking an appointment."
         )
         VOICE_NEW_CUSTOMER_MSG = (
             "We found your record, but your registration with the clinic is not complete. "
@@ -4077,6 +4133,9 @@ def voice():
         VOICE_PIN_PROMPT_MSG = (
             "Thank you. For security verification, please enter your six digit PIN number now, "
             "followed by the pound key. If you prefer, you can also say each digit slowly."
+        )
+        VOICE_REGISTER_ROUTE_MSG = (
+            "Let's start your registration. Please say or enter your phone number now, then press pound."
         )
 
         # ----------------------------------------------------------------------
@@ -4126,7 +4185,6 @@ def voice():
                 )
                 resp.append(g)
                 sd["stage"] = "collect_dob"
-                save_session(call_sid)
                 resp.redirect("/voice")
                 return str(resp)
 
@@ -4166,6 +4224,7 @@ def voice():
                 #   "July 3rd, 1956."  → we need to make it machine-friendly like "July 3 1956"
                 # ----------------------------------------------------------------------
 
+                # 🔹 Removes punctuation at the *end* of the spoken text.
                 t = _re.sub(r"[.,;:]+$", "", speech_text)
 
                 # 🔹 Removes punctuation at the *end* of the spoken text.
@@ -4177,11 +4236,11 @@ def voice():
 
                 t = _re.sub(r"[,\.;:]", " ", t)
 
+                
                 # 🔹 Replaces punctuation *inside* the string with spaces.
                 #   - Pattern: [,\.;:]
                 #       • Matches commas, periods, semicolons, or colons.
                 #   ✅ Example: "July 3rd, 1956" → "July 3rd 1956"
-
                 t = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=_re.IGNORECASE)
 
                 # 🔹 Removes ordinal suffixes (st, nd, rd, th) from day numbers.
@@ -4191,7 +4250,6 @@ def voice():
                 #       • (st|nd|rd|th) → matches common ordinal suffixes.
                 #       • \b → another word boundary to prevent partial matches.
                 #   ✅ Example: "July 3rd 1956" → "July 3 1956"
-
                 t = _re.sub(r"\s+", " ", t).strip()
 
                 # 🔹 Collapses multiple whitespace characters into one space and trims edges.
@@ -4208,7 +4266,6 @@ def voice():
                 dob_date = date(parsed.year, parsed.month, parsed.day)
                 debug_print("[collect_dob] ✅ parsed DOB from speech")
             except Exception as e:
-                # ❌ Unable to parse → re-prompt the user
                 debug_print(f"[collect_dob] ❌ speech parse failed → {e}")
                 sd["stage"] = "collect_dob"
                 g = make_gather(
@@ -4220,7 +4277,6 @@ def voice():
                     finish_on_key="#"
                 )
                 resp.append(g)
-                save_session(call_sid)
                 resp.redirect("/voice")
                 return str(resp)
 
@@ -4242,7 +4298,6 @@ def voice():
                 finish_on_key="#"
             )
             resp.append(g)
-            save_session(call_sid)
             resp.redirect("/voice")
             return str(resp)
 
@@ -4271,45 +4326,66 @@ def voice():
             debug_print("[collect_dob] ⚠️ phone_e164 missing before lookup")
 
         # ----------------------------------------------------------------------
-        # 🔀 Branching based on lookup result
+        # 🔀 NEW LOGIC — handle by origin_stage and registration status
         # ----------------------------------------------------------------------
-        if not found:
-            sd["stage"] = "verify_customer_type"
+        origin_stage = sd.get("origin_stage", "").strip().lower()
+        debug_print(f"[collect_dob] 🔁 origin_stage={origin_stage}, found={found}, customer_status={customer_status}")
+
+        # 1️⃣ If this is a registration flow → go to collect_phone
+        if origin_stage == "register":
+            sd["stage"] = "collect_phone"
             g = make_gather(
-                VOICE_NOT_FOUND_MSG,
-                input="dtmf",
-                timeout=3,
+                VOICE_REGISTER_ROUTE_MSG,
+                input="speech dtmf",
+                timeout=6,
+                speech_timeout="auto",
                 barge_in=True,
                 finish_on_key="#"
             )
             resp.append(g)
-            save_session(call_sid)
             resp.redirect("/voice")
-            debug_print("[collect_dob] 🔀 not found → verify_customer_type")
+            debug_print("[collect_dob] 🔁 origin_stage=register → collect_phone")
             return str(resp)
 
-        # 🟡 Incomplete registration (new)
-        if customer_status == "new":
-            debug_print("[collect_dob] 🟡 incomplete registration → hangup")
+        # 2️⃣ Booking flow but user not found → must register first
+        if origin_stage == "book" and not found:
+            resp.say(gpt_speak(VOICE_NOT_FOUND_MSG), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            debug_print("[collect_dob] ❌ book flow → user not found → ask to register")
+            return str(resp)
+
+        # 3️⃣ Booking flow with customer_status=new → registration incomplete
+        if origin_stage == "book" and customer_status == "new":
             resp.say(gpt_speak(VOICE_NEW_CUSTOMER_MSG), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
+            debug_print("[collect_dob] 🟡 book flow → incomplete registration → hangup")
             return str(resp)
 
-        # ✅ Valid existing customer → proceed to PIN verification
-        sd["stage"] = "collect_pin_number"
-        g = make_gather(
-            VOICE_PIN_PROMPT_MSG,
-            input="speech dtmf",
-            timeout=5,
-            speech_timeout="auto",
-            barge_in=True,
-            finish_on_key="#"
-        )
-        resp.append(g)
-        save_session(call_sid)
-        resp.redirect("/voice")
-        debug_print(f"[collect_dob] ✅ proceed → collect_pin_number (doctor_name={sd.get('doctor_name')})")
+        # 4️⃣ Booking flow with customer_status=current → proceed to PIN
+        if origin_stage == "book" and customer_status == "current":
+            sd["stage"] = "collect_pin_number"
+            g = make_gather(
+                VOICE_PIN_PROMPT_MSG,
+                input="speech dtmf",
+                timeout=5,
+                speech_timeout="auto",
+                barge_in=True,
+                finish_on_key="#"
+            )
+            resp.append(g)
+            resp.redirect("/voice")
+            debug_print(f"[collect_dob] ✅ book flow → current user → collect_pin_number")
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # Fallback — unexpected state
+        # ----------------------------------------------------------------------
+        resp.say(gpt_speak("I could not determine your registration status. Please call the clinic for assistance."), VOICE)
+        resp.hangup()
+        debug_print("[collect_dob] ⚠️ fallback → unexpected condition")
+        session_data.pop(call_sid, None)
         return str(resp)
 
 

@@ -790,7 +790,8 @@ Purpose: Loads a dictionary mapping Google Calendar IDs to spoken-friendly docto
 #openai.api_key = "YOUR_OPENAI_API_KEY"
 
 # ---------------- Google Calendar Auth -----------------
-
+"""
+this not used any more because it diesnt use google calender any more
 
 if not os.path.exists("token.pkl"):
     flow = InstalledAppFlow.from_client_secrets_file(
@@ -811,6 +812,8 @@ else:
 #service = build("calendar", "v3", credentials=creds)
 
 # Calendar IDs are loaded from doctors.txt
+"""
+
 
 # State memory for active calls
 """
@@ -4872,7 +4875,7 @@ def voice():
             if origin_stage == "book":
                 next_stage = "collect_dr_info"     # Booking flow
                 msg = VOICE_CORRECT_PIN_BOOK_MSG
-            elif origin_stage == "cancel":
+            elif origin_stage in ("cancel", "reschedule"):
                 next_stage = "collect_dr_info"     # Cancel flow (later leads to collect_cancel_time_date)
                 msg = VOICE_CORRECT_PIN_CANCEL_MSG
             elif origin_stage == "update_cc":
@@ -5130,7 +5133,7 @@ def voice():
             if origin_stage == "book":
                 next_stage = "collect_dr_info"
                 msg = VOICE_CORRECT_PIN_BOOK_MSG
-            elif origin_stage == "cancel":
+            elif origin_stage in ("cancel", "reschedule"):
                 next_stage = "collect_dr_info"
                 msg = VOICE_CORRECT_PIN_CANCEL_MSG
             elif origin_stage == "update_cc":
@@ -7078,7 +7081,7 @@ def voice():
         # ----------------------------------------------------------------------
         sd["doctor_name"] = matched_name
 
-        if origin_stage == "cancel":
+        if origin_stage in ("cancel", "reschedule"):
             sd["stage"] = "collect_cancel_time_date"
             success_msg = VOICE_CANCEL_SUCCESS_MSG.format(doctor_name=matched_name)
         else:
@@ -8506,6 +8509,27 @@ def voice():
         debug_print("collect_cancel_time_date: 📍 Stage entered")
 
         # ----------------------------------------------------------------------
+        # 💬 VOICE PROMPTS — centralize for clarity and reuse
+        # ----------------------------------------------------------------------
+        VOICE_PROMPT_INITIAL = (
+            "Please say the date and time of the appointment you want to cancel. "
+            "For example, say November third at ten A M."
+        )
+        VOICE_PROMPT_RETRY = (
+            "I didn’t catch that. Please say the appointment date and time clearly, "
+            "for example, October twenty-first at 3:30 PM."
+        )
+        VOICE_PROMPT_TOO_MANY_SILENCES = (
+            "That doesn’t match any of your appointments. I’ll list your upcoming ones."
+        )
+        VOICE_PROMPT_PAST_TIME = (
+            "That appointment time has already passed. I’ll list your upcoming ones."
+        )
+        VOICE_PROMPT_SLOT_NOT_FOUND = (
+            "That doesn’t match any of your appointments. I’ll list your upcoming ones."
+        )
+
+        # ----------------------------------------------------------------------
         # 🧱 Initialize or retrieve cancellation context for this call
         # ----------------------------------------------------------------------
         cancel_ctx = session_data[call_sid].setdefault("cancel", {})
@@ -8518,8 +8542,7 @@ def voice():
         if not speech_result and not request.values.get("Digits"):
             debug_print("collect_cancel_time_date: 🆕 first entry → start prompt gather")
             gather = make_gather(
-                "Please say the date and time of the appointment you want to cancel. "
-                "For example, say November third at ten A M.",
+                VOICE_PROMPT_INITIAL,
                 input="speech dtmf",
                 timeout=25,             # ⏳ wait up to 25 seconds for user to start
                 speech_timeout="5",     # 🧠 accept up to 5s of pause in speech
@@ -8527,7 +8550,10 @@ def voice():
                 barge_in=True,
             )
             resp.append(gather)
-            save_session(call_sid)
+
+            # ⚙️ Add redirect so Twilio re-enters /voice if user is silent
+            resp.redirect("/voice")
+
             return str(resp)
 
         # ----------------------------------------------------------------------
@@ -8551,18 +8577,14 @@ def voice():
                 cancel_ctx["awaiting_input"] = False
                 session_data[call_sid]["stage"] = "cancel_appt_iterate"
                 session_data[call_sid]["skip_silence_retry"] = True
-                resp.say(
-                    gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."),
-                    VOICE,
-                )
-                save_session(call_sid)
+                resp.say(gpt_speak(VOICE_PROMPT_TOO_MANY_SILENCES), VOICE)
+                resp.redirect("/voice")  # ensure Twilio re-calls /voice for next stage
                 return str(resp)
 
-            # Otherwise, re-prompt politely without redirect
+            # Otherwise, re-prompt politely and re-enter after timeout
             resp.pause(length=1)
             gather = make_gather(
-                "Please say the date and time of the appointment you want to cancel. "
-                "For example, say October twenty-first at 3:30 PM.",
+                VOICE_PROMPT_RETRY,
                 input="speech dtmf",
                 timeout=25,              # allow time to think or speak
                 speech_timeout="5",      # wait for 5s pause before closing speech
@@ -8570,7 +8592,7 @@ def voice():
                 barge_in=True,
             )
             resp.append(gather)
-            save_session(call_sid)
+            resp.redirect("/voice")  # 👈 ensures Twilio posts again even if still silent
             return str(resp)
 
         # ✅ Reset silence counter since user provided speech
@@ -8622,7 +8644,7 @@ def voice():
             debug_print(f"collect_cancel_time_date: ⚠️ dp.parse failed → {e}")
 
         # ----------------------------------------------------------------------
-        # ❌ Retry on failed parsing
+        # ❌ Retry on failed parsing (retries < 3)
         # ----------------------------------------------------------------------
         if not matched:
             retries = cancel_ctx.get("retry_cancel_dt", 0) + 1
@@ -8632,8 +8654,7 @@ def voice():
             if retries < 3:
                 resp.pause(length=1)
                 gather = make_gather(
-                    "I didn’t catch that. Please say the appointment date and time clearly, "
-                    "for example, October twenty-first at 3:30 PM.",
+                    VOICE_PROMPT_RETRY,
                     input="speech dtmf",
                     timeout=25,
                     speech_timeout="5",
@@ -8641,17 +8662,17 @@ def voice():
                     barge_in=True,
                 )
                 resp.append(gather)
-                save_session(call_sid)
+                resp.redirect("/voice")  # ✅ Ensures Twilio comes back even if silent again
                 return str(resp)
 
-            # After 3 parse retries → fallback to iterate
+            # After 3 parse retries → fallback to iterate (list upcoming)
             debug_print("collect_cancel_time_date: 🚫 too many parse retries → iterate")
             cancel_ctx.pop("retry_cancel_dt", None)
             cancel_ctx["awaiting_input"] = False
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             session_data[call_sid]["skip_silence_retry"] = True
-            resp.say(gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."), VOICE)
-            save_session(call_sid)
+            resp.say(gpt_speak(VOICE_PROMPT_TOO_MANY_SILENCES), VOICE)
+            resp.redirect("/voice")
             return str(resp)
 
         # ----------------------------------------------------------------------
@@ -8662,8 +8683,8 @@ def voice():
             debug_print("collect_cancel_time_date: ⏳ Time is in the past → iterate")
             cancel_ctx["awaiting_input"] = False
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
-            resp.say(gpt_speak("That appointment time has already passed. I’ll list your upcoming ones."), VOICE)
-            save_session(call_sid)
+            resp.say(gpt_speak(VOICE_PROMPT_PAST_TIME), VOICE)
+            resp.redirect("/voice")  # 👈 Let Twilio continue to listing flow
             return str(resp)
 
         # ----------------------------------------------------------------------
@@ -8688,8 +8709,8 @@ def voice():
             debug_print("collect_cancel_time_date: 🚫 Slot not found → iterate")
             cancel_ctx["awaiting_input"] = False
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
-            resp.say(gpt_speak("That doesn’t match any of your appointments. I’ll list your upcoming ones."), VOICE)
-            save_session(call_sid)
+            resp.say(gpt_speak(VOICE_PROMPT_SLOT_NOT_FOUND), VOICE)
+            resp.redirect("/voice")
             return str(resp)
 
         # ----------------------------------------------------------------------
@@ -8706,10 +8727,8 @@ def voice():
 
         # Confirm with user and move to confirmation stage
         resp.say(gpt_speak(f"You said {day_part} at {time_part}. Let me confirm that appointment."), VOICE)
-        save_session(call_sid)
+        resp.redirect("/voice")  # ✅ safely continues into next confirmation step
         return str(resp)
-
-
 
 
 
@@ -9412,8 +9431,13 @@ def voice():
             # Prompt the user to specify a new date and time
             resp.append(make_gather(
                 "Your previous appointment has been cancelled. "
-                "Please say the new date and time for your appointment, for example, 'October 12th at 9 a.m.'"
+                "Let us go and book your new appointment, say for example, 'October 12th at 9 a.m.'"
             ))
+            msg = (
+                    "Your previous appointment has been cancelled. "
+                    "Let us go and book your new appointment, say for example, 'October 12th at 9 a.m.'"
+                )
+            debug_print(f"🗣️ Prompt → {msg}")
             resp.redirect("/voice")
 
             debug_print(f"cancel_appt_confirm: ⏱️ total stage time {_time_mod.perf_counter() - t0:.3f}s")
