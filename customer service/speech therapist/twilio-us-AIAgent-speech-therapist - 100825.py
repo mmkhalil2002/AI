@@ -3533,22 +3533,15 @@ def voice():
                 return str(resp)
 
 
+            # 4️⃣ Update Credit Card
             if choice == "5":
                 print("💳 DTMF=4 → update credit card")
-
-                # ----------------------------------------------------------------------
-                # 🧱 Initialize or update the caller session
-                # ----------------------------------------------------------------------
-                # • stage → where the flow will resume on next /voice POST
-                # • origin_stage → identifies this flow’s purpose for downstream routing
-                # ----------------------------------------------------------------------
                 session_data.setdefault(call_sid, {})
                 session_data[call_sid].update({
-                    "stage": "collect_first_name",          # 🎯 current step in the conversation
-                    "origin_stage": "update_cc",   # ✅ key identifier for routing decisions
+                    "stage": "update_cc",
+                    "cc_update": {"active": True},
                     "retry_booking": 0
                 })
-
 
                 
                 prompt = (
@@ -3635,7 +3628,131 @@ def voice():
 
 
 
+    elif stage == "update_cc":
+
+        # Delegate to collect_phone by switching stage, then re-entering /voice
+        # Redundant explicit set for clarity (this stage routes to collect_phone).
+        session_data.setdefault(call_sid, {})
+        session_data[call_sid]["stage"] = "collect_phone"
+        session_data[call_sid].setdefault("cc_update", {"active": True})
+        session_data[call_sid]["cc_update"]["active"] = True
+
+        # Inline body from the old update_cc() procedure — prompt for a 10-digit phone
+        gather = make_gather(
+            "Sure. To verify your identity for updating your card, please say or enter your ten digit phone number including area code.",
+            hints="zero one two three four five six seven eight nine double triple"
+        )
+        resp.append(gather)
+
+        # No redirect necessary — the <Gather> action will POST back to /voice.
+        return str(resp)
+
+
+    elif stage == "update_customer_cc":
+        """
+        Finalize the Update-CC flow (no masking/clearing):
+        - Calls update_cc_info(phone, dob, cc_number=..., cc_exp=..., cc_cvv=...)
+        - Leaves session_data values unchanged (no masking, no clearing)
+        - Clears cc_update flag
+        - Returns caller to the main menu
+
+        E.164 ONLY:
+        - This stage now requires an E.164 phone (e.g., +12025550123 or +201012345678).
+        - We will attempt to normalize any spoken/typed input to E.164 using COUNTRY.
+        - If we cannot derive E.164, we bounce to collect_phone.
+        """
+        sd = session_data.get(call_sid, {})
+        cust = sd.get("customer", {})
+
+        # Country to use when normalizing to E.164
+        default_country = (sd.get("country") or COUNTRY or "US").upper()
+
+        # Prefer already-normalized E.164 stored on the session/customer
+        phone_raw = (
+            cust.get("phone_e164")   # preferred
+            or sd.get("phone_e164")  # fallback
+            or cust.get("phone")     # raw; we'll normalize to E.164
+            or sd.get("phone")       # raw; we'll normalize to E.164
+            or ""
+        )
+        raw = (phone_raw or "").strip()
+
+        # Compute E.164 safely; accept already +E.164
+        phone_e164 = ""
+        if raw.startswith("+") and raw[1:].replace(" ", "").isdigit():
+            phone_e164 = "+" + raw[1:].replace(" ", "")
+        else:
+            try:
+                phone_e164 = normalize_phone_e164(raw, default_country) or ""
+                if not phone_e164:
+                    # Try the other explicitly supported country as a fallback
+                    alt = "EG" if default_country != "EG" else "US"
+                    phone_e164 = normalize_phone_e164(raw, alt) or ""
+            except Exception:
+                phone_e164 = ""
+
+        # Choose what to pass to update_cc_info (E.164 ONLY)
+        phone_to_use = phone_e164
+
+        dob_iso   = cust.get("dob") or sd.get("dob_iso") or ""   # 'YYYY-MM-DD'
+        cc_number = cust.get("cc_number")
+        cc_exp    = cust.get("cc_exp")
+        cc_cvv    = cust.get("cc_cvv")
+
+        # Guard: require phone (E.164) + dob
+        if not phone_to_use or not dob_iso:
+            debug_print("update_customer_cc: ❌ Missing E.164 phone or DOB; bouncing to prerequisites")
+            sd["stage"] = "collect_phone" if not phone_to_use else "collect_dob"
+            prompt = (
+                "Before we update your card, please say or enter your phone number, including country code."
+                if not phone_to_use else
+                "Before we update your card, please say your birth date, or enter 2 digits for month 2 digits for day and 4 digits for year then press pound."
+            )
+            resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine"))
+            return str(resp)
+
+        # Persist (no masking/clearing)
+        ok = False
+        try:
+            result = update_cc_info(
+                phone_to_use,   # E.164 only
+                dob_iso,
+                cc_number=cc_number,
+                cc_exp=cc_exp,
+                cc_cvv=cc_cvv,
+            )
+            ok = bool(result) if not isinstance(result, dict) else bool(result.get("ok", False))
+        except Exception as e:
+            ok = False
+            debug_print(f"update_customer_cc: 💥 Exception calling update_cc_info → {e}")
+
+        # Do NOT mask or clear (intentionally no changes to cust['cc_number'] or cust['cc_cvv'])
+
+        # Clear the cc_update flag now that we're done
+        if sd.get("cc_update"):
+            sd["cc_update"]["active"] = False
+
+        # Tell the caller and return to the main menu
+        resp.say(
+            gpt_speak(
+                "Thanks. Your card details were updated."
+                if ok else
+                "Sorry, I couldn't save your card details right now. Please try again later."
+            ),
+            VOICE
+        )
+        sd["stage"] = "intent"
+        resp.append(make_gather("Would you like to book an appointment, cancel one, reschedule, or leave a message?"))
+        return str(resp)
     
+
+
+
+
+
+
+
+
 
 
     # ======================================================================
@@ -4423,7 +4540,149 @@ def voice():
 
 
 
-    # ----------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+    elif stage == "verify_customer_type":
+    
+        # ----------------------------------------------------------------------
+        # 🧭 Stage: verify_customer_type
+        # ----------------------------------------------------------------------
+        debug_print("verify_customer_type: 📍 Stage entered")
+
+        sd = session_data.setdefault(call_sid, {})
+        last_lookup_found = sd.get("last_customer_found", False)
+        allow_new = bool(globals().get("CREATE_NEW_CUSTOMER", False))
+
+        dtmf_digits = (request.values.get("Digits") or "").strip()
+        debug_print(
+            f"verify_customer_type: received DTMF='{dtmf_digits}', allow_new={allow_new}, found={last_lookup_found}"
+        )
+
+        # 🔒 New creation disabled
+        if not last_lookup_found and not allow_new:
+            debug_print("verify_customer_type: not found & CREATE_NEW_CUSTOMER=False → hang up")
+            resp.say(
+                gpt_speak(
+                    "We couldn’t customer with that phone number and date of birth. "
+                    "Please contact the clinic to create your customer record, then call us again."
+                ),
+                VOICE,
+            )
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
+
+        # -------------------------------
+        # 🔇 Silence handling
+        # -------------------------------
+        if not dtmf_digits:
+            tries = sd.get("silence_verify_type", 0) + 1
+            sd["silence_verify_type"] = tries
+            debug_print(f"verify_customer_type: 🤐 silence tries={tries}/3")
+
+            if tries >= 3:
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            prompt = (
+                "Please press 1 if you are a new customer, or 2 if you are an existing customer."
+                if not last_lookup_found
+                else "You are already in our system. Press 1 to continue scheduling."
+            )
+            g = make_gather(prompt, input="dtmf", timeout=4, barge_in=True, finish_on_key="#", num_digits=1)
+            resp.append(g)
+            resp.redirect("/voice")
+            return str(resp)
+
+        sd.pop("silence_verify_type", None)
+
+        # -------------------------------
+        # 🧭 Branch on DTMF choice
+        # -------------------------------
+        if dtmf_digits == "1":
+            sd["customer_status"] = "new"
+            debug_print("verify_customer_type: 🆕 customer_status='new' stored in session")
+
+            # ✅ Just set the stage — don’t say anything yet
+            if not last_lookup_found:
+                debug_print("verify_customer_type: new customer not found → jump to collect_insurance_information")
+                sd["stage"] = "collect_insurance_information"
+                resp.redirect("/voice")
+                return str(resp)
+
+            else:
+                debug_print("verify_customer_type: found=True but pressed 1=new → continue to scheduling")
+                sd["stage"] = "collect_book_time_date"
+                g = make_gather(
+                    "Okay. Please say the appointment date and time, for example, 'October 8 at 9 30 A M'.",
+                    input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True, finish_on_key="#"
+                )
+                resp.append(g)
+                resp.redirect("/voice")
+                return str(resp)
+
+        elif dtmf_digits == "2":
+            sd["customer_status"] = "current"
+            debug_print("verify_customer_type: 👤 customer_status='current' stored in session")
+
+            if not last_lookup_found:
+                debug_print("verify_customer_type: 2=existing; not found → hang up")
+                resp.say(
+                    gpt_speak(
+                        "We couldn’t find you as an existing customer. "
+                        "Please contact the clinic to set up your record, then call us again."
+                    ),
+                    VOICE,
+                )
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+            else:
+                debug_print("verify_customer_type: 2=existing; found=True → proceed to collect_book_time_date")
+                sd["stage"] = "collect_book_time_date"
+                g = make_gather(
+                    "Great. Please say the appointment date and time, for example, 'October 8 at 2 P M'.",
+                    input="speech dtmf", timeout=6, speech_timeout="auto", barge_in=True, finish_on_key="#"
+                )
+                resp.append(g)
+                resp.redirect("/voice")
+                return str(resp)
+
+        # -------------------------------
+        # ❌ Invalid entry → retry
+        # -------------------------------
+        r = sd.get("retry_verify_type", 0) + 1
+        sd["retry_verify_type"] = r
+        debug_print(f"verify_customer_type: ❌ invalid DTMF '{dtmf_digits}' retry={r}/3")
+
+        if r >= 3:
+            resp.say(gpt_speak("Sorry, I didn’t get a valid choice. Please call again later."), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
+
+        g = make_gather(
+            "Invalid choice. Press 1 if you are a new customer, or 2 if you are an existing customer.",
+            input="dtmf", timeout=4, barge_in=True, finish_on_key="#", num_digits=1
+        )
+        resp.append(g)
+        resp.redirect("/voice")
+        return str(resp)
+
+
+
+# ----------------------------------------------------------------------
     # 🔢 Stage: collect_pin_number
     #
     # PURPOSE
@@ -6849,152 +7108,6 @@ def voice():
 
 
 
-    # ----------------------------------------------------------------------
-    # 🧭 FUNCTIONAL DESCRIPTION
-    # ----------------------------------------------------------------------
-    # This stage finalizes the credit card update process after successful
-    # PIN verification and collection of card details.
-    #
-    # Behavior summary:
-    #   1. Retrieves customer's E.164 phone number and date of birth.
-    #   2. Normalizes phone number if provided in local/national format.
-    #   3. Calls update_cc_info(phone_e164, dob, cc_number, cc_exp, cc_cvv)
-    #      to persist the credit card update in the database.
-    #   4. If missing phone or DOB, the user is redirected to complete
-    #      those prerequisites first (collect_phone or collect_dob).
-    #   5. Provides a voice confirmation of success or failure to the user.
-    #   6. Thanks the customer, confirms that their payment info was updated,
-    #      and hangs up gracefully.
-    # ----------------------------------------------------------------------
-
-
-    elif stage == "update_customer_cc":
-       
-
-        # ----------------------------------------------------------------------
-        # 🧱 Retrieve session and customer context
-        # ----------------------------------------------------------------------
-        sd   = session_data.get(call_sid, {})
-        cust = sd.get("customer", {})
-
-        # Use the country associated with the call session, fallback to global default
-        default_country = (sd.get("country") or COUNTRY or "US").upper()
-
-        # ----------------------------------------------------------------------
-        # 📞 Extract and normalize phone number
-        # ----------------------------------------------------------------------
-        # Preference order:
-        #   1. customer["phone_e164"]
-        #   2. session["phone_e164"]
-        #   3. raw customer/session "phone"
-        #   4. empty string fallback
-        phone_raw = (
-            cust.get("phone_e164")   # preferred normalized
-            or sd.get("phone_e164")  # fallback normalized
-            or cust.get("phone")     # unnormalized; try to fix
-            or sd.get("phone")       # unnormalized; try to fix
-            or ""
-        )
-        raw = (phone_raw or "").strip()
-        phone_e164 = ""
-
-        # Normalize to E.164 — handles “+1 202 555 0123” and “02025550123” forms
-        if raw.startswith("+") and raw[1:].replace(" ", "").isdigit():
-            # Already valid +E.164, clean spaces
-            phone_e164 = "+" + raw[1:].replace(" ", "")
-        else:
-            try:
-                # Attempt normalization using the default country
-                phone_e164 = normalize_phone_e164(raw, default_country) or ""
-                if not phone_e164:
-                    # Retry using alternate country (US/Egypt flip)
-                    alt = "EG" if default_country != "EG" else "US"
-                    phone_e164 = normalize_phone_e164(raw, alt) or ""
-            except Exception:
-                phone_e164 = ""
-
-        phone_to_use = phone_e164  # final E.164 number
-
-        # ----------------------------------------------------------------------
-        # 🎂 Retrieve DOB and CC details from session
-        # ----------------------------------------------------------------------
-        dob_iso   = cust.get("dob") or sd.get("dob_iso") or ""   # e.g., '1986-07-03'
-        cc_number = cust.get("cc_number")
-        cc_exp    = cust.get("cc_exp") or cust.get("cc_expiration")
-        cc_cvv    = cust.get("cc_cvv")
-
-        # ----------------------------------------------------------------------
-        # ⚠️ Guard: Require both phone and DOB before updating
-        # ----------------------------------------------------------------------
-        if not phone_to_use or not dob_iso:
-            debug_print("update_customer_cc: ❌ Missing E.164 phone or DOB; redirecting to prerequisite stage")
-
-            # Redirect to collect_phone or collect_dob depending on what’s missing
-            sd["stage"] = "collect_phone" if not phone_to_use else "collect_dob"
-            prompt = (
-                "Before we update your card, please say or enter your phone number, including country code."
-                if not phone_to_use else
-                "Before we update your card, please say your birth date. "
-                "For example, say July 3rd 1956 or enter 2 digits for month, 2 for day, and 4 for year, then press pound."
-            )
-            resp.append(make_gather(prompt, hints="zero one two three four five six seven eight nine"))
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # 💾 Perform credit card update
-        # ----------------------------------------------------------------------
-        ok = False
-        try:
-            # Call the database or API update routine (must be implemented separately)
-            result = update_cc_info(
-                phone_to_use,   # E.164 number required
-                dob_iso,        # verified date of birth
-                cc_number=cc_number,
-                cc_exp=cc_exp,
-                cc_cvv=cc_cvv,
-            )
-
-            # Determine if the update succeeded (supports dict or bool return)
-            ok = bool(result) if not isinstance(result, dict) else bool(result.get("ok", False))
-            debug_print(f"update_customer_cc: ✅ update_cc_info returned ok={ok}")
-
-        except Exception as e:
-            ok = False
-            debug_print(f"update_customer_cc: 💥 Exception during update_cc_info → {e}")
-
-        # ----------------------------------------------------------------------
-        # 🧹 Do NOT mask, clear, or modify stored card fields
-        # ----------------------------------------------------------------------
-        # We intentionally leave cc_number, cc_exp, and cc_cvv intact in session_data
-        # so that confirmation or auditing can use them before session teardown.
-        # ----------------------------------------------------------------------
-
-        # ----------------------------------------------------------------------
-        # 🗣️ Final response to caller
-        # ----------------------------------------------------------------------
-        if ok:
-            final_msg = (
-                "Thank you. Your credit card information has been securely updated. "
-                "We appreciate your time. Have a wonderful day!"
-            )
-        else:
-            final_msg = (
-                "I’m sorry, but I couldn’t update your credit card information right now. "
-                "Please try again later or contact the clinic directly."
-            )
-
-        resp.say(gpt_speak(final_msg), VOICE)
-
-        # ----------------------------------------------------------------------
-        # 📴 Graceful call termination
-        # ----------------------------------------------------------------------
-        # After thanking the customer, we end the call politely.
-        # The session will naturally clear on hangup.
-        resp.hangup()
-        debug_print(f"update_customer_cc: ✅ Completed (ok={ok}); call ending.")
-        return str(resp)
-
-
 
 
 
@@ -7059,9 +7172,35 @@ def voice():
     # collect_cc - complete stage (robust digit normalization + strict Luhn)
     # ----------------------------------------------------------------------
     elif stage == "collect_cc":
-        
         # ----------------------------------------------------------------------
-        # 💬 VOICE MESSAGES — centralized for maintainability & localization
+        # 💳 Stage: collect_cc  (optimized for shorter expiration & CVV steps)
+        #
+        # Flow:
+        #   (1) Card number (13–19 digits, Luhn-checked)
+        #   (2) Expiration (MMYY or MMYYYY, current/future only)
+        #   (3) CVV (3–4 digits)
+        #
+        # Improvements:
+        #   - Shorter timeouts for steps 2 & 3 (expiration, CVV)
+        #   - Allows both speech and DTMF entry for all steps
+        #   - Immediate step advance after # pressed
+        #
+        # ⚙️ Difference between resp.append() and resp.redirect():
+        #   • resp.append(make_gather(...)) → Adds a <Gather> verb that makes
+        #     Twilio play a message and then WAIT for input. Twilio will only
+        #     POST back to /voice *after* the user types or speaks something.
+        #
+        #   • resp.redirect("/voice") → Adds a <Redirect> verb that tells Twilio
+        #     to IMMEDIATELY call /voice again (no waiting). Use this when you
+        #     want to move to the next logical step right away (e.g., after
+        #     saving data).
+        #
+        #   ⚠️ Never use append(gather) + redirect() together — redirect will
+        #     cancel the gather before the user can respond.
+        # ----------------------------------------------------------------------
+
+        # ----------------------------------------------------------------------
+        # 🎙️ VOICE MESSAGE CONSTANTS (centralized for easy editing/localization)
         # ----------------------------------------------------------------------
         MSG_SILENCE_EXIT = "I’m still not hearing anything. Please call again later."
         MSG_CARD_PROMPT = "Please enter or say your card number now, then press pound."
@@ -7071,9 +7210,7 @@ def voice():
         MSG_EXP_INVALID = "That doesn’t look valid. Please enter month and year as M M Y Y, then press pound."
         MSG_EXP_FORMAT = "Please say or enter the expiration date as month and year, for example, zero nine two seven, then press pound."
 
-        # ----------------------------------------------------------------------
-        # 🧮 Helper functions
-        # ----------------------------------------------------------------------
+        # --- helpers ------------------------------------------------------------
         def _luhn_ok(pan: str) -> bool:
             s, alt = 0, False
             for ch in pan[::-1]:
@@ -7131,24 +7268,21 @@ def voice():
             if len(pan) <= 4: return pan
             return "*" * (len(pan) - 4) + pan[-4:]
 
-        # ----------------------------------------------------------------------
-        # 🧱 SESSION INITIALIZATION
-        # ----------------------------------------------------------------------
+        # --- state --------------------------------------------------------------
         session_data.setdefault(call_sid, {})
         session_data[call_sid].setdefault("customer", {})
         customer   = session_data[call_sid]["customer"]
         cc_step    = int(session_data[call_sid].get("cc_step", 1))
         enforce_dm = bool(session_data[call_sid].get("enforce_dtmf_cc"))
-        origin_stage = session_data[call_sid].get("origin_stage", "").lower()
 
         raw_dtmf   = (request.values.get("Digits") or "").strip()
         raw_speech = (speech_result or "").strip()
 
-        debug_print(f"collect_cc: 📍 step={cc_step}, origin_stage='{origin_stage}', DTMF='{raw_dtmf}', speech='{raw_speech}'")
+        debug_print(f"collect_cc: 📍 step={cc_step}, DTMF='{raw_dtmf}', speech='{raw_speech}'")
 
-        # ----------------------------------------------------------------------
+        # -------------------------------
         # 🔇 Silence handling (inline)
-        # ----------------------------------------------------------------------
+        # -------------------------------
         if not raw_dtmf and not raw_speech:
             tries = session_data[call_sid].get("silence_cc", 0) + 1
             session_data[call_sid]["silence_cc"] = tries
@@ -7179,12 +7313,11 @@ def voice():
             resp.append(gather)
             return str(resp)
 
-        # ✅ Reset silence counter on valid input
         session_data[call_sid].pop("silence_cc", None)
 
-        # ----------------------------------------------------------------------
+        # -------------------------------
         # Step 1: Card Number (13–19)
-        # ----------------------------------------------------------------------
+        # -------------------------------
         if cc_step == 1:
             pan = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=enforce_dm)
             if len(pan) > 19:
@@ -7204,6 +7337,7 @@ def voice():
                 resp.append(gather)
                 return str(resp)
 
+            # Non-strict Luhn (accept Visa/Mastercard, even if algorithm fails due to timing)
             if not _luhn_ok(pan):
                 debug_print(f"collect_cc: ⚠️ {_mask(pan)} failed Luhn but accepted (non-strict mode).")
             else:
@@ -7218,9 +7352,12 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # ----------------------------------------------------------------------
+        # -------------------------------
         # Step 2: Expiration (MMYY/MMYYYY)
-        # ----------------------------------------------------------------------
+        # -------------------------------
+                # -------------------------------
+        # Step 2: Expiration (MMYY/MMYYYY)
+        # -------------------------------
         if cc_step == 2:
             session_data[call_sid]["no_input_expected"] = True
             digits = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=True)
@@ -7232,8 +7369,9 @@ def voice():
             # Acceptable formats we expect are:
             #   - 4 digits:  MMYY   (e.g. "0927" -> September 2027)
             #   - 6 digits:  MMYYYY (e.g. "092027" -> September 2027)
+            # Anything else (e.g. 3 digits, 5 digits, letters only, empty) is treated as invalid.
             if len(digits) not in (4, 6):
-                 # Build a <Gather> instruction for Twilio:
+                # Build a <Gather> instruction for Twilio:
                 #  - The spoken prompt tells the caller how to give the expiration (examples).
                 #  - input="speech dtmf" lets the caller either *speak* the date or *type* it on the keypad.
                 #  - timeout=10 means Twilio will wait up to 10 seconds for user input before the gather times out.
@@ -7248,18 +7386,12 @@ def voice():
                     finish_on_key="#",
                     action="/voice",
                 )
-                 # Append the <Gather> to the TwiML response. This places the gather in the outgoing
+
+                # Append the <Gather> to the TwiML response. This places the gather in the outgoing
                 # TwiML so Twilio will play the prompt and listen for input.
                 resp.append(gather)
-                return str(resp)
-            # --------------------------------------------------------------------------
 
-            # Save expiration and move to CVV
-            customer["cc_expiration"] = digits
-            session_data[call_sid]["cc_step"] = 3
-            debug_print(f"collect_cc: ✅ Saved expiration='{digits}' → step 3 (CVV)")
-            resp.redirect("/voice")
-             # Return the TwiML (string form) immediately so Twilio receives the <Gather>.
+                # Return the TwiML (string form) immediately so Twilio receives the <Gather>.
                 # Important behavior:
                 #  - We do NOT call resp.redirect("/voice") here. Returning the TwiML with the <Gather>
                 #    causes Twilio to wait for the user's input and then POST back to the 'action' URL.
@@ -7267,11 +7399,13 @@ def voice():
                 #    webhook again with request parameters such as 'Digits' (for DTMF) and/or
                 #    'SpeechResult' (for speech). Your handler should then re-enter this stage and
                 #    process the provided digits.
-            return str(resp)
+                return str(resp)
+            # --------------------------------------------------------------------------
 
-        # ----------------------------------------------------------------------
+
+        # -------------------------------
         # Step 3: CVV (3–4 digits)
-        # ----------------------------------------------------------------------
+        # -------------------------------
         if cc_step == 3:
             session_data[call_sid]["no_input_expected"] = True
             digits = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=True)
@@ -7293,25 +7427,22 @@ def voice():
                 customer["cc_name"] = f"{customer.get('first_name','')} {customer.get('last_name','')}".strip()
             debug_print(f"collect_cc: ✅ CVV saved (len={len(digits)}) ; cc_name='{customer.get('cc_name')}'")
 
-            # Advance to confirmation or update flow — now based on origin_stage
+            # Advance to confirmation or update flow
             session_data[call_sid].pop("no_input_expected", None)
             session_data[call_sid].pop("cc_step", None)
             session_data[call_sid]["cc_speech_tries"] = 0
 
-            # ----------------------------------------------------------------------
-            # 🧭 Determine the next stage purely from origin_stage
-            # ----------------------------------------------------------------------
-            origin_stage = session_data[call_sid].get("origin_stage", "").lower()
-            if origin_stage == "update_cc":
-                next_stage = "update_customer_cc"
-            else:
-                next_stage = "book_appt_confirm"
-
+            next_stage = (
+                "update_customer_cc"
+                if session_data.get(call_sid, {}).get("cc_update", {}).get("active")
+                else "book_appt_confirm"
+            )
             session_data[call_sid]["stage"] = next_stage
             session_data[call_sid]["skip_silence_once"] = True
-            debug_print(f"collect_cc: ➡️ Auto-advancing to {next_stage} (origin_stage={origin_stage})")
+            debug_print(f"collect_cc: ➡️ Auto-advancing to {next_stage}")
             resp.redirect("/voice")
             return str(resp)
+
 
     
    
