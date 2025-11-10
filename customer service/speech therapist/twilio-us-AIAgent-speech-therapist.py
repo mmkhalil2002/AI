@@ -4063,7 +4063,7 @@ def voice():
             "followed by the pound key. If you prefer, you can also say each digit slowly."
         )
         VOICE_REGISTER_ROUTE_MSG = (
-            "Let's start your registration. Please say or enter your phone number now, then press pound."
+            "Let's start your registration. Please say or enter your first name and press #."
         )
 
         # ----------------------------------------------------------------------
