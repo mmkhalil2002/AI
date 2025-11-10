@@ -38,7 +38,7 @@
     # - Means “ONE OR MORE” repetitions of the preceding token (greedy by default).
     #   Examples:
     #     r"a+"       → "a", "aa", "aaa", ...
-    #     r"\d+"      → one or more digits, e.g., "7", "1956", "12345"
+    #     r"\d+"      → one or more digits, e.g., "7", "1972", "12345"
     #     r"(ab)+"    → "ab", "abab", "ababab", ...
     # - Greedy vs lazy:
     #     r".+"   → match as much as possible
@@ -876,7 +876,7 @@ session_data = {}
                 "first_name": "Mohamed",
                 "last_name": "Khalil",
                 "phone_e164": "+14694633276",
-                "dob": "1956-07-03",
+                "dob": "1972-07-03",
                 "start_utc": "2025-10-22T16:00:00Z",
                 "end_utc": "2025-10-22T16:30:00Z"
             },
@@ -4036,19 +4036,19 @@ def voice():
         # 💬 VOICE MESSAGES — centralized for maintainability & localization
         # ----------------------------------------------------------------------
         VOICE_SILENCE_MSG = (
-            "Please say your date of birth, for example, 'July 3 1956'. "
+            "Please say your date of birth, for example, 'July 3 1972'. "
             "Or enter two digits for month, two for day, and four for year, then press pound."
         )
         VOICE_SILENCE_FINAL_MSG = (
             "Sorry, I couldn’t get your date of birth. Please call again later."
         )
         VOICE_PARSE_FAIL_MSG = (
-            "I didn’t catch your full birth date. Please say it again, for example, 'July 3 1956'. "
+            "I didn’t catch your full birth date. Please say it again, for example, 'July 3 1972'. "
             "You can also enter it using your keypad: 2 digits for month, 2 for day, and 4 for year, then press pound."
         )
         VOICE_INVALID_DOB_MSG = (
             "That doesn’t seem like a valid date of birth. "
-            "Please enter 2 digits for month, 2 for day, and 4 for year, then press #."
+            "Please enter 2 digits for month, 2 for day, and 4 for year, then press pound."
         )
         VOICE_NOT_FOUND_MSG = (
             "We could not find your record. "
@@ -4063,7 +4063,7 @@ def voice():
             "followed by the pound key. If you prefer, you can also say each digit slowly."
         )
         VOICE_REGISTER_ROUTE_MSG = (
-            "Let's start your registration. Please say or enter your first name and press #."
+            "Let's start your registration. Please say or enter your first name and press pound."
         )
 
         # ----------------------------------------------------------------------
@@ -4083,6 +4083,8 @@ def voice():
 
         debug_print(f"[collect_dob] session keys before: {list(sd.keys())}")
         debug_print(f"[collect_dob] 🔎 doctor_name check → {sd.get('doctor_name')}")
+
+
 
         # ----------------------------------------------------------------------
         # 🎧 Capture inputs (speech or keypad digits)
@@ -4149,7 +4151,7 @@ def voice():
                 # 🧹 Clean and normalize spoken date text before parsing
                 # ----------------------------------------------------------------------
                 # Example raw speech input:
-                #   "July 3rd, 1956."  → we need to make it machine-friendly like "July 3 1956"
+                #   "July 3rd, 1972."  → we need to make it machine-friendly like "July 3 1972"
                 # ----------------------------------------------------------------------
 
                 # 🔹 Removes punctuation at the *end* of the spoken text.
@@ -4160,7 +4162,7 @@ def voice():
                 #       • [.,;:]  → matches period (.), comma (,), semicolon (;), or colon (:)
                 #       • +       → one or more occurrences
                 #       • $       → end of string anchor
-                #   ✅ Example: "July 3rd, 1956." → "July 3rd, 1956"
+                #   ✅ Example: "July 3rd, 1972." → "July 3rd, 1972"
 
                 t = _re.sub(r"[,\.;:]", " ", t)
 
@@ -4168,7 +4170,7 @@ def voice():
                 # 🔹 Replaces punctuation *inside* the string with spaces.
                 #   - Pattern: [,\.;:]
                 #       • Matches commas, periods, semicolons, or colons.
-                #   ✅ Example: "July 3rd, 1956" → "July 3rd 1956"
+                #   ✅ Example: "July 3rd, 1972" → "July 3rd 1972"
                 t = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=_re.IGNORECASE)
 
                 # 🔹 Removes ordinal suffixes (st, nd, rd, th) from day numbers.
@@ -4177,7 +4179,7 @@ def voice():
                 #       • (\d{1,2}) → captures one or two digits (day numbers like "3" or "21")
                 #       • (st|nd|rd|th) → matches common ordinal suffixes.
                 #       • \b → another word boundary to prevent partial matches.
-                #   ✅ Example: "July 3rd 1956" → "July 3 1956"
+                #   ✅ Example: "July 3rd 1972" → "July 3 1972"
                 t = _re.sub(r"\s+", " ", t).strip()
 
                 # 🔹 Collapses multiple whitespace characters into one space and trims edges.
@@ -8116,7 +8118,7 @@ def voice():
     #
     # ⚙️ TECHNICAL FEATURES:
     #     • Handles both spoken DOB (“July third nineteen fifty six”)
-    #       and numeric input (“07031956#”).
+    #       and numeric input (“07031972#”).
     #     • Uses regex cleaning for DTMF and `dateutil.parser` for speech.
     #     • Includes retry + silence counters (up to 3 attempts).
     #     • Validates date range (>=1900-01-01 and <=today).
