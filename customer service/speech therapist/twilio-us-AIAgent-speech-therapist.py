@@ -6638,7 +6638,7 @@ def voice():
             ),
             input="speech dtmf",
             language="en-US",
-            hints=FOREIGN_NAME_HINTS
+            hints=FOREIGN_NAME_HINTS,
             timeout=8,
             speech_timeout="auto",
             finish_on_key="#",
