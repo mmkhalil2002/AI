@@ -6306,7 +6306,6 @@ def voice():
                 finish_on_key="#",
                 barge_in=True,
                 action="/voice", method="POST",
-                hints=FOREIGN_NAME_HINTS
             )
             resp.append(gather)
             resp.redirect("/voice")  # Retry loop for silence or invalid input
