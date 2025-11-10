@@ -6638,14 +6638,13 @@ def voice():
             ),
             input="speech dtmf",
             language="en-US",
-            hints="118 Briar Oak Murphy Texas 75094",  # example bias
+            hints=FOREIGN_NAME_HINTS
             timeout=8,
             speech_timeout="auto",
             finish_on_key="#",
             barge_in=True,
             action="/voice",
             method="POST",
-            hints=FOREIGN_NAME_HINTS
         )
         resp.append(gather)
         resp.redirect("/voice")
