@@ -3490,7 +3490,7 @@ def voice():
                     "retry_booking": 0,
                     "retry_time": 0
                 })
-                prompt = "Please say or enter your ten-digit phone number, then press pound."
+                prompt = "I can help you doing your registration, Please say or enter your ten-digit phone number, then press pound."
                 gather = make_gather(prompt, input="speech dtmf", timeout=6,
                                     speech_timeout="auto", barge_in=True,
                                     finish_on_key="#", num_digits=10)
@@ -3749,78 +3749,6 @@ def voice():
 
 
 
-
-
-     # ----------------------------------------------------------------------
-    # 📅 Stage: book_appointment
-    # ----------------------------------------------------------------------
-    # 🎯 PURPOSE:
-    #   • Acts as the entry point for appointment booking.
-    #   • Initializes session data for booking flow.
-    #   • Redirects caller to `collect_phone` to capture their phone number.
-    # ----------------------------------------------------------------------
-    elif stage == "book_appointment":
-   
-        debug_print("book_appointment: entered → redirecting to collect_phone")
-
-        # ----------------------------------------------------------------------
-        # 💬 VOICE MESSAGES — centralized for maintainability & localization
-        # ----------------------------------------------------------------------
-        VOICE_BOOKING_INTRO_MSG = (
-            "Let's get started with your booking. "
-            "Please say or enter your phone number, including the area code, then press pound."
-        )
-        VOICE_INVALID_INPUT_MSG = (
-            "I'm sorry, I didn't get that. Please say or enter your phone number again, then press pound."
-        )
-
-        # ----------------------------------------------------------------------
-        # 🧩 SESSION INITIALIZATION
-        # ----------------------------------------------------------------------
-        # Ensure the call has a valid session in memory.
-        # Sets initial booking metadata to track user flow.
-        sd = session_data.setdefault(call_sid, {})
-        sd["stage"] = "collect_phone"       # Next stage to capture phone number
-        sd["retry_booking"] = 0             # Counter for booking retries
-        sd["origin_stage"] = "book"         # Identify booking origin for PIN flow, etc.
-
-        # ----------------------------------------------------------------------
-        # 🩺 Store available doctors for later doctor selection
-        # ----------------------------------------------------------------------
-        # Convert doctor list into a DTMF map (1 → Dr. Smith, 2 → Dr. Lee, etc.)
-        # This map will be reused in `collect_dr_info` to present choices.
-        if isinstance(doctor_names, dict):
-            doctor_list = list(doctor_names.values())
-        else:
-            doctor_list = doctor_names
-
-        dtmf_map = {str(i): name for i, name in enumerate(doctor_list, start=1)}
-        sd["doctor_dtmf_map"] = dtmf_map
-        debug_print(f"book_appointment: 🩺 loaded doctor map → {dtmf_map}")
-
-        # ----------------------------------------------------------------------
-        # 📞 Prompt caller to provide phone number
-        # ----------------------------------------------------------------------
-        # Uses make_gather() to capture speech or keypad input.
-        #   - input="speech dtmf"  → supports both speaking and typing.
-        #   - timeout=8            → waits up to 8 seconds for a response.
-        #   - finish_on_key="#"    → '#' key ends input early.
-        #   - num_digits=10        → expects 10-digit phone numbers (U.S. style).
-        # After prompt, control passes to `/voice` for next processing.
-        g = make_gather(
-            VOICE_BOOKING_INTRO_MSG,        # spoken prompt to caller
-            input="speech dtmf",            # allow both speech and keypad input
-            timeout=8,                      # wait up to 8 seconds
-            speech_timeout="auto",          # auto-detect end of speech
-            barge_in=True,                  # allow interrupting prompt
-            finish_on_key="#",              # '#' ends input
-            num_digits=10                   # expect 10 digits
-        )
-
-        # Append gather block to Twilio <Response> and redirect
-        resp.append(g)
-        resp.redirect("/voice")
-        return str(resp)
 
 
 
