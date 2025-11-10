@@ -3165,8 +3165,8 @@ def voice():
                  "Say 'update credit card' or press 5. "
                  "Say 'update pin number. or press 6 "
                  "Say 'update insurance info. or press 7 "
-                 "Say 'leave voicemail' or press 8."
-                hints
+                 "Say 'leave voicemail' or press 8.",
+                 hints
             )
 
         if st == "book_appointment":
