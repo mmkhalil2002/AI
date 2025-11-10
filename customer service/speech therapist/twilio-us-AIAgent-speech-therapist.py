@@ -4333,7 +4333,7 @@ def voice():
 
         # 1️⃣ If this is a registration flow → go to collect_phone
         if origin_stage == "register":
-            sd["stage"] = "collect_phone"
+            sd["stage"] = "collect_first_name"
             g = make_gather(
                 VOICE_REGISTER_ROUTE_MSG,
                 input="speech dtmf",
