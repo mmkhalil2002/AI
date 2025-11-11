@@ -3328,13 +3328,7 @@ def voice():
             hints = doctor_list
             return ("Please say the name of the doctor whose appointment you want to cancel.", hints)
 
-        if st in ("collect_cancel_phone_number",):
-            hints = "zero one two three four five six seven eight nine double triple"
-            return ("Please say the phone number used when booking, including area code.", hints)
-
-        if st in ("collect_cancel__time_date"):
-            return ("Please say the date and time of the appointment you want to cancel, for example, 'July third at nine AM'.", hints)
-
+        
         if st == "collect_cancel_get_dob":
             return ("Please say your birth date, for example 'July third nineteen fifty six'. "
                     "Or type 2 digits for month 2 digits for day and 4 digits for year then press pound.", hints)
@@ -3611,7 +3605,7 @@ def voice():
             if choice == "4":
                 debug_print("🔁 DTMF=3 → reschedule (cancel then rebook)")
                 session_data[call_sid] = {
-                    "stage": "collect_cancel_phone_number",
+                    "stage": "collect_phone",
                     "origin_stage": "reschedule",          # ✅ add explicit origin_stage
                     "cancel": {},
                     "retry_booking": 0,
@@ -4797,7 +4791,7 @@ def voice():
         #   • Ensure origin_stage (“book”, “cancel”, etc.) is retained.
         #
         # FLOW:
-        #   collect_cancel_phone_number → collect_cancel_dob → collect_pin_number
+        #   collect_phone → collect_dob → collect_pin_number
         #       → collect_dr_info (origin_stage=cancel)
         #
         # ----------------------------------------------------------------------
