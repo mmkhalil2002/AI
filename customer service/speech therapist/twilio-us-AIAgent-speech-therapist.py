@@ -4016,7 +4016,6 @@ def voice():
 
 
 
-
     elif stage == "collect_dob":
         # ----------------------------------------------------------------------
         # 🎂 Stage: collect_dob — capture and validate date of birth
@@ -4075,8 +4074,6 @@ def voice():
 
         debug_print(f"[collect_dob] session keys before: {list(sd.keys())}")
         debug_print(f"[collect_dob] 🔎 doctor_name check → {sd.get('doctor_name')}")
-
-
 
         # ----------------------------------------------------------------------
         # 🎧 Capture inputs (speech or keypad digits)
@@ -4143,47 +4140,13 @@ def voice():
                 # 🧹 Clean and normalize spoken date text before parsing
                 # ----------------------------------------------------------------------
                 # Example raw speech input:
-                #   "July 3rd, 1972."  → we need to make it machine-friendly like "July 3 1972"
+                #   "July 3rd, 1972."  → "July 3 1972"
                 # ----------------------------------------------------------------------
-
-                # 🔹 Removes punctuation at the *end* of the spoken text.
                 t = _re.sub(r"[.,;:]+$", "", speech_text)
-
-                # 🔹 Removes punctuation at the *end* of the spoken text.
-                #   - Pattern: [.,;:]+$
-                #       • [.,;:]  → matches period (.), comma (,), semicolon (;), or colon (:)
-                #       • +       → one or more occurrences
-                #       • $       → end of string anchor
-                #   ✅ Example: "July 3rd, 1972." → "July 3rd, 1972"
-
                 t = _re.sub(r"[,\.;:]", " ", t)
-
-                
-                # 🔹 Replaces punctuation *inside* the string with spaces.
-                #   - Pattern: [,\.;:]
-                #       • Matches commas, periods, semicolons, or colons.
-                #   ✅ Example: "July 3rd, 1972" → "July 3rd 1972"
                 t = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=_re.IGNORECASE)
-
-                # 🔹 Removes ordinal suffixes (st, nd, rd, th) from day numbers.
-                #   - Pattern: \b(\d{1,2})(st|nd|rd|th)\b
-                #       • \b → **word boundary**, ensures match only at word edges.
-                #       • (\d{1,2}) → captures one or two digits (day numbers like "3" or "21")
-                #       • (st|nd|rd|th) → matches common ordinal suffixes.
-                #       • \b → another word boundary to prevent partial matches.
-                #   ✅ Example: "July 3rd 1972" → "July 3 1972"
                 t = _re.sub(r"\s+", " ", t).strip()
 
-                # 🔹 Collapses multiple whitespace characters into one space and trims edges.
-                #   - Pattern: \s+
-                #       • \s → **whitespace** (spaces, tabs, newlines)
-                #       • +  → one or more occurrences.
-                #   - `.strip()` removes leading/trailing spaces.
-                #   ✅ Example: "  March   22nd,   1988 " → "March 22 1988"
-
-                # ----------------------------------------------------------------------
-                # 🧠 Parse normalized string using dateutil.parser
-                # ----------------------------------------------------------------------
                 parsed = _dtparse(t, fuzzy=True)
                 dob_date = date(parsed.year, parsed.month, parsed.day)
                 debug_print("[collect_dob] ✅ parsed DOB from speech")
@@ -4248,12 +4211,12 @@ def voice():
             debug_print("[collect_dob] ⚠️ phone_e164 missing before lookup")
 
         # ----------------------------------------------------------------------
-        # 🔀 NEW LOGIC — handle by origin_stage and registration status
+        # 🔀 Handle by origin_stage and registration status
         # ----------------------------------------------------------------------
         origin_stage = sd.get("origin_stage", "").strip().lower()
         debug_print(f"[collect_dob] 🔁 origin_stage={origin_stage}, found={found}, customer_status={customer_status}")
 
-        # 1️⃣ If this is a registration flow → go to collect_phone
+        # 1️⃣ Registration flow → go to collect_first_name
         if origin_stage == "register":
             sd["stage"] = "collect_first_name"
             g = make_gather(
@@ -4266,39 +4229,39 @@ def voice():
             )
             resp.append(g)
             resp.redirect("/voice")
-            debug_print("[collect_dob] 🔁 origin_stage=register → collect_phone")
+            debug_print("[collect_dob] 🔁 origin_stage=register → collect_first_name")
             return str(resp)
 
-        # 2️⃣ Booking flow but user not found → must register first
-        if origin_stage == "book" and not found:
+        # 2️⃣ Booking or Cancel flow but user not found → must register first
+        if origin_stage in ("book", "cancel") and not found:
             resp.say(gpt_speak(VOICE_NOT_FOUND_MSG), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
-            debug_print("[collect_dob] ❌ book flow → user not found → ask to register")
+            debug_print(f"[collect_dob] ❌ {origin_stage} flow → user not found → ask to register")
             return str(resp)
 
-        # 3️⃣ Booking flow with customer_status=new → registration incomplete
-        if origin_stage == "book" and customer_status == "new":
+        # 3️⃣ Booking or Cancel flow with customer_status=new → incomplete registration
+        if origin_stage in ("book", "cancel") and customer_status == "new":
             resp.say(gpt_speak(VOICE_NEW_CUSTOMER_MSG), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
-            debug_print("[collect_dob] 🟡 book flow → incomplete registration → hangup")
+            debug_print(f"[collect_dob] 🟡 {origin_stage} flow → incomplete registration → hangup")
             return str(resp)
 
-        # 4️⃣ Booking flow with customer_status=current → proceed to PIN
-        if origin_stage == "book" and customer_status == "current":
+        # 4️⃣ Booking or Cancel flow with customer_status=current → proceed to PIN
+        if origin_stage in ("book", "cancel") and customer_status == "current":
             sd["stage"] = "collect_pin_number"
             g = make_gather(
                 VOICE_PIN_PROMPT_MSG,
                 input="speech dtmf",
-                timeout=5,
+                timeout=6,
                 speech_timeout="auto",
                 barge_in=True,
                 finish_on_key="#"
             )
             resp.append(g)
             resp.redirect("/voice")
-            debug_print(f"[collect_dob] ✅ book flow → current user → collect_pin_number")
+            debug_print(f"[collect_dob] ✅ {origin_stage} flow → current user → collect_pin_number")
             return str(resp)
 
         # ----------------------------------------------------------------------
@@ -4309,6 +4272,7 @@ def voice():
         debug_print("[collect_dob] ⚠️ fallback → unexpected condition")
         session_data.pop(call_sid, None)
         return str(resp)
+
 
 
 
