@@ -846,7 +846,119 @@ So the full nested structure grows as the call progresses.
 
 
 """
+
+
 session_data = {}
+# ----------------------------------------------------------------------
+# 🧱 GLOBAL SESSION STRUCTURE — DOCUMENTATION ONLY
+# ----------------------------------------------------------------------
+# This block shows the expected structure of session_data in memory.
+# Each key under session_data corresponds to a unique Twilio CallSid.
+# ----------------------------------------------------------------------
+
+# session_data = {
+#     "<CallSid>": {                      # Unique Twilio CallSid for each active call
+#
+#         # --------------------------------------------------------------
+#         # 🔹 CORE SESSION STATE
+#         # --------------------------------------------------------------
+#         "stage": "collect_dob",            # Current conversational stage (e.g., intro, intent, collect_dob)
+#         "origin_stage": "book",            # Root flow context ('book', 'cancel', 'reschedule', 'update_cc', 'register')
+#         "country": "US",                   # Caller’s country (used for E.164 normalization)
+#         "from_e164": "+14694633276",       # Caller’s normalized E.164 number
+#         "skip_silence_once": True,         # Skips silence guard for one prompt (temporary flag)
+#         "no_input_expected": False,        # Prevents silence handler from re-prompting
+#         "retry_booking": 0,                # Number of retries while selecting a valid slot
+#         "retry_time": 0,                   # Number of retries for date/time parsing
+#
+#         # --------------------------------------------------------------
+#         # 🔹 CUSTOMER INFORMATION
+#         # --------------------------------------------------------------
+#         "customer": {
+#             "first_name": "Mohamed",       # Captured first name
+#             "last_name": "Khalil",         # Captured last name
+#             "phone": "4694633276",         # Raw phone input (unformatted)
+#             "phone_e164": "+14694633276",  # Normalized E.164 phone number (preferred)
+#             "dob": "1985-07-03",           # Date of birth (ISO format)
+#             "customer_status": "current",  # One of: 'new', 'pending', 'current', 'unknown'
+#
+#             # 💳 Credit card information (collected in collect_cc)
+#             "cc_number": "4111111111111111",  # Credit card number (unmasked)
+#             "cc_exp": "0927",                 # Expiration date (MMYY)
+#             "cc_cvv": "123",                  # Security code
+#             "cc_name": "Mohamed Khalil",      # Cardholder name
+#         },
+#
+#         # --------------------------------------------------------------
+#         # 🔹 BOOKING CONTEXT
+#         # --------------------------------------------------------------
+#         "booking": {
+#             "doctor_name": "Alfred Hitchcock",          # Selected doctor
+#             "doctor_id": "cal_alfred_hitchcock@clinic.com",  # Google Calendar ID for the doctor
+#             "requested_time": "2025-11-07T15:30:00Z",   # Appointment start time (UTC)
+#             "appointment_length": 30,                   # Appointment duration in minutes
+#             "appointment_confirmed": True,              # Whether booking was successful
+#             "pending_insurance": {                      # Insurance information (optional)
+#                 "company": "Blue Cross Blue Shield",     # Insurance provider
+#                 "member_id": "123456789",                # Member ID
+#             },
+#         },
+#
+#         # --------------------------------------------------------------
+#         # 🔹 CANCELLATION / RESCHEDULE CONTEXT
+#         # --------------------------------------------------------------
+#         "cancel": {
+#             "doctor": "Alfred Hitchcock",               # Doctor for the canceled appointment
+#             "matching_event": {                         # Details of the event to cancel
+#                 "spoken_dt": "October 8th at 9:00 a.m.",# Original spoken date/time phrase
+#                 "start": "2025-10-08T14:00:00Z",        # Event start time (UTC)
+#                 "end": "2025-10-08T14:30:00Z",          # Event end time (UTC)
+#             },
+#             "awaiting_input": False,                    # Indicates whether user must confirm
+#             "silence_cancel_dt": 0,                     # Silence retry counter for date/time input
+#         },
+#
+#         # --------------------------------------------------------------
+#         # 🔹 CREDIT CARD UPDATE CONTEXT
+#         # --------------------------------------------------------------
+#         "cc_step": 3,                  # Step index in collect_cc (1=card, 2=expiration, 3=cvv)
+#         "enforce_dtmf_cc": False,      # Forces keypad input instead of speech (for privacy)
+#         "cc_speech_tries": 0,          # Retry counter for speech misrecognition
+#
+#         # --------------------------------------------------------------
+#         # 🔹 DOCTOR MAPPING (for selection menus)
+#         # --------------------------------------------------------------
+#         "doctor_dtmf_map": {           # Maps DTMF digits to doctor names
+#             "1": "Alfred Hitchcock",
+#             "2": "Dr. Faten Salim",
+#             "3": "Dr. Sarah Osman"
+#         },
+#         "doctor_name": "Alfred Hitchcock",  # Current doctor in focus
+#
+#         # --------------------------------------------------------------
+#         # 🔹 SILENCE / RETRY COUNTERS
+#         # --------------------------------------------------------------
+#         "silence_first_name": 0,       # Silence counter for first name prompt
+#         "silence_last_name": 0,        # Silence counter for last name prompt
+#         "silence_cc": 0,               # Silence counter for collect_cc
+#         "silence_cancel_phone": 0,     # Silence counter for cancel phone number
+#         "silence_cancel_dt": 0,        # Silence counter for cancel date/time
+#
+#         # --------------------------------------------------------------
+#         # 🔹 META DATA
+#         # --------------------------------------------------------------
+#         "created_at": "2025-11-07T15:32:18Z",   # Timestamp when session was created
+#         "last_updated": "2025-11-07T15:35:12Z"  # Timestamp of last modification
+#     }
+# }
+#
+# ----------------------------------------------------------------------
+# 🧠 NOTES:
+# - Each CallSid entry is unique per caller session.
+# - Keys are created dynamically as the user moves through the call flow.
+# - Silence counters prevent infinite loops (max 3 attempts).
+# - session_data is in-memory and resets when the app restarts.
+# ----------------------------------------------------------------------
 
 
 
@@ -3450,7 +3562,7 @@ def voice():
             if choice == "2":
                 print("❌ DTMF=2 → cancel flow (secure verification first)")
                 session_data[call_sid] = {
-                      "stage": "collect_cancel_phone_number",
+                      "stage": "collect_phone",
                       "origin_stage": "cancel",        # 🔥 mark this as a cancel flow
                       "cancel": {},
                       "retry_booking": 0
