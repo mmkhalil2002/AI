@@ -235,67 +235,176 @@ Reza, Rezaul, Rezaan, Farzad, Farshad, Arman, Arash, AliReza, Alireza, Navid, Ni
 app = Flask(__name__)
 app.url_map.strict_slashes = False
 load_dotenv()
-# Environment & API setup
+# ----------------------------------------------------------------------
+# 🔐 API & SERVICE CREDENTIALS
+# ----------------------------------------------------------------------
+
+# OPENAI_API_KEY:
+#   • Your secret API key for authenticating requests to OpenAI models (e.g., GPT-4 or GPT-5).
+#   • Used for natural language understanding, summarization, and response generation
+#     within the voice assistant.
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# TWILIO_ACCOUNT_SID:
+#   • The unique identifier for your Twilio account.
+#   • Used to authenticate API calls to Twilio (voice, SMS, recordings, etc.).
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+
+# TWILIO_AUTH_TOKEN:
+#   • The authentication token paired with the Account SID.
+#   • Grants permission to send or receive calls, messages, and manage Twilio resources.
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+
+# TWILIO_PHONE_NUMBER:
+#   • The Twilio-provisioned phone number assigned to your application (E.164 format).
+#   • Used as the caller ID for outgoing calls and as the receiver for incoming calls.
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_NUMBER")
+
+# GOOGLE_CREDENTIALS:
+#   • The path to the Google service account JSON credentials file.
+#   • Required to access Google Calendar for appointment booking and lookup.
 GOOGLE_CREDENTIALS = "credentials.json"
 
-# How long of silence ends a speech phrase (seconds). Use "auto" if you prefer VAD.
+
+# ----------------------------------------------------------------------
+# 🗣️ VOICE INPUT & RECORDING SETTINGS
+# ----------------------------------------------------------------------
+
+# SPEECH_INPUT_DURATION:
+#   • Maximum time (in seconds) Twilio will wait for the caller to speak before timing out.
+#   • If set to "auto", Twilio uses voice activity detection (VAD) to decide when to stop recording.
 SPEECH_INPUT_DURATION = os.getenv("SPEECH_INPUT_DURATION", "6")  # keep as string for Twilio
-# How long Twilio waits for the first input AND between DTMF digits (seconds)
+
+# PAUSE_BETWEEN_DIGITS:
+#   • Number of seconds Twilio waits for the next keypad digit (DTMF) input.
+#   • After this timeout, the system processes the digits entered so far.
 PAUSE_BETWEEN_DIGITS = int(os.getenv("PAUSE_BETWEEN_DIGITS", "7"))
-# Max seconds for <Record> (voicemail, freeform notes)
+
+# MAX_RECORD_TIME:
+#   • Maximum duration (in seconds) for voicemail or freeform audio recordings.
+#   • Used in flows where the caller leaves a message or dictation.
 MAX_RECORD_TIME = int(os.getenv("MAX_RECORD_TIME", "60"))
 
+
+# ----------------------------------------------------------------------
+# 🔁 RETRY & LIMIT SETTINGS
+# ----------------------------------------------------------------------
+
+# MAX_NUMBER_DR_RETRY:
+#   • Maximum number of times to retry retrieving or validating a doctor’s availability.
 MAX_NUMBER_DR_RETRY = int(os.getenv("MAX_NUMBER_DR_RETRY", 3))
+
+# MAX_APPT_RETRIEVED_FROM_CALENDER:
+#   • Maximum number of appointment events to retrieve from Google Calendar in one query.
 MAX_APPT_RETRIEVED_FROM_CALNDER = int(os.getenv("MAX_APPT_RETRIEVED_FROM_CALENDER", 50))
-# 🔧 Appointment duration in minutes (can be 15, 30, 60)
+
+# APPOINTMENT_DURATION_MINUTES:
+#   • Default length of each appointment slot (15, 30, 45, or 60 minutes).
+#   • Used for building and validating slot availability windows.
 APPOINTMENT_DURATION_MINUTES = int(os.getenv("APPOINTMENT_DURATION_MINUTES", 30))
-# 🌐 Global settings
+
+# MAX_TIME_SELECTION_ATTEMPTS:
+#   • Maximum number of times the system will prompt the caller to select or confirm
+#     an appointment time before ending the session.
 MAX_TIME_SELECTION_ATTEMPTS = int(os.getenv("MAX_TIME_SELECTION_ATTEMPTS", 3))
-# Define working days (0 = Monday, 6 = Sunday)
-# Example: [0,1,2,3,4] for Mon–Fri in US; [0,1,2,3,5] for Sun–Thu (skip Friday)
-# 0 = Monday, 1 = Tuesday, 2 = Wednesday, 3 = Thursday, 4 = Friday, 5 = Saturday, 6 = Sunday
+
+# MAX_SILENCE_RETRIES:
+#   • Maximum number of retries allowed when the caller remains silent.
+#   • After reaching this limit, the call ends with a polite message.
 MAX_SILENCE_RETRIES = int(os.getenv("MAX_SILENCE_RETRIES", 3))
 
+# MAX_GET_PHONE_RETRIES:
+#   • Number of times to re-prompt the user to input their phone number if it’s missing or invalid.
 MAX_GET_PHONE_RETRIES = int(os.getenv("MAX_GET_PHONE_RETRIES", 3))
 
+# MAX_ADVANCE_MONTHS:
+#   • Defines how far into the future (in months) appointment searches can go.
+#   • Prevents users from booking unrealistically distant dates.
 MAX_ADVANCE_MONTHS = int(os.getenv("MAX_ADVANCE_MONTHS", 6))
-# do u allow to create new customer on LINE
-CREATE_NEW_CUSTOMER = bool(os.getenv("CREATE_NEW_CUSTOMER", True))  # d
+
+
 # ----------------------------------------------------------------------
-# 🕓 Speech Pause Duration (milliseconds)
-#   Controls SSML <break> tag timing between spoken appointment options.
-#   Examples:
-#       500 → half-second pause
-#      1000 → one-second pause (recommended for clearer spacing)
+# 👤 CUSTOMER MANAGEMENT SETTINGS
 # ----------------------------------------------------------------------
-PAUSE_MS = int(os.getenv("PAUSE_MS", 2000))  # pause time btween messages
+
+# CREATE_NEW_CUSTOMER:
+#   • Determines whether new customers can be automatically created during the call flow.
+#   • True → allow new registration via phone.
+#   • False → restrict to pre-existing patients only.
+CREATE_NEW_CUSTOMER = bool(os.getenv("CREATE_NEW_CUSTOMER", True))
 
 
-DB_FOLDER = os.getenv ("DB_FOLDER","appointment_data")
+# ----------------------------------------------------------------------
+# 🕓 SPEECH TIMING & DELIVERY SETTINGS
+# ----------------------------------------------------------------------
 
-DB_FILE   = os.path.join(DB_FOLDER, "customers.json")  # human-readable, not JSON
-# Global working config
-# 2) Read from env, with a safe default
+# PAUSE_MS:
+#   • Controls the pause duration (milliseconds) between spoken phrases.
+#   • Used to insert SSML <break> tags in synthesized speech for natural pacing.
+#   • Example:
+#       500  = half-second pause
+#      1000  = one-second pause (natural rhythm)
+#      2000  = two-second pause (clear separation)
+PAUSE_MS = int(os.getenv("PAUSE_MS", 2000))  # pause between messages in ms
+
+
+# ----------------------------------------------------------------------
+# 💾 LOCAL DATABASE SETTINGS
+# ----------------------------------------------------------------------
+
+# DB_FOLDER:
+#   • Folder location where customer and appointment data are stored locally.
+#   • Defaults to "appointment_data".
+DB_FOLDER = os.getenv("DB_FOLDER", "appointment_data")
+
+# DB_FILE:
+#   • JSON file path containing customer records.
+#   • Used as a local cache or fallback to Google Calendar data.
+DB_FILE = os.path.join(DB_FOLDER, "customers.json")
+
+
+# ----------------------------------------------------------------------
+# 🌐 GLOBAL TIMEZONE & WORK SCHEDULE
+# ----------------------------------------------------------------------
+
+# CLINIC_TZ:
+#   • Default time zone used for all appointment times, parsing, and formatting.
+#   • Critical for time conversion between Twilio, Google Calendar, and local users.
 CLINIC_TZ = os.getenv("CLINIC_TZ", "America/Chicago")
-#from datetime import time
+
+# WORKING_DAYS:
+#   • Days of the week the clinic operates.
+#   • 0 = Monday, 6 = Sunday.
+#   • Example:
+#       "0,1,2,3,4" → Monday–Friday
+#       "0,1,2,3,5" → Sunday–Thursday
 WORKING_DAYS = [int(x) for x in os.getenv("WORKING_DAYS", "0,1,2,3,4").split(",") if x.strip().isdigit()]
 
+# WORKING_HOURS_START / WORKING_HOURS_END:
+#   • Clinic’s opening and closing times (24-hour clock).
+#   • Example: 8 → 08:00 AM, 17 → 5:00 PM.
 WORKING_HOURS_START = int(os.getenv("WORKING_HOURS_START", 8))
 WORKING_HOURS_END   = int(os.getenv("WORKING_HOURS_END", 17))
 
+# LUNCH_BREAK_START / LUNCH_BREAK_END:
+#   • Defines the clinic’s lunch break window.
+#   • Appointments cannot be booked during this period.
+#   • Split into hours (H) and minutes (M) for flexible configuration.
 LUNCH_BREAK_START = time(
-    int(os.getenv("LUNCH_BREAK_START_H", 13)),
+    int(os.getenv("LUNCH_BREAK_START_H", 13)),  # Default: 1 PM
     int(os.getenv("LUNCH_BREAK_START_M", 0))
 )
 LUNCH_BREAK_END = time(
-    int(os.getenv("LUNCH_BREAK_END_H", 14)),
+    int(os.getenv("LUNCH_BREAK_END_H", 14)),    # Default: 2 PM
     int(os.getenv("LUNCH_BREAK_END_M", 0))
 )
 
+# NEXT_AVAILABLE_SLOT_OFFSET:
+#   • Minimum time (in minutes) between the current moment and the earliest
+#     appointment slot offered to a caller.
+#   • Ensures adequate preparation time and avoids last-minute bookings.
+#   • Example:
+#       If now = 8:15 AM and offset = 30, first slot ≥ 8:45 AM.
 NEXT_AVAILABLE_SLOT_OFFSET = int(os.getenv("NEXT_AVAILABLE_SLOT_OFFSET", 30))
 
 # ----------------------------------------------------------------------
@@ -315,36 +424,89 @@ INSURANCE_COMPANIES_LIST = [
 ]
 
 
-"""
-WORKING_DAYS=0,1,2,3,4
-WORKING_HOURS_START=8
-WORKING_HOURS_END=17
-LUNCH_BREAK_START_H=13
-LUNCH_BREAK_START_M=0
-LUNCH_BREAK_END_H=14
-LUNCH_BREAK_END_M=0
 
-"""
-WORKING_DAYS = [int(x) for x in os.getenv("WORKING_DAYS", "0,1,2,3,4").split(",") if x.strip().isdigit()]
+# ----------------------------------------------------------------------
+# 🕓 CLINIC OPERATING SCHEDULE & SESSION CONFIGURATION
+# ----------------------------------------------------------------------
 
+# WORKING_DAYS:
+#   • Specifies which days of the week the clinic operates.
+#   • Values are integers (0–6) corresponding to Python’s weekday mapping:
+#       0 = Monday, 1 = Tuesday, 2 = Wednesday, 3 = Thursday,
+#       4 = Friday, 5 = Saturday, 6 = Sunday
+#   • Example:
+#       "0,1,2,3,4" → Monday through Friday
+#       "0,1,2,3,5" → Sunday through Thursday (common in Middle East)
+#   • Loaded dynamically from environment variable "WORKING_DAYS".
+#   • Used by appointment scheduling logic to skip weekends or holidays.
+WORKING_DAYS = [
+    int(x) for x in os.getenv("WORKING_DAYS", "0,1,2,3,4").split(",")
+    if x.strip().isdigit()
+]
+
+# WORKING_HOURS_START / WORKING_HOURS_END:
+#   • Define the daily operating hours of the clinic (24-hour format).
+#   • Example:
+#       WORKING_HOURS_START = 8  →  Clinic opens at 08:00 AM
+#       WORKING_HOURS_END   = 17 →  Clinic closes at 05:00 PM
+#   • These hours are enforced by all scheduling and availability logic.
+#   • Appointments outside this range are automatically excluded.
 WORKING_HOURS_START = int(os.getenv("WORKING_HOURS_START", 8))
 WORKING_HOURS_END   = int(os.getenv("WORKING_HOURS_END", 17))
 
+# LUNCH_BREAK_START / LUNCH_BREAK_END:
+#   • Define the clinic’s lunch break period when appointments are not allowed.
+#   • Configured using hour and minute components for flexibility.
+#   • Example:
+#       LUNCH_BREAK_START_H = 13, LUNCH_BREAK_START_M = 0  →  1:00 PM
+#       LUNCH_BREAK_END_H   = 14, LUNCH_BREAK_END_M   = 0  →  2:00 PM
+#   • These values are respected by all scheduling and slot-search routines.
 LUNCH_BREAK_START = time(
-    int(os.getenv("LUNCH_BREAK_START_H", 13)),
+    int(os.getenv("LUNCH_BREAK_START_H", 13)),  # default 13:00 (1 PM)
     int(os.getenv("LUNCH_BREAK_START_M", 0))
 )
 LUNCH_BREAK_END = time(
-    int(os.getenv("LUNCH_BREAK_END_H", 14)),
+    int(os.getenv("LUNCH_BREAK_END_H", 14)),    # default 14:00 (2 PM)
     int(os.getenv("LUNCH_BREAK_END_M", 0))
 )
+
+# SESSION_TIME:
+#   • Standard duration (in minutes) of a therapy or appointment session.
+#   • Used in conjunction with APPOINTMENT_DURATION_MINUTES to control
+#     the slot length for both scheduling and display purposes.
+#   • Example: 30 → each booked session lasts 30 minutes.
 SESSION_TIME = int(os.getenv("SESSION_TIME", 30))
 
-USE_GPT = False
-DEBUG  = True
+# ----------------------------------------------------------------------
+# ⚙️ RUNTIME BEHAVIOR FLAGS
+# ----------------------------------------------------------------------
 
-# ---- Country switch (US by default; set to "EG" to favor Egypt) ----
-COUNTRY = os.getenv("COUNTRY", "US").upper()   # e.g., export COUNTRY=EG
+# USE_GPT:
+#   • Enables or disables OpenAI GPT integration for natural language processing.
+#   • When False → system uses predefined rule-based or fallback responses.
+#   • When True  → system calls GPT models for understanding intent, NLU, etc.
+USE_GPT = False
+
+# DEBUG:
+#   • Enables verbose console logging for development and troubleshooting.
+#   • Should be set to False in production to reduce log noise.
+DEBUG = True
+
+# ----------------------------------------------------------------------
+# 🌍 COUNTRY CONFIGURATION
+# ----------------------------------------------------------------------
+
+# COUNTRY:
+#   • Defines the primary country context for the assistant’s behavior.
+#   • Used to adjust voice prompts, phone number normalization, date formats,
+#     and possibly language preferences.
+#   • Example:
+#       "US" → Default configuration for United States
+#       "EG" → Enables Egypt-specific behaviors (e.g., Arabic prompts, time zones)
+#   • Can be changed using environment variable:
+#       export COUNTRY=EG
+COUNTRY = os.getenv("COUNTRY", "US").upper()   # Default → "US"
+
 
 with open("doctors_map.json") as f:
    doctor_names = json.load(f)
@@ -417,24 +579,43 @@ def save_session(call_sid: str):
 
 
 
-# ==============================================================
-# 📅 smart_parse_time — Robust natural-language date/time parser
-# ==============================================================
-# 🎯 FUNCTIONAL DESCRIPTION:
-#   Converts loosely spoken or transcribed date/time phrases
-#   (e.g. “October 29th at 2 p.m.”, “2000 p.m.”) into a normalized,
-#   timezone-aware UTC structure for scheduling logic.
-#
-# ✅ Fixes:
-#   • Corrects false “past=True” results for same-day future times.
-#   • Uses real clinic timezone (e.g., America/Chicago) with DST.
-# ==============================================================
 
+   # ----------------------------------------------------------------------
+    #FUNCTIONAL DESCRIPTION
+    #----------------------------------------------------------------------
+    #Parses a natural-language or typed time expression (e.g., “November 3rd
+    #at 11:30 a.m.”, “Oct 8 9:00 PM”, or “2000 pm”) and returns a structured,
+    #timezone-aware UTC object with friendly text.
+
+    #🔹 Purpose:
+    #    • Converts ambiguous speech-to-text output into a valid appointment
+    #      datetime.
+    #    • Repairs common STT artifacts (“20 00 pm”, “o’clock”, etc.).
+    #    • Fills missing date parts using the current local time.
+    #    • Adjusts AM/PM properly and rolls over months or years if needed.
+    #    • Detects whether the parsed time is in the past.
+    #    • Applies booking horizon limits (e.g., no more than 6 months ahead).
+
+    #🔹 Inputs:
+    #    raw (str)                – Spoken or typed input such as "October 8 at 9:30 am"
+    #    tz_offset_hours (int)    – Fallback fixed offset if clinic timezone not found
+    #    default_duration_min     – Default meeting length (used to compute `end`)
+
+    #🔹 Returns:
+    #    dict {
+    #        "start": ISO 8601 UTC start time (string),
+    #        "end": ISO 8601 UTC end time (string),
+    #        "friendly": Human-readable text (“Tuesday, May 6 at 9:00 AM”),
+    #       "is_past": Boolean flag (True if slot is before current time)
+    #    }
+    #    or None if parsing fails.
+    #----------------------------------------------------------------------
+    
 def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: int = 30):
-    """Parses spoken or typed date/time text into structured UTC data."""
+    
 
     # ------------------------------------------------------------------
-    # 🧩 Debug print wrapper
+    # 🧩 Local debug wrapper — ensures safe logging even without debug_print()
     # ------------------------------------------------------------------
     def _dbg(msg):
         try:
@@ -443,7 +624,7 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
             print(msg)
 
     # ------------------------------------------------------------------
-    # 🚫 Validate input
+    # 🚫 Validate input before any parsing
     # ------------------------------------------------------------------
     if not raw or not str(raw).strip():
         _dbg("[smart_parse_time] ⚠️ Empty input")
@@ -453,15 +634,17 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
     _dbg(f"[smart_parse_time] 🧠 raw input='{s}'")
 
     # ------------------------------------------------------------------
-    # 🧹 Normalize text and repair STT artifacts
+    # 🧹 Normalize spoken text — clean STT artifacts and unify format
     # ------------------------------------------------------------------
+    # Remove “o’clock”, normalize “a.m.” / “p.m.” spellings,
+    # drop non-alphanumeric characters (except colon), collapse spaces.
     s = _re.sub(r"o['’]?clock", "", s)
     s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s)
     s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s)
     s = _re.sub(r"[^\w\s:]", " ", s)
     s = _re.sub(r"\s+", " ", s).strip()
 
-    # Fix “2000 pm”, “20 00 pm”, “twenty hundred pm” → “2 00 pm”
+    # Fix speech artifacts such as “2000 pm” → “2 00 pm”
     s = _re.sub(r"\b20\s?00\s*pm\b", "2 00 pm", s)
     s = _re.sub(r"\b2000\s*pm\b", "2 00 pm", s)
     s = _re.sub(r"\btwenty hundred\s*pm\b", "2 00 pm", s)
@@ -469,20 +652,24 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
     _dbg(f"[smart_parse_time] 🧹 normalized='{s}'")
 
     # ------------------------------------------------------------------
-    # 🗓️ Extract month / day / time tokens
+    # 🗓️ Extract month, day, time tokens from text
     # ------------------------------------------------------------------
     months = {
-        "january":1,"february":2,"march":3,"april":4,"may":5,"june":6,
-        "july":7,"august":8,"september":9,"october":10,"november":11,"december":12
+        "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+        "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12
     }
+
+    # Initialize defaults (9 AM start time if none given)
     month, day, hour, minute, ampm = None, None, 9, 0, "am"
 
+    # Search for month names
     for m in months:
         if m in s:
             month = months[m]
             _dbg(f"[smart_parse_time] 🗓️ found month='{m}' → {month}")
             break
 
+    # Extract numeric time like "9", "9:30", "9 30", optionally with am/pm
     m_time = _re.search(r"\b(\d{1,2})(?:[: ](\d{2}))?\s*(am|pm)?\b", s)
     if m_time:
         hour = int(m_time.group(1))
@@ -490,13 +677,14 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
         ampm = m_time.group(3) or "am"
         _dbg(f"[smart_parse_time] ⏰ time → {hour}:{minute:02d} {ampm}")
 
+    # Extract day number appearing before the word "at"
     m_day = _re.search(r"\b([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?\b(?=.*\bat\b)", s)
     if m_day:
         day = int(m_day.group(1))
         _dbg(f"[smart_parse_time] 📅 day → {day}")
 
     # ------------------------------------------------------------------
-    # 🌎 Resolve clinic timezone (handles DST properly)
+    # 🌎 Determine clinic timezone; fall back to fixed offset if invalid
     # ------------------------------------------------------------------
     tz_name = globals().get("CLINIC_TZ", "America/Chicago")
     try:
@@ -508,20 +696,19 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
     now_local = datetime.now(tz_local)
 
     # ------------------------------------------------------------------
-    # 📅 Fill missing date parts and adjust 12h clock
+    # 📅 Fill missing components & normalize 12-hour clock
     # ------------------------------------------------------------------
     if not month:
-        month = now_local.month
+        month = now_local.month                      # assume current month
     if not day:
-        day = now_local.day
-
+        day = now_local.day                          # assume today
     if ampm == "pm" and hour < 12:
-        hour += 12
+        hour += 12                                   # convert to 24h clock
     if ampm == "am" and hour == 12:
-        hour = 0
+        hour = 0                                    # midnight normalization
 
     # ------------------------------------------------------------------
-    # 🧮 Build datetime and correct rollover if needed
+    # 🧮 Construct localized datetime and handle invalid values
     # ------------------------------------------------------------------
     try:
         dt_local = tz_local.localize(datetime(now_local.year, month, day, hour, minute))
@@ -529,25 +716,24 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
         _dbg(f"[smart_parse_time] ❌ invalid date → {e}")
         return None
 
-    # If the date has already passed more than half a year, assume next year
+    # If parsed month appears >6 months behind current → assume next year
     if dt_local < now_local and (now_local.month - dt_local.month) > 6:
         _dbg("[smart_parse_time] ⏩ rolling to next year (month wraparound)")
         dt_local = tz_local.localize(datetime(now_local.year + 1, month, day, hour, minute))
 
     # ------------------------------------------------------------------
-    # 🧭 Determine if the parsed time is past or future
+    # 🧭 Check whether the parsed time lies in the past
     # ------------------------------------------------------------------
     is_past = False
-    # Check if truly before current local time (with 2-min tolerance)
-    if dt_local < (now_local - timedelta(minutes=2)):
+    if dt_local < (now_local - timedelta(minutes=2)):   # small tolerance
         is_past = True
-        # ✅ Fix: same-day future check
+        # Special fix: same-day times later than now are still “future”
         if dt_local.date() == now_local.date() and dt_local > now_local:
             _dbg("[smart_parse_time] 🔧 same-day future time detected — marking as not past")
             is_past = False
 
     # ------------------------------------------------------------------
-    # 📏 Booking horizon limit
+    # 📏 Enforce booking horizon limit (e.g., ≤ 6 months ahead)
     # ------------------------------------------------------------------
     max_months = int(globals().get("MAX_ADVANCE_MONTHS", 6))
     limit_local = now_local + timedelta(days=30 * max_months)
@@ -556,21 +742,22 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
         return None
 
     # ------------------------------------------------------------------
-    # 🕒 Convert to UTC + friendly output
+    # 🕒 Convert to UTC and build output structure
     # ------------------------------------------------------------------
     dt_utc = dt_local.astimezone(_pytz.UTC)
     dt_end = dt_utc + timedelta(minutes=default_duration_min)
     friendly = dt_local.strftime("%A, %B %-d at %-I:%M %p").replace(" 0", " ")
 
     result = {
-        "start":    dt_utc.isoformat().replace("+00:00", "Z"),
-        "end":      dt_end.isoformat().replace("+00:00", "Z"),
-        "friendly": friendly,
-        "is_past":  is_past,
+        "start":    dt_utc.isoformat().replace("+00:00", "Z"),   # UTC ISO start
+        "end":      dt_end.isoformat().replace("+00:00", "Z"),   # UTC ISO end
+        "friendly": friendly,                                    # readable label
+        "is_past":  is_past,                                     # flag for past
     }
 
     _dbg(f"[smart_parse_time] ✅ Parsed '{raw}' → {friendly} (past={is_past}) start={result['start']}")
     return result
+
 
 
 
@@ -1153,43 +1340,41 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
 
 
 
-"""
-    ----------------------------------------------------------------------
-    FUNCTIONAL DESCRIPTION
-    ----------------------------------------------------------------------
-    This function finds the next available appointment slots for a given
-    doctor, starting from a given timestamp (`from_start_iso`).
-
-    🔹 Core Features:
-        • Enforces NEXT_AVAILABLE_SLOT_OFFSET — e.g. if offset = 30 min and
-          current time = 8:15, the first slot considered must begin ≥ 8:45.
-        • Skips weekends and non-working days.
-        • Respects configurable working hours (e.g., 08:00 – 17:00).
-        • Avoids lunch break period (if defined, e.g. 12:00 – 13:00).
-        • Searches forward up to a configurable number of days or months.
-        • Returns friendly human-readable slot labels (e.g., “Tuesday,
-          May 6 at 9:00 AM”).
-
-    🔹 Inputs:
-        doctor_name          Doctor’s name (string)
-        from_start_iso       ISO-formatted UTC start time to begin search
-        duration_minutes     Appointment length (defaults to 30 min)
-        limit                Number of available slots to return
-        tz_name              Time zone name (defaults to clinic’s)
-        work_hours           List of working-hour tuples (e.g., [(8,17)])
-        slot_step_minutes    Grid size (e.g., 15 min or 30 min)
-        search_days          How many days ahead to search
-
-    🔹 Outputs:
-        Returns a list of dict objects, each containing:
-            {
-              "start": ISO-UTC start,
-              "end": ISO-UTC end,
-              "friendly": "Tuesday, May 6 at 9:00 AM",
-              "tz": "America/Chicago"
-            }
-    ----------------------------------------------------------------------
-    """
+   # ----------------------------------------------------------------------
+   # FUNCTIONAL DESCRIPTION
+   # ----------------------------------------------------------------------
+   # This function finds the next available appointment slots for a given
+   # doctor, starting from a given timestamp (`from_start_iso`).
+   #
+   # 🔹 Core Features:
+   #    • Enforces NEXT_AVAILABLE_SLOT_OFFSET — e.g. if offset = 30 min and
+   #       current time = 8:15, the first slot considered must begin ≥ 8:45.
+   #     • Skips weekends and non-working days.
+   #     • Respects configurable working hours (e.g., 08:00 – 17:00).
+   # • Avoids lunch break period (if defined, e.g. 12:00 – 13:00).
+   #     • Searches forward up to a configurable number of days or months.
+   #     • Returns friendly human-readable slot labels (e.g., “Tuesday,
+   #       May 6 at 9:00 AM”).
+   #
+   # 🔹 Inputs:
+   #     doctor_name          Doctor’s name (string)
+   #      from_start_iso       ISO-formatted UTC start time to begin search
+   #     duration_minutes     Appointment length (defaults to 30 min)
+   #     limit                Number of available slots to return
+   #     tz_name              Time zone name (defaults to clinic’s)
+   #     work_hours           List of working-hour tuples (e.g., [(8,17)])
+   #     slot_step_minutes    Grid size (e.g., 15 min or 30 min)
+   #     search_days          How many days ahead to search
+   #
+   # 🔹 Outputs:
+   #     Returns a list of dict objects, each containing:
+   #        {
+   #           "start": ISO-UTC start,
+   #          "end": ISO-UTC end,
+   #           "friendly": "Tuesday, May 6 at 9:00 AM",
+   #           "tz": "America/Chicago"
+   #         }
+   # ----------------------------------------------------------------------
 
 
 def get_doctor_next_available_slots(
