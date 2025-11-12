@@ -6902,6 +6902,9 @@ def voice():
             intro_msg = VOICE_CANCEL_INTRO_MSG if origin_stage == "cancel" else VOICE_BOOK_INTRO_MSG
             doctor_prompt = f"{intro_msg} " + " ".join(prompt_lines)
 
+
+
+            """
             g = make_gather(
                 doctor_prompt,
                 input="speech dtmf",
@@ -6914,6 +6917,55 @@ def voice():
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
+            """
+
+            # ----------------------------------------------------------------------
+            # 🎧 Prompt caller for doctor selection using Twilio <Gather>
+            # ----------------------------------------------------------------------
+            # The make_gather() helper creates a <Gather> TwiML element that:
+            #  • Plays or speaks 'doctor_prompt' text to the caller
+            #  • Listens for either speech or keypad (DTMF) input
+            #  • Posts the collected input back to your /voice webhook
+            # ----------------------------------------------------------------------
+            g = make_gather(
+                doctor_prompt,         # 🗣️ The spoken prompt (e.g., "Please say or press the number of your doctor.")
+                input="speech dtmf",   # 🎙️ Accepts both speech recognition and keypad tones
+                timeout=10,            # ⏳ Wait up to 10 seconds for caller to begin responding
+                speech_timeout="auto", # 🧠 Automatically end recognition when silence is detected
+                barge_in=True,         # 🚪 Allow caller to interrupt the prompt by speaking early
+                finish_on_key="#",     # 🔚 End DTMF input collection when '#' is pressed
+                num_digits=2           # 🔢  Allow up to 2 digits (e.g., 10, 11, 12, ... 99)
+            )
+
+            # ----------------------------------------------------------------------
+            # 📞 Add the <Gather> element to the Twilio <Response>
+            # ----------------------------------------------------------------------
+            # This appends the generated <Gather> block to your active VoiceResponse
+            # so that Twilio executes it immediately.
+            # ----------------------------------------------------------------------
+            resp.append(g)
+
+            # ----------------------------------------------------------------------
+            # 🔁 Redirect Twilio back to /voice after <Gather> completes
+            # ----------------------------------------------------------------------
+            # Twilio posts the gathered data (SpeechResult / Digits)
+            # back to this same webhook (/voice) when:
+            #  • the user finishes speaking
+            #  • or presses '#'
+            #  • or timeout occurs
+            # This redirect ensures continuity of your conversation flow.
+            # ----------------------------------------------------------------------
+            resp.redirect("/voice")
+
+            # ----------------------------------------------------------------------
+            # ✅ Return the TwiML response as XML string
+            # ----------------------------------------------------------------------
+            # Flask returns this TwiML to Twilio; Twilio executes it,
+            # speaks the prompt, listens for input, and calls /voice again
+            # when input or timeout occurs.
+            # ----------------------------------------------------------------------
+            return str(resp)
+
 
         # ----------------------------------------------------------------------
         # 🧭 RETRIEVE EXISTING DOCTOR MAP
