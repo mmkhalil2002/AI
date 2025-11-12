@@ -1,5 +1,5 @@
 #=======
-# update  11/11/2025
+# updated  11/12/2025
 #  
 # =========================
 # Standard library imports
@@ -1249,7 +1249,7 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
 
     # Helper to add months safely with rollover
     def _add_months(dt, months):
-        import calendar
+        #import calendar
         y, m = dt.year, dt.month + months
         y += (m - 1) // 12
         m = ((m - 1) % 12) + 1
@@ -3428,31 +3428,44 @@ def safe_twiml_route(func):
     return wrapper
 
 
-
 @app.route("/voice", methods=["POST"])
-@app.route("/voice/", methods=["POST"])  # Accepts trailing slash
+@app.route("/voice/", methods=["POST"])  # Accepts trailing slash for flexibility
 @safe_twiml_route
 def voice():
-    global session_data,doctor_names
+    """
+    🎙️ Twilio Voice Webhook Entry Point
+    -------------------------------------------------------------
+    • Handles all inbound POST requests from Twilio during calls.
+    • Extracts call/session information and user input (speech/DTMF).
+    • Sets up or resumes the session for this call.
+    • Leaves detailed debug information for logging/tracing.
+    • Dispatching to stage handlers is done *outside* this function.
+    -------------------------------------------------------------
+    """
+    global session_data, doctor_names
+
     # ----------------------------------------------------------------------
-    # 🎙️ Twilio Voice Entry Point
+    # 🧭 Initialize a TwiML response object for Twilio
     # ----------------------------------------------------------------------
     resp = VoiceResponse()
     debug_print("[voice] ▶ enter voice()")
 
     # ----------------------------------------------------------------------
-    # 🆔 Extract Call SID & Initialize Session
+    # 🆔 Extract Call SID (unique ID per call)
     # ----------------------------------------------------------------------
     call_sid = request.values.get("CallSid", "")
     debug_print(f"[voice] CallSid={call_sid}")
 
-    # Load or access session
+    # ----------------------------------------------------------------------
+    # 💾 Load or initialize session data for this call
+    # ----------------------------------------------------------------------
     sd = session_data.get(call_sid, {})
-    debug_print(f"voice: 🔁 Loaded session for {call_sid}: keys={list(sd.keys())}")
-    debug_print(f"voice : 🩺 doctor_name loaded → {sd.get('doctor_name')}")
+    session_data.setdefault(call_sid, sd)
+    debug_print(f"[voice] 🔁 Loaded session for {call_sid}: keys={list(sd.keys())}")
+    debug_print(f"[voice] 🩺 doctor_name loaded → {sd.get('doctor_name')}")
 
     # ----------------------------------------------------------------------
-    # 🗣️ Retrieve Inputs
+    # 🗣️ Capture user input: speech recognition or keypad digits
     # ----------------------------------------------------------------------
     speech_result = (request.values.get("SpeechResult") or "").strip()
     try:
@@ -3462,179 +3475,51 @@ def voice():
     debug_print(f"[voice] inputs → speech='{speech_result}' dtmf='{dtmf_digits}'")
 
     # ----------------------------------------------------------------------
-    # 🌍 Country / Caller Initialization
+    # 🌍 Identify caller’s country (based on phone number prefix)
     # ----------------------------------------------------------------------
-    session_data.setdefault(call_sid, {})
-    if "country" not in session_data[call_sid]:
-        from_number = (request.values.get("From") or "").strip()
-        derived = COUNTRY
-        if from_number.startswith("+20"):
-            derived = "EG"
-        elif from_number.startswith("+1"):
-            derived = "US"
-        session_data[call_sid]["country"] = derived
-        debug_print(f"[voice] 🌐 country seeded → {derived}")
-    else:
-        debug_print(f"[voice] 🌐 country exists → {session_data[call_sid].get('country')}")
-
-    # Store E.164 caller number
     from_number = (request.values.get("From") or "").strip()
+    derived_country = COUNTRY  # Default fallback if not detected
+
+    if from_number.startswith("+20"):
+        derived_country = "EG"   # Egypt
+    elif from_number.startswith("+1"):
+        derived_country = "US"   # United States
+
+    # Save country if not already set
+    if "country" not in sd:
+        sd["country"] = derived_country
+        debug_print(f"[voice] 🌐 country seeded → {derived_country}")
+    else:
+        debug_print(f"[voice] 🌐 country exists → {sd.get('country')}")
+
+    # ----------------------------------------------------------------------
+    # ☎️ Save E.164 caller number for reference/logging
+    # ----------------------------------------------------------------------
     if from_number.startswith("+"):
-        session_data[call_sid]["from_e164"] = from_number
+        sd["from_e164"] = from_number
         debug_print(f"[voice] from_e164 set → {from_number}")
 
-    print(f"📢 voice :speech_result: {speech_result}")
-
     # ----------------------------------------------------------------------
-    # 🎯 Determine Current Stage
+    # 🧠 Determine current conversation stage (default = intro)
     # ----------------------------------------------------------------------
-    stage = session_data.get(call_sid, {}).get("stage", "intro")
+    stage = sd.get("stage", "intro")
     debug_print(f"[voice] 🎯 stage='{stage}'")
 
     # ----------------------------------------------------------------------
-    # 🔇 SILENCE GUARD PROMPTS
+    # 📢 Log the speech result for traceability (useful for debugging)
     # ----------------------------------------------------------------------
-    def _silence_prompt_for_stage(st: str) -> Tuple[str, str]:
-        """Return (prompt, hints) best suited for the current stage."""
-        debug_print(f"[voice] 🔇 selecting silence prompt for stage='{st}'")
-        hints = ""
-
-        if st in ("intro", "intent"):
-            hints = "book,cancel,change,reschedule,update,update card,voicemail,leave message"
-            return (
-                "I didn’t hear anything. Say 'book appointment' or press 1. "
-                 "Say 'book appointment' or press 1. "
-                 "Say 'cancel appointment' or press 2. "
-                 "say 'new customer' or press 3."
-                 "Say 'change appointment' or press 4. "
-                 "Say 'update credit card' or press 5. "
-                 "Say 'update pin number. or press 6 "
-                 "Say 'update insurance info. or press 7 "
-                 "Say 'leave voicemail' or press 8.",
-                 hints
-            )
-
-        if st == "book_appointment":
-            # 🩺 Use local doctor names instead of Google map
-            doctor_list = ", ".join(
-                doctor_names.values() if isinstance(doctor_names, dict) else doctor_names
-            )
-            hints = doctor_list
-            return ("Please say the name of the doctor you'd like to book with.", hints)
-
-        if st == "collect_phone":
-            hints = "zero one two three four five six seven eight nine double triple"
-            return ("Please say or enter your ten digit phone number including area code.", hints)
-
-        if st == "collect_dob":
-            return (
-                "Please say your birth date, for example 'July third 1990'. "
-                "Or type 2 digits for Month, 2 digits for Day, and 4 digits for Year, then press pound.",
-                hints
-            )
-
-        if st == "collect_book_time_date":
-            return (
-                "Please say the appointment time, for example, 'August fifteenth at 5 AM'. "
-                "Or enter two digits for month, two for day, two for hour, and two for minutes, "
-                "then say A for AM or P for PM, then press #.",
-                hints
-            )
-
-        if st == "collect_first_name":
-            return ("Please say your first name.", hints)
-
-        if st == "collect_last_name":
-            return ("Please say your last name.", hints)
-
-        if st == "collect_address":
-            return (
-                "Please say your street address, city, and ZIP. For example, "
-                "'118 Briar Oak, Murphy, Texas 75094'.",
-                hints
-            )
-
-        if st == "cancel_appointment":
-            doctor_list = ", ".join(
-                doctor_names.values() if isinstance(doctor_names, dict) else doctor_names
-            )
-            hints = doctor_list
-            return ("Please say the name of the doctor whose appointment you want to cancel.", hints)
-
-        
-        if st == "collect_cancel_get_dob":
-            return ("Please say your birth date, for example 'July third nineteen fifty six'. "
-                    "Or type 2 digits for month 2 digits for day and 4 digits for year then press pound.", hints)
-
-        if st == "voicemail":
-            return ("Please leave your name, phone number, and message after the beep.", hints)
-
-        # Default fallback
-        return ("Sorry, I didn’t hear anything. Please say that again.", hints)
+    print(f"📢 [voice] Speech recognized: {speech_result}")
 
     # ----------------------------------------------------------------------
-    # 🔇 SILENCE HANDLER
+    # ✅ Hand over control to your stage handlers
     # ----------------------------------------------------------------------
-    skip_silence = (
-        "intro",
-        "collect_cc",
-        "book_appt_confirm",
-        "cancel_appt_iterate",
-        "collect_phone",
-        "cancel_appt_confirm",
-        "collect_dob",
-        "collect_first_name",
-        "collect_last_name",
-        "collect_insurance_information",
-        "collect_dr_info",
-        "collect_pin_number",
-        "collect_cancel_time_date",
-    )
-    debug_print(f"[voice] 🔇 skip_silence={skip_silence}")
-
-    if stage not in skip_silence:
-        debug_print(
-            f"[voice] 🔇 evaluating silence guard at stage='{stage}' "
-            f"(speech_empty={not bool(speech_result)} dtmf_empty={not bool(dtmf_digits)})"
-        )
-        if not speech_result and not dtmf_digits:
-            session_data.setdefault(call_sid, {})
-            key = f"silence_{stage}"
-            session_data[call_sid][key] = session_data[call_sid].get(key, 0) + 1
-            tries = session_data[call_sid][key]
-            debug_print(f"[voice] 🔇 silence detected at stage='{stage}' (tries={tries})")
-
-            if tries >= 3:
-                debug_print("[voice] 🔇 max silence reached → hangup")
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            prompt, hints = _silence_prompt_for_stage(stage)
-            debug_print(f"[voice] 🔇 re-prompting with prompt='{prompt[:80]}' hints='{hints}'")
-            try:
-                gather = make_gather(prompt, hints=hints, num_digits=1) if hints else make_gather(prompt, num_digits=1)
-            except Exception as _e:
-                debug_print(f"[voice] 🔇 make_gather failed: {_e} → using generic prompt")
-                gather = make_gather("Sorry, I didn’t hear anything. Please try again.", num_digits=1)
-            resp.append(gather)
-            try:
-                redirect_url = url_for("voice")
-                resp.redirect(redirect_url)
-                debug_print(f"[voice] 🔇 redirect → {redirect_url}")
-            except Exception:
-                resp.redirect("/voice")
-                debug_print("[voice] 🔇 redirect → /voice (fallback)")
-            return str(resp)
-    else:
-        debug_print(f"[voice] 🔇 silence guard skipped for stage='{stage}'")
-
+    # The voice() function no longer performs silence checks or branching.
+    # Your downstream logic (e.g., intro(), intent(), collect_xx()) will
+    # handle the current stage and build the appropriate TwiML response.
+    #
+    # Return this VoiceResponse object so Twilio can continue the call flow.
     # ----------------------------------------------------------------------
-    # Continue with main conversation logic (other stages)
-    # ----------------------------------------------------------------------
-    # ↓ add your existing stage-handling code below this point
-    # e.g. intro / intent / collect_dr_info / collect_book_time_date / etc.
+    return str(resp)
 
 
 
