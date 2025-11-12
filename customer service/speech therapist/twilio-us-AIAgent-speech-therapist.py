@@ -2785,18 +2785,129 @@ def update_pin_number(phone_e164: str, dob: str, new_pin: int) -> bool:
         return False
 
 
+"""
+    Retrieve a customer's stored credit card number (cc_number) from customers.json.
+
+    Parameters:
+        phone_e164 (str): Customer's phone number in E.164 format (e.g., "+14155552671").
+        dob (str): Date of birth in ISO format (YYYY-MM-DD).
+
+    Returns:
+        str | None: The customer's stored credit card number if found and valid, otherwise None.
+
+    Behavior:
+      ✅ Looks up the customer record by key = "<phone_e164>|<dob>".
+      ✅ Ensures that the cc_number is a string of digits (13–19 length typical for credit cards).
+      ✅ Logs detailed debug output for traceability and troubleshooting.
+"""
+
+def get_customer_cc(phone_e164: str, dob: str) -> Optional[str]:
+    
+    try:
+        # ----------------------------------------------------------------------
+        # 🧱 Ensure database (customers.json) is initialized and available
+        # ----------------------------------------------------------------------
+        init_db()
+        data = _load_customers()
+
+        # Build composite key (same schema as used by other customer lookups)
+        key = _key(phone_e164, dob)
+
+        # Attempt to retrieve customer record from JSON store
+        rec = data.get(key)
+        if not rec:
+            debug_print(f"get_customer_cc: ❌ no record for key={key}")
+            return None
+
+        # ----------------------------------------------------------------------
+        # 💳 Extract and validate stored card number
+        # ----------------------------------------------------------------------
+        cc = rec.get("cc_number")
+        if isinstance(cc, str):
+            # Remove spaces or hyphens commonly found in stored CC formats
+            cc_clean = cc.replace(" ", "").replace("-", "")
+            if cc_clean.isdigit() and 13 <= len(cc_clean) <= 19:
+                debug_print(f"get_customer_cc: ✅ found cc_number (masked)={_mask(cc_clean)} for {key}")
+                return cc_clean
+            else:
+                debug_print(f"get_customer_cc: ⚠️ invalid cc_number format for {key} → {cc}")
+                return None
+        else:
+            debug_print(f"get_customer_cc: ⚠️ missing or non-string cc_number for {key}")
+            return None
+
+    except Exception as e:
+        debug_print(f"get_customer_cc: ⚠️ error reading cc_number for {phone_e164}|{dob}: {e}")
+        return None
+
+"""
+    Update a customer's stored credit card number in customers.json.
+
+    Parameters:
+        phone_e164 (str): Customer's phone number in E.164 format (e.g., "+14155552671").
+        dob (str): Date of birth in ISO format (YYYY-MM-DD).
+        new_cc (str): New credit card number (string of digits 13–19 in length).
+
+    Returns:
+        bool: True if the update succeeded, False otherwise.
+
+    Behavior:
+      ✅ Validates the new credit card format before updating.
+      ✅ Looks up the record by key = "<phone_e164>|<dob>".
+      ✅ Persists the updated cc_number field to customers.json.
+      ✅ Logs detailed success and error traces for debugging.
+"""
+
+def update_customer_cc(phone_e164: str, dob: str, new_cc: str) -> bool:
+    
+    try:
+        # ----------------------------------------------------------------------
+        # 🧱 Ensure the customers DB exists and is ready
+        # ----------------------------------------------------------------------
+        init_db()
+        data = _load_customers()
+        key = _key(phone_e164, dob)
+
+        # ----------------------------------------------------------------------
+        # 🔍 Verify that the record exists before modifying
+        # ----------------------------------------------------------------------
+        if key not in data:
+            debug_print(f"update_customer_cc: ❌ no record found for key={key}")
+            return False
+
+        # ----------------------------------------------------------------------
+        # 💳 Sanitize and validate the new credit card number
+        # ----------------------------------------------------------------------
+        cc_clean = str(new_cc).replace(" ", "").replace("-", "")
+        if not (cc_clean.isdigit() and 13 <= len(cc_clean) <= 19):
+            debug_print(f"update_customer_cc: ⚠️ invalid cc_number format → {new_cc}")
+            return False
+
+        # ----------------------------------------------------------------------
+        # 💾 Update the record and persist the changes
+        # ----------------------------------------------------------------------
+        data[key]["cc_number"] = cc_clean
+        _save_customers(data)
+        debug_print(f"update_customer_cc: ✅ updated cc_number (masked)={_mask(cc_clean)} for {key}")
+
+        return True
+
+    except Exception as e:
+        debug_print(f"update_customer_cc: ⚠️ error updating cc_number for {phone_e164}|{dob}: {e}")
+        return False
 
 
-
-def get_customer_status(phone: str, dob: str, default_country: str = COUNTRY) -> Optional[str]:
-    """
+"""
     Retrieve the customer's current status ("new" or "current") from customers.json.
 
     Behavior:
       ✅ Uses strict E.164-only lookup (no legacy phone fallback).
       ✅ Returns "new" or "current" if found, None if no record exists.
       ✅ Performs a light scan fallback if the exact key is missing.
-    """
+"""
+
+def get_customer_status(phone: str, dob: str, default_country: str = COUNTRY) -> Optional[str]:
+    
     init_db()
     dob_iso = (dob or "").strip()
     raw_phone = (phone or "").strip()
@@ -2843,6 +2954,15 @@ def get_customer_status(phone: str, dob: str, default_country: str = COUNTRY) ->
 
 
 
+"""
+    Update the customer's credit card info in customers.json by (phone_e164|dob).
+
+    Optimization goals:
+      ✅ Strict E.164-only normalization (no legacy fallback).
+      ✅ Clearer flow with early returns.
+      ✅ Reduced redundant normalization and string ops.
+      ✅ Maintains identical behavior and full debug traceability.
+"""
 
 
 def update_cc_info(
@@ -2854,15 +2974,7 @@ def update_cc_info(
     cc_cvv: Optional[str] = None,
     default_country: str = COUNTRY,  # e.g., "US" or "EG"
 ) -> bool:
-    """
-    Update the customer's credit card info in customers.json by (phone_e164|dob).
-
-    Optimization goals:
-      ✅ Strict E.164-only normalization (no legacy fallback).
-      ✅ Clearer flow with early returns.
-      ✅ Reduced redundant normalization and string ops.
-      ✅ Maintains identical behavior and full debug traceability.
-    """
+   
     # ----------------------------------------------------------------------
     # 🧩 Step 1: Ensure DB ready + normalize input
     # ----------------------------------------------------------------------
@@ -3533,107 +3645,274 @@ def voice():
 
 
 
+    """
+    🧩 Stage: INTRO
+    ----------------------------------------------------------------------
+    Functional Description:
+    ----------------------------------------------------------------------
+    • This is the very first conversational stage after Twilio hits /voice.
+    • It welcomes the caller to the clinic and presents the main menu.
+    • The prompt offers both speech and keypad (DTMF) options for navigation.
+    • The <Gather> TwiML block listens for input and posts the result
+    back to /voice with SpeechResult or Digits.
+    • If the caller stays silent, local retry logic reprompts up to 3 times
+    before transferring them to voicemail as a fallback.
+    ----------------------------------------------------------------------
+    Flow Summary:
+    ----------------------------------------------------------------------
+    1️⃣ Caller dials the clinic number.
+    2️⃣ Twilio triggers /voice → stage = "intro".
+    3️⃣ The system greets the caller and asks for intent (book, cancel, etc.).
+    4️⃣ If no input: politely retries up to 3 times.
+    5️⃣ On silence limit: redirects to voicemail.
+    6️⃣ On valid speech or DTMF: next stage = "intent".
+    ----------------------------------------------------------------------
+    """
 
-    """
-    # What happens in this stage:
-    # The caller calls the clinic.
-    # Twilio sends a webhook to your /voice endpoint.
-    # You respond with a greeting prompt, dynamically generated using ChatGPT.
-    # You ask: “Would you like to book an appointment or leave a message?”
-    # The system listens for speech and sends the result back to the same endpoint (/voice) using a POST request.
-    # The session progresses from "intro" to "intent" for next steps.
-    # If this is the start of the call, begin with the "intro" stage.
-    """
     if stage == "intro":
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # 🧠 Initialize or update the session for this call
-        # ----------------------------------------------------------------------
-        # Ensures the session dict exists and preserves any previous values
-        # (like phone, country, doctor_name) without overwriting them.
+        # ------------------------------------------------------------------
+        # Create or access the session dictionary for this CallSid.
+        # Preserve any prior values (e.g., phone number, country, doctor).
         sd = session_data.setdefault(call_sid, {})
-        sd["stage"] = "intent"
+        sd["stage"] = "intent"   # The next logical stage after intro
 
-        # ----------------------------------------------------------------------
-        # 🩺 Debug info to trace continuity between Twilio POSTs
-        # ----------------------------------------------------------------------
-        debug_print(f"[intro] ▶️ New or returning call SID → {call_sid}")
+        # ------------------------------------------------------------------
+        # 🩺 Log diagnostic info to verify session continuity
+        # ------------------------------------------------------------------
+        debug_print(f"[intro] ▶️ Call SID → {call_sid}")
         debug_print(f"[intro] 🧭 Next stage set to 'intent'")
         debug_print(f"[intro] Current session keys → {list(sd.keys())}")
 
-        # ----------------------------------------------------------------------
-        # 🎙️ Voice prompt
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🔇 Local silence-handling setup
+        # ------------------------------------------------------------------
+        # This counter tracks how many times the caller failed to respond.
+        # It resets automatically when valid speech or DTMF is received.
+        silence_key = f"intro_silence_count"
+        silence_count = sd.get(silence_key, 0)
+        debug_print(f"[intro] 🔇 Silence attempt #{silence_count}")
+
+        # ------------------------------------------------------------------
+        # 🧾 Retrieve user input (speech or keypad)
+        # ------------------------------------------------------------------
+        raw_speech = (speech_result or "").strip()
+        raw_dtmf = (request.values.get("Digits") or "").strip()
+        debug_print(f"[intro] 🎧 Received speech='{raw_speech}' dtmf='{raw_dtmf}'")
+
+        # ------------------------------------------------------------------
+        # 🗣️ MAIN PROMPT — Welcome and menu options
+        # ------------------------------------------------------------------
         prompt = (
-            "Thank you for calling EPIC therapist. "
+            "Thank you for calling Epic Therapist Clinic. "
             "Say 'book appointment' or press 1. "
             "Say 'cancel appointment' or press 2. "
-            "say 'new customer' or press 3."
+            "Say 'new customer' or press 3. "
             "Say 'change appointment' or press 4. "
             "Say 'update credit card' or press 5. "
-            "Say 'update pin number. or press 6 "
-            "Say 'update insurance info. or press 7 "
+            "Say 'update pin number' or press 6. "
+            "Say 'update insurance information' or press 7. "
             "Say 'leave voicemail' or press 8."
         )
 
-        # Build a Twilio <Gather> block:
-        # - Speaks the message using Polly voice
-        # - Accepts speech or keypad (DTMF)
-        # - Automatically posts back to /voice
+        # ------------------------------------------------------------------
+        # 🔇 Handle silence locally (if no speech or DTMF received)
+        # ------------------------------------------------------------------
+        if not raw_speech and not raw_dtmf:
+            silence_count += 1
+            sd[silence_key] = silence_count
+            debug_print(f"[intro] 🤐 No input detected → retry {silence_count}/3")
+
+            if silence_count >= 3:
+                # After 3 silences → fallback to voicemail
+                debug_print("[intro] 🚫 Too many silences → redirecting to voicemail")
+                sd.pop(silence_key, None)
+                sd["stage"] = "voicemail"
+
+                resp.say(
+                    gpt_speak("I’m still not hearing anything. Please leave your message after the beep."),
+                    VOICE,
+                )
+                resp.record(
+                    max_length=60,
+                    action="/voice",
+                    transcribe=True,
+                    transcribe_callback="/transcription"
+                )
+                return str(resp)
+
+            # Otherwise, politely re-prompt the same menu again
+            resp.pause(length=1)
+            gather = make_gather(
+                "I didn’t catch that. " + prompt,
+                input="speech dtmf",
+                timeout=8,               # Wait 8 seconds for response
+                speech_timeout="auto",   # Auto-stop when silence
+                barge_in=True,           # Allow user to interrupt
+                finish_on_key="#",
+                num_digits=1
+            )
+            resp.append(gather)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # ------------------------------------------------------------------
+        # ✅ Reset silence counter if input received
+        # ------------------------------------------------------------------
+        if raw_speech or raw_dtmf:
+            sd.pop(silence_key, None)
+
+        # ------------------------------------------------------------------
+        # 🎙️ Build main Gather prompt for the intro stage
+        # ------------------------------------------------------------------
+        # The <Gather> element tells Twilio to:
+        #   • Speak the menu options
+        #   • Listen for speech or keypad input
+        #   • Post input back to /voice for next processing (stage='intent')
+        # ------------------------------------------------------------------
         gather = make_gather(
-            prompt,
-            hints="book,cancel,change,reschedule,update,voicemail",
-            num_digits=1
+            prompt,                           # Spoken greeting + menu
+            hints="book,cancel,change,reschedule,update,voicemail",  # Speech hints
+            input="speech dtmf",              # Allow both speech and DTMF
+            timeout=8,                        # Wait up to 8 seconds for reply
+            speech_timeout="auto",            # Stop on short silence
+            barge_in=True,                    # Allow user to interrupt speech
+            finish_on_key="#",                # '#' ends keypad input
+            num_digits=1                      # Expect one digit (1–8)
         )
 
-        """
-        Twilio will receive this as:
-        <Response>
-            <Gather input="speech dtmf" numDigits="1" ...>
-                <Say>Thank you for calling EPIC therapist...</Say>
-            </Gather>
-        </Response>
-        """
-
-        # Append the Gather block to the TwiML response
+        # ------------------------------------------------------------------
+        # 📤 Append Gather to response and redirect Twilio after completion
+        # ------------------------------------------------------------------
         resp.append(gather)
+        resp.redirect("/voice")
 
-        # ✅ Return TwiML back to Twilio
+        # ------------------------------------------------------------------
+        # ✅ Return TwiML response to Twilio for immediate execution
+        # ------------------------------------------------------------------
         return str(resp)
 
 
 
+        """
+    🧩 Stage: INTENT
+    ----------------------------------------------------------------------
+    Functional Description:
+    ----------------------------------------------------------------------
+    • This stage follows immediately after the “intro” greeting.
+    • Its purpose is to understand *what the caller wants to do*.
+    • The caller can respond by **saying** a keyword (e.g. “book appointment”)
+    or **pressing** a corresponding keypad number (e.g. 1–8).
+    • It maps speech and DTMF input to actions such as:
+        1️⃣ Book an appointment
+        2️⃣ Cancel an appointment
+        3️⃣ New customer registration
+        4️⃣ Reschedule an appointment
+        5️⃣ Update credit card
+        6️⃣ Update PIN number
+        7️⃣ Update insurance info
+        8️⃣ Leave a voicemail
+    • Local silence handling:
+    - Retries the prompt up to 3 times if user says nothing.
+    - After 3 silences → transfers to voicemail as fallback.
+    • This stage then redirects to the relevant sub-stage (e.g. `collect_phone`).
+    ----------------------------------------------------------------------
+    Flow Summary:
+    ----------------------------------------------------------------------
+    1️⃣ Receive user input (`SpeechResult` or `Digits`) from Twilio.
+    2️⃣ Detect silence; re-prompt if no input.
+    3️⃣ Normalize text (lowercase, strip punctuation).
+    4️⃣ Identify user intent by keyword or keypad mapping.
+    5️⃣ Update session → set `stage` and `origin_stage`.
+    6️⃣ Redirect back to `/voice` for the next step.
+    ----------------------------------------------------------------------
+    """
+
     elif stage == "intent":
-        # ----------------------------------------------------------------------
-        # 🎯 Intent detection stage: figure out what the caller wants:
-        #   1. Book an appointment
-        #   2. Cancel an appointment
-        #   3. Reschedule an appointment
-        #   4. Update credit card
-        #   5. Update PIN number
-        #   6. Update insurance information
-        #   7. Leave a voicemail
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🧠 Local silence handling setup
+        # ------------------------------------------------------------------
+        sd = session_data.setdefault(call_sid, {})
+        silence_key = "intent_silence_count"
+        silence_count = sd.get(silence_key, 0)
 
+        # Extract and normalize user input
         lower = (speech_result or "").lower().strip()
-        print(f"📢 intent :speech_result: {lower}")
+        debug_print(f"[intent] 🎧 speech_result='{lower}' dtmf='{dtmf_digits}'")
 
-        # ----------------------------------------------------------------------
-        # 🔢 Handle keypad input 1..7 or spoken digits
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🔇 Handle silence locally (no speech, no DTMF)
+        # ------------------------------------------------------------------
+        if not lower and not dtmf_digits:
+            silence_count += 1
+            sd[silence_key] = silence_count
+            debug_print(f"[intent] 🤐 No input detected → retry {silence_count}/3")
+
+            if silence_count >= 3:
+                # After 3 silences → move to voicemail
+                debug_print("[intent] 🚫 Too many silences → redirect to voicemail")
+                sd.pop(silence_key, None)
+                sd["stage"] = "voicemail"
+
+                resp.say(
+                    gpt_speak("I’m still not hearing anything. Please leave your message after the beep."),
+                    VOICE,
+                )
+                resp.record(
+                    max_length=MAX_RECORD_TIME,
+                    action="/voice",
+                    transcribe=True,
+                    transcribe_callback="/transcription"
+                )
+                return str(resp)
+
+            # Reprompt if silence count < 3
+            prompt_retry = (
+                "I didn’t catch that. "
+                "Say 'book appointment' or press 1. "
+                "Say 'cancel appointment' or press 2. "
+                "Say 'new customer' or press 3. "
+                "Say 'change appointment' or press 4. "
+                "Say 'update credit card' or press 5. "
+                "Say 'update PIN number' or press 6. "
+                "Say 'update insurance information' or press 7. "
+                "Say 'leave voicemail' or press 8."
+            )
+
+            gather = make_gather(
+                prompt_retry,
+                input="speech dtmf",
+                timeout=8,
+                speech_timeout="auto",
+                barge_in=True,
+                num_digits=1
+            )
+            resp.append(gather)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # Reset silence counter if valid input was received
+        sd.pop(silence_key, None)
+
+        # ------------------------------------------------------------------
+        # 🔢 Handle keypad or spoken numeric input
+        # ------------------------------------------------------------------
         choice = None
-        if dtmf_digits and len(dtmf_digits) == 1 and dtmf_digits in "1234567":
-            choice = dtmf_digits
-        elif lower in {"1", "2", "3", "4", "5", "6", "7","8"}:
+        if dtmf_digits and dtmf_digits.isdigit():
+            choice = dtmf_digits.strip()
+        elif lower in {"1", "2", "3", "4", "5", "6", "7", "8"}:
             choice = lower
 
-        # ----------------------------------------------------------------------
-        # 🗣️ Handle speech keywords (semantic triggers)
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🗣️ Handle natural language / keyword input
+        # ------------------------------------------------------------------
+        # If caller spoke words instead of numbers, detect intent by keyword.
         if any(word in lower for word in ["book", "appointment", "schedule"]):
             choice = "1"
         elif any(word in lower for word in ["cancel", "delete", "remove"]):
             choice = "2"
-        elif any(word in lower for word in ["new", "user", "new customer"]):
+        elif any(word in lower for word in ["new", "user", "register", "customer"]):
             choice = "3"
         elif any(word in lower for word in ["reschedule", "change", "move"]):
             choice = "4"
@@ -3646,66 +3925,57 @@ def voice():
         elif any(word in lower for word in ["voicemail", "message", "record"]):
             choice = "8"
 
-        # ----------------------------------------------------------------------
-        # ✅ Route user choice (speech or keypad)
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # ✅ Route user choice (by speech or DTMF)
+        # ------------------------------------------------------------------
         if choice:
             # 1️⃣ Book Appointment
             if choice == "1":
-                print("📅 DTMF=1 → booking (start with phone collection)")
-                session_data.setdefault(call_sid, {})
+                debug_print("[intent] 📅 Booking flow selected")
                 session_data[call_sid].update({
-                    "stage": "collect_phone",
+                    "stage": "collect_phone",      # Next step: phone verification
                     "origin_stage": "book",
                     "booking": {},
                     "retry_booking": 0,
                     "retry_time": 0
                 })
                 prompt = "Please say or enter your ten-digit phone number, then press pound."
-                gather = make_gather(prompt, input="speech dtmf", timeout=6,
-                                    speech_timeout="auto", barge_in=True,
-                                    finish_on_key="#", num_digits=10)
+                gather = make_gather(
+                    prompt, input="speech dtmf", timeout=6,
+                    speech_timeout="auto", barge_in=True,
+                    finish_on_key="#", num_digits=10
+                )
                 resp.append(gather)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # 2️⃣ Cancel Appointment (🔒 secure path)
+            # 2️⃣ Cancel Appointment
             if choice == "2":
-                print("❌ DTMF=2 → cancel flow (secure verification first)")
+                debug_print("[intent] ❌ Cancel flow selected")
                 session_data[call_sid] = {
-                      "stage": "collect_phone",
-                      "origin_stage": "cancel",        # 🔥 mark this as a cancel flow
-                      "cancel": {},
-                      "retry_booking": 0
-                    }
-
-                # Step 1: ask for phone number first
+                    "stage": "collect_phone",
+                    "origin_stage": "cancel",
+                    "cancel": {},
+                    "retry_booking": 0
+                }
                 prompt = (
                     "Sure, I can help you cancel your appointment. "
-                    "To verify your identity, please say or enter the phone number you used when booking, then press pound."
+                    "Please say or enter the phone number you used when booking, then press pound."
                 )
-
                 gather = make_gather(
-                    prompt,
-                    input="speech dtmf",
-                    num_digits=10,
-                    finish_on_key="#",
-                    timeout=10,
-                    speech_timeout="auto",
-                    barge_in=True,
+                    prompt, input="speech dtmf", num_digits=10,
+                    finish_on_key="#", timeout=10,
+                    speech_timeout="auto", barge_in=True,
                     language="en-US",
                 )
-
                 resp.append(gather)
                 resp.redirect("/voice")
                 save_session(call_sid)
                 return str(resp)
 
-            # 3️⃣ Reschedule Appointment
-             # 1️⃣ new customer
+            # 3️⃣ New Customer Registration
             if choice == "3":
-                print("📅 DTMF=1 → booking (start with phone collection)")
-                session_data.setdefault(call_sid, {})
+                debug_print("[intent] 🧾 Registration flow selected")
                 session_data[call_sid].update({
                     "stage": "collect_phone",
                     "origin_stage": "register",
@@ -3713,109 +3983,105 @@ def voice():
                     "retry_booking": 0,
                     "retry_time": 0
                 })
-                prompt = "I can help you doing your registration, Please say or enter your ten-digit phone number, then press pound."
-                gather = make_gather(prompt, input="speech dtmf", timeout=6,
-                                    speech_timeout="auto", barge_in=True,
-                                    finish_on_key="#", num_digits=10)
+                prompt = (
+                    "I can help you register. "
+                    "Please say or enter your ten-digit phone number, then press pound."
+                )
+                gather = make_gather(
+                    prompt, input="speech dtmf", timeout=6,
+                    speech_timeout="auto", barge_in=True,
+                    finish_on_key="#", num_digits=10
+                )
                 resp.append(gather)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # 2️⃣ Cancel Appointment (🔒 secure path)
+            # 4️⃣ Reschedule Appointment
             if choice == "4":
-                debug_print("🔁 DTMF=3 → reschedule (cancel then rebook)")
+                debug_print("[intent] 🔁 Reschedule flow selected (cancel + rebook)")
                 session_data[call_sid] = {
                     "stage": "collect_phone",
-                    "origin_stage": "reschedule",          # ✅ add explicit origin_stage
+                    "origin_stage": "reschedule",
                     "cancel": {},
-                    "retry_booking": 0,
-                    "reschedule_after_cancel": True
+                    "retry_booking": 0
                 }
-
-                # ✅ Use the same behavior as cancel — include a <Gather> so Twilio listens
                 prompt = (
                     "Sure, let's reschedule your appointment. "
                     "We'll cancel your current one first. "
-                    "To verify your identity, please say or enter the phone number you used when booking, then press pound."
+                    "Please say or enter your phone number, then press pound."
                 )
-
                 gather = make_gather(
-                    prompt,
-                    input="speech dtmf",
-                    num_digits=10,
-                    finish_on_key="#",
-                    timeout=10,
-                    speech_timeout="auto",
-                    barge_in=True,
+                    prompt, input="speech dtmf", num_digits=10,
+                    finish_on_key="#", timeout=10,
+                    speech_timeout="auto", barge_in=True,
                     language="en-US",
                 )
-
                 resp.append(gather)
                 resp.redirect("/voice")
                 save_session(call_sid)
                 return str(resp)
 
-
+            # 5️⃣ Update Credit Card
             if choice == "5":
-                print("💳 DTMF=4 → update credit card")
-
-                # ----------------------------------------------------------------------
-                # 🧱 Initialize or update the caller session
-                # ----------------------------------------------------------------------
-                # • stage → where the flow will resume on next /voice POST
-                # • origin_stage → identifies this flow’s purpose for downstream routing
-                # ----------------------------------------------------------------------
-                session_data.setdefault(call_sid, {})
+                debug_print("[intent] 💳 Credit card update flow selected")
                 session_data[call_sid].update({
-                    "stage": "collect_first_name",          # 🎯 current step in the conversation
-                    "origin_stage": "update_cc",   # ✅ key identifier for routing decisions
-                    "retry_booking": 0
+                    "stage": "collect_first_name",
+                    "origin_stage": "update_cc"
                 })
-
-
-                
-                prompt = (
-                            "You said you want to update your credit card information. Please hold while we process this request."
-                         )
+                prompt = "You said you want to update your credit card information. Please hold while we process this request."
                 gather = make_gather(
-                    prompt,
+                    prompt, 
                     input="speech dtmf",
                     num_digits=10,
                     finish_on_key="#",
                     timeout=10,
-                    speech_timeout="auto",
+                    speech_timeout="auto", 
                     barge_in=True,
                     language="en-US",
                 )
-
                 resp.append(gather)
                 resp.redirect("/voice")
                 save_session(call_sid)
                 return str(resp)
 
-
-                
-
-            # 5️⃣ Update PIN Number
+            # 6️⃣ Update PIN
             if choice == "6":
-                print("🔢 DTMF=5 → update PIN number")
-                session_data.setdefault(call_sid, {})
-                session_data[call_sid]["stage"] = "update_pin_number"
-                resp.say(gpt_speak("You said you want to update your PIN number. This option is not implemented yet. Please call the clinic for assistance."), VOICE)
+                debug_print("[intent] 🔢 PIN update flow selected")
+                session_data[call_sid].update({
+                    "stage": "collect_first_name",
+                    "origin_stage": "update_pin_number"
+                })
+                
+                prompt = ("You said you want to update your PIN number. "
+                          "Please hold while we process this request.")
+                gather = make_gather(
+                        prompt, 
+                        input="speech dtmf",
+                        num_digits=10,
+                        finish_on_key="#",
+                        timeout=10,
+                        speech_timeout="auto", 
+                        barge_in=True,
+                        language="en-US",
+                    )
+                resp.append(gather)
+                resp.redirect("/voice")
                 return str(resp)
+            
 
-            # 6️⃣ Update Insurance Info
+            # 7️⃣ Update Insurance
             if choice == "7":
-                print("🏥 DTMF=6 → update insurance information")
-                session_data.setdefault(call_sid, {})
+                debug_print("[intent] 🏥 Insurance update flow selected")
                 session_data[call_sid]["stage"] = "update_insurance_information"
-                resp.say(gpt_speak("You said you want to update your health insurance information. This option is not implemented yet. Please call the clinic for assistance."), VOICE)
+                resp.say(gpt_speak(
+                    "You said you want to update your insurance information. "
+                    "This option is not implemented yet. Please call the clinic for assistance."
+                ), VOICE)
                 return str(resp)
 
-            # 7️⃣ Leave Voicemail
+            # 8️⃣ Voicemail
             if choice == "8":
-                print("📩 DTMF=7 → voicemail")
-                session_data.setdefault(call_sid, {})
+                debug_print("[intent] 📩 Voicemail flow selected")
                 session_data[call_sid]["stage"] = "voicemail"
                 resp.say(gpt_speak("Please leave your name, phone number, and message after the beep."), VOICE)
                 resp.record(
@@ -3826,30 +4092,31 @@ def voice():
                 )
                 return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🚫 Handle greetings or empty input (re-prompt main menu)
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🚫 Handle junk or greeting input (e.g. "hello", "hi", etc.)
+        # ------------------------------------------------------------------
         junk_inputs = {
             "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
-            "yo", "test", "1", "yes", "no"
+            "yo", "test", "yes", "no"
         }
         if not lower or lower in junk_inputs:
-            print(f"⛔ Ignored junk input: '{lower}' — re-prompting main menu")
+            debug_print(f"[intent] ⛔ Ignored input '{lower}' → re-prompting main menu")
             gather = make_gather(
                 "Thank you for calling Epic Therapist. "
                 "Say 'book appointment' or press 1. "
                 "Say 'cancel appointment' or press 2. "
-                "Say 'change appointment' or press 3. "
-                "Say 'update credit card' or press 4. "
-                "Say 'update PIN number' or press 5. "
-                "Say 'update insurance information' or press 6. "
-                "Say 'leave voicemail' or press 7.",
+                "Say 'new customer' or press 3. "
+                "Say 'change appointment' or press 4. "
+                "Say 'update credit card' or press 5. "
+                "Say 'update PIN number' or press 6. "
+                "Say 'update insurance information' or press 7. "
+                "Say 'leave voicemail' or press 8.",
                 hints="book,cancel,change,reschedule,update,credit card,pin number,insurance,voicemail",
                 num_digits=1
             )
             resp.append(gather)
+            resp.redirect("/voice")
             return str(resp)
-
 
 
 
@@ -3872,74 +4139,86 @@ def voice():
     # ======================================================================
 
 
-    
-    elif stage == "collect_phone":
-    
+        """
+    🧩 Stage: COLLECT_PHONE
+    ----------------------------------------------------------------------
+    Functional Description:
+    ----------------------------------------------------------------------
+    • Purpose:
+    Collect and validate the caller’s phone number via speech or DTMF.
+    This step is shared by booking, cancel, register, and reschedule flows.
 
+    • Flow:
+    1️⃣ Play prompt asking for a 10-digit phone number.
+    2️⃣ Accept speech (“two one four...”) or keypad input (“2145552671”).
+    3️⃣ Convert speech → digits → normalized E.164 number (+14155552671).
+    4️⃣ If valid → store in session → advance to next stage (`collect_dob`).
+    5️⃣ If silence or invalid input → retry up to 3 times.
+    6️⃣ After 3 failures → end politely.
+
+    • Local Silence Handling:
+    - Tracks attempts in `silence_collect_phone`.
+    - Reprompts politely up to 2 times.
+    - On 3rd silence → apologizes and hangs up.
+    ----------------------------------------------------------------------
+    """
+
+    elif stage == "collect_phone":
         debug_print("[collect_phone] 📍 Stage entered")
 
-        # ----------------------------------------------------------------------
-        # 💬 VOICE MESSAGES — centralized for maintainability & localization
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 💬 Voice messages for reuse and localization
+        # ------------------------------------------------------------------
         VOICE_NO_INPUT_MSG = (
-            "I didn’t hear your phone number. Please say or enter your 10-digit number, then press pound."
+            "I didn’t hear your phone number. Please say or enter your ten-digit number, then press pound."
         )
         VOICE_TOO_MANY_SILENCES_MSG = (
             "I'm sorry, I still didn't get your phone number. Please call again later."
         )
         VOICE_INVALID_PHONE_MSG = (
-            "That doesn’t sound complete. Please say or enter your 10-digit phone number including area code, then press pound."
+            "That doesn’t sound complete. Please say or enter your ten-digit phone number including area code, then press pound."
         )
         VOICE_TOO_MANY_INVALID_MSG = (
             "I'm sorry, I couldn’t capture your phone number. Please call again later."
-        )
-        VOICE_RESCHEDULE_MSG = (
-            "Thanks. Please say the new appointment date and time, for example, 'October 12 at 9 A M'."
         )
         VOICE_ASK_DOB_MSG = (
             "Thanks. What’s your date of birth? You can say it, or enter two digits for month, "
             "two for day, and four for year, then press pound."
         )
 
-        # ----------------------------------------------------------------------
-        # 🔁 Load session safely (never overwrite)
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🔁 Initialize session safely without overwriting existing keys
+        # ------------------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
         cust = sd.setdefault("customer", {})
         cancel_ctx = sd.setdefault("cancel", {})
         debug_print(f"[collect_phone] session keys before: {list(sd.keys())}")
 
-        # 👁️ Diagnostic: ensure doctor_name context persists between stages
-        if "doctor_name" in sd:
-            debug_print(f"[collect_phone] ✅ doctor_name still active: {sd['doctor_name']}")
-        else:
-            debug_print("[collect_phone] ⚠️ doctor_name missing entering collect_phone")
-
-        # ----------------------------------------------------------------------
-        # 🌎 Infer phone country once per call
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🌎 Infer caller’s country code for phone normalization
+        # ------------------------------------------------------------------
         if "phone_country" not in sd:
             from_country = (request.values.get("FromCountry") or "").upper()
             sd["phone_country"] = from_country or (COUNTRY or "US")
             debug_print(f"[collect_phone] 🌐 phone_country={sd['phone_country']}")
 
-        # ----------------------------------------------------------------------
-        # 🗣 Capture inputs from Twilio (speech + DTMF)
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🗣 Capture user input (SpeechResult or DTMF)
+        # ------------------------------------------------------------------
         dtmf_digits = (request.values.get("Digits") or "").strip()
         speech_text = (speech_result or "").strip()
-        debug_print(f"[collect_phone] 🗣 speech='{speech_text}'  🔢 DTMF='{dtmf_digits}'")
+        debug_print(f"[collect_phone] 🗣 speech='{speech_text}' 🔢 DTMF='{dtmf_digits}'")
 
-        # ----------------------------------------------------------------------
-        # 🔇 Silence handling (no speech or digits received)
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🔇 Local silence handling — no input received
+        # ------------------------------------------------------------------
         if not (speech_text or dtmf_digits):
             tries = sd.get("silence_collect_phone", 0) + 1
             sd["silence_collect_phone"] = tries
             debug_print(f"[collect_phone] 🤐 No input (tries={tries}/3)")
 
-            # 🗣 Retry up to 2 times politely
             if tries < 3:
+                # Reprompt politely
                 g = make_gather(
                     VOICE_NO_INPUT_MSG,
                     input="speech dtmf",
@@ -3952,33 +4231,33 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
-            # ❌ After 3 failed attempts, terminate politely
+            # Too many silences → terminate call politely
             resp.say(gpt_speak(VOICE_TOO_MANY_SILENCES_MSG), VOICE)
             resp.hangup()
-            save_session(call_sid)  # ✅ persist logs for debugging
+            save_session(call_sid)
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # ✅ Clear silence counter since input received
+        # Reset silence counter after valid input
         sd.pop("silence_collect_phone", None)
 
-        # ----------------------------------------------------------------------
-        # 🔢 Convert spoken input to digits if needed
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🔢 Convert spoken numbers to digits
+        # ------------------------------------------------------------------
         def _spoken_to_digits(raw: str) -> str:
             """
-            Converts spoken numbers like “two one four five five” → “21455”.
-            Handles common words, including “double” and “triple” cases.
+            Convert spoken number words like “two one four double five”
+            into numeric string “21455”.
+            Supports “double”/“triple” modifiers.
             """
             if not raw:
                 return ""
-            # Normalize input text: lowercase and remove punctuation
+            # Normalize and split input text
             words = (
                 raw.lower()
                 .replace("-", " ").replace(",", " ").replace(".", " ")
                 .replace("(", " ").replace(")", " ").split()
             )
-            # Map spoken words to digits
             mapping = {
                 "zero": "0", "oh": "0", "o": "0",
                 "one": "1", "two": "2", "to": "2", "too": "2",
@@ -3986,53 +4265,50 @@ def voice():
                 "five": "5", "six": "6", "seven": "7",
                 "eight": "8", "ate": "8", "nine": "9",
             }
-
             out = []
             i = 0
             while i < len(words):
                 w = words[i]
-                # Handle "double five" → "55", "triple six" → "666"
+                # Handle "double five" / "triple six"
                 if w in ("double", "triple") and i + 1 < len(words):
                     nxt = words[i + 1]
                     if nxt in mapping:
                         out.extend([mapping[nxt]] * (2 if w == "double" else 3))
                         i += 2
                         continue
-                # Regular mapping
+                # Standard mapping or raw digits
                 if w in mapping:
                     out.append(mapping[w])
                 else:
-                    # Extract digits directly from any alphanumeric speech artifacts
                     out.extend([c for c in w if c.isdigit()])
                 i += 1
             return "".join(out)
 
-        # 🧩 Combine DTMF digits (if pressed) or convert speech
+        # Combine inputs: prefer DTMF digits else convert speech
         raw_digits = _re.sub(r"\D", "", dtmf_digits or _spoken_to_digits(speech_text))
         debug_print(f"[collect_phone] 🔍 raw_digits='{raw_digits}'")
 
-        # ----------------------------------------------------------------------
-        # 🌐 Normalize number to E.164 format (+14155552671)
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🌐 Normalize to E.164 format (e.g., +14155552671)
+        # ------------------------------------------------------------------
         country = sd.get("phone_country", (COUNTRY or "US")).upper()
         try:
             phone_e164 = normalize_phone_e164(raw_digits, country)
             debug_print(f"[collect_phone] ✅ normalized → {phone_e164}")
         except Exception as e:
-            # Fallback for U.S.-style numbers if normalization fails
             debug_print(f"[collect_phone] ⚠️ normalize_phone_e164 failed: {e}")
             d = raw_digits
             if country == "US":
                 if len(d) == 11 and d.startswith("1"):
-                    d = d[1:]  # remove leading “1” if present
+                    d = d[1:]
                 phone_e164 = f"+1{d}" if len(d) == 10 else ""
             else:
                 phone_e164 = ""
             debug_print(f"[collect_phone] ⚙️ fallback normalize → '{phone_e164}'")
 
-        # ----------------------------------------------------------------------
-        # ❌ Retry if invalid or incomplete number
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # ❌ Retry for invalid / incomplete phone numbers
+        # ------------------------------------------------------------------
         if not phone_e164:
             r = sd.get("retry_phone", 0) + 1
             sd["retry_phone"] = r
@@ -4051,16 +4327,16 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
-            # ❌ Max retries exceeded → hang up politely
+            # Too many invalid attempts → end call
             resp.say(gpt_speak(VOICE_TOO_MANY_INVALID_MSG), VOICE)
             resp.hangup()
             save_session(call_sid)
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # ✅ Save phone number across contexts (for booking, cancellation, etc.)
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # ✅ Save valid phone number across session contexts
+        # ------------------------------------------------------------------
         cust["phone_e164"] = phone_e164
         cust["phone"] = phone_e164
         cancel_ctx["phone_e164"] = phone_e164
@@ -4068,39 +4344,11 @@ def voice():
         sd["retry_phone"] = 0
         debug_print(f"[collect_phone] 💾 saved phone_e164={phone_e164}")
 
-        # ----------------------------------------------------------------------
-        # 🔁 Return stage handling (if caller is coming back from another flow)
-        # ----------------------------------------------------------------------
-        return_stage = sd.pop("return_stage", None)
-        if return_stage:
-            sd["stage"] = return_stage
-            debug_print(f"[collect_phone] ↩️ returning to stage '{return_stage}'")
-            resp.redirect("/voice")
-            save_session(call_sid)
-            return str(resp)
+       
 
-        # ----------------------------------------------------------------------
-        # 🔁 Reschedule-after-cancel shortcut
-        # ----------------------------------------------------------------------
-        if sd.get("reschedule_after_cancel"):
-            sd["stage"] = "collect_book_time_date"
-            g = make_gather(
-                VOICE_RESCHEDULE_MSG,
-                input="speech dtmf",
-                timeout=5,
-                speech_timeout="auto",
-                barge_in=True,
-                finish_on_key="#"
-            )
-            resp.append(g)
-            resp.redirect("/voice")
-            debug_print("[collect_phone] 🔁 reschedule → collect_book_time_date")
-            save_session(call_sid)
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # 🗓️ Normal flow → Proceed to collect date of birth
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🗓 Proceed normally → next step is DOB collection
+        # ------------------------------------------------------------------
         sd["stage"] = "collect_dob"
         g = make_gather(
             VOICE_ASK_DOB_MSG,
@@ -4114,7 +4362,7 @@ def voice():
         resp.redirect("/voice")
         debug_print(f"[collect_phone] ➡️ next stage → collect_dob (doctor_name={sd.get('doctor_name')})")
 
-        # ✅ Persist session state for continuity
+        # Persist session state for next webhook call
         save_session(call_sid)
         return str(resp)
 
@@ -4632,109 +4880,85 @@ def voice():
     #   ✅ Supports both DTMF and speech.
     # ----------------------------------------------------------------------
 
-
     elif stage == "collect_pin_number":
-        # ----------------------------------------------------------------------
-        # 🔐 Stage: collect_pin_number
-        #
-        # PURPOSE:
-        #   • Verify the caller’s 6-digit PIN number via speech or DTMF.
-        #   • Maintain session continuity (including origin_stage='cancel' or 'book').
-        #   • Branch to the correct next stage based on origin_stage.
-        #
-        # FLOW:
-        #   - Handles silence and invalid attempts (max 3).
-        #   - Validates PIN against stored value in customer file (via get_pin_number()).
-        #   - Continues to collect_dr_info (booking/cancellation) or collect_cc.
-        # ----------------------------------------------------------------------
+        """
+        🔢 Stage: collect_pin_number
+        ----------------------------------------------------------------------
+        PURPOSE
+        • Verify the caller’s current 6-digit PIN.
+        • Handle multiple flows (book, cancel, update credit card, update PIN).
+        • If origin_stage == "update_pin_number":
+                - Verify old PIN.
+                - Ask for a new one.
+                - Call update_pin_number(phone_e164, dob, new_pin) to save it.
+
+        FEATURES
+        ✅ Speech & DTMF support
+        ✅ Local silence handling
+        ✅ Adaptive retry limits
+        ✅ Dynamic flow routing
+        ----------------------------------------------------------------------
+        """
 
         debug_print("collect_pin_number: 📍 Stage entered")
 
         # ----------------------------------------------------------------------
-        # 💬 VOICE MESSAGES — centralized for maintainability & localization
+        # 💬 Voice messages
         # ----------------------------------------------------------------------
-        VOICE_PIN_PROMPT_MSG = (
-            "Please enter your six digit PIN now, followed by the pound key. "
-            "If you prefer, you can also say each digit slowly."
-        )
+        VOICE_PIN_PROMPT_MSG = "Please enter your six digit PIN now, followed by the pound key."
+        VOICE_NEW_PIN_MSG = "Your current PIN is verified. Please say or enter your new six digit PIN number, followed by the pound key."
+        VOICE_CONFIRM_SUCCESS_MSG = "Your PIN has been updated successfully. Thank you!"
+        VOICE_CONFIRM_FAIL_MSG = "Sorry, I couldn’t update your PIN at this time. Please call the clinic for assistance."
         VOICE_SILENCE_MSG = "I didn’t hear anything. Please enter or say your six digit PIN now."
         VOICE_INVALID_LENGTH_MSG = "That doesn’t seem like a valid six digit PIN. Please try again now."
+        VOICE_WRONG_PIN_MSG = "That PIN number is incorrect. Please try again now."
+        VOICE_CC_AUTH_MSG = (
+            "We couldn’t verify your PIN number after multiple attempts. "
+            "Let's authenticate you securely using your payment information."
+        )
         VOICE_TOO_MANY_INVALID_MSG = (
-            "That doesn’t seem like a valid six digit PIN. "
-            "Please contact the clinic to verify or reset your PIN number. Goodbye."
-        )
-        VOICE_CORRECT_PIN_BOOK_MSG = (
-            "Thank you. Your PIN has been verified. Let's continue with booking your appointment."
-        )
-        VOICE_CORRECT_PIN_CANCEL_MSG = (
-            "Thank you. PIN verified. Let's proceed to locate your appointment for cancellation."
-        )
-        VOICE_CORRECT_PIN_CC_MSG = (
-            "Your PIN has been verified. Let's update your payment information."
-        )
-        VOICE_CORRECT_PIN_DEFAULT_MSG = (
-            "Thank you. Your PIN has been verified. Returning to the main menu."
-        )
-        VOICE_WRONG_PIN_MSG = (
-            "That PIN number is incorrect. Please try again now. "
-            "Enter your six digit PIN followed by the pound key."
-        )
-        VOICE_MAX_ATTEMPTS_MSG = (
-            "You have entered an incorrect PIN too many times. "
-            "Please contact the clinic to verify your information or to change your PIN number. Goodbye!"
-        )
-        VOICE_SILENCE_TERMINATE_MSG = (
-            "I’m still not hearing anything. Please call the clinic for assistance."
+            "That doesn’t seem like a valid six digit PIN. Please contact the clinic to verify or reset your PIN. Goodbye."
         )
 
         # ----------------------------------------------------------------------
-        # 🗂️ SESSION SETUP — ensure continuity and recover cancel/book flow
+        # 🗂️ SESSION SETUP
         # ----------------------------------------------------------------------
-        sd = session_data.setdefault(call_sid, {})  # Ensure per-call session exists
-        sd.setdefault("customer", {})               # Always ensure customer subdict exists
+        sd = session_data.setdefault(call_sid, {})
+        sd.setdefault("customer", {})
         customer = sd["customer"]
 
-        # 🔒 Preserve the "origin_stage" flag so it doesn't get lost between Twilio POSTs.
-        #    If the session came from cancel flow, keep 'cancel', otherwise default to 'book'.
-        if "origin_stage" not in sd:
-            sd["origin_stage"] = "cancel" if "cancel" in sd else "book"
-
-        # 🧾 Print current session contents for debugging — confirms flow continuity.
-        try:
-            debug_print(f"collect_pin_number: 🧭 Current session state → {json.dumps(sd, indent=2)}")
-        except Exception as e:
-            debug_print(f"collect_pin_number: ⚠️ Could not serialize session_data → {e}")
-
-        # Retrieve essential identifiers for lookup and logging.
+        origin_stage = sd.get("origin_stage", "book")
         phone_e164 = (customer.get("phone_e164") or sd.get("phone_e164") or "").strip()
         dob = (customer.get("dob") or "").strip()
-        origin_stage = sd.get("origin_stage", "book")  # Default to booking if not explicitly set
 
         debug_print(f"collect_pin_number: 🔎 origin_stage={origin_stage}")
 
         # ----------------------------------------------------------------------
-        # 🎧 CAPTURE INPUT — speech and keypad digits
+        # 🎧 CAPTURE INPUT
         # ----------------------------------------------------------------------
         raw_dtmf = (request.values.get("Digits") or "").strip()
         raw_speech = (speech_result or "").strip()
         debug_print(f"collect_pin_number: 🔢 DTMF='{raw_dtmf}' 🗣 speech='{raw_speech}'")
 
-        # ======================================================================
-        # 🤐 SILENCE HANDLING — retry up to 3 times if no input received
-        # ======================================================================
+        # ----------------------------------------------------------------------
+        # 🤐 SILENCE HANDLING
+        # ----------------------------------------------------------------------
         if not raw_dtmf and not raw_speech:
             tries = sd.get("silence_pin", 0) + 1
             sd["silence_pin"] = tries
             debug_print(f"collect_pin_number: 🤐 silence tries={tries}/3")
 
-            # After 3 silent attempts → end call politely
             if tries >= 3:
-                resp.say(gpt_speak(VOICE_SILENCE_TERMINATE_MSG), VOICE)
+                if origin_stage == "update_pin_number":
+                    sd["stage"] = "collect_cc"
+                    resp.say(gpt_speak(VOICE_CC_AUTH_MSG), VOICE)
+                    resp.redirect("/voice")
+                    return str(resp)
+
+                resp.say(gpt_speak("I’m still not hearing anything. Goodbye!"), VOICE)
                 resp.hangup()
-                session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Otherwise, re-prompt the user
             g = make_gather(
                 VOICE_PIN_PROMPT_MSG,
                 input="speech dtmf",
@@ -4743,34 +4967,35 @@ def voice():
                 barge_in=True,
                 finish_on_key="#",
                 language="en-US",
-                action="/voice",
             )
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
 
-        # Reset silence counter on valid input
+        # Reset silence counter
         sd.pop("silence_pin", None)
 
-        # ======================================================================
-        # 🔢 PIN PARSING — extract numeric digits only
-        # ======================================================================
+        # ----------------------------------------------------------------------
+        # 🔢 Extract numeric digits
+        # ----------------------------------------------------------------------
         digits = _re.sub(r"\D", "", raw_dtmf or raw_speech)
         debug_print(f"collect_pin_number: normalized digits='{digits}'")
 
-        # If PIN is not 6 digits → invalid
         if len(digits) != 6:
-            debug_print("collect_pin_number: ⚠️ invalid PIN length")
             sd["pin_attempts"] = sd.get("pin_attempts", 0) + 1
+            debug_print(f"collect_pin_number: ⚠️ invalid PIN length (attempt {sd['pin_attempts']}/3)")
 
-            # Terminate after 3 invalid attempts
             if sd["pin_attempts"] >= 3:
+                if origin_stage == "update_pin_number":
+                    sd["stage"] = "collect_cc"
+                    resp.say(gpt_speak(VOICE_CC_AUTH_MSG), VOICE)
+                    resp.redirect("/voice")
+                    return str(resp)
+
                 resp.say(gpt_speak(VOICE_TOO_MANY_INVALID_MSG), VOICE)
                 resp.hangup()
-                session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-prompt for correct input
             g = make_gather(
                 VOICE_INVALID_LENGTH_MSG,
                 input="speech dtmf",
@@ -4779,63 +5004,106 @@ def voice():
                 barge_in=True,
                 finish_on_key="#",
                 language="en-US",
-                action="/voice",
             )
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
 
-        # ======================================================================
-        # 🧩 PIN VALIDATION — compare entered PIN vs stored PIN in DB/JSON
-        # ======================================================================
+        # ----------------------------------------------------------------------
+        # 🧩 Validate current PIN if this is first phase
+        # ----------------------------------------------------------------------
         try:
-            # Retrieve the saved PIN for this customer based on phone + DOB
             stored_pin = get_pin_number(phone_e164, dob)
             debug_print(f"collect_pin_number: 🔍 stored_pin={stored_pin} for {phone_e164}|{dob}")
         except Exception as e:
-            debug_print(f"collect_pin_number: ⚠️ error retrieving stored PIN → {e}")
+            debug_print(f"collect_pin_number: ⚠️ PIN lookup failed → {e}")
             stored_pin = None
 
-        # ======================================================================
-        # ✅ SUCCESS CASE — PIN matches
-        # ======================================================================
-        if stored_pin is not None and digits == str(stored_pin).zfill(6):
-            debug_print(f"collect_pin_number: ✅ PIN verified successfully (origin={origin_stage})")
-
-            # Reset failed attempt counter
+        # ----------------------------------------------------------------------
+        # ✅ CORRECT PIN CASE
+        # ----------------------------------------------------------------------
+        if stored_pin and digits == str(stored_pin).zfill(6):
+            debug_print(f"collect_pin_number: ✅ PIN verified (origin={origin_stage})")
             sd.pop("pin_attempts", None)
 
-            # Branch to next stage depending on call type (booking/cancel/payment)
-            if origin_stage == "book":
-                next_stage = "collect_dr_info"     # Booking flow
-                msg = VOICE_CORRECT_PIN_BOOK_MSG
-            elif origin_stage in ("cancel", "reschedule"):
-                next_stage = "collect_dr_info"     # Cancel flow (later leads to collect_cancel_time_date)
-                msg = VOICE_CORRECT_PIN_CANCEL_MSG
-            elif origin_stage == "update_cc":
-                next_stage = "collect_cc"          # Payment card update
-                msg = VOICE_CORRECT_PIN_CC_MSG
-            else:
-                next_stage = "intro"               # Default fallback
-                msg = VOICE_CORRECT_PIN_DEFAULT_MSG
+            # 🆕 Handle PIN UPDATE scenario
+            if origin_stage == "update_pin_number":
+                debug_print("collect_pin_number: 🔄 origin_stage=update_pin_number → ask for new PIN")
+                sd["stage"] = "update_pin_entry"
 
-            # Update the session with the next stage and skip silence retry for immediate transition
+                # Prompt user to enter a new PIN
+                g = make_gather(
+                    VOICE_NEW_PIN_MSG,
+                    input="speech dtmf",
+                    timeout=6,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    finish_on_key="#",
+                    language="en-US",
+                )
+                resp.append(g)
+                resp.redirect("/voice")
+                return str(resp)
+
+            # ✅ Other origins follow standard routing
+            next_stage = {
+                "book": "collect_dr_info",
+                "cancel": "collect_dr_info",
+                "reschedule": "collect_dr_info",
+                "update_cc": "collect_cc"
+            }.get(origin_stage, "intro")
+
+            msg = {
+                "book": "Your PIN has been verified. Let's continue booking your appointment.",
+                "cancel": "Your PIN has been verified. Let's find your appointment to cancel.",
+                "reschedule": "PIN verified. Let's reschedule your appointment.",
+                "update_cc": "PIN verified. Let's update your payment information."
+            }.get(origin_stage, "Your PIN is verified. Returning to the main menu.")
+
             sd["stage"] = next_stage
-            sd["skip_silence_once"] = True
-
-            # Provide a confirmation voice prompt before redirecting
             resp.say(gpt_speak(msg), VOICE)
             resp.redirect("/voice")
             return str(resp)
 
-        # ======================================================================
-        # ❌ FAILURE CASE — incorrect PIN entered
-        # ======================================================================
+        # ----------------------------------------------------------------------
+        # 🧠 SECOND PHASE — Handle update_pin_entry (new PIN capture)
+        # ----------------------------------------------------------------------
+        if stage == "update_pin_entry":
+            new_pin = digits
+            debug_print(f"update_pin_entry: 🆕 Captured new PIN → {new_pin}")
+
+            try:
+                success = update_pin_number(phone_e164, dob, int(new_pin))
+                debug_print(f"update_pin_entry: ✅ update_pin_number() returned {success}")
+            except Exception as e:
+                debug_print(f"update_pin_entry: ⚠️ Error updating PIN → {e}")
+                success = False
+
+            # ✅ Confirm success/failure
+            if success:
+                resp.say(gpt_speak(VOICE_CONFIRM_SUCCESS_MSG), VOICE)
+            else:
+                resp.say(gpt_speak(VOICE_CONFIRM_FAIL_MSG), VOICE)
+
+            sd["stage"] = "intro"
+            resp.redirect("/voice")
+            return str(resp)
+
+        # ----------------------------------------------------------------------
+        # ❌ WRONG PIN CASE
+        # ----------------------------------------------------------------------
         sd["pin_attempts"] = sd.get("pin_attempts", 0) + 1
         tries = sd["pin_attempts"]
-        debug_print(f"collect_pin_number: ❌ invalid PIN ({digits}) vs stored ({stored_pin}) (try {tries}/3)")
+        debug_print(f"collect_pin_number: ❌ incorrect PIN (try {tries}/3)")
 
-        # Allow up to 3 incorrect attempts before hanging up
+        # Too many failures → redirect to CC if this is a PIN update flow
+        if tries >= 3 and origin_stage == "update_pin_number":
+            sd["stage"] = "collect_cc"
+            resp.say(gpt_speak(VOICE_CC_AUTH_MSG), VOICE)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # Otherwise retry
         if tries < 3:
             g = make_gather(
                 VOICE_WRONG_PIN_MSG,
@@ -4845,19 +5113,17 @@ def voice():
                 barge_in=True,
                 finish_on_key="#",
                 language="en-US",
-                action="/voice",
             )
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🚫 Max retries reached — terminate call politely
-        # ----------------------------------------------------------------------
-        resp.say(gpt_speak(VOICE_MAX_ATTEMPTS_MSG), VOICE)
+        # Too many generic invalid attempts → hang up politely
+        resp.say(gpt_speak(VOICE_TOO_MANY_INVALID_MSG), VOICE)
         resp.hangup()
         session_data.pop(call_sid, None)
         return str(resp)
+
 
 
 
@@ -7298,6 +7564,8 @@ def voice():
     # ----------------------------------------------------------------------
     # collect_cc - complete stage (robust digit normalization + strict Luhn)
     # ----------------------------------------------------------------------
+
+
     elif stage == "collect_cc":
         
         # ----------------------------------------------------------------------
@@ -7310,6 +7578,8 @@ def voice():
         MSG_INVALID_CARD = "That card number doesn't look right. Please re-enter or say the full card number, then press pound."
         MSG_EXP_INVALID = "That doesn’t look valid. Please enter month and year as M M Y Y, then press pound."
         MSG_EXP_FORMAT = "Please say or enter the expiration date as month and year, for example, zero nine two seven, then press pound."
+        MSG_PIN_UPDATED = "Your PIN has been updated successfully. Thank you!"
+        MSG_PIN_UPDATE_FAIL = "We couldn’t verify your card, so we can’t update your PIN. Please call the clinic for assistance."
 
         # ----------------------------------------------------------------------
         # 🧮 Helper functions
@@ -7425,42 +7695,99 @@ def voice():
         # ----------------------------------------------------------------------
         # Step 1: Card Number (13–19)
         # ----------------------------------------------------------------------
-        if cc_step == 1:
-            pan = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=enforce_dm)
-            if len(pan) > 19:
-                pan = pan[:19]
-            debug_print(f"collect_cc: normalized card digits={pan}")
+        pan = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=enforce_dm)
+        if len(pan) > 19:
+            pan = pan[:19]
+        debug_print(f"collect_cc: normalized card digits={pan}")
 
-            if not (13 <= len(pan) <= 19):
-                debug_print("collect_cc: ❌ invalid card length")
-                gather = make_gather(
-                    MSG_INVALID_CARD,
-                    input="speech dtmf",
-                    timeout=20,
-                    speech_timeout="auto",
-                    finish_on_key="#",
-                    action="/voice",
-                )
-                resp.append(gather)
+        if not (13 <= len(pan) <= 19):
+            debug_print("collect_cc: ❌ invalid card length")
+            gather = make_gather(
+                MSG_INVALID_CARD,
+                input="speech dtmf",
+                timeout=20,
+                speech_timeout="auto",
+                finish_on_key="#",
+                action="/voice",
+            )
+            resp.append(gather)
+            return str(resp)
+
+        if not _luhn_ok(pan):
+            debug_print(f"collect_cc: ⚠️ {_mask(pan)} failed Luhn but accepted (non-strict mode).")
+        else:
+            debug_print(f"collect_cc: ✅ Luhn passed for {_mask(pan)}")
+
+        # ----------------------------------------------------------------------
+        # Branch after card number depending on origin
+        # ----------------------------------------------------------------------
+        phone_e164 = (customer.get("phone_e164") or session_data[call_sid].get("phone_e164") or "").strip()
+        dob = (customer.get("dob") or "").strip()
+
+        if origin_stage == "update_pin_number":
+            # PIN UPDATE: Skip Expiration + CVV and verify card immediately
+            debug_print("collect_cc: ⏭️ Skipping expiration & CVV (PIN update flow)")
+
+            # Use requested signature get_customer_cc(dob, phone); fallback to (phone, dob) if needed
+            try:
+                stored_cc = get_customer_cc(dob, phone_e164)
+            except Exception as e1:
+                debug_print(f"collect_cc: ⚠️ get_customer_cc(dob, phone) failed → {e1} ; trying (phone, dob)")
+                try:
+                    stored_cc = get_customer_cc(phone_e164, dob)
+                except Exception as e2:
+                    debug_print(f"collect_cc: ⚠️ get_customer_cc(phone, dob) also failed → {e2}")
+                    stored_cc = None
+
+            debug_print(f"collect_cc: 💳 stored_cc={_mask(stored_cc)} collected_cc={_mask(pan)}")
+
+            if stored_cc and stored_cc == pan:
+                # Cards match → proceed to update PIN
+                try:
+                    # import random
+                    new_pin = random.randint(100000, 999999)  # 🔐 replace with a user-entered PIN if desired
+                    ok = update_pin_number(phone_e164, dob, new_pin)
+                    debug_print(f"collect_cc: ✅ update_pin_number() → {ok}")
+                    if ok:
+                        resp.say(gpt_speak(MSG_PIN_UPDATED), VOICE)
+                    else:
+                        resp.say(gpt_speak(MSG_PIN_UPDATE_FAIL), VOICE)
+                        resp.hangup()
+                        session_data.pop(call_sid, None)
+                        return str(resp)
+                except Exception as e:
+                    debug_print(f"collect_cc: ⚠️ update_pin_number() exception → {e}")
+                    resp.say(gpt_speak(MSG_PIN_UPDATE_FAIL), VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
+                    return str(resp)
+            else:
+                # 🚫 Card mismatch — authentication failed, end call
+                debug_print("collect_cc: 🚫 Collected CC does not match stored CC → deny PIN update")
+                resp.say(gpt_speak(
+                    "Authentication failed. We can’t update your PIN number at this time. "
+                    "Please call the clinic for assistance."
+                ), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
                 return str(resp)
 
-            if not _luhn_ok(pan):
-                debug_print(f"collect_cc: ⚠️ {_mask(pan)} failed Luhn but accepted (non-strict mode).")
-            else:
-                debug_print(f"collect_cc: ✅ Luhn passed for {_mask(pan)}")
-
-            # Save card number and move to step 2
-            customer["cc_number"] = pan
-            session_data[call_sid]["cc_step"] = 2
-            debug_print(f"collect_cc: ✅ Saved card number '{_mask(pan)}' → step 2 (Expiration)")
-
-            # Redirect to /voice → move to next step immediately (no waiting)
+            # Return to main menu after PIN update attempt
+            session_data[call_sid]["stage"] = "intro"
             resp.redirect("/voice")
             return str(resp)
+
 
         # ----------------------------------------------------------------------
         # Step 2: Expiration (MMYY/MMYYYY)
         # ----------------------------------------------------------------------
+        if cc_step == 1:
+            # Move to step 2 only in non-PIN-update flows
+            session_data[call_sid]["cc_step"] = 2
+            debug_print("collect_cc: ➡️ Moving to step 2 (Expiration)")
+            resp.redirect("/voice")
+            return str(resp)
+
         if cc_step == 2:
             session_data[call_sid]["no_input_expected"] = True
             digits = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=True)
@@ -7472,8 +7799,9 @@ def voice():
             # Acceptable formats we expect are:
             #   - 4 digits:  MMYY   (e.g. "0927" -> September 2027)
             #   - 6 digits:  MMYYYY (e.g. "092027" -> September 2027)
+            # --------------------------------------------------------------------------
             if len(digits) not in (4, 6):
-                 # Build a <Gather> instruction for Twilio:
+                # Build a <Gather> instruction for Twilio:
                 #  - The spoken prompt tells the caller how to give the expiration (examples).
                 #  - input="speech dtmf" lets the caller either *speak* the date or *type* it on the keypad.
                 #  - timeout=10 means Twilio will wait up to 10 seconds for user input before the gather times out.
@@ -7488,18 +7816,8 @@ def voice():
                     finish_on_key="#",
                     action="/voice",
                 )
-                 # Append the <Gather> to the TwiML response. This places the gather in the outgoing
-                # TwiML so Twilio will play the prompt and listen for input.
                 resp.append(gather)
-                return str(resp)
-            # --------------------------------------------------------------------------
-
-            # Save expiration and move to CVV
-            customer["cc_expiration"] = digits
-            session_data[call_sid]["cc_step"] = 3
-            debug_print(f"collect_cc: ✅ Saved expiration='{digits}' → step 3 (CVV)")
-            resp.redirect("/voice")
-             # Return the TwiML (string form) immediately so Twilio receives the <Gather>.
+                # Return the TwiML (string form) immediately so Twilio receives the <Gather>.
                 # Important behavior:
                 #  - We do NOT call resp.redirect("/voice") here. Returning the TwiML with the <Gather>
                 #    causes Twilio to wait for the user's input and then POST back to the 'action' URL.
@@ -7507,6 +7825,13 @@ def voice():
                 #    webhook again with request parameters such as 'Digits' (for DTMF) and/or
                 #    'SpeechResult' (for speech). Your handler should then re-enter this stage and
                 #    process the provided digits.
+                return str(resp)
+
+            # Save expiration and move to CVV
+            customer["cc_expiration"] = digits
+            session_data[call_sid]["cc_step"] = 3
+            debug_print(f"collect_cc: ✅ Saved expiration='{digits}' → step 3 (CVV)")
+            resp.redirect("/voice")
             return str(resp)
 
         # ----------------------------------------------------------------------
@@ -7533,25 +7858,28 @@ def voice():
                 customer["cc_name"] = f"{customer.get('first_name','')} {customer.get('last_name','')}".strip()
             debug_print(f"collect_cc: ✅ CVV saved (len={len(digits)}) ; cc_name='{customer.get('cc_name')}'")
 
-            # Advance to confirmation or update flow — now based on origin_stage
+            # Finalize for non-PIN-update flows
             session_data[call_sid].pop("no_input_expected", None)
             session_data[call_sid].pop("cc_step", None)
             session_data[call_sid]["cc_speech_tries"] = 0
 
-            # ----------------------------------------------------------------------
-            # 🧭 Determine the next stage purely from origin_stage
-            # ----------------------------------------------------------------------
-            origin_stage = session_data[call_sid].get("origin_stage", "").lower()
-            if origin_stage == "update_cc":
+            origin_stage2 = session_data[call_sid].get("origin_stage", "").lower()
+            if origin_stage2 == "update_cc":
                 next_stage = "update_customer_cc"
             else:
                 next_stage = "book_appt_confirm"
 
             session_data[call_sid]["stage"] = next_stage
             session_data[call_sid]["skip_silence_once"] = True
-            debug_print(f"collect_cc: ➡️ Auto-advancing to {next_stage} (origin_stage={origin_stage})")
+            debug_print(f"collect_cc: ➡️ Auto-advancing to {next_stage} (origin_stage={origin_stage2})")
             resp.redirect("/voice")
             return str(resp)
+
+
+
+
+
+
 
 
 
