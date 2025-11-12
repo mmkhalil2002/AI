@@ -3435,23 +3435,23 @@ def voice():
     """
     🎙️ Twilio Voice Webhook Entry Point
     -------------------------------------------------------------
-    • Handles all inbound POST requests from Twilio during calls.
-    • Extracts call/session information and user input (speech/DTMF).
-    • Sets up or resumes the session for this call.
-    • Leaves detailed debug information for logging/tracing.
-    • Dispatching to stage handlers is done *outside* this function.
+    • This function prepares the environment for your inline
+      stage-handling logic (if stage == "intro", elif stage == ...).
+    • It handles session loading, country detection, and input capture.
+    • After setup, execution flows directly into your existing
+      "if stage == ..." chain defined immediately below.
     -------------------------------------------------------------
     """
     global session_data, doctor_names
 
     # ----------------------------------------------------------------------
-    # 🧭 Initialize a TwiML response object for Twilio
+    # 🧭 Initialize Twilio Voice Response
     # ----------------------------------------------------------------------
     resp = VoiceResponse()
     debug_print("[voice] ▶ enter voice()")
 
     # ----------------------------------------------------------------------
-    # 🆔 Extract Call SID (unique ID per call)
+    # 🆔 Unique Call Identifier
     # ----------------------------------------------------------------------
     call_sid = request.values.get("CallSid", "")
     debug_print(f"[voice] CallSid={call_sid}")
@@ -3465,7 +3465,7 @@ def voice():
     debug_print(f"[voice] 🩺 doctor_name loaded → {sd.get('doctor_name')}")
 
     # ----------------------------------------------------------------------
-    # 🗣️ Capture user input: speech recognition or keypad digits
+    # 🗣️ Capture Speech / DTMF Input
     # ----------------------------------------------------------------------
     speech_result = (request.values.get("SpeechResult") or "").strip()
     try:
@@ -3475,17 +3475,16 @@ def voice():
     debug_print(f"[voice] inputs → speech='{speech_result}' dtmf='{dtmf_digits}'")
 
     # ----------------------------------------------------------------------
-    # 🌍 Identify caller’s country (based on phone number prefix)
+    # 🌍 Determine Caller Country from phone prefix
     # ----------------------------------------------------------------------
     from_number = (request.values.get("From") or "").strip()
-    derived_country = COUNTRY  # Default fallback if not detected
+    derived_country = COUNTRY  # Default global fallback
 
     if from_number.startswith("+20"):
-        derived_country = "EG"   # Egypt
+        derived_country = "EG"
     elif from_number.startswith("+1"):
-        derived_country = "US"   # United States
+        derived_country = "US"
 
-    # Save country if not already set
     if "country" not in sd:
         sd["country"] = derived_country
         debug_print(f"[voice] 🌐 country seeded → {derived_country}")
@@ -3493,33 +3492,36 @@ def voice():
         debug_print(f"[voice] 🌐 country exists → {sd.get('country')}")
 
     # ----------------------------------------------------------------------
-    # ☎️ Save E.164 caller number for reference/logging
+    # ☎️ Save E.164 Caller Number
     # ----------------------------------------------------------------------
     if from_number.startswith("+"):
         sd["from_e164"] = from_number
         debug_print(f"[voice] from_e164 set → {from_number}")
 
     # ----------------------------------------------------------------------
-    # 🧠 Determine current conversation stage (default = intro)
+    # 🧠 Determine Current Stage (default to 'intro')
     # ----------------------------------------------------------------------
     stage = sd.get("stage", "intro")
     debug_print(f"[voice] 🎯 stage='{stage}'")
 
     # ----------------------------------------------------------------------
-    # 📢 Log the speech result for traceability (useful for debugging)
+    # 📢 Log Speech Result for debugging trace
     # ----------------------------------------------------------------------
     print(f"📢 [voice] Speech recognized: {speech_result}")
 
     # ----------------------------------------------------------------------
-    # ✅ Hand over control to your stage handlers
+    # ✅ Continue into stage-handling logic
     # ----------------------------------------------------------------------
-    # The voice() function no longer performs silence checks or branching.
-    # Your downstream logic (e.g., intro(), intent(), collect_xx()) will
-    # handle the current stage and build the appropriate TwiML response.
-    #
-    # Return this VoiceResponse object so Twilio can continue the call flow.
+    # Do NOT return here — execution will flow into your existing
+    #   if stage == "intro": ...
+    #   elif stage == "intent": ...
+    #   etc.
+    # Each stage builds its own TwiML response and ends with:
+    #   return str(resp)
     # ----------------------------------------------------------------------
-    return str(resp)
+
+    # ↓ Your existing “if stage == ... elif stage == ...” block starts below
+
 
 
 
