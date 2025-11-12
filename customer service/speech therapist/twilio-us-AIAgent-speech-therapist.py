@@ -7544,7 +7544,7 @@ def voice():
         debug_print("collect_cancel_time_date: 📍 Stage entered")
 
         # ----------------------------------------------------------------------
-        # 💬 VOICE PROMPTS — centralize for clarity and reuse
+        # 💬 Voice prompt constants — centralized for clarity and reuse
         # ----------------------------------------------------------------------
         VOICE_PROMPT_INITIAL = (
             "Please say the date and time of the appointment you want to cancel. "
@@ -7565,47 +7565,44 @@ def voice():
         )
 
         # ----------------------------------------------------------------------
-        # 🧱 Initialize or retrieve cancellation context for this call
+        # 🧱 Retrieve or initialize the cancellation context for this call
         # ----------------------------------------------------------------------
         cancel_ctx = session_data[call_sid].setdefault("cancel", {})
 
         # ----------------------------------------------------------------------
-        # 🛡️ FRESH ENTRY GUARD — start gather when stage first loads
+        # 🛡️ FRESH ENTRY GUARD — first time entering this stage
         # ----------------------------------------------------------------------
-        # If Twilio redirected here from another stage and no speech input yet,
-        # we must play the initial prompt and wait for speech.
+        # If no speech/DTMF input yet, this means Twilio just redirected here.
+        # We need to prompt the user for the date/time and start listening.
         if not speech_result and not request.values.get("Digits"):
             debug_print("collect_cancel_time_date: 🆕 first entry → start prompt gather")
             gather = make_gather(
                 VOICE_PROMPT_INITIAL,
                 input="speech dtmf",
-                timeout=25,             # ⏳ wait up to 25 seconds for user to start
-                speech_timeout="5",     # 🧠 accept up to 5s of pause in speech
+                timeout=25,             # wait up to 25 s for caller to start talking
+                speech_timeout="5",     # up to 5 s pause allowed
                 finish_on_key="#",
                 barge_in=True,
             )
             resp.append(gather)
-
-            # ⚙️ Add redirect so Twilio re-enters /voice if user is silent
-            resp.redirect("/voice")
-
+            resp.redirect("/voice")     # ensure Twilio re-enters /voice after gather
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🎧 Capture raw speech input (if available)
+        # 🎧 Capture and normalize the raw speech text
         # ----------------------------------------------------------------------
         raw = (speech_result or "").strip()
         debug_print(f"collect_cancel_time_date: 🗣️ Raw speech → '{raw}'")
 
         # ----------------------------------------------------------------------
-        # 🔇 Handle silence gracefully (up to 3 attempts)
+        # 🔇 Handle silence: if user said nothing, retry politely
         # ----------------------------------------------------------------------
         if not raw:
             tries = cancel_ctx.get("silence_cancel_dt", 0) + 1
             cancel_ctx["silence_cancel_dt"] = tries
             debug_print(f"collect_cancel_time_date: 🤐 silence count={tries}")
 
-            # After 3 consecutive silences → switch to appointment list
+            # After 3 failed attempts → switch to appointment listing stage
             if tries >= 3:
                 debug_print("collect_cancel_time_date: 🚫 too many silent attempts → iterate")
                 cancel_ctx.pop("silence_cancel_dt", None)
@@ -7613,53 +7610,78 @@ def voice():
                 session_data[call_sid]["stage"] = "cancel_appt_iterate"
                 session_data[call_sid]["skip_silence_retry"] = True
                 resp.say(gpt_speak(VOICE_PROMPT_TOO_MANY_SILENCES), VOICE)
-                resp.redirect("/voice")  # ensure Twilio re-calls /voice for next stage
+                resp.redirect("/voice")
                 return str(resp)
 
-            # Otherwise, re-prompt politely and re-enter after timeout
+            # Otherwise, reprompt
             resp.pause(length=1)
             gather = make_gather(
                 VOICE_PROMPT_RETRY,
                 input="speech dtmf",
-                timeout=25,              # allow time to think or speak
-                speech_timeout="5",      # wait for 5s pause before closing speech
+                timeout=25,
+                speech_timeout="5",
                 finish_on_key="#",
                 barge_in=True,
             )
             resp.append(gather)
-            resp.redirect("/voice")  # 👈 ensures Twilio posts again even if still silent
+            resp.redirect("/voice")
             return str(resp)
 
-        # ✅ Reset silence counter since user provided speech
+        # ✅ Reset silence counter once valid speech is received
         cancel_ctx.pop("silence_cancel_dt", None)
 
         # ----------------------------------------------------------------------
-        # 🧩 Parse date and time parts from spoken phrase
+        # 🧩 Enhanced date/time extraction — handles “October 13” edge cases
         # ----------------------------------------------------------------------
         day_part, time_part = (None, None)
         try:
-            # Clean commas and lowercase text to normalize
+            # Normalize and lowercase the input for consistency
             raw_fixed = raw.lower().replace(",", "").strip()
 
-            # Split phrases like “November 3 at 10 a.m.”
+            # --- Fix STT mishearings like “October 1388” → “October 13”
+            raw_fixed = _re.sub(r"\b(\d{1,2})\d{2,3}\b", r"\1", raw_fixed)
+
+            # --- Convert ordinal words (thirteenth → 13)
+            month_words = [
+                "january","february","march","april","may","june",
+                "july","august","september","october","november","december"
+            ]
+            number_words = {
+                "first":1,"second":2,"third":3,"fourth":4,"fifth":5,"sixth":6,
+                "seventh":7,"eighth":8,"ninth":9,"tenth":10,"eleventh":11,
+                "twelfth":12,"thirteenth":13,"fourteenth":14,"fifteenth":15,
+                "sixteenth":16,"seventeenth":17,"eighteenth":18,"nineteenth":19,
+                "twentieth":20,"twenty first":21,"twenty second":22,"twenty third":23,
+                "twenty fourth":24,"twenty fifth":25,"twenty sixth":26,
+                "twenty seventh":27,"twenty eighth":28,"twenty ninth":29,
+                "thirtieth":30,"thirty first":31
+            }
+            for month in month_words:
+                for word, num in number_words.items():
+                    pattern = rf"{month}\s+{word}"
+                    raw_fixed = _re.sub(pattern, f"{month} {num}", raw_fixed)
+
+            # --- Split into day and time parts if "at" exists; otherwise assume noon
             if " at " in raw_fixed:
                 parts = raw_fixed.split("at")
                 if len(parts) == 2:
                     day_part, time_part = parts[0].strip(), parts[1].strip()
+            else:
+                day_part, time_part = raw_fixed.strip(), "12:00 pm"
+
+            debug_print(f"collect_cancel_time_date: 📆 Extracted → Day='{day_part}', Time='{time_part}'")
+
         except Exception as e:
             debug_print(f"collect_cancel_time_date: ⚠️ parse split error → {e}")
 
-        debug_print(f"collect_cancel_time_date: 📆 Extracted → Day='{day_part}', Time='{time_part}'")
-
         # ----------------------------------------------------------------------
-        # 🕐 Attempt fuzzy datetime parsing
+        # 🕐 Fuzzy datetime parsing with timezone awareness
         # ----------------------------------------------------------------------
         matched = False
         dt_utc, dt_end, spoken_phrase = (None, None, None)
-
         try:
-            if day_part and time_part:
-                # Replace malformed ordinal endings like “3d” → “3rd”
+            if day_part:
+                # Clean malformed ordinals like “3d” → “3rd”
                 day_part_fixed = _re.sub(r"\b(\d{1,2})d\b", r"\1rd", day_part, flags=_re.IGNORECASE)
                 spoken_phrase = f"{day_part_fixed} at {time_part}"
 
@@ -7667,10 +7689,10 @@ def voice():
                 tz_name = globals().get("CLINIC_TZ", "America/Chicago")
                 tz = _pytz.timezone(tz_name)
 
-                # Fuzzy parse the natural language date/time
+                # Parse the natural-language datetime (dateutil handles fuzzy words)
                 dt_local = dp.parse(spoken_phrase, fuzzy=True, default=datetime.now(tz))
 
-                # Convert to UTC and define end time (30-min window)
+                # Convert to UTC and define a 30-minute window for slot comparison
                 dt_utc = dt_local.astimezone(_pytz.UTC)
                 dt_end = dt_utc + timedelta(minutes=30)
                 matched = True
@@ -7679,7 +7701,7 @@ def voice():
             debug_print(f"collect_cancel_time_date: ⚠️ dp.parse failed → {e}")
 
         # ----------------------------------------------------------------------
-        # ❌ Retry on failed parsing (retries < 3)
+        # ❌ Retry if parsing failed (up to 3 times)
         # ----------------------------------------------------------------------
         if not matched:
             retries = cancel_ctx.get("retry_cancel_dt", 0) + 1
@@ -7697,10 +7719,10 @@ def voice():
                     barge_in=True,
                 )
                 resp.append(gather)
-                resp.redirect("/voice")  # ✅ Ensures Twilio comes back even if silent again
+                resp.redirect("/voice")
                 return str(resp)
 
-            # After 3 parse retries → fallback to iterate (list upcoming)
+            # After 3 failed parses → move to listing stage
             debug_print("collect_cancel_time_date: 🚫 too many parse retries → iterate")
             cancel_ctx.pop("retry_cancel_dt", None)
             cancel_ctx["awaiting_input"] = False
@@ -7711,7 +7733,7 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ⏰ Validate parsed time (must be in the future)
+        # ⏰ Validate that the parsed time is not in the past
         # ----------------------------------------------------------------------
         now_utc = datetime.utcnow().replace(tzinfo=_pytz.UTC)
         if dt_utc < now_utc:
@@ -7719,26 +7741,28 @@ def voice():
             cancel_ctx["awaiting_input"] = False
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             resp.say(gpt_speak(VOICE_PROMPT_PAST_TIME), VOICE)
-            resp.redirect("/voice")  # 👈 Let Twilio continue to listing flow
+            resp.redirect("/voice")
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧠 Verify appointment existence from local JSON
+        # 🧠 Verify the appointment exists in local schedule (JSON / Calendar)
         # ----------------------------------------------------------------------
         try:
             doctor_name = session_data[call_sid].get("doctor_name")
             start_iso = dt_utc.isoformat()
             end_iso = dt_end.isoformat()
 
-            # Verify slot availability using stored data
+            # Custom helper that checks whether a slot exists
             is_booked = is_doctor_slot_available(doctor_name, start_iso, end_iso)
-            debug_print(f"collect_cancel_time_date: 🧩 is_doctor_slot_available({doctor_name}, {start_iso}) → {is_booked}")
+            debug_print(
+                f"collect_cancel_time_date: 🧩 is_doctor_slot_available({doctor_name}, {start_iso}) → {is_booked}"
+            )
         except Exception as e:
             debug_print(f"collect_cancel_time_date: ⚠️ slot check failed → {e}")
             is_booked = False
 
         # ----------------------------------------------------------------------
-        # 🚫 No matching slot found → switch to appointment listing
+        # 🚫 Slot not found → fall back to listing stage
         # ----------------------------------------------------------------------
         if not is_booked:
             debug_print("collect_cancel_time_date: 🚫 Slot not found → iterate")
@@ -7749,7 +7773,7 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ SUCCESS — Save recognized slot and advance
+        # ✅ SUCCESS — Save recognized appointment and move to confirmation
         # ----------------------------------------------------------------------
         cancel_ctx["matching_event"] = {
             "spoken_dt": spoken_phrase,
@@ -7760,10 +7784,14 @@ def voice():
         cancel_ctx["awaiting_input"] = False
         session_data[call_sid]["stage"] = "cancel_appt_confirm"
 
-        # Confirm with user and move to confirmation stage
-        resp.say(gpt_speak(f"You said {day_part} at {time_part}. Let me confirm that appointment."), VOICE)
-        resp.redirect("/voice")  # ✅ safely continues into next confirmation step
+        # Verbally confirm the recognized date/time
+        resp.say(
+            gpt_speak(f"You said {day_part} at {time_part}. Let me confirm that appointment."),
+            VOICE,
+        )
+        resp.redirect("/voice")
         return str(resp)
+
 
 
 
