@@ -6934,7 +6934,8 @@ def voice():
                 speech_timeout="auto", # 🧠 Automatically end recognition when silence is detected
                 barge_in=True,         # 🚪 Allow caller to interrupt the prompt by speaking early
                 finish_on_key="#",     # 🔚 End DTMF input collection when '#' is pressed
-                num_digits=2           # 🔢  Allow up to 2 digits (e.g., 10, 11, 12, ... 99)
+                num_digits=1           # 🔢 currently only 0-9.
+                                       # 🔢 if u want to allow up to 2 digits (e.g., 10, 11, 12, ... 99) change to 2
             )
 
             # ----------------------------------------------------------------------
