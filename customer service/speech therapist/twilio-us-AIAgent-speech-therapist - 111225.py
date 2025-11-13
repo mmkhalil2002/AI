@@ -1,5 +1,5 @@
 #=======
-# updated  11/13/2025
+# updated  11/12/2025
 #  
 # =========================
 # Standard library imports
@@ -4374,46 +4374,19 @@ def voice():
 
 
   
-    # ==========================================================================
-    # 🎂 Stage: collect_dob — Capture and Validate Customer Date of Birth
-    # ==========================================================================
-    #
-    # FUNCTIONAL OVERVIEW:
-    # --------------------
-    # • Purpose: To capture and validate the caller's date of birth (DOB)
-    #   using speech or keypad (DTMF) input.
-    #
-    # • Inputs:
-    #     - SpeechResult (spoken date, e.g. “July 3rd 1972”)
-    #     - Digits (numeric input, e.g. “07031972”)
-    #
-    # • Flow:
-    #     1️⃣ Handle silence with up to 3 polite retries.
-    #     2️⃣ Parse DOB using keypad (MMDDYYYY) or speech recognition.
-    #     3️⃣ Validate DOB is between 1900–today.
-    #     4️⃣ Lookup the customer in customers.json (via phone + DOB).
-    #     5️⃣ Route based on origin_stage:
-    #         - "register"      → collect_first_name
-    #         - "book"          → collect_pin_number
-    #         - "cancel"        → collect_pin_number
-    #         - "reschedule"    → collect_pin_number
-    #         - "update_cc"     → collect_cc
-    #         - "update_pin_number" → collect_pin_number
-    #     6️⃣ Any unknown condition → polite fallback and hangup.
-    #
-    # ==========================================================================
 
 
 
 
     elif stage == "collect_dob":
-    
-        # Record start time for profiling
+        # ----------------------------------------------------------------------
+        # 🎂 Stage: collect_dob — capture and validate date of birth
+        # ----------------------------------------------------------------------
         t_stage_start = _time_mod.perf_counter()
         debug_print(f"[collect_dob] 📍 Stage entered at {_time_mod.strftime('%H:%M:%S')}")
 
         # ----------------------------------------------------------------------
-        # 💬 VOICE PROMPTS — centralized for easy localization
+        # 💬 VOICE MESSAGES — centralized for maintainability & localization
         # ----------------------------------------------------------------------
         VOICE_SILENCE_MSG = (
             "Please say your date of birth, for example, 'July 3 1972'. "
@@ -4447,7 +4420,7 @@ def voice():
         )
 
         # ----------------------------------------------------------------------
-        # 🛡️ Ensure the session dictionary exists
+        # 🛡️ Session protection — ensure dictionary exists
         # ----------------------------------------------------------------------
         if "session_data" not in globals():
             debug_print("[collect_dob] ⚠️ session_data missing globally — recreating empty dict")
@@ -4465,21 +4438,23 @@ def voice():
         debug_print(f"[collect_dob] 🔎 doctor_name check → {sd.get('doctor_name')}")
 
         # ----------------------------------------------------------------------
-        # 🎧 Capture inputs (speech or keypad)
+        # 🎧 Capture inputs (speech or keypad digits)
         # ----------------------------------------------------------------------
-        dtmf_digits = (request.values.get("Digits") or "").strip()
+        try:
+            dtmf_digits = (request.values.get("Digits") or "").strip()
+        except Exception:
+            dtmf_digits = ""
         speech_text = (speech_result or "").strip()
         debug_print(f"[collect_dob] 🎙️ speech='{speech_text}', 🔢 dtmf='{dtmf_digits}'")
 
         # ----------------------------------------------------------------------
-        # 🔇 Handle silence (no speech or keypad input)
+        # 🔇 Silence handling
         # ----------------------------------------------------------------------
         if not dtmf_digits and not speech_text:
             tries = sd.get("silence_dob", 0) + 1
             sd["silence_dob"] = tries
             debug_print(f"[collect_dob] 🤐 silence tries={tries}/3")
 
-            # Retry up to 2 times with gentle re-prompts
             if tries < 3:
                 g = make_gather(
                     VOICE_SILENCE_MSG,
@@ -4494,22 +4469,22 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
-            # After 3 silent attempts → hang up politely
+            # ❌ Too many silent attempts → hang up politely
             resp.say(gpt_speak(VOICE_SILENCE_FINAL_MSG), VOICE)
             resp.hangup()
             debug_print(f"[collect_dob] 🧹 clearing session after hangup (call_sid={call_sid})")
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # ✅ Reset silence counter on valid input
+        # ✅ Reset silence counter once valid input is received
         sd.pop("silence_dob", None)
 
         # ----------------------------------------------------------------------
-        # 🧩 Parse DOB from input (DTMF or speech)
+        # 🧩 Parse DOB (from DTMF or speech)
         # ----------------------------------------------------------------------
         dob_date = None
 
-        # 🧮 Case 1: Numeric input via DTMF keypad (MMDDYYYY)
+        # 🧮 If DTMF provided (numeric keypad input)
         if dtmf_digits:
             d = _re.sub(r"\D", "", dtmf_digits)
             if len(d) >= 8:
@@ -4520,10 +4495,15 @@ def voice():
                 except Exception as e:
                     debug_print(f"[collect_dob] ❌ keypad parse error → {e}")
 
-        # 🗣️ Case 2: Parse spoken date (e.g., “July 3rd, 1972”)
+        # 🗣️ If not from keypad, try parsing spoken date
         if not dob_date and speech_text:
             try:
-                # Clean punctuation and normalize ordinals ("3rd" → "3")
+                # ----------------------------------------------------------------------
+                # 🧹 Clean and normalize spoken date text before parsing
+                # ----------------------------------------------------------------------
+                # Example raw speech input:
+                #   "July 3rd, 1972."  → "July 3 1972"
+                # ----------------------------------------------------------------------
                 t = _re.sub(r"[.,;:]+$", "", speech_text)
                 t = _re.sub(r"[,\.;:]", " ", t)
                 t = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=_re.IGNORECASE)
@@ -4568,14 +4548,14 @@ def voice():
             resp.redirect("/voice")
             return str(resp)
 
-        # ✅ Save DOB in session
+        # ✅ Store DOB in session once validated
         iso_dob = dob_date.strftime("%Y-%m-%d")
         sd["customer"]["dob"] = iso_dob
         sd["cancel"]["dob"] = iso_dob
         debug_print(f"[collect_dob] ✅ Stored DOB → {iso_dob}")
 
         # ----------------------------------------------------------------------
-        # 🔍 Lookup customer in local DB (via phone + DOB)
+        # 🔍 Lookup customer by phone & DOB
         # ----------------------------------------------------------------------
         phone_e164 = sd["customer"].get("phone_e164") or sd.get("phone_e164")
         found, customer_status = False, "unknown"
@@ -4593,12 +4573,12 @@ def voice():
             debug_print("[collect_dob] ⚠️ phone_e164 missing before lookup")
 
         # ----------------------------------------------------------------------
-        # 🔀 Route based on origin_stage and customer_status
+        # 🔀 Handle by origin_stage and registration status
         # ----------------------------------------------------------------------
         origin_stage = sd.get("origin_stage", "").strip().lower()
         debug_print(f"[collect_dob] 🔁 origin_stage={origin_stage}, found={found}, customer_status={customer_status}")
 
-        # 1️⃣ Registration flow → ask for first name
+        # 1️⃣ Registration flow → go to collect_first_name
         if origin_stage == "register":
             sd["stage"] = "collect_first_name"
             g = make_gather(
@@ -4614,7 +4594,7 @@ def voice():
             debug_print("[collect_dob] 🔁 origin_stage=register → collect_first_name")
             return str(resp)
 
-        # 2️⃣ Booking or Cancel flow → customer not found → must register
+        # 2️⃣ Booking or Cancel flow but user not found → must register first
         if origin_stage in ("book", "cancel") and not found:
             resp.say(gpt_speak(VOICE_NOT_FOUND_MSG), VOICE)
             resp.hangup()
@@ -4622,7 +4602,7 @@ def voice():
             debug_print(f"[collect_dob] ❌ {origin_stage} flow → user not found → ask to register")
             return str(resp)
 
-        # 3️⃣ Booking or Cancel flow → incomplete registration
+        # 3️⃣ Booking or Cancel flow with customer_status=new → incomplete registration
         if origin_stage in ("book", "cancel") and customer_status == "new":
             resp.say(gpt_speak(VOICE_NEW_CUSTOMER_MSG), VOICE)
             resp.hangup()
@@ -4630,8 +4610,8 @@ def voice():
             debug_print(f"[collect_dob] 🟡 {origin_stage} flow → incomplete registration → hangup")
             return str(resp)
 
-        # 4️⃣ Booking, Cancel, or Reschedule → current customer → verify via PIN
-        if origin_stage in ("book", "cancel", "reschedule") and customer_status == "current":
+        # 4️⃣ Booking or Cancel flow with customer_status=current → proceed to PIN
+        if origin_stage in ("book", "cancel") and customer_status == "current":
             sd["stage"] = "collect_pin_number"
             g = make_gather(
                 VOICE_PIN_PROMPT_MSG,
@@ -4646,47 +4626,14 @@ def voice():
             debug_print(f"[collect_dob] ✅ {origin_stage} flow → current user → collect_pin_number")
             return str(resp)
 
-        # 5️⃣ Update credit card → skip PIN → go to collect_cc
-        if origin_stage == "update_cc" and customer_status == "current":
-            sd["stage"] = "collect_cc"
-            g = make_gather(
-                "Please enter or say your credit card number, then press pound.",
-                input="speech dtmf",
-                timeout=8,
-                speech_timeout="auto",
-                barge_in=True,
-                finish_on_key="#"
-            )
-            resp.append(g)
-            resp.redirect("/voice")
-            debug_print("[collect_dob] ✅ update_cc → current user → collect_cc")
-            return str(resp)
-
-        # 6️⃣ Update PIN number → verify identity first
-        if origin_stage == "update_pin_number" and customer_status == "current":
-            sd["stage"] = "collect_pin_number"
-            g = make_gather(
-                "Let's verify your identity. Please enter your existing six digit PIN, followed by the pound key.",
-                input="speech dtmf",
-                timeout=6,
-                speech_timeout="auto",
-                barge_in=True,
-                finish_on_key="#"
-            )
-            resp.append(g)
-            resp.redirect("/voice")
-            debug_print("[collect_dob] ✅ update_pin_number → verified customer → collect_pin_number")
-            return str(resp)
-
         # ----------------------------------------------------------------------
-        # 🚨 Fallback — unexpected combination
+        # Fallback — unexpected state
         # ----------------------------------------------------------------------
         resp.say(gpt_speak("I could not determine your registration status. Please call the clinic for assistance."), VOICE)
         resp.hangup()
         debug_print("[collect_dob] ⚠️ fallback → unexpected condition")
         session_data.pop(call_sid, None)
         return str(resp)
-
 
 
 
