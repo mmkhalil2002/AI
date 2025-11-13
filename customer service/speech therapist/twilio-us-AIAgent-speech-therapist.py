@@ -1404,7 +1404,6 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
    #         }
    # ----------------------------------------------------------------------
 
-
 def get_doctor_next_available_slots(
     doctor_name: str,
     *,
@@ -1416,22 +1415,22 @@ def get_doctor_next_available_slots(
     slot_step_minutes: int = None,
     search_days: int = None
 ) -> list:
-    """
-    ----------------------------------------------------------------------
-    FUNCTIONAL DESCRIPTION
-    ----------------------------------------------------------------------
-    This function finds the next available appointment slots for a given
-    doctor, starting from a given timestamp (`from_start_iso`).
-
-    🔹 Core Features:
-        • Enforces NEXT_AVAILABLE_SLOT_OFFSET — no slot begins sooner
-          than X minutes from now.
-        • Skips weekends and non-working days.
-        • Respects clinic working hours and avoids lunch breaks.
-        • Uses environment-configurable variables for flexibility.
-        • Returns friendly human-readable time labels.
-    ----------------------------------------------------------------------
-    """
+    
+    #----------------------------------------------------------------------
+    # FUNCTIONAL DESCRIPTION
+    # ----------------------------------------------------------------------
+    # This function finds the next available appointment slots for a given
+    # doctor, starting from a given timestamp (`from_start_iso`).
+    #
+    #🔹 Core Features:
+    #    • Enforces NEXT_AVAILABLE_SLOT_OFFSET — no slot begins sooner
+    #      than X minutes from now.
+    #    • Skips weekends and non-working days.
+    #    • Respects clinic working hours and avoids lunch breaks.
+    #    • Uses environment-configurable variables for flexibility.
+    #    • Returns friendly human-readable time labels.
+    # ----------------------------------------------------------------------
+    
 
     # ----------------------------------------------------------------------
     # 🧩 Safe debug printer
