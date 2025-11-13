@@ -8813,53 +8813,58 @@ def voice():
         # Functional Description:
         # ----------------------------------------------------------------------
         # • Finalizes the cancellation of an appointment that the caller confirmed.
-        # • Deletes the selected record from the doctor’s JSON file.
-        # • Plays one concise confirmation message (no duplication).
-        # • If in a reschedule flow, transitions directly to booking flow
-        #   using a single smooth message (“Your appointment ... has been cancelled.
-        #   Let’s book your new one...”).
+        # • Removes the selected appointment record from the corresponding doctor file.
+        # • Speaks a single confirmation message (no duplicates).
+        # • If this is a reschedule flow, transitions directly into the booking
+        #   stage (collect_book_time_date) — using a Gather that *waits* for the
+        #   caller’s new requested date/time.
+        # • Handles file errors and missing appointment gracefully.
         # ----------------------------------------------------------------------
 
-        # Start performance timer for debugging and metrics
+        # Start timer to measure performance (for debug logging)
         t0 = _time_mod.perf_counter()
         debug_print("cancel_appt_confirm: 📍 Stage entered")
 
         # ----------------------------------------------------------------------
-        # 🧾 Retrieve context and current candidate (from previous stage)
+        # 🗂️ Retrieve context (appointment info stored from previous step)
         # ----------------------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
         cancel_ctx = sd.get("cancel", {})
-        cand = cancel_ctx.get("matching_event")  # Appointment confirmed to cancel
+        cand = cancel_ctx.get("matching_event")  # Candidate appointment user confirmed to cancel
         origin_stage = sd.get("origin_stage", "").strip().lower()
 
         # ----------------------------------------------------------------------
-        # 🚫 Safety check — ensure we have a valid appointment candidate
+        # 🚫 SAFETY CHECK — if nothing to cancel, stop politely
         # ----------------------------------------------------------------------
         if not cand:
-            debug_print("cancel_appt_confirm: ⚠️ No candidate found (nothing to cancel).")
+            debug_print("cancel_appt_confirm: ⚠️ No candidate found — nothing to cancel.")
             resp.say(gpt_speak("Sorry, I couldn’t find that appointment to cancel."), VOICE)
 
-            # If this is a reschedule flow → forward directly to new booking
+            # If this came from a reschedule flow → continue to booking
             if origin_stage == "reschedule":
                 sd["stage"] = "collect_book_time_date"
                 sd["origin_stage"] = ""
 
-                # Prompt user to provide new appointment date/time
-                resp.append(make_gather(
-                    "Please say the new date and time for your appointment, for example, 'October 12th at 9 a.m.'"
-                ))
+                # Ask user to speak a new time directly
+                gather = make_gather(
+                    "Please say the new date and time for your appointment, for example, 'October 12th at 9 a.m.'",
+                    input="speech dtmf",
+                    timeout=8,
+                    speech_timeout="auto",
+                    barge_in=True,
+                    finish_on_key="#"
+                )
+                resp.append(gather)
                 resp.redirect("/voice")
-                save_session(call_sid)
                 return str(resp)
 
-            # Otherwise end politely
+            # Otherwise, end call if nothing to cancel
             resp.hangup()
             session_data.pop(call_sid, None)
-            save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Extract appointment details
+        # 🧩 Extract data from confirmed appointment
         # ----------------------------------------------------------------------
         doctor_name = cand.get("doctor_name", "")
         start_utc   = cand.get("start_utc", "")
@@ -8871,39 +8876,39 @@ def voice():
         debug_print(f"cancel_appt_confirm: 🩺 Doctor='{doctor_name}', Start='{start_utc}', End='{end_utc}'")
 
         # ----------------------------------------------------------------------
-        # 📂 Locate and load the doctor’s appointment JSON file
+        # 📂 Locate and open the doctor's appointment file
         # ----------------------------------------------------------------------
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         safe_name = doctor_name.lower().replace(" ", "_")
         doc_path = os.path.join(BASE_DIR, DB_FOLDER, f"{safe_name}.json")
 
+        # Try loading existing appointments
         try:
             with open(doc_path, "r", encoding="utf-8") as f:
                 appointments = json.load(f)
             debug_print(f"cancel_appt_confirm: 📁 Loaded {len(appointments)} appointments from {doc_path}")
         except FileNotFoundError:
-            debug_print(f"cancel_appt_confirm: ❌ Doctor JSON not found: {doc_path}")
+            debug_print(f"cancel_appt_confirm: ❌ No JSON file found for {doctor_name}")
             resp.say(f"I couldn’t find any appointment records for {doctor_name}.", VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
-            save_session(call_sid)
             return str(resp)
         except Exception as e:
-            debug_print(f"cancel_appt_confirm: ⚠️ Error reading doctor JSON → {e}")
-            resp.say("Sorry, something went wrong while accessing the appointment list.", VOICE)
+            debug_print(f"cancel_appt_confirm: ⚠️ Error reading {doc_path}: {e}")
+            resp.say("Sorry, something went wrong while accessing appointment data.", VOICE)
             resp.hangup()
-            save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Find and delete matching appointment record
+        # 🧩 Find and delete the appointment entry
         # ----------------------------------------------------------------------
         deleted = False
-        for appt in list(appointments):  # iterate over a copy
+        for appt in list(appointments):  # iterate over copy to modify safely
             appt_phone = _re.sub(r"\D", "", appt.get("phone_e164", appt.get("phone", "")))
             cand_phone = _re.sub(r"\D", "", phone_e164)
             appt_dob = (appt.get("dob", "") or "").strip()
 
+            # Match by start time, phone, and DOB
             start_match = appt.get("start_utc", appt.get("utc_start", "")) == start_utc
             phone_match = appt_phone == cand_phone
             dob_match = not dob or appt_dob == dob
@@ -8915,7 +8920,7 @@ def voice():
                 break
 
         # ----------------------------------------------------------------------
-        # 💾 Save updated appointment list back to file
+        # 💾 Write updated list back to file
         # ----------------------------------------------------------------------
         if deleted:
             try:
@@ -8923,59 +8928,76 @@ def voice():
                     json.dump(appointments, f, indent=2)
                 debug_print(f"cancel_appt_confirm: 🗑️ Appointment successfully removed from {doc_path}")
 
-                # ------------------------------------------------------------------
-                # 🗣️ Unified message logic (avoid double “cancelled” lines)
-                # ------------------------------------------------------------------
+                # ==============================================================
+                # 🎙️ MESSAGE LOGIC — Unified & Natural Voice Flow
+                # ==============================================================
+
                 if origin_stage == "reschedule":
-                    # ✅ Smooth single message for rescheduling
+                    # 🔄 Reschedule mode — single continuous message and gather
                     combined_msg = (
                         f"Your appointment with {doctor_name} on {friendly} has been cancelled. "
                         "Let’s book your new appointment now. "
                         "Please say, for example, 'October 12th at 9 a.m.'."
                     )
-                    resp.say(gpt_speak(combined_msg), VOICE)
+
+                    # ------------------------------------------------------------------
+                    # 🎧 Build a Gather that *waits* for input instead of redirecting immediately
+                    # ------------------------------------------------------------------
+                    gather = make_gather(
+                        combined_msg,           # The voice prompt text
+                        input="speech dtmf",    # Accept both speech and keypad
+                        timeout=10,             # Wait up to 10 seconds for a reply
+                        speech_timeout="auto",  # Automatically end when silence
+                        barge_in=True,          # Allow interrupting the prompt
+                        finish_on_key="#",      # '#' can be used to finish keypad input
+                        num_digits=0,           # Unlimited speech length
+                        action="/voice"         # Twilio will post here with SpeechResult
+                    )
+
+                    # Append gather and provide a redirect for silence fallback
+                    resp.append(gather)
+                    resp.redirect("/voice")  # Twilio returns here if user stays silent
+
+                    # Update the session for the next stage
                     sd["stage"] = "collect_book_time_date"
-                    sd["origin_stage"] = ""  # clear marker
-                    resp.redirect("/voice")
-                    debug_print("cancel_appt_confirm: 🔄 reschedule flow → unified prompt used")
-                    save_session(call_sid)
+                    sd["origin_stage"] = ""  # Clear origin marker
+                    session_data[call_sid] = sd
+
+                    debug_print("cancel_appt_confirm: 🔄 reschedule flow → Gather prompt waiting for speech")
                     return str(resp)
 
                 else:
-                    # ✅ Standard cancellation (no rebooking)
+                    # ✅ Normal cancellation — not rescheduling
                     single_msg = (
                         f"Your appointment with {doctor_name} on {friendly} has been cancelled. "
                         "Thank you for calling Epic Therapist Clinic."
                     )
                     resp.say(gpt_speak(single_msg), VOICE)
                     resp.hangup()
-                    debug_print("cancel_appt_confirm: ✅ Appointment cancelled normally")
-                    save_session(call_sid)
+                    debug_print("cancel_appt_confirm: ✅ Standard cancellation complete")
                     return str(resp)
 
             except Exception as e:
-                debug_print(f"cancel_appt_confirm: ⚠️ Could not update JSON file → {e}")
+                debug_print(f"cancel_appt_confirm: ⚠️ Failed to update {doc_path}: {e}")
                 resp.say("Sorry, there was an error while removing your appointment.", VOICE)
                 resp.hangup()
-                save_session(call_sid)
                 return str(resp)
 
         else:
-            debug_print("cancel_appt_confirm: ❌ No matching record found (nothing removed).")
+            # No record matched for deletion
+            debug_print("cancel_appt_confirm: ❌ No matching appointment found in JSON file.")
             resp.say("Sorry, I couldn’t find that appointment to cancel.", VOICE)
             resp.hangup()
-            save_session(call_sid)
+            session_data.pop(call_sid, None)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ Final fallback — clean up if not already returned
+        # ✅ Final cleanup — default end of stage
         # ----------------------------------------------------------------------
         resp.hangup()
         session_data.pop(call_sid, None)
         debug_print(f"cancel_appt_confirm: ✅ total runtime {_time_mod.perf_counter() - t0:.3f}s")
-        save_session(call_sid)
         return str(resp)
-
 
 
 
