@@ -1186,8 +1186,24 @@ session_data = {}
     """
 
 
-
-
+# """
+# 🩺 PURPOSE:
+#     Determine if a given [start, end) appointment slot is available for a doctor.
+#     Checks for:
+#       • Overlaps with existing appointments
+#       • Invalid or past time ranges
+#       • Bookings too far in the future
+#       • Non-working days (Saturday, Sunday)
+#
+# ✅ RETURNS:
+#     True  → Slot is available (no conflicts, within business hours)
+#     False → Slot is busy, invalid, or outside working schedule
+#
+# 🌍 DEPENDENCIES:
+#     - Local JSON files stored under ./appointment_data/
+#     - Optional global: MAX_ADVANCE_MONTHS (default = 6)
+#     - Uses timezone-aware datetime operations (UTC)
+# """
 
 # ==============================================================
 # 🩺 Function: is_doctor_slot_available
@@ -1196,39 +1212,45 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
     """
     🩺 PURPOSE:
         Determine if a given [start, end) appointment slot is available for a doctor.
-        Uses only the local JSON file under ./appointment_data/.
+        Checks for:
+          • Overlaps with existing appointments
+          • Invalid or past time ranges
+          • Bookings too far in the future
+          • Non-working days (Saturday, Sunday)
 
     ✅ RETURNS:
-        True  → Slot is available (no overlaps, valid window)
-        False → Slot is busy, invalid, or out of range
+        True  → Slot is available (no conflicts, within business hours)
+        False → Slot is busy, invalid, or outside working schedule
 
-    🌍 GLOBAL DEPENDENCY:
-        - Reads MAX_ADVANCE_MONTHS (if defined globally) to enforce booking window.
-          If not defined, defaults safely to 6 months.
+    🌍 DEPENDENCIES:
+        - Local JSON files stored under ./appointment_data/
+        - Optional global: MAX_ADVANCE_MONTHS (default = 6)
+        - Uses timezone-aware datetime operations (UTC)
     """
 
     # ----------------------------------------------------------------------
-    # 🧩 Local helper: convert ISO → timezone-aware UTC datetime
+    # 🧩 Local helper: safely parse ISO strings → UTC datetime objects
     # ----------------------------------------------------------------------
     def _as_utc_dt(s: str):
         """
-        Converts ISO timestamp string to a UTC datetime object.
-        Handles both 'Z' suffix and naive ISO strings.
+        Converts ISO timestamp string to a timezone-aware UTC datetime.
+        Handles both 'Z' suffix and naive strings without timezone info.
+
         Example:
             "2025-10-22T16:00:00Z" → datetime(2025,10,22,16,0,0,tz=UTC)
         """
         try:
-            s2 = s.replace("Z", "+00:00")                # Normalize trailing Z → +00:00
-            dt = isoparse(s2)                            # Parse into datetime
-            if not dt.tzinfo:                            # If timezone missing
-                dt = dt.replace(tzinfo=_pytz.UTC)        # Assume UTC explicitly
-            return dt.astimezone(_pytz.UTC)              # Return timezone-aware UTC datetime
+            s2 = s.replace("Z", "+00:00")           # Normalize trailing 'Z' to explicit UTC offset
+            dt = isoparse(s2)                       # Parse string into datetime
+            if not dt.tzinfo:                       # If missing timezone
+                dt = dt.replace(tzinfo=_pytz.UTC)   # Assume UTC explicitly
+            return dt.astimezone(_pytz.UTC)         # Return as UTC datetime object
         except Exception as e:
             debug_print(f"[is_doctor_slot_available] ⚠️ Failed to parse datetime '{s}' → {e}")
             raise
 
     # ----------------------------------------------------------------------
-    # 🕐 Normalize start/end input times to aware UTC datetimes
+    # 🕐 Normalize start/end input times to UTC datetimes
     # ----------------------------------------------------------------------
     try:
         start_dt = _as_utc_dt(start_iso)
@@ -1237,19 +1259,227 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
         debug_print("[is_doctor_slot_available] ⚠️ Invalid time input — cannot convert to UTC")
         return False
 
-    # Sanity check — ensure start precedes end
+    # ----------------------------------------------------------------------
+    # 🧭 Sanity check — ensure start precedes end
+    # ----------------------------------------------------------------------
     if end_dt <= start_dt:
         debug_print("[is_doctor_slot_available] ⚠️ Invalid interval (end ≤ start)")
         return False
 
     # ----------------------------------------------------------------------
-    # 🗓️ Enforce MAX_ADVANCE_MONTHS booking window
+    # 🚫 Reject non-working days (Saturday, Sunday)
     # ----------------------------------------------------------------------
-    MAX_ADVANCE_MONTHS = int(globals().get("MAX_ADVANCE_MONTHS", 6))  # Use global or fallback to 6
+    # weekday(): Monday=0, Tuesday=1, ..., Saturday=5, Sunday=6
+    day_of_week = start_dt.weekday()
+    if day_of_week >= 5:
+        debug_print(f"[is_doctor_slot_available] ❌ {start_dt.strftime('%A')} is not a working day.")
+        return False
 
-    # Helper to add months safely with rollover
+    # ----------------------------------------------------------------------
+    # 🗓️ Enforce MAX_ADVANCE_MONTHS booking window (default = 6 months)
+    # ----------------------------------------------------------------------
+    MAX_ADVANCE_MONTHS = int(globals().get("MAX_ADVANCE_MONTHS", 6))
+
     def _add_months(dt, months):
-        #import calendar
+        """
+        Adds 'months' to a datetime object safely (handles year rollover).
+        Example: add 6 months to June 2025 → December 2025.
+        """
+        y, m = dt.year, dt.month + months
+        y += (m - 1) // 12
+        m = ((m - 1) % 12) + 1
+        d = min(dt.day, calendar.monthrange(y, m)[1])
+        return dt.replace(year=y, month=m, day=d)
+
+    # Current UTC time and limit for future bookings
+    now_utc = datetime.now(_pytz.UTC)
+    limit_end_utc = _add_months(now_utc, MAX_ADVANCE_MONTHS)
+
+    # Reject slots that are fully in the past
+    if end_dt <= now_utc:
+        debug_print(f"[is_doctor_slot_available] ⏳ Slot is in the past → {start_dt.isoformat()}")
+        return False
+
+    # Reject slots too far in the future
+    if start_dt > limit_end_utc:
+        debug_print(f"[is_doctor_slot_available] 🚫 Beyond {MAX_ADVANCE_MONTHS}-month window → {start_dt.isoformat()}")
+        return False
+
+    # ----------------------------------------------------------------------
+    # 📂 Locate the doctor's JSON appointment file
+    # ----------------------------------------------------------------------
+    safe_name = _re.sub(r"\s+", "_", doctor_name.strip().lower())  # Normalize name
+    doc_path = os.path.join("appointment_data", f"{safe_name}.json")
+    debug_print(f"[is_doctor_slot_available] 📁 File lookup → {doc_path}")
+
+    # If file doesn’t exist, the doctor has no bookings yet → slot free
+    if not os.path.exists(doc_path):
+        debug_print(f"[is_doctor_slot_available] 🆕 No appointment file for {doctor_name} — slot is free.")
+        return True
+
+    # ----------------------------------------------------------------------
+    # 📖 Load existing appointments from the doctor's JSON
+    # ----------------------------------------------------------------------
+    try:
+        with open(doc_path, "r", encoding="utf-8") as f:
+            appointments = json.load(f)
+    except Exception as e:
+        debug_print(f"[is_doctor_slot_available] ❌ Failed to load JSON → {e}")
+        return True  # Fail-open: if corrupted, treat as available to avoid blocking all bookings
+
+    # Validate data type (expecting list of appointments)
+    if not isinstance(appointments, list):
+        debug_print("[is_doctor_slot_available] ⚠️ Invalid file format (expected list) — treating as free.")
+        return True
+
+    debug_print(f"[is_doctor_slot_available] 🔍 Loaded {len(appointments)} existing entries for {doctor_name}")
+
+    # ----------------------------------------------------------------------
+    # 🔄 Iterate through each appointment and check for time overlap
+    # ----------------------------------------------------------------------
+    for i, appt in enumerate(appointments, start=1):
+        # Extract stored time fields (fallback to alternate key names)
+        appt_start_raw = appt.get("start_utc") or appt.get("utc_start") or appt.get("time")
+        appt_end_raw   = appt.get("end_utc") or appt.get("utc_end")
+
+        # Skip incomplete or malformed records
+        if not appt_start_raw or not appt_end_raw:
+            debug_print(f"[is_doctor_slot_available] ⚠️ Skipping incomplete record #{i}")
+            continue
+
+        try:
+            appt_start = _as_utc_dt(appt_start_raw)
+            appt_end   = _as_utc_dt(appt_end_raw)
+        except Exception as e:
+            debug_print(f"[is_doctor_slot_available] ⚠️ Record #{i} datetime parse failed → {e}")
+            continue
+
+        # Skip expired (past) appointments
+        if appt_end <= now_utc:
+            continue
+
+        # ------------------------------------------------------------------
+        # 🧮 Overlap logic:
+        # Two time intervals [A,B) and [C,D) overlap if:
+        #   NOT (B <= C or D <= A)
+        # ------------------------------------------------------------------
+        if not (end_dt <= appt_start or appt_end <= start_dt):
+            debug_print(f"[is_doctor_slot_available] 🚫 Overlap with record #{i}: "
+                        f"{appt_start.isoformat()} → {appt_end.isoformat()}")
+            return False  # Conflict found — slot is not free
+
+    # ----------------------------------------------------------------------
+    # ✅ If we reach here — slot is valid and available
+    # ----------------------------------------------------------------------
+    debug_print(f"[is_doctor_slot_available] ✅ Slot free for {doctor_name}: "
+                f"{start_dt.isoformat()} → {end_dt.isoformat()}")
+    return True
+
+
+
+# """
+# 🩺 PURPOSE:
+#     Determine if a given [start, end) appointment slot is available for a doctor.
+#     Checks for:
+#       • Overlaps with existing appointments
+#       • Invalid or past time ranges
+#       • Bookings too far in the future
+#       • Non-working days or hours (from WORKING_DAYS and WORKING_HOURS)
+#       • Lunch breaks (from LUNCH_BREAK_START / LUNCH_BREAK_END)
+#
+# ✅ RETURNS:
+#     True  → Slot is available (no conflicts, within working schedule)
+#     False → Slot is busy, invalid, or outside working schedule
+#
+# 🌍 DEPENDENCIES:
+#     - Local JSON files stored under ./appointment_data/
+#     - Globals:
+#           WORKING_DAYS
+#           WORKING_HOURS_START / WORKING_HOURS_END
+#           LUNCH_BREAK_START / LUNCH_BREAK_END
+#           MAX_ADVANCE_MONTHS (default = 6)
+#     - Uses timezone-aware datetime operations (UTC)
+# """
+def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> bool:
+    # ----------------------------------------------------------------------
+    # 🧩 Local helper: safely parse ISO → UTC datetime
+    # ----------------------------------------------------------------------
+    def _as_utc_dt(s: str):
+        """Convert ISO string (with or without 'Z') into timezone-aware UTC datetime."""
+        try:
+            s2 = s.replace("Z", "+00:00")  # Normalize trailing 'Z'
+            dt = isoparse(s2)
+            if not dt.tzinfo:
+                dt = dt.replace(tzinfo=_pytz.UTC)
+            return dt.astimezone(_pytz.UTC)
+        except Exception as e:
+            debug_print(f"[is_doctor_slot_available] ⚠️ Failed to parse datetime '{s}' → {e}")
+            raise
+
+    # ----------------------------------------------------------------------
+    # 🕐 Normalize and validate timestamps
+    # ----------------------------------------------------------------------
+    try:
+        start_dt = _as_utc_dt(start_iso)
+        end_dt   = _as_utc_dt(end_iso)
+    except Exception:
+        debug_print("[is_doctor_slot_available] ⚠️ Invalid time input — cannot convert to UTC")
+        return False
+
+    # ----------------------------------------------------------------------
+    # 🧭 Sanity check — ensure start precedes end
+    # ----------------------------------------------------------------------
+    if end_dt <= start_dt:
+        debug_print("[is_doctor_slot_available] ⚠️ Invalid interval (end ≤ start)")
+        return False
+
+    # ----------------------------------------------------------------------
+    # 🗓️ Working day validation (from WORKING_DAYS)
+    # ----------------------------------------------------------------------
+    WORKING_DAYS = globals().get("WORKING_DAYS", [0, 1, 2, 3, 4])  # Default Monday–Friday
+    day_of_week = start_dt.weekday()
+
+    if day_of_week not in WORKING_DAYS:
+        day_name = start_dt.strftime("%A")
+        debug_print(f"[is_doctor_slot_available] ❌ {day_name} is not in WORKING_DAYS={WORKING_DAYS}")
+        return False
+
+    # ----------------------------------------------------------------------
+    # ⏰ Working hours validation
+    # ----------------------------------------------------------------------
+    WORKING_HOURS_START = globals().get("WORKING_HOURS_START", 8)
+    WORKING_HOURS_END   = globals().get("WORKING_HOURS_END", 17)
+
+    start_hour = start_dt.hour + start_dt.minute / 60
+    end_hour   = end_dt.hour + end_dt.minute / 60
+
+    if start_hour < WORKING_HOURS_START or end_hour > WORKING_HOURS_END:
+        debug_print(f"[is_doctor_slot_available] ❌ Outside working hours "
+                    f"({WORKING_HOURS_START}:00–{WORKING_HOURS_END}:00)")
+        return False
+
+    # ----------------------------------------------------------------------
+    # 🍴 Exclude lunch break periods
+    # ----------------------------------------------------------------------
+    LUNCH_START = globals().get("LUNCH_BREAK_START", time(13, 0))
+    LUNCH_END   = globals().get("LUNCH_BREAK_END", time(14, 0))
+
+    start_t = start_dt.time()
+    end_t   = end_dt.time()
+
+    # Condition → overlaps with lunch if NOT (end <= lunch_start OR start >= lunch_end)
+    if not (end_t <= LUNCH_START or start_t >= LUNCH_END):
+        debug_print(f"[is_doctor_slot_available] 🚫 Conflicts with lunch break "
+                    f"{LUNCH_START.strftime('%H:%M')}–{LUNCH_END.strftime('%H:%M')}")
+        return False
+
+    # ----------------------------------------------------------------------
+    # 🗓️ Enforce MAX_ADVANCE_MONTHS booking limit (default = 6 months)
+    # ----------------------------------------------------------------------
+    MAX_ADVANCE_MONTHS = int(globals().get("MAX_ADVANCE_MONTHS", 6))
+
+    def _add_months(dt, months):
+        """Helper to compute date + n months safely."""
         y, m = dt.year, dt.month + months
         y += (m - 1) // 12
         m = ((m - 1) % 12) + 1
@@ -1259,52 +1489,46 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
     now_utc = datetime.now(_pytz.UTC)
     limit_end_utc = _add_months(now_utc, MAX_ADVANCE_MONTHS)
 
-    # Reject appointments that are too far in the future or fully in the past
+    # Block appointments in the past or beyond configured horizon
     if end_dt <= now_utc:
-        debug_print(f"[is_doctor_slot_available] ⏳ Slot is entirely in the past → {start_dt.isoformat()}")
+        debug_print(f"[is_doctor_slot_available] ⏳ Slot is in the past → {start_dt.isoformat()}")
         return False
     if start_dt > limit_end_utc:
-        debug_print(f"[is_doctor_slot_available] 🚫 Slot beyond {MAX_ADVANCE_MONTHS}-month limit → {start_dt.isoformat()}")
+        debug_print(f"[is_doctor_slot_available] 🚫 Beyond {MAX_ADVANCE_MONTHS}-month limit → {start_dt.isoformat()}")
         return False
 
     # ----------------------------------------------------------------------
-    # 📂 Locate the doctor's appointment file
+    # 📂 Locate doctor's JSON file and load appointments
     # ----------------------------------------------------------------------
-    safe_name = _re.sub(r"\s+", "_", doctor_name.strip().lower())  # Normalize name
+    safe_name = _re.sub(r"\s+", "_", doctor_name.strip().lower())
     doc_path = os.path.join("appointment_data", f"{safe_name}.json")
     debug_print(f"[is_doctor_slot_available] 📁 File lookup → {doc_path}")
 
-    # If no file exists, doctor has no appointments yet → slot is free
+    # If doctor file doesn't exist, slot is free
     if not os.path.exists(doc_path):
-        debug_print(f"[is_doctor_slot_available] 🆕 No file for {doctor_name} — slot free")
+        debug_print(f"[is_doctor_slot_available] 🆕 No appointment file for {doctor_name} — slot free.")
         return True
 
-    # ----------------------------------------------------------------------
-    # 📖 Load existing appointments from the JSON file
-    # ----------------------------------------------------------------------
     try:
         with open(doc_path, "r", encoding="utf-8") as f:
             appointments = json.load(f)
     except Exception as e:
         debug_print(f"[is_doctor_slot_available] ❌ Failed to load JSON → {e}")
-        return True  # Fail-open: if corrupted/unreadable, treat as available
-
-    # Validate that data structure is a list
-    if not isinstance(appointments, list):
-        debug_print("[is_doctor_slot_available] ⚠️ File format invalid (expected list) — treating as free")
         return True
 
-    debug_print(f"[is_doctor_slot_available] 🔍 Loaded {len(appointments)} existing entries for {doctor_name}")
+    if not isinstance(appointments, list):
+        debug_print("[is_doctor_slot_available] ⚠️ Invalid JSON format — treating as free.")
+        return True
+
+    debug_print(f"[is_doctor_slot_available] 🔍 Loaded {len(appointments)} existing appointments for {doctor_name}")
 
     # ----------------------------------------------------------------------
-    # 🔄 Check each existing appointment for overlap
+    # 🔁 Overlap check — ensure new slot doesn’t conflict with existing
     # ----------------------------------------------------------------------
     for i, appt in enumerate(appointments, start=1):
-        # Extract stored start/end fields
         appt_start_raw = appt.get("start_utc") or appt.get("utc_start") or appt.get("time")
         appt_end_raw   = appt.get("end_utc") or appt.get("utc_end")
 
-        # Skip incomplete records
         if not appt_start_raw or not appt_end_raw:
             debug_print(f"[is_doctor_slot_available] ⚠️ Skipping incomplete record #{i}")
             continue
@@ -1316,319 +1540,22 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
             debug_print(f"[is_doctor_slot_available] ⚠️ Record #{i} parse error → {e}")
             continue
 
-        # Skip outdated (past) appointments
+        # Skip appointments already in the past
         if appt_end <= now_utc:
             continue
 
-        # --------------------------------------------------------------
-        # 🧮 Overlap condition:
-        # Two intervals [start_dt, end_dt) and [appt_start, appt_end)
-        # overlap if not (end_dt <= appt_start or appt_end <= start_dt)
-        # --------------------------------------------------------------
+        # Overlap condition: intervals overlap if not (end ≤ start_existing or existing_end ≤ start)
         if not (end_dt <= appt_start or appt_end <= start_dt):
             debug_print(f"[is_doctor_slot_available] 🚫 Overlap with record #{i}: "
                         f"{appt_start.isoformat()} → {appt_end.isoformat()}")
-            return False  # Slot busy
+            return False
 
     # ----------------------------------------------------------------------
-    # ✅ No overlaps found → slot is free
+    # ✅ Slot passes all checks — available
     # ----------------------------------------------------------------------
     debug_print(f"[is_doctor_slot_available] ✅ Slot free for {doctor_name}: "
                 f"{start_dt.isoformat()} → {end_dt.isoformat()}")
     return True
-
-
-
-
-   # ----------------------------------------------------------------------
-   # FUNCTIONAL DESCRIPTION
-   # ----------------------------------------------------------------------
-   # This function finds the next available appointment slots for a given
-   # doctor, starting from a given timestamp (`from_start_iso`).
-   #
-   # 🔹 Core Features:
-   #    • Enforces NEXT_AVAILABLE_SLOT_OFFSET — e.g. if offset = 30 min and
-   #       current time = 8:15, the first slot considered must begin ≥ 8:45.
-   #     • Skips weekends and non-working days.
-   #     • Respects configurable working hours (e.g., 08:00 – 17:00).
-   # • Avoids lunch break period (if defined, e.g. 12:00 – 13:00).
-   #     • Searches forward up to a configurable number of days or months.
-   #     • Returns friendly human-readable slot labels (e.g., “Tuesday,
-   #       May 6 at 9:00 AM”).
-   #
-   # 🔹 Inputs:
-   #     doctor_name          Doctor’s name (string)
-   #      from_start_iso       ISO-formatted UTC start time to begin search
-   #     duration_minutes     Appointment length (defaults to 30 min)
-   #     limit                Number of available slots to return
-   #     tz_name              Time zone name (defaults to clinic’s)
-   #     work_hours           List of working-hour tuples (e.g., [(8,17)])
-   #     slot_step_minutes    Grid size (e.g., 15 min or 30 min)
-   #     search_days          How many days ahead to search
-   #
-   # 🔹 Outputs:
-   #     Returns a list of dict objects, each containing:
-   #        {
-   #           "start": ISO-UTC start,
-   #          "end": ISO-UTC end,
-   #           "friendly": "Tuesday, May 6 at 9:00 AM",
-   #           "tz": "America/Chicago"
-   #         }
-   # ----------------------------------------------------------------------
-
-
-def get_doctor_next_available_slots(
-    doctor_name: str,
-    *,
-    from_start_iso: str,
-    duration_minutes: int = None,
-    limit: int = 3,
-    tz_name: str = None,
-    work_hours=None,
-    slot_step_minutes: int = None,
-    search_days: int = None
-) -> list:
-    
-
-    # ----------------------------------------------------------------------
-    # 🧩 Local debug helper — wraps debug_print safely
-    # ----------------------------------------------------------------------
-    def _dbg(msg: str):
-        try:
-            debug_print(msg)
-        except Exception:
-            print(msg)
-
-    _dbg(f"[get_doctor_next_available_slots] ▶️ doctor={doctor_name} from={from_start_iso} limit={limit}")
-
-    # ----------------------------------------------------------------------
-    # ⚙️ Environment defaults and constants
-    # ----------------------------------------------------------------------
-    MAX_ADVANCE_MONTHS = int(globals().get("MAX_ADVANCE_MONTHS", 6))  # Maximum months to look ahead
-    NEXT_AVAILABLE_SLOT_OFFSET = int(globals().get("NEXT_AVAILABLE_SLOT_OFFSET", 30))  # Offset in minutes before first slot is valid
-    _dbg(f"[get_doctor_next_available_slots] 📏 Using MAX_ADVANCE_MONTHS={MAX_ADVANCE_MONTHS}, NEXT_AVAILABLE_SLOT_OFFSET={NEXT_AVAILABLE_SLOT_OFFSET}")
-
-    # Default appointment length (if not supplied)
-    if duration_minutes is None:
-        duration_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
-    if duration_minutes not in (15, 30, 45, 60):
-        duration_minutes = 30
-
-    # Default slot step = duration (so slots don’t overlap)
-    if slot_step_minutes is None:
-        slot_step_minutes = duration_minutes
-
-    # Time zone handling
-    if tz_name is None:
-        tz_name = globals().get("CLINIC_TZ", "America/Chicago")
-    try:
-        tz_local = _pytz.timezone(tz_name)
-    except Exception:
-        _dbg("[get_doctor_next_available_slots] ⚠️ Invalid timezone, using America/Chicago")
-        tz_local = _pytz.timezone("America/Chicago")
-
-    # ----------------------------------------------------------------------
-    # 🕐 Working hours and working days configuration
-    # ----------------------------------------------------------------------
-    WSTART = int(globals().get("WORKING_HOURS_START", 8))   # Opening hour (24-h format)
-    WEND   = int(globals().get("WORKING_HOURS_END", 17))    # Closing hour
-    if not work_hours:
-        work_hours = ((WSTART, WEND),)
-
-    # Default working days: Monday–Friday (0–4)
-    WORKING_DAYS = set(int(x) for x in globals().get("WORKING_DAYS", {0, 1, 2, 3, 4}))
-
-    # ----------------------------------------------------------------------
-    # 🍽️ Lunch break configuration
-    # ----------------------------------------------------------------------
-    def _as_time(val, default_h=None, default_m=0):
-        """Safely convert strings like '12:30' → datetime.time(12,30)."""
-        if val is None:
-            return None if default_h is None else dtime(default_h, default_m)
-        if isinstance(val, dtime):
-            return val
-        s = str(val).strip()
-        if not s:
-            return None
-        if ":" in s:
-            hh, mm = (s.split(":", 1) + ["0"])[:2]
-        else:
-            hh, mm = s, "0"
-        try:
-            return dtime(int(hh), int(mm))
-        except Exception:
-            return None
-
-    LUNCH_START = _as_time(globals().get("LUNCH_BREAK_START"))  # e.g., "12:00"
-    LUNCH_END   = _as_time(globals().get("LUNCH_BREAK_END"))    # e.g., "13:00"
-
-    if search_days is None:
-        search_days = int(globals().get("SEARCH_DAYS", 14))
-
-    # ----------------------------------------------------------------------
-    # 🧠 Helper functions
-    # ----------------------------------------------------------------------
-    def _friendly(dt_local, now_local):
-        """Return human-friendly text like 'Tuesday, May 3 at 2:30 PM'."""
-        try:
-            if dt_local.year != now_local.year:
-                return dt_local.strftime("%A, %B %-d, %Y at %-I:%M %p")
-            return dt_local.strftime("%A, %B %-d at %-I:%M %p")
-        except Exception:
-            return dt_local.strftime("%A, %B %d at %I:%M %p")
-
-    def _align_up_to_window_grid(dt_local, minutes, window_start_local, *, now_local):
-        """
-        Aligns a time up to the next valid slot boundary.
-        Example: if step=30 and time=09:10 → aligns to 09:30.
-        """
-        dt_local = dt_local.replace(second=0, microsecond=0)
-        anchor = window_start_local.replace(second=0, microsecond=0)
-        diff_min = int((dt_local - anchor).total_seconds() // 60)
-        if diff_min <= 0:
-            aligned = anchor
-        else:
-            rem = diff_min % minutes
-            aligned = dt_local if rem == 0 else (dt_local + timedelta(minutes=(minutes - rem)))
-        # Ensure we never align to a time before “now”
-        if aligned.date() == now_local.date() and aligned <= now_local:
-            steps = ((now_local - anchor).total_seconds() // 60 // minutes) + 1
-            aligned = anchor + timedelta(minutes=int(steps * minutes))
-        return aligned
-
-    def _add_months(dt, months):
-        """Safely add months to a date (keeps valid day numbers)."""
-        import calendar
-        y, m = dt.year, dt.month + months
-        y += (m - 1) // 12
-        m = ((m - 1) % 12) + 1
-        d = min(dt.day, calendar.monthrange(y, m)[1])
-        return dt.replace(year=y, month=m, day=d)
-
-    # ----------------------------------------------------------------------
-    # 🕐 Establish the search window and apply the NEXT_AVAILABLE_SLOT_OFFSET
-    # ----------------------------------------------------------------------
-    now_utc = datetime.now(_pytz.UTC)
-    now_loc = now_utc.astimezone(tz_local)
-
-    # Parse user-requested starting time
-    try:
-        req_utc = isoparse((from_start_iso or "").strip())
-        if req_utc.tzinfo is None:
-            req_utc = _pytz.UTC.localize(req_utc)
-    except Exception:
-        _dbg("[get_doctor_next_available_slots] ⚠️ Invalid from_start_iso, using now")
-        req_utc = now_utc
-
-    req_local = req_utc.astimezone(tz_local)
-
-    # Apply the offset: we skip ahead by NEXT_AVAILABLE_SLOT_OFFSET minutes
-    earliest_allowed_local = now_loc + timedelta(minutes=NEXT_AVAILABLE_SLOT_OFFSET)
-    if req_local < earliest_allowed_local:
-        _dbg(f"[get_doctor_next_available_slots] ⏩ Applying offset → skipping to {earliest_allowed_local.strftime('%H:%M')}")
-        req_local = earliest_allowed_local
-
-    # Clamp search range within global horizon (days/months)
-    limit_end_utc = _add_months(now_utc, MAX_ADVANCE_MONTHS)
-    search_window_end = min(now_utc + timedelta(days=search_days), limit_end_utc)
-    base_utc = req_local.astimezone(_pytz.UTC)
-    cur_local = base_utc.astimezone(tz_local)
-
-    results, seen = [], set()
-
-    # ----------------------------------------------------------------------
-    # 🔁 Main scanning loop — iterate days and time windows
-    # ----------------------------------------------------------------------
-    while cur_local.astimezone(_pytz.UTC) < search_window_end and len(results) < limit:
-
-        # 🗓️ Skip non-working days (e.g., weekends)
-        if cur_local.weekday() not in WORKING_DAYS:
-            _dbg(f"[get_doctor_next_available_slots] 💤 Skipping {cur_local.strftime('%A')} (non-working day)")
-            cur_local = cur_local + timedelta(days=1)
-            cur_local = cur_local.replace(hour=WSTART, minute=0, second=0, microsecond=0)
-            continue
-
-        # Build work windows for this day
-        windows = []
-        for ws, we in work_hours:
-            wstart = tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day, ws, 0))
-            wend   = tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day, we, 0))
-            windows.append((wstart, wend))
-
-        progressed = False
-
-        for wstart, wend in windows:
-
-            # Ensure starting point within today’s work window
-            if cur_local < wstart:
-                cur_local = wstart
-
-            # Align to next valid grid boundary (e.g., 09:10 → 09:30)
-            cur_local = _align_up_to_window_grid(cur_local, slot_step_minutes, wstart, now_local=now_loc)
-
-            # Loop over slots within work window
-            while cur_local + timedelta(minutes=duration_minutes) <= wend and len(results) < limit:
-
-                # 🍽️ Skip if overlapping lunch break
-                if LUNCH_START and LUNCH_END:
-                    if (cur_local.time() < LUNCH_END and
-                        (cur_local + timedelta(minutes=duration_minutes)).time() > LUNCH_START):
-                        _dbg("[get_doctor_next_available_slots] 🍽️ Lunch break — skipping")
-                        cur_local = tz_local.localize(datetime.combine(cur_local.date(), LUNCH_END))
-                        cur_local = _align_up_to_window_grid(cur_local, slot_step_minutes, wstart, now_local=now_loc)
-                        continue
-
-                # ⛔ Skip times outside work hours
-                local_hour = cur_local.hour + cur_local.minute / 60.0
-                if local_hour < WSTART or local_hour >= WEND:
-                    _dbg(f"[get_doctor_next_available_slots] ⛔ {cur_local.strftime('%I:%M %p')} outside working hours ({WSTART}:00–{WEND}:00)")
-                    cur_local = cur_local + timedelta(minutes=slot_step_minutes)
-                    continue
-
-                # 🚫 Stop if beyond the maximum allowed horizon
-                if cur_local.astimezone(_pytz.UTC) > limit_end_utc:
-                    _dbg(f"[get_doctor_next_available_slots] 🚫 Beyond {MAX_ADVANCE_MONTHS}-month limit — stop")
-                    return results
-
-                # Compute slot start/end in UTC
-                start_iso = cur_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
-                end_iso   = (cur_local + timedelta(minutes=duration_minutes)).astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
-
-                # ✅ Check if slot is free
-                try:
-                    if is_doctor_slot_available(doctor_name, start_iso, end_iso) and start_iso not in seen:
-                        seen.add(start_iso)
-                        results.append({
-                            "start": start_iso,
-                            "end": end_iso,
-                            "friendly": _friendly(cur_local, now_loc),
-                            "tz": tz_name,
-                        })
-                        _dbg(f"[get_doctor_next_available_slots] ✅ Added → {results[-1]['friendly']} ({start_iso})")
-                except Exception as e:
-                    _dbg(f"[get_doctor_next_available_slots] ❌ Availability check failed → {e}")
-
-                # Advance to next grid step
-                cur_local = cur_local + timedelta(minutes=slot_step_minutes)
-                progressed = True
-
-        # If no valid slots found this day → jump to next day
-        if not progressed:
-            _dbg(f"[get_doctor_next_available_slots] ⏭️ No valid slots on {cur_local.strftime('%A')} — moving to next day")
-            cur_local = cur_local + timedelta(days=1)
-            cur_local = cur_local.replace(hour=WSTART, minute=0, second=0, microsecond=0)
-
-    # ----------------------------------------------------------------------
-    # ✅ Return the collected slot list
-    # ----------------------------------------------------------------------
-    _dbg(f"[get_doctor_next_available_slots] ✅ Finished — found {len(results)} slot(s)")
-    return results
-
-
-
-
-
-
 
 
 
