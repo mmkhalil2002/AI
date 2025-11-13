@@ -3644,7 +3644,7 @@ def voice():
 
 
 
-    # 🧩 Stage: INTRO
+       # 🧩 Stage: INTRO
     # ----------------------------------------------------------------------
     # Functional Description:
     # ----------------------------------------------------------------------
@@ -3654,15 +3654,16 @@ def voice():
     # • The <Gather> TwiML block listens for input and posts the result
     #   back to /voice with SpeechResult or Digits.
     # • If the caller stays silent, local retry logic reprompts up to 3 times.
-    #   The first retry skips “I didn’t catch that.” to avoid redundancy.
-    # • After 3 silences → redirect to voicemail as fallback.
+    #   - First time → greeting + full menu
+    #   - Second time → “I couldn’t catch that” + full menu
+    #   - Third time → transfers to voicemail
     # ----------------------------------------------------------------------
     # Flow Summary:
     # ----------------------------------------------------------------------
     # 1️⃣ Caller dials the clinic number.
     # 2️⃣ Twilio triggers /voice → stage = "intro".
     # 3️⃣ The system greets the caller and asks for intent (book, cancel, etc.).
-    # 4️⃣ If no input: retry up to 3 times (first retry skips the “catch that” line).
+    # 4️⃣ If no input: retry up to 3 times.
     # 5️⃣ After 3 silences → redirect to voicemail.
     # 6️⃣ On valid speech or DTMF → proceed to stage="intent".
     # ----------------------------------------------------------------------
@@ -3686,8 +3687,6 @@ def voice():
         # ------------------------------------------------------------------
         # 🔇 Local silence-handling setup
         # ------------------------------------------------------------------
-        # This counter tracks how many times the caller failed to respond.
-        # It resets automatically when valid speech or DTMF is received.
         silence_key = "intro_silence_count"
         silence_count = sd.get(silence_key, 0)
         debug_print(f"[intro] 🔇 Silence attempt #{silence_count}")
@@ -3700,10 +3699,9 @@ def voice():
         debug_print(f"[intro] 🎧 Received speech='{raw_speech}' dtmf='{raw_dtmf}'")
 
         # ------------------------------------------------------------------
-        # 🗣️ MAIN PROMPT — Welcome and menu options
+        # 🎙️ MENU PROMPT — main message text reused for all re-prompts
         # ------------------------------------------------------------------
-        prompt = (
-            "Thank you for calling Epic Therapist Clinic. "
+        menu_text = (
             "Say 'book appointment' or press 1. "
             "Say 'cancel appointment' or press 2. "
             "Say 'new customer' or press 3. "
@@ -3715,7 +3713,7 @@ def voice():
         )
 
         # ------------------------------------------------------------------
-        # 🔇 Handle silence (no speech or keypad response)
+        # 🔇 Handle silence or missing input
         # ------------------------------------------------------------------
         if not raw_speech and not raw_dtmf:
             silence_count += 1
@@ -3723,62 +3721,51 @@ def voice():
             debug_print(f"[intro] 🤐 No input detected → retry {silence_count}/3")
 
             # ==============================================================
-            # 🚫 If 3 silent attempts reached → fallback to voicemail
+            # 🚫 3 Silent Attempts → Transfer to Voicemail
             # ==============================================================
             if silence_count >= 3:
                 debug_print("[intro] 🚫 Too many silences → redirecting to voicemail")
-                sd.pop(silence_key, None)     # Reset silence counter
-                sd["stage"] = "voicemail"     # Set next stage for Twilio POST
+                sd.pop(silence_key, None)
+                sd["stage"] = "voicemail"
 
-                # Speak final fallback prompt and start recording
                 resp.say(
                     gpt_speak("I’m still not hearing anything. Please leave your message after the beep."),
                     VOICE,
                 )
                 resp.record(
                     max_length=60,                 # Record up to 60 seconds
-                    action="/voice",               # Twilio posts recording here
-                    transcribe=True,               # Enable automatic transcription
-                    transcribe_callback="/transcription"  # Webhook to store transcript
+                    action="/voice",               # Twilio POST target after recording
+                    transcribe=True,               # Enable transcription
+                    transcribe_callback="/transcription"
                 )
                 return str(resp)
 
             # ==============================================================
-            # 🔁 If under 3 silent attempts → re-prompt politely
+            # 🔁 1st & 2nd Silence Attempts — Reprompt with adaptive feedback
             # ==============================================================
-            # ✅ FIXED:
-            #  - The first retry (silence_count==1) replays menu directly.
-            #  - The second/third retries add “I didn’t catch that.” for feedback.
-            # ==============================================================
-
-            # Define the reusable short menu string (without greeting)
-            menu_only = (
-                "Say 'book appointment' or press 1. "
-                "Say 'cancel appointment' or press 2. "
-                "Say 'new customer' or press 3. "
-                "Say 'change appointment' or press 4. "
-                "Say 'update credit card' or press 5. "
-                "Say 'update pin number' or press 6. "
-                "Say 'update insurance information' or press 7. "
-                "Say 'leave voicemail' or press 8."
-            )
-
-            # Choose prompt style based on retry attempt
             if silence_count == 1:
-                reprompt_text = menu_only
+                # First silence: repeat full greeting politely
+                reprompt_text = (
+                    "Thank you for calling Epic Therapist Clinic. "
+                    + menu_text
+                )
             else:
-                reprompt_text = "I didn’t catch that. " + menu_only
+                # Second silence: include acknowledgment before menu
+                reprompt_text = (
+                    "I couldn’t catch that. Please listen again. "
+                    + menu_text
+                )
 
-            # Build the new <Gather> element
-            resp.pause(length=1)  # brief pause for smoother UX
+            # Create <Gather> prompt for Twilio
+            resp.pause(length=1)
             gather = make_gather(
                 reprompt_text,
-                input="speech dtmf",               # Allow speech or DTMF
-                timeout=8,                         # Wait 8s for input
-                speech_timeout="auto",             # Stop when silence
-                barge_in=True,                     # Allow interrupting
-                finish_on_key="#",                 # '#' ends keypad input
-                num_digits=1                       # Expect one digit
+                input="speech dtmf",
+                timeout=8,               # Wait 8 seconds
+                speech_timeout="auto",   # Detect silence pause
+                barge_in=True,           # Allow interruption
+                finish_on_key="#",       # '#' ends keypad input
+                num_digits=1             # Expect one digit
             )
             resp.append(gather)
             debug_print(f"[intro] 🔁 Re-prompting user after silence (try {silence_count}/3)")
@@ -3791,32 +3778,37 @@ def voice():
             sd.pop(silence_key, None)
 
         # ------------------------------------------------------------------
-        # 🎙️ Build main Gather prompt for the intro stage
+        # 🎙️ Primary greeting (first-time caller)
         # ------------------------------------------------------------------
-        # The <Gather> element tells Twilio to:
-        #   • Speak the menu options
-        #   • Listen for speech or keypad input
-        #   • Post input back to /voice for next processing (stage='intent')
-        # ------------------------------------------------------------------
-        gather = make_gather(
-            prompt,                           # Full greeting + menu
-            hints="book,cancel,change,reschedule,update,voicemail",  # Speech hints
-            input="speech dtmf",              # Allow both speech & keypad
-            timeout=8,                        # Wait up to 8 seconds
-            speech_timeout="auto",            # Auto-stop on pause
-            barge_in=True,                    # Allow user to talk early
-            finish_on_key="#",                # End on '#'
-            num_digits=1                      # Expect single digit (1–8)
+        # When user first enters this stage (no silence detected yet),
+        # they hear a full welcome message followed by the main options.
+        prompt = (
+            "Thank you for calling Epic Therapist Clinic. "
+            + menu_text
         )
 
         # ------------------------------------------------------------------
-        # 📤 Append Gather to response and redirect Twilio after completion
+        # 🧩 Build <Gather> TwiML to capture caller intent
+        # ------------------------------------------------------------------
+        gather = make_gather(
+            prompt,
+            hints="book,cancel,change,reschedule,update,voicemail",
+            input="speech dtmf",
+            timeout=8,
+            speech_timeout="auto",
+            barge_in=True,
+            finish_on_key="#",
+            num_digits=1
+        )
+
+        # ------------------------------------------------------------------
+        # 📤 Append <Gather> to Twilio response and redirect after
         # ------------------------------------------------------------------
         resp.append(gather)
         resp.redirect("/voice")
 
         # ------------------------------------------------------------------
-        # ✅ Return TwiML response to Twilio for immediate execution
+        # ✅ Return TwiML back to Twilio for immediate playback
         # ------------------------------------------------------------------
         return str(resp)
 
