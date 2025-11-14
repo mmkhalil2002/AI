@@ -1,5 +1,5 @@
 #=======
-# updated  11/13/2025
+# updated  11/14/2025
 #  
 # =========================
 # Standard library imports
@@ -384,7 +384,7 @@ WORKING_DAYS = [int(x) for x in os.getenv("WORKING_DAYS", "0,1,2,3,4").split(","
 #   • Clinic’s opening and closing times (24-hour clock).
 #   • Example: 8 → 08:00 AM, 17 → 5:00 PM.
 WORKING_HOURS_START = int(os.getenv("WORKING_HOURS_START", 8))
-WORKING_HOURS_END   = int(os.getenv("WORKING_HOURS_END", 17))
+WORKING_HOURS_END   = int(os.getenv("WORKING_HOURS_END", 5))
 
 # LUNCH_BREAK_START / LUNCH_BREAK_END:
 #   • Defines the clinic’s lunch break window.
@@ -579,54 +579,21 @@ def save_session(call_sid: str):
 
 
 
+# ======================================================================
+# 🧠 FUNCTIONAL DESCRIPTION — smart_parse_time()
+# ======================================================================
+# This routine parses a spoken/natural-language date-time string into a
+# validated timezone-aware UTC appointment window.
+#
+# EXTENDED DEBUGGING:
+#   ✔ Logs every normalization stage
+#   ✔ Logs detection of month/day/hour/minute/AMPM
+#   ✔ Logs reasoning behind year rollover & past/future classification
+#   ✔ Logs timezone resolution, DST awareness, and fallback paths
+#
+# ======================================================================
 
-   # ----------------------------------------------------------------------
-    #FUNCTIONAL DESCRIPTION
-    #----------------------------------------------------------------------
-    #Parses a natural-language or typed time expression (e.g., “November 3rd
-    #at 11:30 a.m.”, “Oct 8 9:00 PM”, or “2000 pm”) and returns a structured,
-    #timezone-aware UTC object with friendly text.
-
-    #🔹 Purpose:
-    #    • Converts ambiguous speech-to-text output into a valid appointment
-    #      datetime.
-    #    • Repairs common STT artifacts (“20 00 pm”, “o’clock”, etc.).
-    #    • Fills missing date parts using the current local time.
-    #    • Adjusts AM/PM properly and rolls over months or years if needed.
-    #    • Detects whether the parsed time is in the past.
-    #    • Applies booking horizon limits (e.g., no more than 6 months ahead).
-
-    #🔹 Inputs:
-    #    raw (str)                – Spoken or typed input such as "October 8 at 9:30 am"
-    #    tz_offset_hours (int)    – Fallback fixed offset if clinic timezone not found
-    #    default_duration_min     – Default meeting length (used to compute `end`)
-
-    #🔹 Returns:
-    #    dict {
-    #        "start": ISO 8601 UTC start time (string),
-    #        "end": ISO 8601 UTC end time (string),
-    #        "friendly": Human-readable text (“Tuesday, May 6 at 9:00 AM”),
-    #       "is_past": Boolean flag (True if slot is before current time)
-    #    }
-    #    or None if parsing fails.
-    #----------------------------------------------------------------------
 def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: int = 30):
-    """
-    PURPOSE:
-        Convert spoken or typed natural-language time expressions into:
-            • Local datetime (clinic timezone)
-            • UTC ISO start & end timestamps
-            • Friendly human label
-            • is_past flag
-
-    THIS VERSION:
-        ✔ Uses CLINIC_TZ (e.g., "America/Chicago", "Africa/Cairo")
-        ✔ All parsing occurs in LOCAL TIME
-        ✔ All output converted to UTC
-        ✔ Supports Arabic-accent STT artifacts
-        ✔ Handles month/day/time normalization
-        ✔ Handles PM/AM correctly
-    """
 
     # ------------------------------------------------------------------
     # 🧩 Safe debug wrapper
@@ -641,169 +608,172 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
     # 🚫 Validate input
     # ------------------------------------------------------------------
     if not raw or not str(raw).strip():
-        _dbg("[smart_parse_time] ⚠️ Empty input")
+        _dbg("[smart_parse_time] ⚠️ Empty input received — aborting")
         return None
 
     s = str(raw).strip().lower()
-    _dbg(f"[smart_parse_time] 🧠 raw input='{s}'")
+    _dbg(f"[smart_parse_time] 🔍 RAW INPUT = '{s}'")
 
     # ------------------------------------------------------------------
-    # 🧹 Clean STT artifacts and normalize formatting
+    # 🧹 NORMALIZATION STAGE 1 — Clean STT noise
     # ------------------------------------------------------------------
-    # Remove “o'clock”
+    _dbg("[smart_parse_time] 🔧 Normalizing STT artifacts")
+    before_norm = s
+
     s = _re.sub(r"o['’]?clock", "", s)
-
-    # Normalize “a.m.” → “am”, “p.m.” → “pm”
     s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s)
     s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s)
-
-    # Normalize speech errors: “b m”, “bm”, “p m”, “p m m”
-    s = _re.sub(r"\bbm\b", "pm", s)
-    s = _re.sub(r"\bam\b", "am", s)
-    s = _re.sub(r"\bpm pm\b", "pm", s)
-
-    # Remove punctuation except colon
     s = _re.sub(r"[^\w\s:]", " ", s)
-
-    # Collapse spaces
     s = _re.sub(r"\s+", " ", s).strip()
 
-    # Fix cases like “2000 pm” → “2 00 pm”
+    # Fix STT "2000 pm" weirdness
     s = _re.sub(r"\b20\s?00\s*pm\b", "2 00 pm", s)
     s = _re.sub(r"\b2000\s*pm\b", "2 00 pm", s)
+    s = _re.sub(r"\btwenty hundred\s*pm\b", "2 00 pm", s)
 
-    _dbg(f"[smart_parse_time] 🧹 normalized='{s}'")
+    _dbg(f"[smart_parse_time] 🔄 NORMALIZED = '{s}' (from '{before_norm}')")
 
     # ------------------------------------------------------------------
-    # 🗓️ Month name → number
+    # 🗓 TOKEN EXTRACTION
     # ------------------------------------------------------------------
     months = {
         "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
-        "july": 7, "august": 8, "september": 9, "october": 10,
-        "november": 11, "december": 12
+        "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12
     }
 
     month = day = None
-    hour, minute, ampm = 9, 0, "am"  # defaults
+    hour, minute = 9, 0
+    ampm = "am"
 
-    # Detect month name
+    # MONTH detection
     for m in months:
         if m in s:
             month = months[m]
-            _dbg(f"[smart_parse_time] 🗓️ detected month='{m}' → {month}")
+            _dbg(f"[smart_parse_time] 🗓 MONTH DETECTED → {m} ({month})")
             break
+    if not month:
+        _dbg("[smart_parse_time] 🗓 MONTH missing — will assume current month")
 
-    # ------------------------------------------------------------------
-    # ⏰ Extract time
-    # ------------------------------------------------------------------
-    # Pattern: HH, HH:MM, HH MM, with optional AM/PM
+    # TIME detection
     m_time = _re.search(r"\b(\d{1,2})(?:[: ](\d{2}))?\s*(am|pm)?\b", s)
     if m_time:
-        hour   = int(m_time.group(1))
+        hour = int(m_time.group(1))
         minute = int(m_time.group(2) or 0)
-        ampm   = m_time.group(3) or "am"
-        _dbg(f"[smart_parse_time] ⏰ time → {hour}:{minute:02d} {ampm}")
+        ampm = (m_time.group(3) or "am").lower()
+        _dbg(f"[smart_parse_time] ⏰ TIME DETECTED → hour={hour}, minute={minute}, ampm={ampm}")
+    else:
+        _dbg("[smart_parse_time] ⏰ NO TIME FOUND — default 9:00 AM applied")
 
-    # ------------------------------------------------------------------
-    # 📅 Extract day number (before “at” or alone)
-    # ------------------------------------------------------------------
-    m_day = _re.search(r"\b([1-9]|[12][0-9]|3[0-1])(st|nd|rd|th)?\b", s)
+    # DAY detection
+    m_day = _re.search(r"\b([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?\b(?=.*\bat\b)", s)
     if m_day:
         day = int(m_day.group(1))
-        _dbg(f"[smart_parse_time] 📅 day → {day}")
+        _dbg(f"[smart_parse_time] 📅 DAY DETECTED → {day}")
+    else:
+        _dbg("[smart_parse_time] 📅 DAY missing — will assume TODAY")
 
     # ------------------------------------------------------------------
-    # 🌍 Determine local timezone
+    # 🌎 TIMEZONE RESOLUTION
     # ------------------------------------------------------------------
     tz_name = globals().get("CLINIC_TZ", "America/Chicago")
+    _dbg(f"[smart_parse_time] 🌎 Loading clinic timezone → {tz_name}")
 
     try:
         tz_local = _pytz.timezone(tz_name)
-    except:
-        _dbg(f"[smart_parse_time] ⚠️ Invalid timezone '{tz_name}', using fixed offset")
+        _dbg(f"[smart_parse_time] 🌎 Timezone loaded successfully (DST aware: {tz_local.dst(datetime.now()) != timedelta(0)})")
+    except Exception:
+        _dbg(f"[smart_parse_time] ❗ Invalid TZ '{tz_name}', using fallback offset {tz_offset_hours}")
         tz_local = _pytz.FixedOffset(tz_offset_hours * 60)
 
     now_local = datetime.now(tz_local)
+    _dbg(f"[smart_parse_time] 📌 NOW LOCAL = {now_local.isoformat()}")
 
     # ------------------------------------------------------------------
-    # 📅 Fill missing values with today's date
+    # 📅 Fill missing date parts
     # ------------------------------------------------------------------
-    if month is None:
+    if not month:
         month = now_local.month
-        _dbg(f"[smart_parse_time] 📌 inferred month={month}")
-
-    if day is None:
+    if not day:
         day = now_local.day
-        _dbg(f"[smart_parse_time] 📌 inferred day={day}")
+
+    _dbg(f"[smart_parse_time] 🧩 FINAL DATE TOKENS → month={month}, day={day}")
 
     # ------------------------------------------------------------------
-    # 🧮 Convert AM/PM → 24h clock
+    # 🔄 Normalize AM/PM → 24h
     # ------------------------------------------------------------------
+    before_clock = hour
     if ampm == "pm" and hour < 12:
         hour += 12
     if ampm == "am" and hour == 12:
         hour = 0
+    _dbg(f"[smart_parse_time] 🕒 12h→24h conversion → {before_clock} {ampm} → {hour:02d}:{minute:02d}")
 
     # ------------------------------------------------------------------
-    # 🧱 Build preliminary local datetime
+    # 🧮 Construct localized datetime
     # ------------------------------------------------------------------
     try:
-        dt_local = tz_local.localize(
-            datetime(now_local.year, month, day, hour, minute)
-        )
+        dt_local = tz_local.localize(datetime(now_local.year, month, day, hour, minute))
+        _dbg(f"[smart_parse_time] 🏗️ Local datetime constructed → {dt_local.isoformat()}")
     except Exception as e:
-        _dbg(f"[smart_parse_time] ❌ Invalid date/time → {e}")
+        _dbg(f"[smart_parse_time] ❌ INVALID date components → {e}")
         return None
 
     # ------------------------------------------------------------------
-    # 🔁 Fix year rollover (e.g., caller says "January" in December)
+    # 🔁 YEAR ROLLOVER (handles STT "old month")
     # ------------------------------------------------------------------
-    if dt_local < now_local and (now_local.month - month) >= 6:
-        dt_local = tz_local.localize(
-            datetime(now_local.year + 1, month, day, hour, minute)
-        )
-        _dbg("[smart_parse_time] ⏩ Rolled forward to next year")
+    if dt_local < now_local and (now_local.month - month) > 6:
+        _dbg("[smart_parse_time] 🔁 YEAR ROLLOVER triggered → adding +1 year")
+        dt_local = tz_local.localize(datetime(now_local.year + 1, month, day, hour, minute))
+        _dbg(f"[smart_parse_time] 🔁 Rolled datetime → {dt_local.isoformat()}")
 
     # ------------------------------------------------------------------
-    # ⏳ Past check with tolerance
+    # ⏳ PAST/FUTURE DETECTION
     # ------------------------------------------------------------------
-    is_past = False
-    if dt_local < (now_local - timedelta(minutes=2)):
-        is_past = True
+    is_past = dt_local < (now_local - timedelta(minutes=2))
 
-        # BUT: same-day future times are NOT past
+    if is_past:
+        _dbg(f"[smart_parse_time] ⏳ PARSED TIME appears in the past → {dt_local.isoformat()}")
+
+        # Special rule: same-day future times must NOT be flagged past
         if dt_local.date() == now_local.date() and dt_local > now_local:
+            _dbg("[smart_parse_time] 🔧 SAME-DAY FIX — marking as future instead")
             is_past = False
-            _dbg("[smart_parse_time] 🔧 same-day adjustment — marking NOT past")
 
     # ------------------------------------------------------------------
-    # 📏 Enforce horizon (≤ MAX_ADVANCE_MONTHS)
+    # 🚫 Booking horizon limit
     # ------------------------------------------------------------------
     max_months = int(globals().get("MAX_ADVANCE_MONTHS", 6))
     limit_local = now_local + timedelta(days=30 * max_months)
 
+    _dbg(f"[smart_parse_time] 📏 HORIZON LIMIT → {max_months} months → {limit_local.isoformat()}")
+
     if dt_local > limit_local:
-        _dbg(f"[smart_parse_time] 🚫 beyond horizon ({max_months} months)")
+        _dbg("[smart_parse_time] 🚫 Parsed datetime exceeds booking horizon — rejecting")
         return None
 
     # ------------------------------------------------------------------
-    # 🌎 Convert to UTC for output
+    # 🌐 Convert LOCAL → UTC
     # ------------------------------------------------------------------
     dt_utc = dt_local.astimezone(_pytz.UTC)
-    dt_end_utc = dt_utc + timedelta(minutes=default_duration_min)
+    dt_end = dt_utc + timedelta(minutes=default_duration_min)
 
+    # ------------------------------------------------------------------
+    # 🧑‍🤝‍🧑 Friendly text
+    # ------------------------------------------------------------------
     friendly = dt_local.strftime("%A, %B %-d at %-I:%M %p").replace(" 0", " ")
 
+    # ------------------------------------------------------------------
+    # 📦 RESULT
+    # ------------------------------------------------------------------
     result = {
-        "start": dt_utc.isoformat().replace("+00:00", "Z"),
-        "end": dt_end_utc.isoformat().replace("+00:00", "Z"),
+        "start":    dt_utc.isoformat().replace("+00:00", "Z"),
+        "end":      dt_end.isoformat().replace("+00:00", "Z"),
         "friendly": friendly,
-        "is_past": is_past,
+        "is_past":  is_past,
     }
 
-    _dbg(f"[smart_parse_time] ✅ Parsed OK → {friendly} → start={result['start']}")
+    _dbg(f"[smart_parse_time] ✅ SUCCESS → '{raw}' → {friendly} | UTC={result['start']} | past={is_past}")
     return result
-
 
 
 
@@ -1197,157 +1167,157 @@ session_data = {}
 
 
 
-# PURPOSE:
-#   Unified appointment-slot validator supporting BOTH:
-#     ✓ Booking availability checks (mode="available")
-#     ✓ Cancellation matching (mode="exists")
+"""
+    Determine if a given [start, end) time slot is available for the doctor
+    based entirely on the local JSON appointment file.
+
+    🩺 FUNCTION PURPOSE
+    -------------------
+    This replaces the old Google Calendar API call. It loads the doctor's
+    appointments from a JSON file located in "appointment_data/{doctor}.json"
+    and checks for time overlaps with existing appointments.
+
+    ✅ Returns:
+        True  → The slot is free (no overlaps).
+        False → The slot is busy (overlaps with an existing booking).
+
+    ⚙️ Input Parameters:
+        doctor_name : str  → Name of the doctor (used to find JSON file)
+        start_iso   : str  → Start time in ISO 8601 (e.g., "2025-10-22T16:00:00Z")
+        end_iso     : str  → End time in ISO 8601 (e.g., "2025-10-22T16:30:00Z")
+
+    🧩 JSON Format Expected:
+        [
+            {
+                "first_name": "Mohamed",
+                "last_name": "Khalil",
+                "phone_e164": "+14694633276",
+                "dob": "1972-07-03",
+                "start_utc": "2025-10-22T16:00:00Z",
+                "end_utc": "2025-10-22T16:30:00Z"
+            },
+            ...
+        ]
+    """
+# ======================================================================
+# 🩺 FUNCTION: is_doctor_slot_available()
+# ======================================================================
+# 🎯 FUNCTIONAL PURPOSE:
+#     This routine determines whether a doctor has an AVAILABLE
+#     appointment slot at a given time. It is used *only for booking*.
 #
-# HOW IT WORKS:
-#   - Converts incoming ISO timestamps to UTC
-#   - Converts UTC → LOCAL timezone for all business-rule filtering
-#   - Validates working hours, working days, and lunch break ONLY in booking mode
-#   - Validates past/future horizon limits ONLY in booking mode
-#   - Performs overlap checks when mode="available" (normal booking)
-#   - When mode="exists", checks ONLY whether a matching slot exists in JSON
+#     All business rules are evaluated in **LOCAL CLINIC TIME**:
+#        • Working days (Mon–Fri, unless changed)
+#        • Working hours (e.g., 08:00 → 17:00 local)
+#        • Lunch break exclusion
+#        • MAX_ADVANCE_MONTHS future limit
+#        • Reject past times
 #
-#   This unified structure makes the function safe for:
-#     • Appointment booking
-#     • Rebooking flows
-#     • Cancellation lookup flows
-#     • Validation of spoken date/time inputs
+#     Overlap detection is done in **UTC**, ensuring correctness across:
+#        ✓ DST transitions
+#        ✓ Different country rules (US, Egypt)
+#        ✓ UTC timestamps stored in JSON
+#
+# 👌 CANCELLATION DOES NOT USE THIS FUNCTION ANYMORE.
+#     Cancellation uses an exact-match JSON lookup instead.
+#
+# 🧠 RETURN VALUE:
+#     True  → Slot is available for booking
+#     False → Slot is invalid, forbidden, past, or already booked
+# ======================================================================
 
+def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> bool:
 
+    # ------------------------------------------------------------------
+    # ⏳ Helper: Convert any ISO string → timezone-aware UTC datetime
+    # ------------------------------------------------------------------
+    def _as_utc_dt(s: str):
+        try:
+            s2 = s.replace("Z", "+00:00")            # convert Z → +00:00 for parser
+            dt = isoparse(s2)
+            if dt.tzinfo is None:                   # naive → treat as UTC
+                dt = dt.replace(tzinfo=_pytz.UTC)
+            return dt.astimezone(_pytz.UTC)         # ensure UTC normalized
+        except Exception as e:
+            debug_print(f"[is_doctor_slot_available] ⚠️ bad datetime '{s}': {e}")
+            raise
 
-def is_doctor_slot_available(
-    doctor_name: str,
-    start_iso: str,
-    end_iso: str,
-    mode: str = "available"  
-    # mode="available" → booking/availability check (default)
-    # mode="exists"    → cancellation match check (looser rules)
-    ):
-   
+    # ------------------------------------------------------------------
+    # ⏳ Normalize input times (UTC)
+    # ------------------------------------------------------------------
+    try:
+        start_dt = _as_utc_dt(start_iso)
+        end_dt   = _as_utc_dt(end_iso)
+    except Exception:
+        debug_print("[is_doctor_slot_available] ⚠️ bad input — cannot parse")
+        return False
 
-    # ---------------------------------------------------------------
-    # 🌍 Load clinic timezone from settings
-    # ---------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🧭 Sanity check (must be forward time interval)
+    # ------------------------------------------------------------------
+    if end_dt <= start_dt:
+        debug_print("[is_doctor_slot_available] ⚠️ end ≤ start")
+        return False
+
+    # ------------------------------------------------------------------
+    # 🌍 Convert UTC → LOCAL for business rules
+    # ------------------------------------------------------------------
     tz_name = globals().get("CLINIC_TZ", "America/Chicago")
     try:
         tz_local = _pytz.timezone(tz_name)
     except:
-        debug_print(f"[is_doctor_slot_available] ⚠️ TZ '{tz_name}' invalid → default Chicago")
         tz_local = _pytz.timezone("America/Chicago")
 
-    # ---------------------------------------------------------------
-    # 🔧 Helper: ISO → aware UTC datetime
-    # ---------------------------------------------------------------
-    def _as_utc_dt(s: str):
-        try:
-            s2 = s.replace("Z", "+00:00")
-            dt = isoparse(s2)
-            if not dt.tzinfo:
-                dt = dt.replace(tzinfo=_pytz.UTC)
-            return dt.astimezone(_pytz.UTC)
-        except Exception as e:
-            debug_print(f"[is_doctor_slot_available] ❌ parse error '{s}' → {e}")
-            raise
+    start_local = start_dt.astimezone(tz_local)
+    end_local   = end_dt.astimezone(tz_local)
 
-    # ---------------------------------------------------------------
-    # 🕒 Parse incoming timestamps (UTC)
-    # ---------------------------------------------------------------
-    try:
-        start_utc = _as_utc_dt(start_iso)
-        end_utc   = _as_utc_dt(end_iso)
-    except:
-        return False
-
-    # ---------------------------------------------------------------
-    # 🌍 Convert UTC → LOCAL for business-rule checks
-    # ---------------------------------------------------------------
-    start_local = start_utc.astimezone(tz_local)
-    end_local   = end_utc.astimezone(tz_local)
-
-    # ---------------------------------------------------------------
-    # 🛑 Basic sanity check
-    # ---------------------------------------------------------------
-    if end_local <= start_local:
-        debug_print("[is_doctor_slot_available] ❌ end ≤ start")
-        return False
-
-    # ===============================================================
-    # MODE = "exists"  → Used ONLY for cancellation matching
-    # ===============================================================
-    if mode == "exists":
-        # Only check whether THIS EXACT slot exists in doctor's JSON
-        
-        safe = _re.sub(r"\s+", "_", doctor_name.strip().lower())
-        path = os.path.join("appointment_data", f"{safe}.json")
-
-        if not os.path.exists(path):
-            return False  # No file → no appointment
-
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                appts = json.load(f)
-        except:
-            return False
-
-        for ap in appts:
-            s_raw = ap.get("start_utc") or ap.get("utc_start")
-            if not s_raw:
-                continue
-
-            try:
-                s_exist = _as_utc_dt(s_raw)
-            except:
-                continue
-
-            # If the UTC start matches exactly → appointment exists
-            if abs((s_exist - start_utc).total_seconds()) < 60:
-                return True
-
-        return False  # No matching entry found
-
-    # ===============================================================
-    # MODE = "available" → standard booking availability
-    # ===============================================================
-
-    # ---------------------------------------------------------------
-    # 🗓️ Working day block (LOCAL)
-    # ---------------------------------------------------------------
-    WORKING_DAYS = globals().get("WORKING_DAYS", [0,1,2,3,4])
+    # ------------------------------------------------------------------
+    # 🗓️ Working day validation
+    # ------------------------------------------------------------------
+    WORKING_DAYS = set(globals().get("WORKING_DAYS", {0, 1, 2, 3, 4}))
     if start_local.weekday() not in WORKING_DAYS:
-        debug_print("[is_doctor_slot_available] ❌ non-working day")
+        debug_print(f"[is_doctor_slot_available] ❌ Non-working day: {start_local.strftime('%A')}")
         return False
 
-    # ---------------------------------------------------------------
-    # ⏰ Working hours block (LOCAL)
-    # ---------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🕒 Working hours validation (LOCAL TIME!)
+    # ------------------------------------------------------------------
     WSTART = int(globals().get("WORKING_HOURS_START", 8))
     WEND   = int(globals().get("WORKING_HOURS_END", 17))
 
-    start_hour = start_local.hour + start_local.minute/60
-    end_hour   = end_local.hour   + end_local.minute/60
+    start_h = start_local.hour + start_local.minute / 60
+    end_h   = end_local.hour   + end_local.minute   / 60
 
-    if start_hour < WSTART or end_hour > WEND:
-        debug_print("[is_doctor_slot_available] ❌ outside business hours")
+    if start_h < WSTART or end_h > WEND:
+        debug_print("[is_doctor_slot_available] ❌ Outside working hours")
         return False
 
-    # ---------------------------------------------------------------
-    # 🍽️ Lunch break block (LOCAL)
-    # ---------------------------------------------------------------
-    LUNCH_START = globals().get("LUNCH_BREAK_START", time(13,0))
-    LUNCH_END   = globals().get("LUNCH_BREAK_END",   time(14,0))
+    # ------------------------------------------------------------------
+    # 🍽️ Lunch break exclusion (LOCAL TIME)
+    # ------------------------------------------------------------------
+    LUNCH_START = globals().get("LUNCH_BREAK_START", time(13, 0))
+    LUNCH_END   = globals().get("LUNCH_BREAK_END",   time(14, 0))
 
-    if not (end_local.time() <= LUNCH_START or start_local.time() >= LUNCH_END):
-        debug_print("[is_doctor_slot_available] ❌ lunch overlap")
+    s_t = start_local.time()
+    e_t = end_local.time()
+
+    # Overlaps if NOT (end ≤ lunch_start OR start ≥ lunch_end)
+    if not (e_t <= LUNCH_START or s_t >= LUNCH_END):
+        debug_print("[is_doctor_slot_available] ❌ overlaps with lunch break")
         return False
 
-    # ---------------------------------------------------------------
-    # 🕓 Past / future horizon checks (UTC)
-    # ---------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🕒 Past or too-far-in-future check (UTC)
+    # ------------------------------------------------------------------
+    now_utc = datetime.now(_pytz.UTC)
+
+    if end_dt <= now_utc:
+        debug_print("[is_doctor_slot_available] ❌ slot in the past")
+        return False
+
     MAX_ADVANCE_MONTHS = int(globals().get("MAX_ADVANCE_MONTHS", 6))
 
+    # helper to compute dt + n months
     def _add_months(dt, months):
         import calendar
         y, m = dt.year, dt.month + months
@@ -1356,65 +1326,58 @@ def is_doctor_slot_available(
         d = min(dt.day, calendar.monthrange(y, m)[1])
         return dt.replace(year=y, month=m, day=d)
 
-    now_utc = datetime.now(_pytz.UTC)
-    horizon_utc = _add_months(now_utc, MAX_ADVANCE_MONTHS)
-
-    if end_utc <= now_utc:
-        debug_print("[is_doctor_slot_available] ❌ past slot")
+    limit_end_utc = _add_months(now_utc, MAX_ADVANCE_MONTHS)
+    if start_dt > limit_end_utc:
+        debug_print("[is_doctor_slot_available] ❌ beyond booking horizon")
         return False
 
-    if start_utc > horizon_utc:
-        debug_print("[is_doctor_slot_available] ❌ beyond horizon")
-        return False
+    # ------------------------------------------------------------------
+    # 📁 Load doctor’s JSON schedule
+    # ------------------------------------------------------------------
+    safe_name = _re.sub(r"\s+", "_", doctor_name.strip().lower())
+    doc_path = os.path.join("appointment_data", f"{safe_name}.json")
+    debug_print(f"[is_doctor_slot_available] 📁 Loading: {doc_path}")
 
-    # ---------------------------------------------------------------
-    # 📁 Load doctor JSON for overlap check
-    # ---------------------------------------------------------------
-    safe = _re.sub(r"\s+", "_", doctor_name.strip().lower())
-    path = os.path.join("appointment_data", f"{safe}.json")
-
-    if not os.path.exists(path):
-        return True  # No file → no conflicts
+    if not os.path.exists(doc_path):
+        debug_print("[is_doctor_slot_available] 🆕 no file — slot free")
+        return True
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            appts = json.load(f)
+        with open(doc_path, "r", encoding="utf-8") as f:
+            appointments = json.load(f)
     except:
+        debug_print("[is_doctor_slot_available] ⚠️ bad JSON — treat as free")
         return True
 
-    if not isinstance(appts, list):
-        return True
+    # ------------------------------------------------------------------
+    # 🔁 OVERLAP CHECK (all UTC)
+    # ------------------------------------------------------------------
+    for i, appt in enumerate(appointments, start=1):
+        raw_s = appt.get("start_utc") or appt.get("utc_start") or appt.get("time")
+        raw_e = appt.get("end_utc")   or appt.get("utc_end")
 
-    # ---------------------------------------------------------------
-    # 🔁 Standard overlap check (UTC)
-    # ---------------------------------------------------------------
-    for ap in appts:
-        s_raw = ap.get("start_utc") or ap.get("utc_start")
-        e_raw = ap.get("end_utc")   or ap.get("utc_end")
-        if not s_raw or not e_raw:
+        if not raw_s or not raw_e:
             continue
 
         try:
-            s_exist = _as_utc_dt(s_raw)
-            e_exist = _as_utc_dt(e_raw)
+            ap_s = _as_utc_dt(raw_s)
+            ap_e = _as_utc_dt(raw_e)
         except:
             continue
 
-        # Skip past appointments
-        if e_exist <= now_utc:
+        if ap_e <= now_utc:
             continue
 
-        # Overlap rule:
-        if not (end_utc <= s_exist or e_exist <= start_utc):
-            debug_print("[is_doctor_slot_available] ❌ overlap")
+        # INTERVAL OVERLAP: not (end ≤ ap_s OR ap_e ≤ start)
+        if not (end_dt <= ap_s or ap_e <= start_dt):
+            debug_print(f"[is_doctor_slot_available] ❌ overlap with appt #{i}")
             return False
 
-    # ---------------------------------------------------------------
-    # 🟢 SUCCESS
-    # ---------------------------------------------------------------
-    debug_print("[is_doctor_slot_available] ✅ slot free")
+    # ------------------------------------------------------------------
+    # 🎉 PASS — the slot is bookable
+    # ------------------------------------------------------------------
+    debug_print("[is_doctor_slot_available] ✅ SLOT AVAILABLE")
     return True
-
 
 
 
@@ -1422,51 +1385,44 @@ def is_doctor_slot_available(
 # ======================================================================
 # 🧠 FUNCTIONAL DESCRIPTION — get_doctor_next_available_slots()
 # ======================================================================
-# This function computes the **next available appointment slots** for a
-# doctor, using all clinic global rules — working days, hours, lunch break,
-# offset window, duration, future horizon, and time-zone normalization.
+# PURPOSE:
+#     Compute the next available appointment slots for a doctor,
+#     applying ALL business rules in **LOCAL TIME**, then converting
+#     final candidate slots to **UTC** for storage.
 #
-# ----------------------------------------------------------------------
-# ✔ WHAT THE FUNCTION DOES
-# ----------------------------------------------------------------------
-# • Enforces NEXT_AVAILABLE_SLOT_OFFSET
-#       (earliest permitted slot must be ≥ X minutes from NOW)
+# WHY IT MATTERS:
+#     Local rules like:
+#         • 8 AM → 5 PM working hours
+#         • lunch break (e.g., 1–2 PM)
+#         • weekdays-only schedule
+#         • DST (Daylight Saving)
+#         • local date boundaries
+#     MUST BE evaluated in LOCAL TIME — otherwise you get bugs like:
+#         ❌ “Thursday 3:15 PM” → “Friday slots only”
 #
-# • Avoids forbidden days:
-#       Uses WORKING_DAYS from environment (e.g., 0–4 for Mon–Fri)
+# WHAT THIS FUNCTION DOES:
+#   ✔ Converts request ISO timestamp → LOCAL TZ
+#   ✔ Enforces NEXT_AVAILABLE_SLOT_OFFSET (e.g., 30 minutes from now)
+#   ✔ Applies all rules in local:
+#         • working days
+#         • working hours
+#         • lunch break
+#         • grid alignment
+#   ✔ Converts final slot to UTC only before returning
+#   ✔ Uses is_doctor_slot_available() *only for overlap check*
 #
-# • Enforces working hours:
-#       WORKING_HOURS_START → WORKING_HOURS_END
-#
-# • Skips lunch breaks:
-#       LUNCH_BREAK_START → LUNCH_BREAK_END
-#
-# • Ensures grid alignment:
-#       Uses slot_step_minutes to align slots to boundaries
-#       (e.g., 9:10 → 9:30)
-#
-# • Ensures date does NOT exceed MAX_ADVANCE_MONTHS
-#
-# • Uses is_doctor_slot_available() to validate each candidate slot
-#
-# • Returns structured results with:
-#       - start/end ISO timestamps in UTC
-#       - friendly human text (e.g. “Thursday, May 7 at 9:00 AM”)
-#       - time zone name
-#
-# ----------------------------------------------------------------------
-# ✔ OUTPUT FORMAT
-# ----------------------------------------------------------------------
-# [
-#     {
-#         "start":    "2025-05-14T14:00:00Z",
-#         "end":      "2025-05-14T14:30:00Z",
-#         "friendly": "Wednesday, May 14 at 9:00 AM",
-#         "tz":       "America/Chicago"
-#     },
-#     ...
-# ]
+# RETURNS LIST OF DICTS:
+#     [
+#         {
+#           "start":    "2025-05-14T14:00:00Z",
+#           "end":      "2025-05-14T14:30:00Z",
+#           "friendly": "Wednesday, May 14 at 9:00 AM",
+#           "tz":       "America/Chicago"
+#         },
+#         ...
+#     ]
 # ======================================================================
+
 def get_doctor_next_available_slots(
     doctor_name: str,
     *,
@@ -1479,65 +1435,67 @@ def get_doctor_next_available_slots(
     search_days: int = None
 ) -> list:
 
-    # ----------------------------------------------------------------------
-    # 🔧 Load global configuration values
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🔧 Load configuration values from global environment
+    # ------------------------------------------------------------------
     MAX_ADVANCE_MONTHS = int(globals().get("MAX_ADVANCE_MONTHS", 6))
     NEXT_AVAILABLE_SLOT_OFFSET = int(globals().get("NEXT_AVAILABLE_SLOT_OFFSET", 30))
 
-    debug_print(f"[get_doctor_next_available_slots] ▶️ doctor={doctor_name}, from={from_start_iso}, limit={limit}")
-    debug_print(f"[get_doctor_next_available_slots] ⚙️ Config: MAX_ADVANCE_MONTHS={MAX_ADVANCE_MONTHS}, OFFSET={NEXT_AVAILABLE_SLOT_OFFSET}")
+    debug_print(f"[get_doctor_next_available_slots] ▶ doctor={doctor_name}, from={from_start_iso}")
+    debug_print(f"[get_doctor_next_available_slots] ⚙ MAX_ADVANCE_MONTHS={MAX_ADVANCE_MONTHS}, OFFSET={NEXT_AVAILABLE_SLOT_OFFSET}")
 
-    # ----------------------------------------------------------------------
-    # 🕓 Determine session duration
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🕒 Determine slot duration (default: 30 minutes)
+    # ------------------------------------------------------------------
     if duration_minutes is None:
         duration_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES",
                                              globals().get("SESSION_TIME", 30)))
 
+    # Only valid durations
     if duration_minutes not in (15, 30, 45, 60):
         duration_minutes = 30
 
+    # Slot grid alignment defaults to duration
     if slot_step_minutes is None:
         slot_step_minutes = duration_minutes
 
-    # ----------------------------------------------------------------------
-    # 🌍 Time zone configuration
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🌍 Load clinic time zone
+    # ------------------------------------------------------------------
     if tz_name is None:
         tz_name = globals().get("CLINIC_TZ", "America/Chicago")
 
     try:
         tz_local = _pytz.timezone(tz_name)
     except:
-        debug_print("[get_doctor_next_available_slots] ⚠️ Invalid timezone, defaulting to America/Chicago")
+        debug_print("[get_doctor_next_available_slots] ⚠ invalid timezone → default Chicago")
         tz_local = _pytz.timezone("America/Chicago")
 
-    # ----------------------------------------------------------------------
-    # 🏢 Working hours and days
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🕘 Working hours configuration
+    # ------------------------------------------------------------------
     WSTART = int(globals().get("WORKING_HOURS_START", 8))
     WEND   = int(globals().get("WORKING_HOURS_END", 17))
 
+    # If caller didn’t override work_hours → use single window
     if not work_hours:
         work_hours = ((WSTART, WEND),)
 
+    # Working days (Mon–Fri unless overridden)
     WORKING_DAYS = {int(x) for x in globals().get("WORKING_DAYS", {0,1,2,3,4})}
 
-    # ----------------------------------------------------------------------
-    # 🍽️ Lunch break parser
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🍽 Lunch-time handling
+    # ------------------------------------------------------------------
     def _as_time(val):
+        """Convert '13:00' or integer hour → Python time()."""
         if isinstance(val, time):
             return val
         if not val:
             return None
         try:
             s = str(val)
-            if ":" in s:
-                h, m = s.split(":")
-            else:
-                h, m = s, "0"
+            h, m = (s.split(":") if ":" in s else (s, "0"))
             return time(int(h), int(m))
         except:
             return None
@@ -1545,16 +1503,17 @@ def get_doctor_next_available_slots(
     LUNCH_START = _as_time(globals().get("LUNCH_BREAK_START"))
     LUNCH_END   = _as_time(globals().get("LUNCH_BREAK_END"))
 
-    # ----------------------------------------------------------------------
-    # 🔢 Search window
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🔎 How many days into the future to search
+    # ------------------------------------------------------------------
     if search_days is None:
         search_days = int(globals().get("SEARCH_DAYS", 14))
 
-    # ----------------------------------------------------------------------
-    # 🧠 Human-friendly label generator
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🧠 Format human-friendly text
+    # ------------------------------------------------------------------
     def _friendly(dt_local, now_local):
+        """Format like 'Thursday, May 16 at 9:00 AM'."""
         try:
             if dt_local.year != now_local.year:
                 return dt_local.strftime("%A, %B %-d, %Y at %-I:%M %p")
@@ -1562,20 +1521,20 @@ def get_doctor_next_available_slots(
         except:
             return dt_local.strftime("%A, %B %d at %I:%M %p")
 
-    # ----------------------------------------------------------------------
-    # 🧮 Align upward to grid
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🧮 Align cursor to next N-minute boundary
+    # ------------------------------------------------------------------
     def _align_up(dt_local, step_min, anchor):
         dt_local = dt_local.replace(second=0, microsecond=0)
         diff = int((dt_local - anchor).total_seconds() // 60)
         if diff <= 0:
             return anchor
         rem = diff % step_min
-        return dt_local if rem == 0 else dt_local + timedelta(minutes=step_min - rem)
+        return dt_local if rem == 0 else dt_local + timedelta(minutes=(step_min - rem))
 
-    # ----------------------------------------------------------------------
-    # 🧮 Safe month add
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🗓 Helper — add months safely
+    # ------------------------------------------------------------------
     def _add_months(dt, months):
         import calendar
         y, m = dt.year, dt.month + months
@@ -1584,12 +1543,13 @@ def get_doctor_next_available_slots(
         d = min(dt.day, calendar.monthrange(y, m)[1])
         return dt.replace(year=y, month=m, day=d)
 
-    # ----------------------------------------------------------------------
-    # 🕒 NOW and request time
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 🕒 Convert NOW and from_start_iso to local time
+    # ------------------------------------------------------------------
     now_utc = datetime.now(_pytz.UTC)
     now_local = now_utc.astimezone(tz_local)
 
+    # Parse incoming ISO timestamp
     try:
         req_utc = isoparse(from_start_iso)
         if req_utc.tzinfo is None:
@@ -1599,73 +1559,85 @@ def get_doctor_next_available_slots(
 
     req_local = req_utc.astimezone(tz_local)
 
-    # ----------------------------------------------------------------------
-    # ⏳ ENFORCE NEXT_AVAILABLE_SLOT_OFFSET (LOCAL)
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # ⏩ Enforce NEXT_AVAILABLE_SLOT_OFFSET
+    # ------------------------------------------------------------------
     min_allowed_local = now_local + timedelta(minutes=NEXT_AVAILABLE_SLOT_OFFSET)
-
     if req_local < min_allowed_local:
-        debug_print(f"[get_doctor_next_available_slots] ⏩ Offset shift → {min_allowed_local.strftime('%H:%M')}")
+        debug_print("[get_doctor_next_available_slots] ⏩ adjusted to enforce offset")
         req_local = min_allowed_local
 
-    # ----------------------------------------------------------------------
-    # ⛔ Horizon limit
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # ⛔ FUTURE HORIZON (MAX months)
+    # ------------------------------------------------------------------
     limit_end_utc = _add_months(now_utc, MAX_ADVANCE_MONTHS)
     search_end_utc = min(now_utc + timedelta(days=search_days), limit_end_utc)
 
-    # Cursor
+    # ------------------------------------------------------------------
+    # 🚀 Begin scanning in LOCAL TIME
+    # ------------------------------------------------------------------
     cur_local = req_local
     results = []
     seen = set()
 
     # ======================================================================
-    # 🔁 MAIN SCAN LOOP (LOCAL TIME ONLY)
+    # LOOP DAY BY DAY — scanning slot-by-slot in local time
     # ======================================================================
     while cur_local.astimezone(_pytz.UTC) < search_end_utc and len(results) < limit:
 
-        # Skip non-working day
+        # --------------------------------------------------------------
+        # Skip weekends/non-working days
+        # --------------------------------------------------------------
         if cur_local.weekday() not in WORKING_DAYS:
-            debug_print(f"[get_doctor_next_available_slots] 💤 {cur_local.strftime('%A')} skipped")
+            debug_print("[get_doctor_next_available_slots] 💤 skipping non-working day")
             cur_local = (cur_local + timedelta(days=1)).replace(
                 hour=WSTART, minute=0, second=0, microsecond=0
             )
             continue
 
-        # Build windows
+        # --------------------------------------------------------------
+        # Build today's working windows
+        # --------------------------------------------------------------
         windows = []
         for ws, we in work_hours:
-            wstart = tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day, ws))
-            wend   = tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day, we))
+            wstart = tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day, ws, 0))
+            wend   = tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day, we, 0))
             windows.append((wstart, wend))
 
         progressed = False
 
+        # --------------------------------------------------------------
+        # Scan each working window
+        # --------------------------------------------------------------
         for wstart, wend in windows:
 
+            # If cursor before opening → jump to opening
             if cur_local < wstart:
                 cur_local = wstart
 
+            # Align to nearest grid (15/30/etc)
             cur_local = _align_up(cur_local, slot_step_minutes, wstart)
 
-            # Iterate through slots inside window (LOCAL)
+            # ----------------------------------------------------------
+            # Scan all slots inside this window
+            # ----------------------------------------------------------
             while cur_local + timedelta(minutes=duration_minutes) <= wend and len(results) < limit:
 
-                # Enforce offset
+                # Skip time below offset
                 if cur_local < min_allowed_local:
                     cur_local += timedelta(minutes=slot_step_minutes)
                     continue
 
-                # Lunch skipping
+                # Skip lunch overlap
                 if LUNCH_START and LUNCH_END:
                     slot_end_t = (cur_local + timedelta(minutes=duration_minutes)).time()
                     if cur_local.time() < LUNCH_END and slot_end_t > LUNCH_START:
-                        debug_print("[get_doctor_next_available_slots] 🍽️ Lunch — skip")
+                        debug_print("[get_doctor_next_available_slots] 🍽 lunch skip")
                         cur_local = tz_local.localize(datetime.combine(cur_local.date(), LUNCH_END))
                         cur_local = _align_up(cur_local, slot_step_minutes, wstart)
                         continue
 
-                # Skip outside working hours
+                # Skip outside hourly boundaries
                 hour_dec = cur_local.hour + cur_local.minute / 60
                 if hour_dec < WSTART or hour_dec >= WEND:
                     cur_local += timedelta(minutes=slot_step_minutes)
@@ -1675,46 +1647,40 @@ def get_doctor_next_available_slots(
                 if cur_local.astimezone(_pytz.UTC) > limit_end_utc:
                     return results
 
-                # Convert LOCAL → UTC
+                # -----------------------
+                # Convert slot to UTC
+                # -----------------------
                 start_iso = cur_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
                 end_iso   = (cur_local + timedelta(minutes=duration_minutes)).astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
 
-                # ------------------------------------------------------------------
-                # 🔥 NEW — use unified slot checker
-                # ------------------------------------------------------------------
+                # -----------------------
+                # Overlap detection only
+                # -----------------------
                 try:
-                    ok = is_doctor_slot_available(
-                        doctor_name,
-                        start_iso,
-                        end_iso,
-                        mode="available"    # <<< REQUIRED FOR NEXT SLOTS
-                    )
+                    if is_doctor_slot_available(doctor_name, start_iso, end_iso) and start_iso not in seen:
+                        seen.add(start_iso)
+                        results.append({
+                            "start": start_iso,
+                            "end": end_iso,
+                            "friendly": _friendly(cur_local, now_local),
+                            "tz": tz_name,
+                        })
+                        debug_print(f"[get_doctor_next_available_slots] ✅ Added {results[-1]['friendly']}")
                 except Exception as e:
-                    debug_print(f"[get_doctor_next_available_slots] ❌ Slot check error → {e}")
-                    ok = False
+                    debug_print(f"[get_doctor_next_available_slots] ❌ availability check error: {e}")
 
-                if ok and start_iso not in seen:
-                    seen.add(start_iso)
-                    friendly = _friendly(cur_local, now_local)
-                    results.append({
-                        "start": start_iso,
-                        "end": end_iso,
-                        "friendly": friendly,
-                        "tz": tz_name,
-                    })
-                    debug_print(f"[get_doctor_next_available_slots] ✅ Added: {friendly}")
-
+                # Move to next grid slot
                 cur_local += timedelta(minutes=slot_step_minutes)
                 progressed = True
 
+        # If entire day produced no slot → advance to next day
         if not progressed:
             cur_local = (cur_local + timedelta(days=1)).replace(
                 hour=WSTART, minute=0, second=0, microsecond=0
             )
 
-    debug_print(f"[get_doctor_next_available_slots] ✅ Finished → {len(results)} slots")
+    debug_print(f"[get_doctor_next_available_slots] ⏹ Finished with {len(results)} slot(s)")
     return results
-
 
 
 
@@ -3133,45 +3099,80 @@ def update_cc_info(
 
 #  remove phone10 
 
+# ================================================================
+# 🩺 FUNCTION: cancel_appointment_for_dr_name
+# ================================================================
+#
+# 🎯 PURPOSE:
+#     Safely remove ONE appointment record from a doctor’s JSON file.
+#     This cancellation requires matching ALL THREE keys:
+#         ✓ phone number    (E.164 normalized)
+#         ✓ date of birth   (ISO string exactly)
+#         ✓ UTC start time  (normalized to canonical UTC ISO)
+#
+# 🧩 WHAT THIS FUNCTION DOES:
+#     1. Normalizes and validates the caller’s phone number into E.164.
+#     2. Loads the doctor’s JSON file from disk.
+#     3. Converts all stored appointment timestamps to canonical UTC ISO.
+#     4. Derives E.164 phone numbers from old or new storage formats.
+#     5. Compares caller input → stored appointment records (E.164 + DOB + UTC time).
+#     6. Writes back the JSON file WITHOUT the matched appointment.
+#
+# 📝 INPUTS:
+#     doctor_name (str)     → Used to find the doctor’s JSON file.
+#     phone (str)           → Raw or E.164; normalized before comparison.
+#     dob (str)             → Expected exact DOB string ('YYYY-MM-DD').
+#     utc_start (str)       → ISO timestamp representing the start of the appointment.
+#     default_country       → Used when normalizing non-E.164 phone inputs.
+#
+# 🔄 OUTPUT:
+#     True  → At least one matching appointment was removed.
+#     False → No matching record OR error occurred.
+#
+# 🛡 SAFETY:
+#     • Does NOT throw exceptions outward — always returns False on error.
+#     • Supports US + Egypt phone formats automatically.
+#     • Ensures old JSON formats (digit-only phone) remain compatible.
+#
+# ================================================================
 def cancel_appointment_for_dr_name(
     doctor_name: str,
     phone: str,
     dob: str,
     utc_start: str,
     *,
-    default_country: str = COUNTRY  # use your global default (e.g., "US" or "EG")
+    default_country: str = COUNTRY  # fallback country from global constant
 ) -> bool:
-    """
-    Remove a single appointment from appointment_data/doctors/<doctor>.json
-    matching ALL of:
-      • phone  → E.164 ('+<cc><nsn>') **only**
-      • dob    → exact string match; expected ISO 'YYYY-MM-DD'
-      • time   → exact UTC ISO match (after normalization)
 
-    Returns True if a record was removed, else False.
-
-    Notes:
-      - Input `phone` can be already E.164; otherwise we normalize with `normalize_phone_e164`.
-      - Records may be mixed (older ones may only have 'phone' digits). We *derive* an E.164
-        form per record when needed (US/EG supported) and compare E.164 ↔ E.164 only.
-    """
-
-    # ---------- normalize input phone to E.164 ----------
+    # ------------------------------------------------------------
+    # 🔧 Normalize input phone number → E.164
+    # ------------------------------------------------------------
     raw = (phone or "").strip()
     phone_e164 = ""
+
+    # Case 1: Already valid E.164 (starts with + and rest are digits)
     if raw.startswith("+") and raw[1:].replace(" ", "").isdigit():
         phone_e164 = "+" + raw[1:].replace(" ", "")
+
     else:
+        # Case 2: Convert raw phone → E.164 using helper
         try:
+            # Primary attempt using default_country (US or EG)
             phone_e164 = normalize_phone_e164(raw, (default_country or "US").upper()) or ""
+
+            # Secondary attempt: try the OTHER supported country
             if not phone_e164:
-                # try the other supported country as a last resort
                 alt = "EG" if (default_country or "US").upper() != "EG" else "US"
                 phone_e164 = normalize_phone_e164(raw, alt) or ""
+
         except Exception:
+            # If normalization fails completely → phone_e164 remains ""
             phone_e164 = ""
 
+    # Strip DOB and ensure string format
     dob_str = (dob or "").strip()
+
+    # Build the full file path for doctor_name
     full_path = get_doctor_filename(doctor_name)
 
     debug_print(
@@ -3179,92 +3180,135 @@ def cancel_appointment_for_dr_name(
         f"phone_e164='{phone_e164 or '∅'}' dob='{dob_str or '∅'}' utc='{utc_start or '∅'}'"
     )
 
+    # ------------------------------------------------------------
+    # 🛑 Validate minimal requirements before proceeding
+    # ------------------------------------------------------------
     if not (os.path.exists(full_path) and phone_e164 and dob_str and utc_start):
         return False
 
-    # ---------- load list ----------
+    # ------------------------------------------------------------
+    # 📂 Load appointment list from disk
+    # ------------------------------------------------------------
     try:
         with open(full_path, "r", encoding="utf-8") as f:
             data = json.load(f)
+
+        # If the JSON root is not a list → invalid schema
         if not isinstance(data, list):
             return False
+
     except Exception as e:
         debug_print(f"cancel_appointment_by_name: read error → {e}")
         return False
 
-    # ---------- normalize times to comparable UTC ISO (no micros) ----------
+    # ------------------------------------------------------------
+    # 🕓 Normalization helper for stored UTC timestamps
+    #     - Convert any ISO or naive timestamp to canonical UTC ISO string
+    # ------------------------------------------------------------
     def _to_utc_iso(s: str) -> str:
         dt = dtparser.isoparse(s)
+
+        # If naive timestamp → treat as UTC
         if dt.tzinfo is None:
-            # treat naive as UTC
             dt = dt.replace(tzinfo=timezone.utc)
         else:
+            # Convert any timezone → UTC
             dt = dt.astimezone(timezone.utc)
+
+        # Remove micros for consistent comparison; write as ISO+Z
         return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
+    # Normalize the target UTC start time (the one we are trying to cancel)
     try:
         target_norm = _to_utc_iso(utc_start)
     except Exception as e:
         debug_print(f"cancel_appointment_by_name: utc parse error → {e}")
         return False
 
-    # ---------- helper: derive E.164 for a stored appt record ----------
+    # ------------------------------------------------------------
+    # 📞 Helper to derive E.164 from stored appointment record
+    # ------------------------------------------------------------
     def _appt_e164(appt: dict) -> str:
-        # Prefer explicit E.164 field
+
+        # 1. New format → explicit phone_e164 field
         pe = (appt.get("phone_e164") or "").strip()
         if pe.startswith("+") and pe[1:].replace(" ", "").isdigit():
             return "+" + pe[1:].replace(" ", "")
 
-        # Try normalizing whatever is in 'phone' using our helper
+        # 2. Old format → "phone" field (may be digits only)
         cand = (appt.get("phone") or "").strip()
         if cand:
-            e164 = ""
             try:
+                # Primary
                 e164 = normalize_phone_e164(cand, (default_country or "US").upper()) or ""
+
+                # Secondary
                 if not e164:
                     alt = "EG" if (default_country or "US").upper() != "EG" else "US"
                     e164 = normalize_phone_e164(cand, alt) or ""
-            except Exception:
-                e164 = ""
-            if e164:
-                return e164
 
-        # Nothing usable
+                if e164:
+                    return e164
+
+            except Exception:
+                pass
+
+        # No usable phone
         return ""
 
-    kept = []
-    removed = 0
+    # ------------------------------------------------------------
+    # 🔍 Compare all stored appointments with input and filter out matches
+    # ------------------------------------------------------------
+    kept = []      # appointments we keep
+    removed = 0    # counter for deleted appointments
 
     for appt in data:
+
+        # Only dictionary objects matter; keep non-dict safely
         if not isinstance(appt, dict):
             kept.append(appt)
             continue
 
+        # Extract normalized E.164 number for this record
         ap_e164 = _appt_e164(appt)
+
+        # Extract stored DOB
         ap_dob  = (appt.get("dob", "") or "").strip()
+
+        # Extract stored start time
         ap_time_raw = (appt.get("time") or appt.get("start") or "").strip()
 
+        # Normalize stored timestamp → canonical UTC ISO
         try:
             ap_time_norm = _to_utc_iso(ap_time_raw) if ap_time_raw else ""
         except Exception:
+            # If record is malformed → DO NOT delete it
             kept.append(appt)
             continue
 
+        # Match condition: ALL must match
         if ap_e164 == phone_e164 and ap_dob == dob_str and ap_time_norm == target_norm:
             removed += 1
         else:
             kept.append(appt)
 
+    # ------------------------------------------------------------
+    # 🛑 No matching record found
+    # ------------------------------------------------------------
     if removed == 0:
         debug_print("cancel_appointment_by_name: no matching record found")
         return False
 
-    # ---------- write back ----------
+    # ------------------------------------------------------------
+    # 💾 Write updated appointment list back to file
+    # ------------------------------------------------------------
     try:
         with open(full_path, "w", encoding="utf-8") as f:
             json.dump(kept, f, indent=2, ensure_ascii=False)
+
         debug_print(f"cancel_appointment_by_name: ✅ deleted {removed} appt(s)")
         return True
+
     except Exception as e:
         debug_print(f"cancel_appointment_by_name: write error → {e}")
         return False
@@ -5546,58 +5590,48 @@ def voice():
 
 
 
-# ======================================================================
+
+
+    # ======================================================================
     # 📅 Stage: collect_book_time_date
-    # ----------------------------------------------------------------------
+    # ======================================================================
     # 🎯 FUNCTIONAL PURPOSE:
-    #   • Captures, parses, and validates the date/time spoken or entered by the caller.
-    #   • Uses natural-language parsing via `smart_parse_time()` for flexibility.
-    #   • Detects silence, invalid, or past/future-out-of-range input.
-    #   • Suggests the next available appointment times if the chosen slot is invalid.
-    #   • Provides SSML-based spoken options (with pauses) for natural dialog.
-    #   • Maintains full debug traceability and session continuity.
+    #   Handle all user input related to selecting the appointment date/time.
+    #   This stage is responsible for:
     #
-    # 🧠 HOW IT WORKS:
-    #   1️⃣ Handles silence → re-prompts up to 2 times before hangup.
-    #   2️⃣ Parses input using `smart_parse_time()`.
-    #   3️⃣ If time is in the past or beyond limit → suggests up to 3 available options.
-    #   4️⃣ Builds <speak> + <break> SSML for natural pauses between options.
-    #   5️⃣ Waits for user selection (Option 1, 2, or 3) or alternate spoken time.
-    #   6️⃣ Confirms and advances to `book_appt_confirm`.
+    #    • Capturing spoken or keypad input from the caller.
+    #    • Normalizing and parsing the input using smart_parse_time().
+    #    • Detecting silence, invalid format, past times, or dates beyond
+    #      the booking horizon.
+    #    • Suggesting the next available 1–3 appointment slots if the
+    #      candidate time is invalid or unavailable.
+    #    • Building SSML-based <speak><break> prompts for smooth prosody.
+    #    • Recording user selection (Option 1, 2, 3) or alternate spoken time.
+    #    • Storing the parsed start/end UTC timestamps into session_data.
+    #    • Finally, advancing to the `book_appt_confirm` stage.
     #
-    # 📦 DATA STORAGE:
+    # 📦 DATA WRITTEN TO SESSION:
     #   session_data[call_sid]["stage"]              = "collect_book_time_date"
-    #   session_data[call_sid]["alts_list"]          = [ {start, end, friendly, tz}, ... ]
-    #   session_data[call_sid]["appointment_time"]   = { "start": ISO8601, "end": ISO8601 }
-    #   session_data[call_sid]["doctor_name"]        = "Dr. Alfred Hitchcock"
+    #   session_data[call_sid]["alts_list"]          = [{start,end,friendly,tz}, ...]
+    #   session_data[call_sid]["appointment_time"]   = {"start": ISO8601, "end": ISO8601}
+    #   session_data[call_sid]["doctor_name"]        = "Dr. <Name>"
     #
     # 🔄 NEXT STAGE:
-    #   → "book_appt_confirm"  (confirmation and SMS dispatch)
+    #   → book_appt_confirm
     # ======================================================================
 
-   
-   
     elif stage == "collect_book_time_date":
-        # ----------------------------------------------------------------------
-        # 📅 Stage: collect_book_time_date
-        # PURPOSE:
-        #   • Capture spoken/DTMF date+time.
-        #   • Convert it into a precise UTC slot using smart_parse_time().
-        #   • If the time is past / invalid → propose up to 3 alternative slots.
-        #   • If the slot is available → move to "book_appt_confirm".
-        #   • All voice messages are centralized here for easy editing.
-        # ----------------------------------------------------------------------
 
-        debug_print(f"[collect_book_time_date] 🗣️ Received speech: {speech_result}")
+        debug_print(f"[collect_book_time_date] 🗣️ Incoming speech='{speech_result}'")
 
-        # ----------------------------------------------------------------------
-        # 💬 CENTRALIZED VOICE MESSAGES
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 💬 Centralized voice messages (easy to localize & edit)
+        # ------------------------------------------------------------------
         VOICE_OLD_DATE_MSG = (
             "That time has already passed. Let me suggest the next available appointment times."
         )
         VOICE_NO_DECISION_MSG = (
-            "It seems you’re not ready right now. Please call us back when you’re ready. Goodbye."
+            "It seems you're not ready right now. Please call us back when you're ready. Goodbye."
         )
         VOICE_SILENCE_MSG = (
             "I didn’t hear anything. Please say the date and time clearly, "
@@ -5605,9 +5639,6 @@ def voice():
         )
         VOICE_REASK_TIME_MSG = "Please tell me another time that works for you."
         VOICE_NO_AVAILABLE_SLOTS_MSG = "Sorry, there are no upcoming available appointments."
-        VOICE_NO_RESPONSE_MSG = (
-            "I didn’t hear from you. Please call us again when you're ready. Goodbye."
-        )
         VOICE_ASK_AGAIN_MSG = (
             "Please say the date and time again, for example, 'October 8 at 9 30 A M'."
         )
@@ -5616,170 +5647,174 @@ def voice():
             "Please say the option number, or tell me another date and time."
         )
 
-        # ----------------------------------------------------------------------
-        # 🗂️ SESSION INITIALIZATION
-        # ----------------------------------------------------------------------
-        session_data.setdefault(call_sid, {})
-        sd = session_data[call_sid]
+        # ------------------------------------------------------------------
+        # 🗂️ Initialize session storage for this stage
+        # ------------------------------------------------------------------
+        sd = session_data.setdefault(call_sid, {})
         sd.setdefault("stage", "collect_book_time_date")
 
-        # Doctor must be selected first
         doctor_name = sd.get("doctor_name")
+
+        # ------------------------------------------------------------------
+        # 🩺 Safety check — Doctor must be known first
+        # ------------------------------------------------------------------
         if not doctor_name:
-            # Redirect flow if doctor missing
-            resp.append(make_gather("Please tell me which doctor you'd like to see."))
+            debug_print("[collect_book_time_date] ❗ No doctor in session — redirecting to collect_dr_info")
+            
+            g = make_gather(
+                "Please tell me which doctor you'd like to see.",
+                input="speech",
+                timeout=8,
+                action="/voice"
+            )
+            resp.append(g)
             sd["stage"] = "collect_dr_info"
             save_session(call_sid)
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🔇 HANDLE SILENCE
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🔇 Silence handling — speech_result AND DTMF empty
+        # ------------------------------------------------------------------
         if not speech_result and not request.values.get("Digits"):
-            # Count silent attempts inside this stage
             sd["silence_retry"] = sd.get("silence_retry", 0) + 1
+            debug_print(f"[collect_book_time_date] 🔇 Silence detected (retry={sd['silence_retry']})")
 
-            # After two silence attempts → end the call
+            # If repeated silence → end call
             if sd["silence_retry"] >= 2:
+                debug_print("[collect_book_time_date] 🔇 Max silence reached → call ending")
                 resp.say(gpt_speak(VOICE_NO_DECISION_MSG), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Otherwise prompt again
+            # Re-prompt user
             g = make_gather(
                 VOICE_SILENCE_MSG,
                 input="speech dtmf",
                 timeout=10,
                 speech_timeout="auto",
                 barge_in=True,
-                action="/voice",
-                method="POST"
+                action="/voice"
             )
             resp.append(g)
             save_session(call_sid)
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🧠 PARSE RAW SPEECH/DTMF
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🧠 Extract raw user text (speech or digits)
+        # ------------------------------------------------------------------
         raw = (speech_result or request.values.get("Digits") or "").strip()
-        debug_print(f"[collect_book_time_date][parse] raw='{raw}'")
+        debug_print(f"[collect_book_time_date][parse] RAW='{raw}'")
 
-        # ----------------------------------------------------------------------
-        # 🗳️ Handle "Option 1 / 2 / 3" selection for alternative slots
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🎛️ Handling numeric “Option 1/2/3” selections (from alt slots)
+        # ------------------------------------------------------------------
         if sd.get("alts_list"):
-            spoken = raw.lower().strip()
+            spoken = raw.lower()
+            debug_print(f"[collect_book_time_date] 📝 Evaluating selection from alts_list, spoken='{spoken}'")
 
-            # Map spoken "one" → "1", etc.
-            num_map = {
+            # Soft mapping spoken words → numbers
+            word_to_num = {
                 "one": "1", "first": "1",
                 "two": "2", "second": "2",
-                "three": "3", "third": "3",
+                "three": "3", "third": "3"
             }
 
-            for word, number in num_map.items():
+            for word, num in word_to_num.items():
                 if word in spoken:
-                    raw = number
+                    debug_print(f"[collect_book_time_date] 🔁 Converting word '{word}' → '{num}'")
+                    raw = num
+                    break
 
-            # If user picks a valid option number
-            if raw.isdigit() and 1 <= int(raw) <= len(sd["alts_list"]):
-                choice = sd["alts_list"][int(raw) - 1]
-                debug_print(f"[collect_book_time_date] 🎯 User selected Option {raw}: {choice['friendly']}")
+            # If now numeric and valid range → accept
+            if raw.isdigit():
+                idx = int(raw)
+                if 1 <= idx <= len(sd["alts_list"]):
+                    choice = sd["alts_list"][idx - 1]
+                    debug_print(f"[collect_book_time_date] 🎯 User chose Option {idx} → {choice}")
 
-                # Save chosen UTC timeslot
-                sd["appointment_time"] = {
-                    "start": choice["start"],
-                    "end": choice["end"]
-                }
-                sd["stage"] = "book_appt_confirm"
-                save_session(call_sid)
-                resp.redirect("/voice")
-                return str(resp)
+                    # Record final choice
+                    sd["appointment_time"] = {
+                        "start": choice["start"],
+                        "end": choice["end"],
+                    }
+                    sd["stage"] = "book_appt_confirm"
+                    save_session(call_sid)
 
-        # ----------------------------------------------------------------------
-        # 🧠 Try to parse user’s spoken time (smart_parse_time ALWAYS returns UTC)
-        # ----------------------------------------------------------------------
+                    resp.redirect("/voice")
+                    return str(resp)
+
+        # ------------------------------------------------------------------
+        # 🧪 Parse a natural language datetime (smart_parse_time)
+        # ------------------------------------------------------------------
         try:
             result = smart_parse_time(raw)
         except Exception as e:
-            debug_print(f"[collect_book_time_date][parse] error: {e}")
+            debug_print(f"[collect_book_time_date] ❌ smart_parse_time exception → {e}")
             result = None
 
-        # ----------------------------------------------------------------------
-        # ❌ Parsing Failed → Re-prompt or end call
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # ❌ If parsing failed OR returned None → ask again
+        # ------------------------------------------------------------------
         if not result:
             sd["retry_time"] = sd.get("retry_time", 0) + 1
+            debug_print(f"[collect_book_time_date] ❌ Invalid date-time (retry={sd['retry_time']})")
 
             if sd["retry_time"] >= 3:
-                # After 3 failures → end call
+                debug_print("[collect_book_time_date] ❌ Max retries reached — ending call")
                 resp.say(gpt_speak(VOICE_NO_DECISION_MSG), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Ask again with example
             g = make_gather(
                 VOICE_ASK_AGAIN_MSG,
                 input="speech dtmf",
                 timeout=10,
                 barge_in=True,
-                action="/voice",
-                method="POST"
+                action="/voice"
             )
             resp.append(g)
             save_session(call_sid)
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🎉 PARSE SUCCESS
-        # smart_parse_time() returns fully normalized UTC:
-        #
-        #   {
-        #     "start": "2025-11-13T15:30:00Z",
-        #     "end":   "2025-11-13T16:00:00Z",
-        #     "friendly": "Thursday, November 13 at 3:30 PM",
-        #     "is_past": False
-        #   }
-        # ----------------------------------------------------------------------
-        appointment_start = result["start"]   # UTC ISO
-        appointment_end   = result["end"]     # UTC ISO
+        # ------------------------------------------------------------------
+        # 🎉 Parsed successfully — extract fields
+        # ------------------------------------------------------------------
+        appointment_start = result["start"]
+        appointment_end   = result["end"]
         friendly          = result["friendly"]
         is_past           = result["is_past"]
 
-        # Compute bounds
+        debug_print(f"[collect_book_time_date] ✅ Parsed result={result}")
+
         now_utc = _pytz.UTC.localize(_dt.utcnow())
         limit_end_utc = now_utc + timedelta(days=30 * MAX_ADVANCE_MONTHS)
 
-        # ----------------------------------------------------------------------
-        # ⏰ PAST or OUT-OF-RANGE DATE → Suggest alternative slots
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # ⏳ Reject past or out-of-range dates → propose alternatives
+        # ------------------------------------------------------------------
         if is_past or isoparse(appointment_start) <= now_utc or isoparse(appointment_start) > limit_end_utc:
+
+            debug_print(f"[collect_book_time_date] 🔁 Parsed time is invalid/out-of-range → suggesting alternatives")
 
             resp.say(gpt_speak(VOICE_OLD_DATE_MSG), VOICE)
 
-            # ------------------------------------------------------------------
-            # ⭐ IMPORTANT FIX:
-            # Always pass STRICT CANONICAL UTC with “Z” at the end.
-            # This prevents timezone misinterpretations across USA/Egypt.
-            # ------------------------------------------------------------------
-            safe_now_iso = now_utc.isoformat().replace("+00:00", "Z")
-
             alts = get_doctor_next_available_slots(
-                doctor_name,
-                from_start_iso=safe_now_iso,   # ✔ ALWAYS VALID UTC Z-format
+                doctor_name, 
+                from_start_iso=now_utc.isoformat(),
                 limit=3
             )
 
-            # No alternatives found → end call
             if not alts:
+                debug_print("[collect_book_time_date] ❌ No alternative slots available")
                 resp.say(gpt_speak(VOICE_NO_AVAILABLE_SLOTS_MSG), VOICE)
                 resp.hangup()
                 return str(resp)
 
-          
+            # 🗣️ Build spoken options with configurable pause duration between each
+            #   Using SSML <break> tag with PAUSE_MS milliseconds.
+
             # ──────────────────────────────────────────────────────────────
             # 🔍 PURPOSE:
             #   This line dynamically builds a natural-sounding spoken list of
@@ -5870,11 +5905,12 @@ def voice():
             # ----------------------------------------------------------------------
             combined = (
                 f"<speak>{VOICE_NEXT_AVAILABLE_INTRO}"
-                f"<break time=\"{PAUSE_MS}ms\"/>{options_ssml}"
+                f"<break time=\"{PAUSE_MS}ms\"/>"
+                f"{options_ssml}"
                 f"<break time=\"{PAUSE_MS}ms\"/>{VOICE_NEXT_AVAILABLE_OUTRO}</speak>"
             )
 
-            debug_print(f"[collect_book_time_date] 🗣️ SSML with {len(alts)} options prepared")
+            debug_print(f"[collect_book_time_date] 🗣️ SSML prepared with {len(alts)} options")
 
             g = make_gather(
                 combined,
@@ -5882,44 +5918,44 @@ def voice():
                 timeout=15,
                 speech_timeout="auto",
                 barge_in=True,
-                action="/voice",
-                method="POST"
+                action="/voice"
             )
-
             resp.append(g)
             sd["alts_list"] = alts
-            sd["stage"] = "collect_book_time_date"
             save_session(call_sid)
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🕓 CHECK AVAILABILITY FOR THE EXACT SLOT USER CHOSE
-        # ----------------------------------------------------------------------
-        if not is_doctor_slot_available(
-                                            doctor_name,
-                                            appointment_start,
-                                            appointment_end,
-                                            mode="available"     # <-- REQUIRED
-                                       ):
+        # ------------------------------------------------------------------
+        # 🕓 CHECK DIRECT AVAILABILITY
+        # ------------------------------------------------------------------
+        debug_print(f"[collect_book_time_date] 🔍 Checking availability for {appointment_start} → {appointment_end}")
 
+        if not is_doctor_slot_available(doctor_name, appointment_start, appointment_end):
+
+            debug_print(f"[collect_book_time_date] 🚫 Slot unavailable → reprompt user")
 
             g = make_gather(
                 f"That time is not available. {VOICE_REASK_TIME_MSG}",
                 input="speech dtmf",
                 timeout=10,
                 barge_in=True,
-                action="/voice",
-                method="POST"
+                action="/voice"
             )
             resp.append(g)
             save_session(call_sid)
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🎯 SUCCESS → Move to confirmation stage
-        # ----------------------------------------------------------------------
-        sd["appointment_time"] = {"start": appointment_start, "end": appointment_end}
+        # ------------------------------------------------------------------
+        # ✅ All checks passed → move to confirmation stage
+        # ------------------------------------------------------------------
+        debug_print(f"[collect_book_time_date] ✅ ACCEPTED → {friendly}")
+
+        sd["appointment_time"] = {
+            "start": appointment_start,
+            "end": appointment_end
+        }
         sd["stage"] = "book_appt_confirm"
+
         save_session(call_sid)
         resp.redirect("/voice")
         return str(resp)
@@ -8077,7 +8113,7 @@ def voice():
 
 
 
-    # ======================================================================
+   # ======================================================================
     # 🗓️ STAGE: collect_cancel_time_date
     # ======================================================================
     # 🎯 FUNCTIONAL DESCRIPTION:
@@ -8113,9 +8149,9 @@ def voice():
     elif stage == "collect_cancel_time_date":
         debug_print("collect_cancel_time_date: 📍 Stage entered")
 
-        # ----------------------------------------------------------------------
-        # 💬 Voice prompts used in this stage (centralized for reuse)
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 💬 Voice prompt strings — centralized for easy editing
+        # ------------------------------------------------------------------
         VOICE_PROMPT_INITIAL = (
             "Please say the date and time of the appointment you want to cancel. "
             "For example, say November third at ten A M."
@@ -8134,189 +8170,254 @@ def voice():
             "That doesn’t match any of your appointments. I’ll list your upcoming ones."
         )
 
-        # ----------------------------------------------------------------------
-        # 🧱 Retrieve cancellation context
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🧱 Retrieve the cancellation context from session (per caller)
+        # ------------------------------------------------------------------
         cancel_ctx = session_data[call_sid].setdefault("cancel", {})
 
-        # ----------------------------------------------------------------------
-        # 🛡 FIRST ENTRY — Prompt user
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🛡 FIRST ENTRY CHECK — If Twilio just redirected here without input
+        # ------------------------------------------------------------------
         if not speech_result and not request.values.get("Digits"):
-            debug_print("collect_cancel_time_date: 🆕 first entry → prompt")
-            g = make_gather(
+            debug_print("collect_cancel_time_date: 🆕 First entry → play initial prompt")
+
+            # Build gather to capture speech or keypad
+            gather = make_gather(
                 VOICE_PROMPT_INITIAL,
                 input="speech dtmf",
-                timeout=25,
-                speech_timeout="5",
+                timeout=25,           # Caller has up to 25 sec to start talking
+                speech_timeout="5",   # Allow up to 5 sec pause during speech
                 barge_in=True,
-                finish_on_key="#"
+                finish_on_key="#",
             )
-            resp.append(g)
+
+            # Add gather to response
+            resp.append(gather)
+
+            # Twilio will POST to /voice after gather
             resp.redirect("/voice")
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🎧 Raw speech
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🎧 Capture raw recognized speech text (if any)
+        # ------------------------------------------------------------------
         raw = (speech_result or "").strip()
-        debug_print(f"collect_cancel_time_date: 🗣️ Raw speech='{raw}'")
+        debug_print(f"collect_cancel_time_date: 🗣️ Raw speech = '{raw}'")
 
-        # ----------------------------------------------------------------------
-        # 🔇 SILENCE handling — up to 3 retries
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🔇 Handle silence (no speech recognized)
+        # ------------------------------------------------------------------
         if not raw:
+            # Increment silence counter
             tries = cancel_ctx.get("silence_cancel_dt", 0) + 1
             cancel_ctx["silence_cancel_dt"] = tries
-            debug_print(f"collect_cancel_time_date: 🤐 silence count={tries}")
+            debug_print(f"collect_cancel_time_date: 🤐 Silence detected (count={tries})")
 
+            # If 3 consecutive silences → fallback to appointment list stage
             if tries >= 3:
-                debug_print("collect_cancel_time_date: 🚫 silence limit → iterate")
+                debug_print("collect_cancel_time_date: 🚫 Silence limit reached → moving to cancel_appt_iterate")
                 cancel_ctx.pop("silence_cancel_dt", None)
+                cancel_ctx["awaiting_input"] = False
                 session_data[call_sid]["stage"] = "cancel_appt_iterate"
                 session_data[call_sid]["skip_silence_retry"] = True
                 resp.say(gpt_speak(VOICE_PROMPT_TOO_MANY_SILENCES), VOICE)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # retry prompt
-            g = make_gather(
+            # Otherwise → reprompt
+            resp.pause(length=1)
+            gather = make_gather(
                 VOICE_PROMPT_RETRY,
                 input="speech dtmf",
                 timeout=25,
                 speech_timeout="5",
                 barge_in=True,
-                finish_on_key="#"
+                finish_on_key="#",
             )
-            resp.append(g)
+            resp.append(gather)
             resp.redirect("/voice")
             return str(resp)
 
-        # Reset silence after speech
+        # If user spoke → reset silence counter
         cancel_ctx.pop("silence_cancel_dt", None)
 
-        # ----------------------------------------------------------------------
-        # 🧹 Clean common STT errors (“1388” → “13”, etc.)
-        # ----------------------------------------------------------------------
-        raw_fixed = raw.lower().replace(",", "").strip()
-        raw_fixed = _re.sub(r"\b(\d{1,2})\d{2,3}\b", r"\1", raw_fixed)
+        # ------------------------------------------------------------------
+        # 🧹 Normalize and clean speech artifacts (STT errors)
+        # ------------------------------------------------------------------
+        day_part, time_part = (None, None)
+        try:
+            raw_fixed = raw.lower().replace(",", "").strip()
 
-        # Ordinal words → digits
-        ordinal_map = {
-            "first":1,"second":2,"third":3,"fourth":4,"fifth":5,"sixth":6,"seventh":7,
-            "eighth":8,"ninth":9,"tenth":10,"eleventh":11,"twelfth":12,"thirteenth":13,
-            "fourteenth":14,"fifteenth":15,"sixteenth":16,"seventeenth":17,
-            "eighteenth":18,"nineteenth":19,"twentieth":20,"twenty first":21,
-            "twenty second":22,"twenty third":23,"twenty fourth":24,
-            "twenty fifth":25,"twenty sixth":26,"twenty seventh":27,
-            "twenty eighth":28,"twenty ninth":29,"thirtieth":30,"thirty first":31
-        }
-        for word, num in ordinal_map.items():
-            raw_fixed = _re.sub(word, str(num), raw_fixed)
+            # Example: "October 1388" → "October 13"
+            raw_fixed = _re.sub(r"\b(\d{1,2})\d{2,3}\b", r"\1", raw_fixed)
 
-        debug_print(f"collect_cancel_time_date: 🧼 normalized='{raw_fixed}'")
+            # Convert words like "twenty first" → "21"
+            ordinal_map = {
+                "first":1,"second":2,"third":3,"fourth":4,"fifth":5,"sixth":6,
+                "seventh":7,"eighth":8,"ninth":9,"tenth":10,"eleventh":11,
+                "twelfth":12,"thirteenth":13,"fourteenth":14,"fifteenth":15,
+                "sixteenth":16,"seventeenth":17,"eighteenth":18,"nineteenth":19,
+                "twentieth":20,"twenty first":21,"twenty second":22,
+                "twenty third":23,"twenty fourth":24,"twenty fifth":25,
+                "twenty sixth":26,"twenty seventh":27,"twenty eighth":28,
+                "twenty ninth":29,"thirtieth":30,"thirty first":31
+            }
+            for word, num in ordinal_map.items():
+                raw_fixed = _re.sub(rf"\b{word}\b", str(num), raw_fixed)
 
-        # ----------------------------------------------------------------------
-        # 🔍 Day/time extraction
-        # ----------------------------------------------------------------------
-        if " at " in raw_fixed:
-            parts = raw_fixed.split(" at ")
-            if len(parts) == 2:
-                day_part = parts[0].strip()
-                time_part = parts[1].strip()
+            # Split into day + time if “at” is present
+            if " at " in raw_fixed:
+                parts = raw_fixed.split(" at ")
+                if len(parts) == 2:
+                    day_part = parts[0].strip()
+                    time_part = parts[1].strip()
             else:
+                # If no time said → default to noon
                 day_part = raw_fixed
                 time_part = "12:00 pm"
-        else:
-            day_part = raw_fixed
-            time_part = "12:00 pm"
 
-        debug_print(f"collect_cancel_time_date: 📆 day='{day_part}', time='{time_part}'")
-
-        # ----------------------------------------------------------------------
-        # 🕐 Parse → local → UTC → round to slot grid
-        # ----------------------------------------------------------------------
-        tz_name = globals().get("CLINIC_TZ", "America/Chicago")
-        tz = _pytz.timezone(tz_name)
-
-        try:
-            spoken_phrase = f"{day_part} at {time_part}"
-            dt_local = dp.parse(spoken_phrase, fuzzy=True, default=datetime.now(tz))
-            dt_utc = dt_local.astimezone(_pytz.UTC)
-
-            # Round minutes for matching JSON slots (00 or 30)
-            m = dt_utc.minute
-            if m < 15:
-                dt_utc = dt_utc.replace(minute=0, second=0, microsecond=0)
-            elif m < 45:
-                dt_utc = dt_utc.replace(minute=30, second=0, microsecond=0)
-            else:
-                dt_utc = (dt_utc + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-
-            dt_end = dt_utc + timedelta(minutes=30)
-
-            debug_print(f"collect_cancel_time_date: ⏰ Parsed start={dt_utc.isoformat()}")
+            debug_print(f"collect_cancel_time_date: 📆 Extracted → day='{day_part}', time='{time_part}'")
 
         except Exception as e:
-            debug_print(f"collect_cancel_time_date: ❌ parse error → {e}")
+            debug_print(f"collect_cancel_time_date: ⚠️ Error normalizing text → {e}")
+
+        # ------------------------------------------------------------------
+        # 🕒 Parse natural-language datetime into local timezone → convert to UTC
+        # ------------------------------------------------------------------
+        matched = False
+        dt_utc = None
+        spoken_phrase = None
+        try:
+            if day_part:
+                # Fix minor errors like "3d" → "3rd"
+                day_part_fixed = _re.sub(r"\b(\d{1,2})d\b", r"\1rd", day_part)
+
+                # Build phrase for dateutil.parser
+                spoken_phrase = f"{day_part_fixed} at {time_part}"
+
+                # Load clinic timezone
+                tz_name = globals().get("CLINIC_TZ", "America/Chicago")
+                tz = _pytz.timezone(tz_name)
+
+                # Parse fuzzy natural language
+                dt_local = dp.parse(
+                    spoken_phrase,
+                    fuzzy=True,
+                    default=datetime.now(tz)
+                )
+
+                # Convert local → UTC
+                dt_utc = dt_local.astimezone(_pytz.UTC)
+
+                # Compute 30-minute appointment end
+                dt_end = dt_utc + timedelta(minutes=30)
+
+                matched = True
+                debug_print(f"collect_cancel_time_date: 🕒 Parsed UTC datetime → {dt_utc}")
+
+        except Exception as e:
+            debug_print(f"collect_cancel_time_date: ❌ Failed fuzzy parse → {e}")
+
+        # ------------------------------------------------------------------
+        # ❌ Retry on parse failure (3 attempts)
+        # ------------------------------------------------------------------
+        if not matched:
+            retries = cancel_ctx.get("retry_cancel_dt", 0) + 1
+            cancel_ctx["retry_cancel_dt"] = retries
+            debug_print(f"collect_cancel_time_date: ❌ parse failed → retry {retries}")
+
+            if retries < 3:
+                resp.pause(length=1)
+                gather = make_gather(
+                    VOICE_PROMPT_RETRY,
+                    input="speech dtmf",
+                    timeout=25,
+                    speech_timeout="5",
+                    barge_in=True,
+                    finish_on_key="#",
+                )
+                resp.append(gather)
+                resp.redirect("/voice")
+                return str(resp)
+
+            # Too many parse failures → list all appointments
+            debug_print("collect_cancel_time_date: 🚫 Too many parse errors → fallback")
+            cancel_ctx.pop("retry_cancel_dt", None)
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             resp.say(gpt_speak(VOICE_PROMPT_SLOT_NOT_FOUND), VOICE)
             resp.redirect("/voice")
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🗓 Normalize ISO
-        # ----------------------------------------------------------------------
-        start_iso = dt_utc.isoformat().replace("+00:00", "Z")
-        end_iso   = dt_end.isoformat().replace("+00:00", "Z")
-
-        # ----------------------------------------------------------------------
-        # ⏳ Past time check (cancellation cannot use past time)
-        # ----------------------------------------------------------------------
-        now_utc = _pytz.UTC.localize(datetime.utcnow())
+        # ------------------------------------------------------------------
+        # ⏰ Check that the parsed datetime is not in the past
+        # ------------------------------------------------------------------
+        now_utc = datetime.utcnow().replace(tzinfo=_pytz.UTC)
         if dt_utc < now_utc:
-            debug_print("collect_cancel_time_date: ⏳ past → iterate")
+            debug_print("collect_cancel_time_date: ⏳ Parsed time is in the past → iterate")
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             resp.say(gpt_speak(VOICE_PROMPT_PAST_TIME), VOICE)
             resp.redirect("/voice")
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🌟 THE MOST IMPORTANT PART — use unified function
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🔍 CHECK IF APPOINTMENT EXISTS IN DOCTOR'S JSON FILE
+        # ------------------------------------------------------------------
         doctor_name = session_data[call_sid].get("doctor_name")
 
-        exists = is_doctor_slot_available(
-            doctor_name,
-            start_iso,
-            end_iso,
-            mode="exists"               # <── Cancellation mode
-        )
+        # Compute ISO strings
+        start_iso = dt_utc.isoformat().replace("+00:00", "Z")
+        end_iso = (dt_utc + timedelta(minutes=30)).isoformat().replace("+00:00", "Z")
 
-        debug_print(
-            f"collect_cancel_time_date: 🔍 is_doctor_slot_available({doctor_name}, {start_iso}, mode='exists') → {exists}"
-        )
+        debug_print(f"collect_cancel_time_date: 🔍 Searching JSON for: {doctor_name}, start={start_iso}")
 
+        # Build path to doctor file
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        safe = doctor_name.lower().replace(" ", "_")
+        doc_path = os.path.join(BASE_DIR, DB_FOLDER, f"{safe}.json")
+
+        exists = False
+
+        # Load JSON and check existence
+        try:
+            with open(doc_path, "r", encoding="utf-8") as f:
+                appts = json.load(f)
+
+            for ap in appts:
+                ap_start = ap.get("utc_start", ap.get("start_utc", ""))
+                if ap_start == start_iso:
+                    exists = True
+                    break
+
+        except Exception as e:
+            debug_print(f"collect_cancel_time_date: ⚠️ JSON read error → {e}")
+
+        # ------------------------------------------------------------------
+        # 🚫 If slot not found → go to listing stage
+        # ------------------------------------------------------------------
         if not exists:
-            debug_print("collect_cancel_time_date: 🚫 no matching slot → iterate")
+            debug_print("collect_cancel_time_date: 🚫 Slot not found in JSON → iterate")
             session_data[call_sid]["stage"] = "cancel_appt_iterate"
             resp.say(gpt_speak(VOICE_PROMPT_SLOT_NOT_FOUND), VOICE)
             resp.redirect("/voice")
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🎯 SUCCESS → store & continue
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # ✅ SUCCESS — Save parsed slot into context and move to confirmation
+        # ------------------------------------------------------------------
         cancel_ctx["matching_event"] = {
+            "doctor_name": doctor_name,
             "start_utc": start_iso,
             "end_utc": end_iso,
             "friendly": spoken_phrase,
+            "phone_e164": cancel_ctx.get("phone_e164", ""),
+            "dob": cancel_ctx.get("dob", "")
         }
 
         session_data[call_sid]["stage"] = "cancel_appt_confirm"
+
         resp.say(
             gpt_speak(f"You said {day_part} at {time_part}. Let me confirm that appointment."),
-            VOICE,
+            VOICE
         )
         resp.redirect("/voice")
         return str(resp)
@@ -8326,54 +8427,27 @@ def voice():
 
 
 
-
-    # ======================================================================
-    # 🔁 STAGE: cancel_appt_iterate
-    # ======================================================================
-    # 🎯 FUNCTIONAL DESCRIPTION:
-    #     This stage iterates through all appointments for a given doctor that
-    #     match the caller’s phone number and date of birth. It lets the caller
-    #     review each appointment one by one, confirm whether to cancel it,
-    #     and deletes it from the JSON file upon confirmation.
-    #
-    # 💡 PURPOSE:
-    #     1. Load all appointments for the doctor from their JSON file.
-    #     2. Match entries based on caller’s phone number and DOB.
-    #     3. Present each matching appointment for confirmation.
-    #     4. Cancel (delete) selected appointment or skip to next.
-    #     5. End gracefully when all appointments are processed.
-    #
-    # ⚙️ TECHNICAL FEATURES:
-    #     • Uses JSON-based local storage for appointments.
-    #     • Supports both speech (“yes”, “no”) and DTMF (1, 2).
-    #     • Maintains iteration index for sequential traversal.
-    #     • Deletes confirmed appointments directly from file.
-    #     • Saves session state to resume after each turn.
-    #
-    # 💾 OUTPUTS:
-    #     cancel_ctx["candidates"]  → list of possible matches.
-    #     cancel_ctx["matching_event"] → confirmed appointment to cancel.
-    #
-    # 🔁 NEXT STAGES:
-    #     → cancel_appt_confirm (after “yes”)
-    #     → End call gracefully (after last iteration)
-    #
     elif stage == "cancel_appt_iterate":
         # ======================================================================
         # 🎯 Stage: cancel_appt_iterate
         #
         # PURPOSE:
-        #   • Iterate through the doctor’s appointment file.
-        #   • Match appointments by phone number + DOB.
-        #   • Convert each appointment from UTC → Local clinic time.
-        #   • Speak one appointment at a time and ask: “Do you want to cancel it?”
+        #   • Iterate through the doctor’s JSON appointment file.
+        #   • Match by phone number + DOB.
+        #   • Present each valid appointment.
+        #   • Confirm → send to cancel_appt_confirm.
+        #   • Skip → move to next.
+        #
+        # NOTE:
+        #   🚫 This stage MUST NOT use is_doctor_slot_available().
+        #   ✔ Cancellation must ONLY check whether the appointment EXISTS.
         # ======================================================================
 
         t_stage_start = _time_mod.perf_counter()
         debug_print("cancel_appt_iterate: 📍 Stage entered")
 
         # ----------------------------------------------------------------------
-        # 💬 Localized voice messages
+        # 💬 SPEECH MESSAGES
         # ----------------------------------------------------------------------
         VOICE_NO_FILE_MSG = "Sorry, I couldn’t find any appointment records for your doctor."
         VOICE_JSON_ERROR_MSG = "Sorry, there was a problem reading the appointment list."
@@ -8387,155 +8461,96 @@ def voice():
         )
 
         # ----------------------------------------------------------------------
-        # 🧭 Retrieve cancellation context
+        # 📌 Retrieve session context
         # ----------------------------------------------------------------------
         cancel_ctx = session_data[call_sid].setdefault("cancel", {})
-
         doctor = (
             cancel_ctx.get("doctor")
             or session_data[call_sid].get("doctor_name")
             or ""
         ).strip()
-
         phone_e164 = (cancel_ctx.get("phone_e164") or "").replace("+", "").lstrip("0")
         dob = (cancel_ctx.get("dob") or "").strip()
 
         debug_print(f"cancel_appt_iterate: inputs → doctor='{doctor}', phone='{phone_e164}', dob='{dob}'")
 
         # ----------------------------------------------------------------------
-        # 🚨 Doctor validation
+        # 🔎 Validate doctor
         # ----------------------------------------------------------------------
         if not doctor:
-            debug_print("cancel_appt_iterate: ⚠️ doctor name missing from context")
+            debug_print("cancel_appt_iterate: ⚠️ Missing doctor name")
             resp.say(gpt_speak(VOICE_MISSING_DOCTOR_MSG), VOICE)
             resp.hangup()
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 📂 Locate doctor's appointment JSON file
+        # 📂 Get doctor’s JSON path
         # ----------------------------------------------------------------------
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         safe_name = doctor.lower().replace(" ", "_")
         doc_path = os.path.join(BASE_DIR, DB_FOLDER, f"{safe_name}.json")
-        debug_print(f"cancel_appt_iterate: 🧭 normalized doctor='{doctor}' → file='{doc_path}'")
+        debug_print(f"cancel_appt_iterate: 🗂 Appointment file = {doc_path}")
 
         # ----------------------------------------------------------------------
-        # 🔍 Load appointment list
+        # 📥 Load JSON file
         # ----------------------------------------------------------------------
         try:
             with open(doc_path, "r", encoding="utf-8") as f:
                 appointments = json.load(f)
-            debug_print(f"cancel_appt_iterate: 📁 Loaded {len(appointments)} appointments")
+            debug_print(f"cancel_appt_iterate: 📁 Loaded {len(appointments)} appointments.")
         except FileNotFoundError:
-            debug_print("cancel_appt_iterate: ❌ no file found")
+            debug_print("cancel_appt_iterate: ❌ File not found")
             resp.say(gpt_speak(VOICE_NO_FILE_MSG), VOICE)
             resp.hangup()
             save_session(call_sid)
             return str(resp)
         except Exception as e:
-            debug_print(f"cancel_appt_iterate: ⚠️ JSON loading error → {e}")
+            debug_print(f"cancel_appt_iterate: ❌ JSON error → {e}")
             resp.say(gpt_speak(VOICE_JSON_ERROR_MSG), VOICE)
             resp.hangup()
             save_session(call_sid)
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🧩 Normalize phone + DOB for matching
+        # 🔍 Match appointments by PHONE + DOB
         # ----------------------------------------------------------------------
-        normalized_phone = _re.sub(r"\D", "", phone_e164)  # digits only
+        candidates = []
+        normalized_phone = _re.sub(r"\D", "", phone_e164)
         normalized_dob = _re.sub(r"[^0-9a-z]+", "", dob.replace("-", "").replace("/", ""))
 
-        candidates = []
-
-        # ----------------------------------------------------------------------
-        # 🌍 Prepare timezone conversion (UTC → Local)
-        # ----------------------------------------------------------------------
-        tz_name = globals().get("CLINIC_TZ", "America/Chicago")
-        try:
-            tz_local = _pytz.timezone(tz_name)
-        except Exception:
-            debug_print(f"cancel_appt_iterate: ⚠️ invalid TZ '{tz_name}', falling back to America/Chicago")
-            tz_local = _pytz.timezone("America/Chicago")
-
-        # ======================================================================
-        # 🔁 Iterate through all doctor appointments
-        # ======================================================================
         for appt in appointments:
-
-            # Get stored UTC values
-            appt_start_raw = appt.get("utc_start") or appt.get("start_utc") or appt.get("time")
-            appt_end_raw   = appt.get("utc_end") or appt.get("end_utc") or ""
-
-            # Skip incomplete records
-            if not appt_start_raw:
-                debug_print("[cancel_appt_iterate] ⚠️ skipping record with no start time")
-                continue
-
-            # Normalize stored phone + DOB
             appt_phone = _re.sub(r"\D", "", appt.get("phone_e164", appt.get("phone", "")))
-            appt_dob   = _re.sub(r"[^0-9a-z]+", "", (appt.get("dob", "") or "").replace("-", "").replace("/", ""))
+            appt_dob = _re.sub(r"[^0-9a-z]+", "", (appt.get("dob", "") or "").replace("-", "").replace("/", ""))
 
-            # Match conditions
             phone_match = normalized_phone == appt_phone
             dob_match = not dob or normalized_dob == appt_dob
 
-            debug_print("------------------------------------------------")
-            debug_print(f"👤 Name: {appt.get('first_name','')} {appt.get('last_name','')}")
-            debug_print(f"📞 Phone: {appt.get('phone_e164','')} → match={phone_match}")
-            debug_print(f"🎂 DOB: {appt.get('dob','')} → match={dob_match}")
-            debug_print(f"🕓 UTC Start: {appt_start_raw}")
-
             if not (phone_match and dob_match):
-                debug_print("🚫 Skipped — no match")
                 continue
 
-            # ------------------------------------------------------------------
-            # ✅ Convert UTC → Local timezone CLEANLY
-            # ------------------------------------------------------------------
+            # Friendly date format for TTS
+            start_iso = appt.get("utc_start", "")
             try:
-                # Parse ISO into aware UTC datetime
-                dt_utc = datetime.fromisoformat(appt_start_raw.replace("Z", "+00:00"))
-                if dt_utc.tzinfo is None:
-                    dt_utc = _pytz.UTC.localize(dt_utc)
+                friendly = _dt.fromisoformat(start_iso.replace("Z", "+00:00")).strftime("%A, %B %d at %I:%M %p")
+            except Exception:
+                friendly = start_iso or "unknown time"
 
-                # Convert into clinic timezone
-                dt_local = dt_utc.astimezone(tz_local)
-
-                # Friendly readout (“Thursday, Nov 13 at 3:30 PM”)
-                friendly = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
-
-            except Exception as e:
-                debug_print(f"cancel_appt_iterate: ⚠️ time parsing failed → {e}")
-                friendly = appt_start_raw
-
-            # Save candidate
             candidates.append({
                 "doctor_name": doctor,
-                "start_utc": appt_start_raw,
-                "end_utc": appt_end_raw,
+                "start_utc": start_iso,
+                "end_utc": appt.get("utc_end", ""),
                 "friendly": friendly,
                 "phone_e164": phone_e164,
                 "dob": dob,
                 "index_in_file": appointments.index(appt),
             })
-            debug_print(f"✅ Added matching appointment → {friendly}")
-
-        # ----------------------------------------------------------------------
-        # 📌 Sort by actual UTC start time (guaranteed correct order)
-        # ----------------------------------------------------------------------
-        try:
-            candidates.sort(key=lambda c: isoparse(c["start_utc"]))
-        except Exception:
-            debug_print("cancel_appt_iterate: ⚠️ sort failed — using unsorted list")
 
         cancel_ctx["candidates"] = candidates
         cancel_ctx["iter_index"] = 0
 
-        debug_print(f"cancel_appt_iterate: ✅ Prepared {len(candidates)} candidate(s)")
-
         # ----------------------------------------------------------------------
-        # 🚫 No matching appointments
+        # 🚫 Nothing found
         # ----------------------------------------------------------------------
         if not candidates:
             resp.say(gpt_speak(VOICE_NO_MATCH_MSG), VOICE)
@@ -8545,14 +8560,14 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🎤 Handle confirmation (YES/NO)
+        # 🎤 Handle confirmation YES/NO
         # ----------------------------------------------------------------------
         dtmf = (request.values.get("Digits") or "").strip()
         utter = (speech_result or "").strip().lower()
         utter = _re.sub(r"[^a-z0-9]+", "", utter)
 
         YES = {"yes", "yeah", "yep", "confirm", "correct"}
-        NO  = {"no", "nope", "next"}
+        NO = {"no", "nope", "next"}
 
         idx = int(cancel_ctx.get("iter_index", 0))
         total = len(candidates)
@@ -8566,18 +8581,16 @@ def voice():
 
         cand = candidates[idx]
 
-        # YES
+        # YES → Save candidate and go to confirmation
         if utter in YES or dtmf == "1":
-            debug_print(f"cancel_appt_iterate: ✅ User confirmed cancellation for #{idx+1}")
             cancel_ctx["matching_event"] = cand
             session_data[call_sid]["stage"] = "cancel_appt_confirm"
             resp.redirect("/voice")
             save_session(call_sid)
             return str(resp)
 
-        # NO → next appointment
+        # NO → Move forward
         if utter in NO or dtmf == "2":
-            debug_print(f"cancel_appt_iterate: ↪️ User skipped #{idx+1}")
             idx += 1
             cancel_ctx["iter_index"] = idx
 
@@ -8591,11 +8604,11 @@ def voice():
             cand = candidates[idx]
 
         # ----------------------------------------------------------------------
-        # 🗣️ Speak this appointment
+        # 🗣️ Read the appointment aloud
         # ----------------------------------------------------------------------
         say_line = VOICE_APPT_PROMPT_TEMPLATE.format(
             doctor_name=cand["doctor_name"],
-            friendly=cand["friendly"]
+            friendly=cand["friendly"],
         )
 
         gather = make_gather(
@@ -8609,9 +8622,11 @@ def voice():
             barge_in=True,
         )
         resp.append(gather)
-        debug_print(f"cancel_appt_iterate: ✅ Runtime {_time_mod.perf_counter() - t_stage_start:.3f}s")
+
         save_session(call_sid)
         return str(resp)
+
+
 
 
 
@@ -8658,13 +8673,16 @@ def voice():
     # ======================================================================
 
     elif stage == "book_appt_confirm":
-
+    
         # Start execution timer (for performance diagnostics)
         t_stage_start = _time_mod.perf_counter()
         debug_print("book_appt_confirm: 📍 Stage entered")
 
         # ----------------------------------------------------------------------
         # 💬 VOICE MESSAGES — centralized for maintainability & localization
+        # ----------------------------------------------------------------------
+        #   These message templates are reused for TTS responses and can
+        #   easily be localized to other languages if needed.
         # ----------------------------------------------------------------------
         VOICE_NEW_CUSTOMER_MSG = (
             "Thank you {name}. You need to verify your information with the clinic "
@@ -8680,14 +8698,16 @@ def voice():
         )
 
         # ----------------------------------------------------------------------
-        # 🧩 Retrieve session data
+        # 🧩 Retrieve session data for this call
         # ----------------------------------------------------------------------
         sd = session_data.get(call_sid, {})
         customer_status = sd.get("customer_status", "current")
         debug_print(f"book_appt_confirm: 🧾 customer_status={customer_status}")
 
         # ----------------------------------------------------------------------
-        # 👤 Extract customer information
+        # 👤 Extract customer information from session
+        # ----------------------------------------------------------------------
+        #   These fields are collected earlier in the flow.
         # ----------------------------------------------------------------------
         customer = sd.get("customer", {}) or {}
         first_name       = (customer.get("first_name") or "").strip()
@@ -8699,12 +8719,16 @@ def voice():
         insurance_member_id = (customer.get("insurance_member_id") or "").strip()
 
         # ----------------------------------------------------------------------
-        # 🆕 NEW CUSTOMER FLOW — saved but NOT booked
+        # 🆕 NEW CUSTOMER FLOW
+        # ----------------------------------------------------------------------
+        #   If this is a first-time caller, insert their record locally but
+        #   do not schedule an appointment. The system ends politely.
         # ----------------------------------------------------------------------
         if customer_status == "new":
             debug_print("book_appt_confirm: 🆕 new customer → skipping appointment booking")
 
             try:
+                # Store new customer details in local database
                 inserted_ok = insert_customer(
                     phone=phone_e164,
                     dob=customer_dob,
@@ -8724,6 +8748,7 @@ def voice():
             except Exception as e:
                 debug_print(f"book_appt_confirm: ❌ insert_customer failed for new customer → {e}")
 
+            # 🗣 Speak polite final message and end the call
             msg = VOICE_NEW_CUSTOMER_MSG.format(name=first_name or "there")
             resp.say(gpt_speak(msg), VOICE)
             resp.hangup()
@@ -8733,15 +8758,18 @@ def voice():
         # ----------------------------------------------------------------------
         # 👤 CURRENT CUSTOMER FLOW
         # ----------------------------------------------------------------------
+        #   This handles confirmed returning customers with full booking logic.
+        # ----------------------------------------------------------------------
         debug_print("book_appt_confirm: 👤 current customer flow continues")
 
+        # Retrieve doctor and appointment slot from session
         doctor_name = sd.get("doctor_name", "the doctor")
         appt = sd.get("appointment_time", {}) or {}
         appointment_start = appt.get("start")
         appointment_end   = appt.get("end")
 
         # ----------------------------------------------------------------------
-        # ❌ Missing start time
+        # ❌ Handle missing appointment info (no start time)
         # ----------------------------------------------------------------------
         if not appointment_start:
             debug_print("book_appt_confirm: ❌ appointment_start missing for current customer")
@@ -8755,12 +8783,14 @@ def voice():
         tz_name = globals().get("CLINIC_TZ", "America/Chicago")
         try:
             tz = _pytz.timezone(tz_name)
-        except:
+        except Exception:
             tz = _pytz.timezone("America/Chicago")
 
         try:
-            dt_UTC = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
-            dt_local = dt_UTC.astimezone(tz)
+            # Parse appointment time and convert for local readability
+            dt_utc   = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
+            dt_local = dt_utc.astimezone(tz)
+            # Convert to readable format, e.g. “Monday, October 28 at 9:00 AM”
             formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
         except Exception as e:
             debug_print(f"book_appt_confirm: time format error → {e}")
@@ -8769,12 +8799,12 @@ def voice():
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 🕓 Compute missing end time
+        # 🕓 Compute missing end time (defaults to 30 minutes)
         # ----------------------------------------------------------------------
         if not appointment_end:
             try:
                 dur = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
-                end_dt = dt_UTC + timedelta(minutes=dur)
+                end_dt = dt_utc + timedelta(minutes=dur)
                 appointment_end = end_dt.astimezone(_pytz.UTC).isoformat()
             except Exception as e:
                 debug_print(f"book_appt_confirm: ❌ failed computing end time → {e}")
@@ -8783,28 +8813,24 @@ def voice():
                 return str(resp)
 
         # ----------------------------------------------------------------------
-        # ✅ VERIFY SLOT STILL AVAILABLE (NEW FUNCTION)
+        # ✅ Verify that the selected time slot is still available
         # ----------------------------------------------------------------------
         try:
-            slot_ok = is_doctor_slot_available(
-                doctor_name,
-                appointment_start,
-                appointment_end,
-                mode="available"      # <-- REQUIRED for bookings
-            )
+            slot_ok = is_doctor_slot_available(doctor_name, appointment_start, appointment_end)
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ slot check failed → {e}")
             slot_ok = False
 
-        # If unavailable → force the user back to pick another time
+        # If slot unavailable → redirect caller to reschedule
         if not slot_ok:
-            debug_print("book_appt_confirm: ❌ Slot no longer available")
             sd["stage"] = "collect_book_time_date"
             resp.append(make_gather(VOICE_SLOT_TAKEN_MSG))
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 💾 Insert/Update customer in local DB
+        # 💾 Insert or Update Customer Record Locally
+        # ----------------------------------------------------------------------
+        #   Ensures that even existing customers have up-to-date info stored.
         # ----------------------------------------------------------------------
         try:
             inserted_ok = insert_customer(
@@ -8827,7 +8853,9 @@ def voice():
             debug_print(f"book_appt_confirm: ❌ insert_customer failed → {e}")
 
         # ----------------------------------------------------------------------
-        # 🗂️ Log appointment in doctor JSON file
+        # 🗂️ Log the appointment locally for the doctor
+        # ----------------------------------------------------------------------
+        #   This writes the booking record into the doctor's JSON file.
         # ----------------------------------------------------------------------
         try:
             full_name = f"{first_name} {last_name}".strip()
@@ -8842,17 +8870,18 @@ def voice():
                 friendly_local=formatted_time,
                 debug=True
             )
-            debug_print(f"book_appt_confirm: ✅ Appointment logged for {doctor_name}")
+            debug_print(f"book_appt_confirm: ✅ Appointment logged locally for {doctor_name} at {formatted_time}")
         except Exception as e:
-            debug_print(f"book_appt_confirm: ⚠️ failed logging appointment → {e}")
+            debug_print(f"book_appt_confirm: ⚠️ failed to log appointment locally → {e}")
 
         # ----------------------------------------------------------------------
-        # 📩 Confirmation message + SMS
+        # ✅ Final confirmation message + SMS notification
         # ----------------------------------------------------------------------
         msg = VOICE_APPT_CONFIRMED_MSG.format(doctor=doctor_name, time=formatted_time)
         resp.say(gpt_speak(msg), VOICE)
 
         try:
+            # Build SMS confirmation string
             sms = (
                 f"Hi {first_name or 'there'}, your appointment with {doctor_name} is confirmed "
                 f"on {formatted_time}. Thank you for choosing Epic Therapist Clinic."
@@ -8863,7 +8892,7 @@ def voice():
             debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
 
         # ----------------------------------------------------------------------
-        # 🧹 CLEAN UP
+        # 🧹 Cleanup session data and gracefully end the call
         # ----------------------------------------------------------------------
         resp.hangup()
         session_data.pop(call_sid, None)
@@ -8874,85 +8903,79 @@ def voice():
 
 
 
-
     # ======================================================================
     # 🧩 STAGE: cancel_appt_confirm
     # ======================================================================
-    # 🎯 FUNCTIONAL DESCRIPTION:
-    #     This is the final confirmation stage for appointment cancellation.
-    #     It handles the deletion of the chosen appointment from the doctor's
-    #     local JSON file, confirms to the caller, and optionally triggers the
-    #     reschedule flow if enabled.
+    # 🎯 FUNCTIONAL DESCRIPTION
+    # ----------------------------------------------------------------------
+    # This stage finalizes the cancellation of an appointment previously
+    # selected by the caller during the cancellation flow.
     #
-    # 💡 PURPOSE:
-    #     1. Verify that a valid appointment candidate exists.
-    #     2. Remove the matching record (start time, phone, DOB) from JSON.
-    #     3. Inform the caller of the successful cancellation.
-    #     4. If the user intends to reschedule, automatically route to
-    #        `collect_book_time_date` stage to capture the new time.
+    # It performs the following:
+    #   1. Loads the doctor’s local JSON appointment file.
+    #   2. Searches for the exact appointment record using:
+    #         • start_utc     (mandatory match)
+    #         • phone number  (normalized digits)
+    #         • date of birth (optional, when provided)
+    #   3. Removes the matching entry from the file.
+    #   4. Confirms cancellation to the caller.
+    #   5. If this cancellation is part of a *reschedule flow*, it immediately
+    #      transitions to "collect_book_time_date" so the caller can speak the
+    #      new desired appointment time.
     #
-    # ⚙️ TECHNICAL FEATURES:
-    #     • Uses local JSON files only (no Google Calendar dependency).
-    #     • Safely deletes appointments in-place with file rewrite.
-    #     • Handles "reschedule-after-cancel" flag with data persistence.
-    #     • Gracefully exits if no matching record is found.
+    # 💡 IMPORTANT:
+    #   • This stage does NOT check working hours, availability, weekends, or
+    #     business rules. Cancellation must rely ONLY on JSON storage.
+    #   • There is NO dependency on is_doctor_slot_available().
+    #   • All comparisons use raw stored UTC timestamps.
     #
-    # 💾 INPUTS:
-    #     cancel_ctx["matching_event"] → appointment selected for cancellation.
-    #     Includes:
-    #       doctor_name, start_utc, end_utc, friendly time, phone_e164, dob.
+    # 📥 INPUTS:
+    #   cancel_ctx["matching_event"] = {
+    #       "doctor_name", "start_utc", "end_utc",
+    #       "friendly", "phone_e164", "dob"
+    #   }
     #
-    # 💾 OUTPUTS:
-    #     • Appointment record removed from local file (if found).
-    #     • Spoken confirmation or polite fallback message.
-    #     • Optional transition to reschedule booking flow.
-    #
-    # 🔁 NEXT STAGES:
-    #     → collect_book_time_date  (if rescheduling)
-    #     → Hangup                 (after final confirmation)
+    # 📤 OUTPUTS:
+    #   • JSON record removed (if matched)
+    #   • Spoken confirmation to user
+    #   • Optional: transition to booking flow if rescheduling
     #
     # ======================================================================
     elif stage == "cancel_appt_confirm":
-        # 🧩 Stage: CANCEL_APPT_CONFIRM
-        # ----------------------------------------------------------------------
-        # Functional Description:
-        # ----------------------------------------------------------------------
-        # • Finalizes the cancellation of an appointment that the caller confirmed.
-        # • Removes the selected appointment record from the corresponding doctor file.
-        # • Speaks a single confirmation message (no duplicates).
-        # • If this is a reschedule flow, transitions directly into the booking
-        #   stage (collect_book_time_date) — using a Gather that *waits* for the
-        #   caller’s new requested date/time.
-        # • Handles file errors and missing appointment gracefully.
-        # ----------------------------------------------------------------------
 
-        # Start timer to measure performance (for debug logging)
+        # --------------------------------------------------------------
+        # ⏱ Start performance timer (for debugging)
+        # --------------------------------------------------------------
         t0 = _time_mod.perf_counter()
         debug_print("cancel_appt_confirm: 📍 Stage entered")
 
-        # ----------------------------------------------------------------------
-        # 🗂️ Retrieve context (appointment info stored from previous step)
-        # ----------------------------------------------------------------------
+        # --------------------------------------------------------------
+        # 🗂 Retrieve the session & cancellation context
+        # --------------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
         cancel_ctx = sd.get("cancel", {})
-        cand = cancel_ctx.get("matching_event")  # Candidate appointment user confirmed to cancel
+
+        # The appointment previously selected during "cancel_appt_iterate"
+        cand = cancel_ctx.get("matching_event")
+
+        # Used to determine if we must transition to booking
         origin_stage = sd.get("origin_stage", "").strip().lower()
 
-        # ----------------------------------------------------------------------
-        # 🚫 SAFETY CHECK — if nothing to cancel, stop politely
-        # ----------------------------------------------------------------------
+        # --------------------------------------------------------------
+        # 🚫 SAFETY CHECK — ensure appointment exists
+        # --------------------------------------------------------------
         if not cand:
-            debug_print("cancel_appt_confirm: ⚠️ No candidate found — nothing to cancel.")
+            debug_print("cancel_appt_confirm: ⚠️ No appointment selected")
             resp.say(gpt_speak("Sorry, I couldn’t find that appointment to cancel."), VOICE)
 
-            # If this came from a reschedule flow → continue to booking
+            # If caller cancelled as part of reschedule → go to booking
             if origin_stage == "reschedule":
                 sd["stage"] = "collect_book_time_date"
-                sd["origin_stage"] = ""
+                sd["origin_stage"] = ""  # clear origin
 
-                # Ask user to speak a new time directly
+                # Ask user to speak new date/time
                 gather = make_gather(
-                    "Please say the new date and time for your appointment, for example, 'October 12th at 9 a.m.'",
+                    "Please say the new date and time for your appointment.",
                     input="speech dtmf",
                     timeout=8,
                     speech_timeout="auto",
@@ -8963,14 +8986,14 @@ def voice():
                 resp.redirect("/voice")
                 return str(resp)
 
-            # Otherwise, end call if nothing to cancel
+            # Otherwise end call
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🧩 Extract data from confirmed appointment
-        # ----------------------------------------------------------------------
+        # --------------------------------------------------------------
+        # 🧩 Extract fields from selected appointment
+        # --------------------------------------------------------------
         doctor_name = cand.get("doctor_name", "")
         start_utc   = cand.get("start_utc", "")
         end_utc     = cand.get("end_utc", "")
@@ -8978,130 +9001,129 @@ def voice():
         phone_e164  = cand.get("phone_e164", "")
         dob         = cand.get("dob", "")
 
-        debug_print(f"cancel_appt_confirm: 🩺 Doctor='{doctor_name}', Start='{start_utc}', End='{end_utc}'")
+        debug_print(f"cancel_appt_confirm: 🩺 Doctor={doctor_name}, Start={start_utc}")
 
-        # ----------------------------------------------------------------------
-        # 📂 Locate and open the doctor's appointment file
-        # ----------------------------------------------------------------------
+        # --------------------------------------------------------------
+        # 📁 Compute path to doctor’s JSON appointment file
+        # --------------------------------------------------------------
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         safe_name = doctor_name.lower().replace(" ", "_")
-        doc_path = os.path.join(BASE_DIR, DB_FOLDER, f"{safe_name}.json")
+        file_path = os.path.join(BASE_DIR, DB_FOLDER, f"{safe_name}.json")
 
-        # Try loading existing appointments
+        # --------------------------------------------------------------
+        # 📂 Load doctor’s appointment list
+        # --------------------------------------------------------------
         try:
-            with open(doc_path, "r", encoding="utf-8") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 appointments = json.load(f)
-            debug_print(f"cancel_appt_confirm: 📁 Loaded {len(appointments)} appointments from {doc_path}")
+            debug_print(f"cancel_appt_confirm: 📁 Loaded {len(appointments)} appointments")
         except FileNotFoundError:
-            debug_print(f"cancel_appt_confirm: ❌ No JSON file found for {doctor_name}")
+            debug_print(f"cancel_appt_confirm: ❌ Missing file for {doctor_name}")
             resp.say(f"I couldn’t find any appointment records for {doctor_name}.", VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
         except Exception as e:
-            debug_print(f"cancel_appt_confirm: ⚠️ Error reading {doc_path}: {e}")
-            resp.say("Sorry, something went wrong while accessing appointment data.", VOICE)
+            debug_print(f"cancel_appt_confirm: ⚠️ Error loading JSON → {e}")
+            resp.say("Sorry, something went wrong accessing appointment data.", VOICE)
             resp.hangup()
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🧩 Find and delete the appointment entry
-        # ----------------------------------------------------------------------
+        # --------------------------------------------------------------
+        # 🧹 Normalize phone + DOB for comparison
+        # --------------------------------------------------------------
+        norm_phone = _re.sub(r"\D", "", phone_e164)
+        norm_dob   = (dob or "").strip()
+
+        # --------------------------------------------------------------
+        # 🗑 SEARCH & DELETE matching appointment
+        # --------------------------------------------------------------
         deleted = False
-        for appt in list(appointments):  # iterate over copy to modify safely
+
+        # Iterate over a COPY to safely remove from original
+        for appt in list(appointments):
+
+            # Normalize phone numbers before compare
             appt_phone = _re.sub(r"\D", "", appt.get("phone_e164", appt.get("phone", "")))
-            cand_phone = _re.sub(r"\D", "", phone_e164)
-            appt_dob = (appt.get("dob", "") or "").strip()
+            appt_dob   = (appt.get("dob", "") or "").strip()
 
-            # Match by start time, phone, and DOB
+            # Match start time (stored as start_utc or utc_start)
             start_match = appt.get("start_utc", appt.get("utc_start", "")) == start_utc
-            phone_match = appt_phone == cand_phone
-            dob_match = not dob or appt_dob == dob
+            phone_match = appt_phone == norm_phone
+            dob_match   = (not norm_dob) or (appt_dob == norm_dob)
 
+            # Final match → delete this record
             if start_match and phone_match and dob_match:
-                debug_print(f"cancel_appt_confirm: ✅ Found matching appointment → {appt}")
+                debug_print(f"cancel_appt_confirm: 🗑️ Removing entry → {appt}")
                 appointments.remove(appt)
                 deleted = True
                 break
 
-        # ----------------------------------------------------------------------
-        # 💾 Write updated list back to file
-        # ----------------------------------------------------------------------
+        # --------------------------------------------------------------
+        # 💾 Write updated JSON file (if deletion happened)
+        # --------------------------------------------------------------
         if deleted:
             try:
-                with open(doc_path, "w", encoding="utf-8") as f:
+                with open(file_path, "w", encoding="utf-8") as f:
                     json.dump(appointments, f, indent=2)
-                debug_print(f"cancel_appt_confirm: 🗑️ Appointment successfully removed from {doc_path}")
+                debug_print("cancel_appt_confirm: 🗑️ Appointment successfully removed")
 
-                # ==============================================================
-                # 🎙️ MESSAGE LOGIC — Unified & Natural Voice Flow
-                # ==============================================================
-
+                # ------------------------------------------------------
+                # 🔄 If reschedule flow → transition to booking
+                # ------------------------------------------------------
                 if origin_stage == "reschedule":
-                    # 🔄 Reschedule mode — single continuous message and gather
+
                     combined_msg = (
                         f"Your appointment with {doctor_name} on {friendly} has been cancelled. "
                         "Let’s book your new appointment now. "
-                        "Please say, for example, 'October 12th at 9 a.m.'."
+                        "Please say the new date and time."
                     )
 
-                    # ------------------------------------------------------------------
-                    # 🎧 Build a Gather that *waits* for input instead of redirecting immediately
-                    # ------------------------------------------------------------------
                     gather = make_gather(
-                        combined_msg,           # The voice prompt text
-                        input="speech dtmf",    # Accept both speech and keypad
-                        timeout=10,             # Wait up to 10 seconds for a reply
-                        speech_timeout="auto",  # Automatically end when silence
-                        barge_in=True,          # Allow interrupting the prompt
-                        finish_on_key="#",      # '#' can be used to finish keypad input
-                        num_digits=0,           # Unlimited speech length
-                        action="/voice"         # Twilio will post here with SpeechResult
+                        combined_msg,
+                        input="speech dtmf",
+                        timeout=10,
+                        speech_timeout="auto",
+                        barge_in=True,
+                        finish_on_key="#",
+                        action="/voice"
                     )
 
-                    # Append gather and provide a redirect for silence fallback
                     resp.append(gather)
-                    resp.redirect("/voice")  # Twilio returns here if user stays silent
+                    resp.redirect("/voice")
 
-                    # Update the session for the next stage
                     sd["stage"] = "collect_book_time_date"
-                    sd["origin_stage"] = ""  # Clear origin marker
+                    sd["origin_stage"] = ""
                     session_data[call_sid] = sd
 
-                    debug_print("cancel_appt_confirm: 🔄 reschedule flow → Gather prompt waiting for speech")
                     return str(resp)
 
-                else:
-                    # ✅ Normal cancellation — not rescheduling
-                    single_msg = (
-                        f"Your appointment with {doctor_name} on {friendly} has been cancelled. "
-                        "Thank you for calling Epic Therapist Clinic."
-                    )
-                    resp.say(gpt_speak(single_msg), VOICE)
-                    resp.hangup()
-                    debug_print("cancel_appt_confirm: ✅ Standard cancellation complete")
-                    return str(resp)
+                # ------------------------------------------------------
+                # ✔ NORMAL CANCELLATION — not rescheduling
+                # ------------------------------------------------------
+                msg = (
+                    f"Your appointment with {doctor_name} on {friendly} has been cancelled. "
+                    "Thank you for calling Epic Therapist Clinic."
+                )
+                resp.say(gpt_speak(msg), VOICE)
+                resp.hangup()
+
+                session_data.pop(call_sid, None)
+                return str(resp)
 
             except Exception as e:
-                debug_print(f"cancel_appt_confirm: ⚠️ Failed to update {doc_path}: {e}")
-                resp.say("Sorry, there was an error while removing your appointment.", VOICE)
+                debug_print(f"cancel_appt_confirm: ❌ failed writing JSON → {e}")
+                resp.say("Sorry, there was an error removing your appointment.", VOICE)
                 resp.hangup()
                 return str(resp)
 
-        else:
-            # No record matched for deletion
-            debug_print("cancel_appt_confirm: ❌ No matching appointment found in JSON file.")
-            resp.say("Sorry, I couldn’t find that appointment to cancel.", VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # ✅ Final cleanup — default end of stage
-        # ----------------------------------------------------------------------
+        # --------------------------------------------------------------
+        # ❌ No appointment found → fallback
+        # --------------------------------------------------------------
+        debug_print("cancel_appt_confirm: ❌ No matching record found")
+        resp.say("Sorry, I couldn’t find that appointment to cancel.", VOICE)
         resp.hangup()
         session_data.pop(call_sid, None)
-        debug_print(f"cancel_appt_confirm: ✅ total runtime {_time_mod.perf_counter() - t0:.3f}s")
         return str(resp)
 
 
