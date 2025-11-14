@@ -5961,7 +5961,307 @@ def voice():
         return str(resp)
 
 
+    # ======================================================================
+    # 📅 Stage: collect_book_time_date
+    # ======================================================================
+    # 🎯 FUNCTIONAL PURPOSE:
+    #   This stage receives ANY spoken or typed date/time from the caller.
+    #   Responsibilities:
+    #
+    #    1) Detect silence → re-ask or end after retries
+    #    2) Parse free-form speech like:
+    #          “August 17 at 5 PM”
+    #          “Next Friday morning”
+    #          “Tomorrow at 3”
+    #    3) Convert caller-local time → UTC automatically
+    #    4) Check if:
+    #          • date is in the past
+    #          • outside booking horizon
+    #          • not within working hours
+    #          • the doctor is unavailable
+    #    5) If invalid → suggest 1–3 alternate time slots
+    #    6) Store these alternatives in session_data["alts_list"]
+    #    7) Redirect to new stage `confirm_time_choice`
+    #
+    #   This stage DOES NOT ask for confirmation. It only:
+    #       ► parses
+    #       ► validates
+    #       ► proposes alternative slots
+    #
+    #   Confirmation happens in NEW STAGE: `confirm_time_choice`
+    # ======================================================================
 
+    elif stage == "collect_book_time_date":
+
+        debug_print(f"[collect_book_time_date] 🗣️ Incoming speech='{speech_result}'")
+
+        sd = session_data.setdefault(call_sid, {})
+        sd.setdefault("stage", "collect_book_time_date")
+
+        doctor_name = sd.get("doctor_name")
+
+        # ---------------------------------------------------------------
+        # 🩺 SAFETY CHECK: doctor must be known before booking a time
+        # ---------------------------------------------------------------
+        if not doctor_name:
+            debug_print("[collect_book_time_date] ❗ No doctor selected before time entry")
+
+            g = make_gather(
+                "Before choosing a time, please tell me which doctor you want to see.",
+                input="speech dtmf",
+                timeout=8,
+                action="/voice"
+            )
+            resp.append(g)
+            sd["stage"] = "collect_dr_info"
+            save_session(call_sid)
+            return str(resp)
+
+        # ---------------------------------------------------------------
+        # 🔇 SILENCE HANDLING
+        # ---------------------------------------------------------------
+        if not speech_result and not request.values.get("Digits"):
+            sd["silence_retry"] = sd.get("silence_retry", 0) + 1
+
+            debug_print(f"[collect_book_time_date] 🔇 Silence (retry={sd['silence_retry']})")
+
+            if sd["silence_retry"] >= 2:
+                resp.say(gpt_speak("I didn’t hear anything. Please call us back later."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            g = make_gather(
+                "Please say the appointment date and time, for example 'October 10 at 9 A M'.",
+                input="speech dtmf",
+                timeout=8,
+                action="/voice"
+            )
+            resp.append(g)
+            save_session(call_sid)
+            return str(resp)
+
+        # ---------------------------------------------------------------
+        # 🧠 Extract speech or DTMF
+        # ---------------------------------------------------------------
+        raw = (speech_result or request.values.get("Digits") or "").strip()
+        debug_print(f"[collect_book_time_date][parse] RAW='{raw}'")
+
+        # ---------------------------------------------------------------
+        # 🧠 Try free-form parsing
+        # ---------------------------------------------------------------
+        try:
+            parsed = smart_parse_time(raw)
+        except Exception as e:
+            parsed = None
+            debug_print(f"[collect_book_time_date] ❌ smart_parse_time raised → {e}")
+
+        # ---------------------------------------------------------------
+        # ❌ If parsing fails → ask again
+        # ---------------------------------------------------------------
+        if not parsed:
+            sd["retry_time"] = sd.get("retry_time", 0) + 1
+
+            if sd["retry_time"] >= 3:
+                resp.say(gpt_speak("Sorry, I could not understand the time. Goodbye."), VOICE)
+                resp.hangup()
+                session_data.pop(call_sid, None)
+                return str(resp)
+
+            g = make_gather(
+                "I could not understand the time. Please say it again.",
+                input="speech dtmf",
+                timeout=8,
+                action="/voice"
+            )
+            resp.append(g)
+            save_session(call_sid)
+            return str(resp)
+
+        # ------------------------------------------------------------------
+        # 🎉 Parsed successfully
+        # ------------------------------------------------------------------
+        appointment_start = parsed["start"]
+        appointment_end   = parsed["end"]
+        friendly          = parsed["friendly"]
+        is_past           = parsed["is_past"]
+
+        now_utc = _pytz.UTC.localize(_dt.utcnow())
+        booking_end_limit = now_utc + timedelta(days=30 * MAX_ADVANCE_MONTHS)
+
+        # ------------------------------------------------------------------
+        # ❌ Out-of-range OR past → suggest alternatives
+        # ------------------------------------------------------------------
+        if is_past or isoparse(appointment_start) <= now_utc or isoparse(appointment_start) > booking_end_limit:
+
+            resp.say(gpt_speak("That time is not available. Here are the next available appointments."), VOICE)
+
+            alts = get_doctor_next_available_slots(
+                doctor_name,
+                from_start_iso=now_utc.isoformat(),
+                limit=3
+            )
+
+            if not alts:
+                resp.say(gpt_speak("Sorry, there are no available times soon."), VOICE)
+                resp.hangup()
+                return str(resp)
+
+            sd["alts_list"] = alts
+            sd["stage"] = "confirm_time_choice"
+
+            resp.redirect("/voice")
+            save_session(call_sid)
+            return str(resp)
+
+        # ------------------------------------------------------------------
+        # 🟩 Direct slot availability check
+        # ------------------------------------------------------------------
+        if not is_doctor_slot_available(doctor_name, appointment_start, appointment_end):
+            resp.say(gpt_speak("That time is not available. Let me suggest alternatives."), VOICE)
+
+            alts = get_doctor_next_available_slots(
+                doctor_name,
+                from_start_iso=now_utc.isoformat(),
+                limit=3
+            )
+
+            if not alts:
+                resp.say(gpt_speak("Sorry, there are no available times."), VOICE)
+                resp.hangup()
+                return str(resp)
+
+            sd["alts_list"] = alts
+            sd["stage"] = "confirm_time_choice"
+
+            resp.redirect("/voice")
+            save_session(call_sid)
+            return str(resp)
+
+        # ------------------------------------------------------------------
+        # 🟩 SUCCESS — parsed & available → ask for confirmation
+        # ------------------------------------------------------------------
+        sd["appointment_time"] = {
+            "start": appointment_start,
+            "end": appointment_end
+        }
+        sd["stage"] = "confirm_time_choice"
+
+        resp.redirect("/voice")
+        save_session(call_sid)
+        return str(resp)
+
+
+
+    # ======================================================================
+    # 📌 Stage: confirm_time_choice
+    # ======================================================================
+    # 🎯 FUNCTIONAL PURPOSE:
+    #   This stage confirms the selected appointment time.
+    #   Caller can:
+    #       • Say “yes”, “confirm”, “book it”
+    #       • Press 1 to confirm
+    #       • Say “no”, “change”, “another time”
+    #       • Press 2 to change time
+    #       • Pick from alternate slots (option 1/2/3)
+    #
+    #   After 3 failed attempts → apologize → hangup.
+    # ======================================================================
+
+    elif stage == "confirm_time_choice":
+
+        sd = session_data.setdefault(call_sid, {})
+        alts = sd.get("alts_list", [])
+        chosen = sd.get("appointment_time")
+
+        # ---------------------------------------------------------------
+        # 🗣️ Build confirmation prompt
+        # ---------------------------------------------------------------
+        if chosen:
+            friendly = isoparse(chosen["start"]).astimezone(local_tz).strftime("%A, %B %d at %I:%M %p")
+            prompt = f"Do you want to confirm your appointment on {friendly}? Say yes or press 1. To choose another time, say no or press 2."
+        else:
+            # caller will choose from alternatives
+            opts = ", ".join([f"Option {i}: {a['friendly']}" for i,a in enumerate(alts,1)])
+            prompt = f"{opts}. Please say an option number or press 1, 2, or 3."
+
+        g = make_gather(
+            prompt,
+            input="speech dtmf",
+            timeout=8,
+            barge_in=True,
+            action="/voice"
+        )
+        resp.append(g)
+
+        # ---------------------------------------------------------------
+        # 🔇 Silence?
+        # ---------------------------------------------------------------
+        if not speech_result and not request.values.get("Digits"):
+            sd["confirm_retry"] = sd.get("confirm_retry", 0) + 1
+            
+            if sd["confirm_retry"] >= 3:
+                resp.say("I’m sorry, I still didn’t hear you. Please call us back later.", VOICE)
+                resp.hangup()
+                return str(resp)
+
+            resp.redirect("/voice")
+            save_session(call_sid)
+            return str(resp)
+
+        # ---------------------------------------------------------------
+        # Extract input
+        # ---------------------------------------------------------------
+        raw = (speech_result or request.values.get("Digits") or "").lower().strip()
+
+        # ---------------------------------------------------------------
+        # YES / CONFIRM
+        # ---------------------------------------------------------------
+        if raw in ["yes", "yeah", "yep", "confirm", "1", "one"]:
+            sd["stage"] = "book_appt_confirm"
+            save_session(call_sid)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # ---------------------------------------------------------------
+        # NO / CHANGE
+        # ---------------------------------------------------------------
+        if raw in ["no", "nope", "change", "2", "two"]:
+            # allow user another chance
+            sd["stage"] = "collect_book_time_date"
+            save_session(call_sid)
+            resp.redirect("/voice")
+            return str(resp)
+
+        # ---------------------------------------------------------------
+        # Selecting from alts_list
+        # ---------------------------------------------------------------
+        if alts and raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(alts):
+                sd["appointment_time"] = {
+                    "start": alts[idx-1]["start"],
+                    "end":   alts[idx-1]["end"]
+                }
+                sd["stage"] = "book_appt_confirm"
+                save_session(call_sid)
+                resp.redirect("/voice")
+                return str(resp)
+
+        # ---------------------------------------------------------------
+        # Invalid input → retry
+        # ---------------------------------------------------------------
+        sd["confirm_retry"] = sd.get("confirm_retry", 0) + 1
+
+        if sd["confirm_retry"] >= 3:
+            resp.say("Sorry, I still could not understand. Please call back later.", VOICE)
+            resp.hangup()
+            return str(resp)
+
+        resp.say("I’m sorry, I didn’t understand that. Let’s try again.", VOICE)
+        resp.redirect("/voice")
+        save_session(call_sid)
+        return str(resp)
 
 
 
