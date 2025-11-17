@@ -6123,101 +6123,79 @@ def voice():
     # ==============================================================================
     elif stage == "confirm_specific_choice":
 
-        # --------------------------------------------------------------
-        # 🎙 ALL AUDIO MESSAGES
-        # --------------------------------------------------------------
-        MSG_SILENCE_RETRY = (
-            "I didn't hear your answer. Should I book this appointment?"
-        )
-        MSG_MAX_RETRIES = (
-            "I'm sorry, I still could not confirm your choice. Goodbye."
-        )
-        MSG_CONFIRM_REQUEST = (
-            "Should I book this appointment?"
-        )
-        MSG_CONFIRM_ACK = (
-            "Great, I will book this appointment now."
-        )
-        MSG_REJECT_ACK = (
-            "No problem. Please choose another available time."
-        )
-        MSG_INVALID = (
-            "I did not understand that. Please say yes if this appointment is correct, "
-            "or no if you want to choose another time."
-        )
-        MSG_ERROR_NO_APPT = (
-            "There seems to be an error retrieving your appointment time. Let's try again."
-        )
+        # ----------------------------------------------------------
+        # 🎙 Messages
+        # ----------------------------------------------------------
+        MSG_SILENCE = "I didn't hear your answer. Should I book this appointment?"
+        MSG_INVALID = ("I did not understand. Please say yes if this appointment is correct, "
+                    "or no if you want to choose another time.")
+        MSG_YES = "Great, I will book this appointment now."
+        MSG_NO = "No problem. Please choose another available time."
+        MSG_ERROR = "There seems to be an error retrieving your appointment time. Let's try again."
+        MSG_TOO_MANY = "I'm sorry, I still could not confirm your choice. Goodbye."
 
-        # --------------------------------------------------------------
-        # 📌 Load Session
-        # --------------------------------------------------------------
-        sd = session_data.setdefault(call_sid, {})
-
-        # --------------------------------------------------------------
-        # 📌 Load retry limit
-        # --------------------------------------------------------------
         MAX_RETRIES = int(globals().get("MAX_CONFIRM_RETRIES", 3))
 
-        # --------------------------------------------------------------
-        # 🗣 Normalize Input
-        # --------------------------------------------------------------
+        sd = session_data.setdefault(call_sid, {})
         raw = (speech_result or "").strip().lower()
+
         debug_print(f"[confirm_specific_choice] speech='{raw}'")
 
-        # --------------------------------------------------------------
-        # 📅 Retrieve chosen appointment
-        # --------------------------------------------------------------
         appt = sd.get("appointment_time")
         if not appt:
-            resp.say(MSG_ERROR_NO_APPT, voice=VOICE)
+            resp.say(MSG_ERROR, voice=VOICE)
             sd["stage"] = "confirm_time_choice"
             return str(resp)
 
-        # --------------------------------------------------------------
-        # 🔇 Handle silence
-        # --------------------------------------------------------------
+        # Silence
         if not raw:
-            retry = sd.get("confirm_retry", 0) + 1
-            sd["confirm_retry"] = retry
-
-            if retry >= MAX_RETRIES:
-                resp.say(MSG_MAX_RETRIES, voice=VOICE)
+            sd["confirm_retry"] = sd.get("confirm_retry", 0) + 1
+            if sd["confirm_retry"] >= MAX_RETRIES:
+                resp.say(MSG_TOO_MANY, voice=VOICE)
                 resp.hangup()
                 return str(resp)
 
-            resp.say(MSG_SILENCE_RETRY, voice=VOICE)
+            resp.say(MSG_SILENCE, voice=VOICE)
+            g = Gather(input="speech", timeout=MAX_SILENT_TIME, action="/voice")
+            resp.append(g)
             return str(resp)
 
-        # --------------------------------------------------------------
-        # YES responses
-        # --------------------------------------------------------------
-        YES_WORDS = {
-            "yes", "yeah", "yep", "correct", "book", "confirm", "sure",
-            "ok", "okay", "yes please"
-        }
-
-        if raw in YES_WORDS:
-            resp.say(MSG_CONFIRM_ACK, voice=VOICE)
+        # YES
+        YES = {"yes", "yeah", "yep", "correct", "confirm", "book", "sure", "ok", "okay"}
+        if raw in YES:
+            resp.say(MSG_YES, voice=VOICE)
             sd["stage"] = "book_appt_confirm"
             return str(resp)
 
-        # --------------------------------------------------------------
-        # NO responses
-        # --------------------------------------------------------------
-        NO_WORDS = {
-            "no", "nope", "change", "another", "different", "not correct", "incorrect"
-        }
+        # NO → replay menu
+        NO = {"no", "nope", "change", "another", "different", "not correct", "incorrect"}
+        if raw in NO:
+            resp.say(MSG_NO, voice=VOICE)
 
-        if raw in NO_WORDS:
-            resp.say(MSG_REJECT_ACK, voice=VOICE)
             sd["stage"] = "confirm_time_choice"
+            alts = sd.get("alts_list", [])
+
+            menu = "Here are the available appointment times. "
+            for i, slot in enumerate(alts, start=1):
+                menu += f"Option {i}: {slot['friendly']}. "
+            menu += "Please say option 1, option 2, option 3 or press 1, 2, 3."
+
+            resp.say(menu, voice=VOICE)
+
+            g = Gather(
+                input="speech dtmf",
+                timeout=MAX_SILENT_TIME,
+                speechTimeout="auto",
+                action="/voice",
+                method="POST",
+            )
+            resp.append(g)
             return str(resp)
 
-        # --------------------------------------------------------------
-        # INVALID input
-        # --------------------------------------------------------------
+        # INVALID
         resp.say(MSG_INVALID, voice=VOICE)
+        g = Gather(input="speech", timeout=MAX_SILENT_TIME, action="/voice")
+        resp.append(g)
         return str(resp)
 
 
