@@ -5858,7 +5858,7 @@ def voice():
     elif stage == "confirm_time_choice":
 
         # ================================================================
-        # 🎤 TOP-LEVEL PROMPT MESSAGES (all messages defined at top here)
+        # 🎤 TOP-LEVEL PROMPT MESSAGES
         # ================================================================
         MSG_INVALID = (
             "I did not understand your choice. Please try again."
@@ -5874,10 +5874,11 @@ def voice():
         debug_print(f"[confirm_time_choice] ▶ Entered — speech='{speech_result}'")
 
         # ================================================================
-        # 🧠 LOAD SESSION DATA & AVAILABLE SLOT LIST
+        # 🧠 LOAD SESSION DATA & AVAILABLE OPTIONS
         # ================================================================
         sd = session_data.setdefault(call_sid, {})
         alts = sd.get("alts_list", [])
+
         if not alts:
             debug_print("[confirm_time_choice] ❗ No alternative list found in session")
             resp.say(gpt_speak("Sorry, something went wrong. Please call again."), VOICE)
@@ -5885,30 +5886,28 @@ def voice():
             return str(resp)
 
         # ================================================================
-        # 🎧 1 — HANDLE DTMF INPUT FIRST
+        # 🎧 1 — DTMF HANDLING FIRST
         # ================================================================
         digits = request.values.get("Digits", "").strip()
         if digits in ("1", "2", "3"):
-            debug_print(f"[confirm_time_choice] 📟 DTMF received → '{digits}'")
-            index = int(digits) - 1
-            chosen = alts[index]
+            idx = int(digits) - 1
+            chosen = alts[idx]
 
-            # Save selected appointment slot
             sd["appointment_time"] = chosen
-            sd["stage"] = "collect_customer_details"  # next stage in booking pipeline
+            sd["stage"] = "collect_customer_details"
             save_session(call_sid)
 
             resp.redirect("/voice")
             return str(resp)
 
         # ================================================================
-        # 🎤 2 — HANDLE SPEECH INPUT
+        # 🎤 2 — SPEECH HANDLING
         # ================================================================
         spoken = (speech_result or "").strip().lower()
         debug_print(f"[confirm_time_choice] 🗣️ Speech normalized → '{spoken}'")
 
         # ------------------------------------------------------------
-        # (A) HANDLE DIRECT OPTION WORDS ("option one", "two", etc.)
+        # (A) Map "option one" → 1, "option two" → 2, etc.
         # ------------------------------------------------------------
         spoken_map = {
             "1": ["1", "one", "option one", "first option", "number one"],
@@ -5918,7 +5917,6 @@ def voice():
 
         for num, variants in spoken_map.items():
             if any(v in spoken for v in variants):
-                debug_print(f"[confirm_time_choice] 🗣️ Matched speech to option {num}")
                 idx = int(num) - 1
                 chosen = alts[idx]
 
@@ -5930,8 +5928,7 @@ def voice():
                 return str(resp)
 
         # ------------------------------------------------------------
-        # (B) FULL NATURAL TIME PARSING
-        #     e.g. “November 17 at 8 AM”
+        # (B) Natural-language datetime parsing
         # ------------------------------------------------------------
         parsed = None
         try:
@@ -5942,10 +5939,9 @@ def voice():
 
         if parsed:
             spoken_start = parsed["start"]
-
-            # Try matching parsed time to each alternative
             for i, alt in enumerate(alts):
                 alt_start = alt["start"]
+                # Match within 3 minutes
                 if abs(isoparse(alt_start) - isoparse(spoken_start)) < timedelta(minutes=3):
                     debug_print(f"[confirm_time_choice] 🟩 Matched natural time to option {i+1}")
                     sd["appointment_time"] = alt
@@ -5956,9 +5952,10 @@ def voice():
                     return str(resp)
 
         # ================================================================
-        # ❌ 3 — INVALID INPUT → RETRY LOGIC
+        # ❌ INVALID INPUT — RETRY LOGIC
         # ================================================================
         sd["confirm_retry"] = sd.get("confirm_retry", 0) + 1
+
         debug_print(f"[confirm_time_choice] 🔁 Invalid choice — retry {sd['confirm_retry']}")
 
         if sd["confirm_retry"] >= 3:
@@ -5968,18 +5965,14 @@ def voice():
             return str(resp)
 
         # ================================================================
-        # 🔁 4 — READ OPTIONS AGAIN WITH SSML BREAK CONTROLLED BY
-        #       MAX_SILENT_TIME
+        # 🔁 RE-PROMPT LIST OF OPTIONS (SSML WITH CONFIGURED PAUSES)
         # ================================================================
         msg = "<speak>"
-
         for i, alt in enumerate(alts, 1):
             msg += (
                 f"Option {i}: {alt['friendly']}."
                 f"<break time='{MAX_SILENT_TIME}ms'/>"
             )
-
-        # Add final instruction
         msg += "Please say an option number or press 1, 2, or 3."
         msg += "</speak>"
 
@@ -5987,13 +5980,13 @@ def voice():
             msg,
             input="speech dtmf",
             timeout=8,
-            action="/voice",
-            play_beep=False
+            action="/voice"
         )
 
         resp.append(g)
         save_session(call_sid)
         return str(resp)
+
 
 
 
