@@ -1,5 +1,5 @@
 #=======
-# updated  11/14/2025
+# updated  11/17/2025
 #  
 # =========================
 # Standard library imports
@@ -79,7 +79,6 @@ import openai
 import calendar as _calendar
 import dateparser
 import pytz as _pytz
-import pytz as _TZMOD
 import time as _time_mod
 import threading
 import traceback
@@ -5875,7 +5874,7 @@ def voice():
         # ------------------------------------------------------------------
         # Example: "America/Chicago", "Africa/Cairo", "America/New_York"
         CLINIC_TZ = os.getenv("CLINIC_TZ", "America/Chicago")
-        local_tz = pytz.timezone(CLINIC_TZ)
+        local_tz = _pytz.timezone(CLINIC_TZ)
 
         # ------------------------------------------------------------------
         # 🧱 Load session data
