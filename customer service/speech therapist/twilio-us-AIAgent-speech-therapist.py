@@ -265,6 +265,29 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_NUMBER")
 GOOGLE_CREDENTIALS = "credentials.json"
 
 
+# ================================================================
+# 🕒 MAX_SILENT_TIME
+# ----------------------------------------------------------------
+# FUNCTIONAL PURPOSE:
+#   Defines the pause (in milliseconds) inserted between spoken
+#   appointment choices in SSML <break> tags.
+#
+#   This allows the voice assistant to read options clearly,
+#   giving callers enough time to process each choice.
+#
+#   Increasing this value makes pauses longer (slower reading).
+#   Decreasing it makes the assistant read options faster.
+#
+#   Example:
+#       MAX_SILENT_TIME = 600   → 0.6-second pause
+#       MAX_SILENT_TIME = 1200  → 1.2-second pause
+#
+#   Used exclusively inside confirm_time_choice() when building
+#   the options menu for the user.
+# ================================================================
+MAX_SILENT_TIME = 700   # milliseconds
+
+
 # ----------------------------------------------------------------------
 # 🗣️ VOICE INPUT & RECORDING SETTINGS
 # ----------------------------------------------------------------------
@@ -333,18 +356,6 @@ MAX_ADVANCE_MONTHS = int(os.getenv("MAX_ADVANCE_MONTHS", 6))
 CREATE_NEW_CUSTOMER = bool(os.getenv("CREATE_NEW_CUSTOMER", True))
 
 
-# ----------------------------------------------------------------------
-# 🕓 SPEECH TIMING & DELIVERY SETTINGS
-# ----------------------------------------------------------------------
-
-# PAUSE_MS:
-#   • Controls the pause duration (milliseconds) between spoken phrases.
-#   • Used to insert SSML <break> tags in synthesized speech for natural pacing.
-#   • Example:
-#       500  = half-second pause
-#      1000  = one-second pause (natural rhythm)
-#      2000  = two-second pause (clear separation)
-PAUSE_MS = int(os.getenv("PAUSE_MS", 2000))  # pause between messages in ms
 
 
 # ----------------------------------------------------------------------
@@ -5846,141 +5857,147 @@ def voice():
 
     elif stage == "confirm_time_choice":
 
-        # ------------------------------------------------------------------
-        # 🎤 CENTRALIZED MESSAGES (All voice strings go here)
-        # ------------------------------------------------------------------
-        MSG_PROMPT_CHOOSE = (
-            "Please say an option number or press 1, 2, or 3."
-        )
-        MSG_CONFIRM_YN = (
-            "Do you want to confirm your appointment on {time}? "
-            "Say yes or press 1. To choose another time, say no or press 2."
-        )
-        MSG_SILENCE = (
-            "I didn’t hear anything. Please repeat."
-        )
+        # ================================================================
+        # 🎤 TOP-LEVEL PROMPT MESSAGES (all messages defined at top here)
+        # ================================================================
         MSG_INVALID = (
-            "I’m sorry, I didn’t understand that. Let’s try again."
+            "I did not understand your choice. Please try again."
         )
-        MSG_MAX_RETRY = (
-            "I’m sorry, I still didn’t hear you. Please call us back later."
+        MSG_FINAL_FAIL = (
+            "Sorry, I still did not understand. Please call again later."
         )
-        MSG_GOODBYE = (
-            "Sorry, I could not understand. Please call back later."
+        MSG_REPROMPT = (
+            "Please choose one of the available times. "
+            "You can say option one, two, or three, or press 1, 2, or 3."
         )
 
-        # ------------------------------------------------------------------
-        # 🌍 LOAD CLINIC TIMEZONE
-        # ------------------------------------------------------------------
-        # Example: "America/Chicago", "Africa/Cairo", "America/New_York"
-        CLINIC_TZ = os.getenv("CLINIC_TZ", "America/Chicago")
-        local_tz = _pytz.timezone(CLINIC_TZ)
+        debug_print(f"[confirm_time_choice] ▶ Entered — speech='{speech_result}'")
 
-        # ------------------------------------------------------------------
-        # 🧱 Load session data
-        # ------------------------------------------------------------------
+        # ================================================================
+        # 🧠 LOAD SESSION DATA & AVAILABLE SLOT LIST
+        # ================================================================
         sd = session_data.setdefault(call_sid, {})
-        alts = sd.get("alts_list", [])         # suggested alt slots (Option 1/2/3)
-        chosen = sd.get("appointment_time")    # final chosen slot (from user or direct)
-
-        # ==================================================================
-        # 🗣️ Build the main confirmation prompt
-        # ==================================================================
-        if chosen:
-            # Caller already selected a time, so convert UTC → clinic timezone.
-            friendly = (
-                isoparse(chosen["start"])
-                .astimezone(local_tz)
-                .strftime("%A, %B %d at %I:%M %p")
-            )
-
-            prompt_text = MSG_CONFIRM_YN.format(time=friendly)
-
-        else:
-            # Caller must select from the alternate list
-            opts = ", ".join([f"Option {i}: {a['friendly']}" for i, a in enumerate(alts, 1)])
-            prompt_text = f"{opts}. {MSG_PROMPT_CHOOSE}"
-
-        # ==================================================================
-        # 🗣️ Send <Gather> to Twilio to listen again
-        # ==================================================================
-        g = make_gather(
-            prompt_text,
-            input="speech dtmf",
-            timeout=8,
-            barge_in=True,
-            action="/voice"
-        )
-        resp.append(g)
-
-        # ==================================================================
-        # 🔇 Handle silence (no speech + no digits)
-        # ==================================================================
-        if not speech_result and not request.values.get("Digits"):
-            sd["confirm_retry"] = sd.get("confirm_retry", 0) + 1
-
-            if sd["confirm_retry"] >= 3:
-                resp.say(MSG_MAX_RETRY, VOICE)
-                resp.hangup()
-                return str(resp)
-
-            resp.say(MSG_SILENCE, VOICE)
-            resp.redirect("/voice")
-            save_session(call_sid)
-            return str(resp)
-
-        # ==================================================================
-        # 🔍 Extract raw user input (speech or keypad)
-        # ==================================================================
-        raw = (speech_result or request.values.get("Digits") or "").lower().strip()
-
-        # ==================================================================
-        # ✔ YES / CONFIRM
-        # ==================================================================
-        if raw in ["yes", "yeah", "yep", "confirm", "1", "one"]:
-            sd["stage"] = "book_appt_confirm"
-            save_session(call_sid)
-            resp.redirect("/voice")
-            return str(resp)
-
-        # ==================================================================
-        # ❌ NO / CHANGE → return to booking stage
-        # ==================================================================
-        if raw in ["no", "nope", "change", "2", "two"]:
-            sd["stage"] = "collect_book_time_date"
-            save_session(call_sid)
-            resp.redirect("/voice")
-            return str(resp)
-
-        # ==================================================================
-        # 🔢 Selecting from alt options (1–3)
-        # ==================================================================
-        if alts and raw.isdigit():
-            idx = int(raw)
-            if 1 <= idx <= len(alts):
-                sd["appointment_time"] = {
-                    "start": alts[idx - 1]["start"],
-                    "end":   alts[idx - 1]["end"]
-                }
-                sd["stage"] = "book_appt_confirm"
-                save_session(call_sid)
-                resp.redirect("/voice")
-                return str(resp)
-
-        # ==================================================================
-        # ❌ Invalid input → retry
-        # ==================================================================
-        sd["confirm_retry"] = sd.get("confirm_retry", 0) + 1
-
-        if sd["confirm_retry"] >= 3:
-            resp.say(MSG_GOODBYE, VOICE)
+        alts = sd.get("alts_list", [])
+        if not alts:
+            debug_print("[confirm_time_choice] ❗ No alternative list found in session")
+            resp.say(gpt_speak("Sorry, something went wrong. Please call again."), VOICE)
             resp.hangup()
             return str(resp)
 
-        resp.say(MSG_INVALID, VOICE)
-        resp.redirect("/voice")
+        # ================================================================
+        # 🎧 1 — HANDLE DTMF INPUT FIRST
+        # ================================================================
+        digits = request.values.get("Digits", "").strip()
+        if digits in ("1", "2", "3"):
+            debug_print(f"[confirm_time_choice] 📟 DTMF received → '{digits}'")
+            index = int(digits) - 1
+            chosen = alts[index]
+
+            # Save selected appointment slot
+            sd["appointment_time"] = chosen
+            sd["stage"] = "collect_customer_details"  # next stage in booking pipeline
+            save_session(call_sid)
+
+            resp.redirect("/voice")
+            return str(resp)
+
+        # ================================================================
+        # 🎤 2 — HANDLE SPEECH INPUT
+        # ================================================================
+        spoken = (speech_result or "").strip().lower()
+        debug_print(f"[confirm_time_choice] 🗣️ Speech normalized → '{spoken}'")
+
+        # ------------------------------------------------------------
+        # (A) HANDLE DIRECT OPTION WORDS ("option one", "two", etc.)
+        # ------------------------------------------------------------
+        spoken_map = {
+            "1": ["1", "one", "option one", "first option", "number one"],
+            "2": ["2", "two", "option two", "second option", "number two"],
+            "3": ["3", "three", "option three", "third option", "number three"],
+        }
+
+        for num, variants in spoken_map.items():
+            if any(v in spoken for v in variants):
+                debug_print(f"[confirm_time_choice] 🗣️ Matched speech to option {num}")
+                idx = int(num) - 1
+                chosen = alts[idx]
+
+                sd["appointment_time"] = chosen
+                sd["stage"] = "collect_customer_details"
+                save_session(call_sid)
+
+                resp.redirect("/voice")
+                return str(resp)
+
+        # ------------------------------------------------------------
+        # (B) FULL NATURAL TIME PARSING
+        #     e.g. “November 17 at 8 AM”
+        # ------------------------------------------------------------
+        parsed = None
+        try:
+            parsed = smart_parse_time(spoken)
+            debug_print(f"[confirm_time_choice] 🧠 Parsed spoken time → {parsed}")
+        except Exception as e:
+            debug_print(f"[confirm_time_choice] ❌ Parsing error: {e}")
+
+        if parsed:
+            spoken_start = parsed["start"]
+
+            # Try matching parsed time to each alternative
+            for i, alt in enumerate(alts):
+                alt_start = alt["start"]
+                if abs(isoparse(alt_start) - isoparse(spoken_start)) < timedelta(minutes=3):
+                    debug_print(f"[confirm_time_choice] 🟩 Matched natural time to option {i+1}")
+                    sd["appointment_time"] = alt
+                    sd["stage"] = "collect_customer_details"
+                    save_session(call_sid)
+
+                    resp.redirect("/voice")
+                    return str(resp)
+
+        # ================================================================
+        # ❌ 3 — INVALID INPUT → RETRY LOGIC
+        # ================================================================
+        sd["confirm_retry"] = sd.get("confirm_retry", 0) + 1
+        debug_print(f"[confirm_time_choice] 🔁 Invalid choice — retry {sd['confirm_retry']}")
+
+        if sd["confirm_retry"] >= 3:
+            resp.say(gpt_speak(MSG_FINAL_FAIL), VOICE)
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            return str(resp)
+
+        # ================================================================
+        # 🔁 4 — READ OPTIONS AGAIN WITH SSML BREAK CONTROLLED BY
+        #       MAX_SILENT_TIME
+        # ================================================================
+        msg = "<speak>"
+
+        for i, alt in enumerate(alts, 1):
+            msg += (
+                f"Option {i}: {alt['friendly']}."
+                f"<break time='{MAX_SILENT_TIME}ms'/>"
+            )
+
+        # Add final instruction
+        msg += "Please say an option number or press 1, 2, or 3."
+        msg += "</speak>"
+
+        g = make_gather(
+            msg,
+            input="speech dtmf",
+            timeout=8,
+            action="/voice",
+            play_beep=False
+        )
+
+        resp.append(g)
         save_session(call_sid)
         return str(resp)
+
+
+
+
 
 
 
