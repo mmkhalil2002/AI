@@ -5929,66 +5929,67 @@ def voice():
     # ======================================================================
     elif stage == "confirm_time_choice":
 
-        # ------------------------------------------------------------------
-        # 📌 DECLARE ALL MESSAGES HERE
-        # ------------------------------------------------------------------
+        # ===============================================================
+        # 📌 ALL MESSAGE DECLARATIONS
+        # ===============================================================
         MSG_REASK = (
-            "I did not hear you. Here are the available appointment times again. "
+            "I didn’t hear your response. Here are the appointment times again. "
         )
         MSG_INVALID = (
-            "The time you selected is not valid. Please try again. "
+            "The time you selected \"{input}\" is not valid. Please try again. "
         )
         MSG_NOT_IN_LIST = (
-            "The option you selected is not one of the available choices. "
+            "The option you selected \"{input}\" is not one of the available choices. "
         )
         MSG_TOO_MANY_RETRIES = (
             "I'm sorry, we were not able to confirm an appointment. "
             "Please call us back to try again. Goodbye."
         )
         MSG_CONFIRM_CHOICE = (
-            "You selected {friendly}. Is this correct? "
-            "Please say yes or no."
+            "You selected {friendly}. Is this correct? Please say yes or no."
         )
 
-        # ------------------------------------------------------------------
-        # ⚙ CONFIG VALUES (local copies)
-        # ------------------------------------------------------------------
+        # ===============================================================
+        # ⚙ CONFIG VALUES
+        # ===============================================================
         MAX_SILENT_TIME = int(globals().get("MAX_SILENT_TIME", 3))
         MAX_RETRIES = int(globals().get("MAX_TIME_RETRIES", 3))
 
-        # ------------------------------------------------------------------
-        # 🧠 PULL SESSION
-        # ------------------------------------------------------------------
+        # ===============================================================
+        # 🧠 SESSION + INPUT
+        # ===============================================================
         sd = session_data.setdefault(call_sid, {})
-        raw_speech = speech_result.strip() if speech_result else ""
-        raw_dtmf = digits.strip() if digits else ""
+
+        raw_speech = (speech_result or "").strip()
+        raw_dtmf = (dtmf_digits or "").strip()
+
+        # Save last dtmf
+        sd["last_dtmf"] = raw_dtmf
 
         debug_print("[confirm_time_choice] ▶ Entered stage")
         debug_print(f"[confirm_time_choice] raw_speech='{raw_speech}', raw_dtmf='{raw_dtmf}'")
 
-        # ------------------------------------------------------------------
-        # 📋 Load alternate slots previously generated
-        # ------------------------------------------------------------------
+        # ===============================================================
+        # 📋 Load alternate slots
+        # ===============================================================
         alts = sd.get("alts_list", [])
 
-        # ------------------------------------------------------------------
-        # 🛡 Ensure retry counters exist
-        # ------------------------------------------------------------------
+        # ===============================================================
+        # 🛡 Initialize retry counters
+        # ===============================================================
         sd.setdefault("retries", 0)
         sd.setdefault("silence_retry", 0)
-        sd.setdefault("menu_presented", False)  # controls fake vs real silence
+        sd.setdefault("menu_presented", False)
 
-        # ------------------------------------------------------------------
-        # 0️⃣ HANDLE FAKE SILENCE — Empty input BEFORE menu presented
-        # ------------------------------------------------------------------
-        # If this is the *first POST after Gather*, Twilio often sends speech=""
-        # This is NOT real silence → ignore it and DO NOT increment counters.
+        # ===============================================================
+        # 0️⃣ FAKE SILENCE — first empty POST
+        # ===============================================================
         if raw_speech == "" and raw_dtmf == "" and not sd["menu_presented"]:
-            debug_print("[confirm_time_choice] 🔄 FIRST EMPTY POST — FAKE SILENCE → skipping")
-            # Mark menu as now shown so next silence becomes real
+            debug_print("[confirm_time_choice] 🔄 FIRST EMPTY POST → FAKE SILENCE IGNORED")
+
+            # Mark now that menu was shown
             sd["menu_presented"] = True
 
-            # Rebuild initial prompt with full menu
             resp = VoiceResponse()
             g = Gather(
                 input="speech dtmf",
@@ -5998,19 +5999,19 @@ def voice():
                 method="POST",
             )
 
-            # Construct menu
+            # Build full menu
             full_menu = "Here are the available appointment times. "
             for i, slot in enumerate(alts, start=1):
                 full_menu += f"Option {i}: {slot['friendly']}. "
-            full_menu += "Please say Option 1, Option 2, Option 3 or press 1, 2 or 3."
+            full_menu += "Please say Option 1, Option 2 or Option 3, or press 1, 2 or 3."
 
             g.say(full_menu)
             resp.append(g)
             return str(resp)
 
-        # ------------------------------------------------------------------
-        # 1️⃣ REAL SILENCE (menu already shown, no input)
-        # ------------------------------------------------------------------
+        # ===============================================================
+        # 1️⃣ REAL SILENCE — no input after menu was presented
+        # ===============================================================
         if raw_speech == "" and raw_dtmf == "":
             sd["silence_retry"] += 1
             debug_print(f"[confirm_time_choice] 🔇 REAL silence retry={sd['silence_retry']}")
@@ -6021,7 +6022,6 @@ def voice():
                 resp.hangup()
                 return str(resp)
 
-            # Replay entire menu
             resp = VoiceResponse()
             g = Gather(
                 input="speech dtmf",
@@ -6031,34 +6031,33 @@ def voice():
                 method="POST",
             )
 
+            # Repeat entire menu
             menu = MSG_REASK
             for i, slot in enumerate(alts, start=1):
                 menu += f"Option {i}: {slot['friendly']}. "
-
-            menu += "Please say Option 1, Option 2 or Option 3. Or press 1, 2 or 3."
+            menu += "Please say Option 1, Option 2 or Option 3, or press 1, 2 or 3."
 
             g.say(menu)
             resp.append(g)
             return str(resp)
 
-        # ------------------------------------------------------------------
-        # 2️⃣ USER PICKED DTMF (1,2,3)
-        # ------------------------------------------------------------------
+        # ===============================================================
+        # 2️⃣ DTMF SELECTION 1 / 2 / 3
+        # ===============================================================
         if raw_dtmf in ("1", "2", "3"):
             choice_idx = int(raw_dtmf) - 1
 
             if choice_idx >= len(alts):
-                # Invalid number
                 sd["retries"] += 1
+
+                resp = VoiceResponse()
                 if sd["retries"] >= MAX_RETRIES:
-                    resp = VoiceResponse()
                     resp.say(MSG_TOO_MANY_RETRIES)
                     resp.hangup()
                     return str(resp)
 
-                resp = VoiceResponse()
-                resp.say(MSG_NOT_IN_LIST)
-                # repeat menu after error
+                resp.say(MSG_NOT_IN_LIST.format(input=raw_dtmf))
+
                 g = Gather(input="speech dtmf", timeout=MAX_SILENT_TIME, action="/voice")
                 full_menu = ""
                 for i, slot in enumerate(alts, start=1):
@@ -6067,7 +6066,6 @@ def voice():
                 resp.append(g)
                 return str(resp)
 
-            # Valid choice → confirm
             chosen = alts[choice_idx]
             sd["appointment_time"] = chosen
 
@@ -6076,13 +6074,14 @@ def voice():
             sd["stage"] = "book_appt_confirm"
             return str(resp)
 
-        # ------------------------------------------------------------------
-        # 3️⃣ USER SPOKE A DATE/TIME ("October 8 at 9 AM")
-        # ------------------------------------------------------------------
+        # ===============================================================
+        # 3️⃣ USER SPOKE A TIME — parse it
+        # ===============================================================
         parsed = smart_parse_time(raw_speech)
         debug_print(f"[confirm_time_choice] 🧠 Parsed spoken time → {parsed}")
 
         if not parsed or parsed.get("is_past"):
+
             sd["retries"] += 1
             resp = VoiceResponse()
 
@@ -6091,8 +6090,8 @@ def voice():
                 resp.hangup()
                 return str(resp)
 
-            resp.say(MSG_INVALID)
-            # replay menu
+            resp.say(MSG_INVALID.format(input=raw_speech))
+
             g = Gather(input="speech dtmf", timeout=MAX_SILENT_TIME, action="/voice")
             full_menu = ""
             for i, slot in enumerate(alts, start=1):
@@ -6101,29 +6100,25 @@ def voice():
             resp.append(g)
             return str(resp)
 
-        # ------------------------------------------------------------------
-        # 4️⃣ SPOKEN TIME MATCHES ONE OF THE ALTS
-        # ------------------------------------------------------------------
+        # ===============================================================
+        # 4️⃣ Spoken time MATCHES one of the offered slots
+        # ===============================================================
         spoken_start = parsed["start"]
-
-        match = None
-        for i, slot in enumerate(alts, start=1):
-            if slot["start"] == spoken_start:
-                match = slot
-                break
+        match = next((s for s in alts if s["start"] == spoken_start), None)
 
         if match:
             sd["appointment_time"] = match
+
             resp = VoiceResponse()
             resp.say(MSG_CONFIRM_CHOICE.format(friendly=match["friendly"]))
             sd["stage"] = "book_appt_confirm"
             return str(resp)
 
-        # ------------------------------------------------------------------
-        # 5️⃣ SPOKEN TIME IS VALID BUT NOT ONE OF ALTS → TRY TO BOOK IT
-        # ------------------------------------------------------------------
-        # If valid, accept it and then confirm with user.
+        # ===============================================================
+        # 5️⃣ Spoken time DOES NOT match alts → but it is VALID → Accept it
+        # ===============================================================
         sd["appointment_time"] = parsed
+
         resp = VoiceResponse()
         resp.say(MSG_CONFIRM_CHOICE.format(friendly=parsed["friendly"]))
         sd["stage"] = "book_appt_confirm"
@@ -6152,10 +6147,9 @@ def voice():
 
     elif stage == "confirm_specific_choice":
 
-        # ----------------------------------------------------------
+        # ===============================================================
         # 🎙 ALL AUDIO MESSAGES DECLARED AT THE TOP
-        # ----------------------------------------------------------
-
+        # ===============================================================
         MSG_SILENCE_RETRY = (
             "I didn't hear your answer. Should I book this appointment?"
         )
@@ -6185,83 +6179,94 @@ def voice():
             "There seems to be an error retrieving your appointment time. Let's try again."
         )
 
-        # ----------------------------------------------------------
-        # 📌 Load & initialize session safely
-        # ----------------------------------------------------------
+        # ===============================================================
+        # 📌 SAFE SESSION INITIALIZATION
+        # ===============================================================
         sd = session_data.setdefault(call_sid, {})
+        sd.setdefault("confirm_retry", 0)
+        sd.setdefault("confirm_prompt_played", False)
 
-        # ----------------------------------------------------------
-        # 📌 Load retry limit (default = 3, globally defined)
-        # ----------------------------------------------------------
+        # ===============================================================
+        # 🔧 CONFIG LIMITS
+        # ===============================================================
         MAX_RETRIES = int(globals().get("MAX_CONFIRM_RETRIES", 3))
 
-        # ----------------------------------------------------------
-        # 📌 Normalize speech input
-        # ----------------------------------------------------------
+        # ===============================================================
+        # 🗣 Normalize & log speech input
+        # ===============================================================
         raw = (speech_result or "").strip().lower()
         debug_print(f"[confirm_specific_choice] speech='{raw}'")
 
-        # ----------------------------------------------------------
-        # 📌 Load previously selected appointment time
-        # ----------------------------------------------------------
+        # ===============================================================
+        # 🗓 Load the appointment being confirmed
+        # ===============================================================
         appt = sd.get("appointment_time")
 
-        # ----------------------------------------------------------
-        # ⚠️ Safety: no appointment stored
-        # ----------------------------------------------------------
         if not appt:
             resp.say(MSG_ERROR_NO_APPT, VOICE)
             sd["stage"] = "confirm_time_choice"
             return str(resp)
 
-        # ----------------------------------------------------------
-        # 🔇 Handle silence (empty speech)
-        # ----------------------------------------------------------
-        if not raw:
-            retry = sd.get("confirm_retry", 0) + 1
-            sd["confirm_retry"] = retry
+        # ===============================================================
+        # 0️⃣ FAKE SILENCE (Twilio's FIRST empty POST)
+        # ===============================================================
+        if raw == "" and not sd["confirm_prompt_played"]:
+            debug_print("[confirm_specific_choice] 🔄 FAKE silence ignored")
+            sd["confirm_prompt_played"] = True
+            resp.say(MSG_CONFIRM_REQUEST, VOICE)
+            return str(resp)
 
-            # ❌ Too many retries → hang up gracefully
-            if retry >= MAX_RETRIES:
+        # ===============================================================
+        # 1️⃣ REAL SILENCE (user spoke nothing after prompt)
+        # ===============================================================
+        if raw == "":
+            sd["confirm_retry"] += 1
+            debug_print(f"[confirm_specific_choice] 🔇 REAL silence retry={sd['confirm_retry']}")
+
+            if sd["confirm_retry"] >= MAX_RETRIES:
                 resp.say(MSG_MAX_RETRIES, VOICE)
                 sd["stage"] = "hangup"
                 return str(resp)
 
-            # 🔁 Re-ask confirmation
             resp.say(MSG_SILENCE_RETRY, VOICE)
+            sd["confirm_prompt_played"] = True
             return str(resp)
 
-        # ----------------------------------------------------------
-        # ✅ YES responses → proceed to booking
-        # ----------------------------------------------------------
+        # ===============================================================
+        # 2️⃣ YES RESPONSES
+        # ===============================================================
         YES_WORDS = {
             "yes", "yeah", "yep", "correct",
-            "book", "confirm", "sure", "ok", "okay"
+            "book", "confirm", "sure", "ok", "okay", "that's fine"
         }
 
-        if raw in YES_WORDS:
+        if any(word in raw for word in YES_WORDS):
             resp.say(MSG_CONFIRM_ACK, VOICE)
             sd["stage"] = "book_appt_confirm"
             return str(resp)
 
-        # ----------------------------------------------------------
-        # ❌ NO responses → user wants to change time
-        # ----------------------------------------------------------
+        # ===============================================================
+        # 3️⃣ NO RESPONSES
+        # ===============================================================
         NO_WORDS = {
             "no", "nope", "change", "another", "different",
-            "not correct", "incorrect"
+            "incorrect", "not correct", "choose again"
         }
 
-        if raw in NO_WORDS:
+        if any(word in raw for word in NO_WORDS):
             resp.say(MSG_REJECT_ACK, VOICE)
+            sd["confirm_retry"] = 0
             sd["stage"] = "confirm_time_choice"
             return str(resp)
 
-        # ----------------------------------------------------------
-        # ❓ Invalid response → repeat question
-        # ----------------------------------------------------------
+        # ===============================================================
+        # 4️⃣ INVALID RESPONSE
+        # ===============================================================
         resp.say(MSG_INVALID, VOICE)
+        resp.say(MSG_CONFIRM_REQUEST, VOICE)
+        sd["confirm_prompt_played"] = True
         return str(resp)
+
 
 
 
