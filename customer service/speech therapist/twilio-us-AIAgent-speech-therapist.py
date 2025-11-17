@@ -5871,14 +5871,13 @@ def voice():
         sd = session_data.setdefault(call_sid, {})
         alts = sd.get("alts_list", [])
 
-        # If alternatives list missing → fail safely
         if not alts:
-            debug_print("[confirm_time_choice] ❗ No alternatives in session")
+            debug_print("[confirm_time_choice] ❗ ERROR: alts_list missing")
             resp.say(gpt_speak("Sorry, something went wrong. Please call again."), VOICE)
             resp.hangup()
             return str(resp)
 
-        # Normalize inputs
+        # Normalize input
         spoken = (speech_result or "").strip().lower()
         digits = request.values.get("Digits", "").strip()
 
@@ -5886,32 +5885,26 @@ def voice():
 
 
         # =====================================================================
-        # 🔇 1. SILENCE HANDLING (Twilio often sends empty speech first)
+        # 🔇 1. SILENCE HANDLING (Twilio initial empty pass)
         # =====================================================================
         if not spoken and not digits:
-
             sd["silence_retry"] = sd.get("silence_retry", 0) + 1
             debug_print(f"[confirm_time_choice] 🔇 Silence detected — retry {sd['silence_retry']}")
 
-            # First 2 silences: gentle re-prompt (NOT counted as an invalid choice)
+            # First 2 silences → gently re-prompt
             if sd["silence_retry"] <= 2:
                 msg = "<speak>"
                 for i, alt in enumerate(alts, 1):
                     msg += f"Option {i}: {alt['friendly']}."
                     msg += f"<break time='{MAX_SILENT_TIME}ms'/>"
-                msg += "Please choose one of these options or say yes or no.</speak>"
+                msg += "Please choose one of the options or say yes or no.</speak>"
 
-                g = make_gather(
-                    msg,
-                    input="speech dtmf",
-                    timeout=8,
-                    action="/voice"
-                )
+                g = make_gather(msg, input="speech dtmf", timeout=8, action="/voice")
                 resp.append(g)
                 save_session(call_sid)
                 return str(resp)
 
-            # Too much silence → hang up
+            # Too much silence → hangup
             resp.say(gpt_speak("I did not hear anything. Please call again later."), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
@@ -5919,11 +5912,11 @@ def voice():
 
 
         # =====================================================================
-        # ✔ 2. HANDLE YES — APPOINTMENT CONFIRMED
+        # ✔ 2. HANDLE YES CONFIRMATION
         # =====================================================================
         yes_words = ["yes", "confirm", "correct", "that works", "okay", "ok", "book it"]
         if any(w in spoken for w in yes_words):
-            debug_print("[confirm_time_choice] ✔ User confirmed appointment")
+            debug_print("[confirm_time_choice] ✔ YES confirmed by user")
             sd["stage"] = "book_appt_confirm"
             save_session(call_sid)
             resp.redirect("/voice")
@@ -5931,12 +5924,12 @@ def voice():
 
 
         # =====================================================================
-        # ✔ 3. HANDLE NO — USER WANTS TO CHANGE THE TIME
+        # ✔ 3. HANDLE NO → RE-READ OPTIONS
         # =====================================================================
         no_words = ["no", "change", "different", "wrong", "not good", "another", "other"]
         if any(w in spoken for w in no_words):
-            debug_print("[confirm_time_choice] ❗ User rejected appointment — replaying options")
-            sd["confirm_retry"] = 0  # reset invalid attempts
+            debug_print("[confirm_time_choice] ❗ User rejected appointment")
+            sd["confirm_retry"] = 0
 
             msg = "<speak>"
             for i, alt in enumerate(alts, 1):
@@ -5944,47 +5937,41 @@ def voice():
                 msg += f"<break time='{MAX_SILENT_TIME}ms'/>"
             msg += "Please say an option number or press 1, 2, or 3.</speak>"
 
-            g = make_gather(
-                msg,
-                input="speech dtmf",
-                timeout=8,
-                action="/voice"
-            )
+            g = make_gather(msg, input="speech dtmf", timeout=8, action="/voice")
             resp.append(g)
             save_session(call_sid)
             return str(resp)
 
 
         # =====================================================================
-        # ✔ 4. DTMF OPTION SELECTION (1,2,3)
+        # ✔ 4. HANDLE NUMBER PICK (DTMF 1/2/3)
         # =====================================================================
         if digits in ("1", "2", "3"):
             idx = int(digits) - 1
             chosen = alts[idx]
-
-            debug_print(f"[confirm_time_choice] 📟 DTMF option selected → {digits}")
+            debug_print(f"[confirm_time_choice] 📟 DTMF selected option {digits}")
 
             sd["appointment_time"] = chosen
             sd["stage"] = "book_appt_confirm"
             save_session(call_sid)
+
             resp.redirect("/voice")
             return str(resp)
 
 
         # =====================================================================
-        # ✔ 5. SPEECH OPTION SELECTION ("option two", "second", etc.)
+        # ✔ 5. HANDLE SPEECH OPTION (“option two”, “second”, etc.)
         # =====================================================================
-        option_map = {
-            "1": ["1", "option one", "first", "one"],
-            "2": ["2", "option two", "second", "two"],
-            "3": ["3", "option three", "third", "three"]
+        spoken_map = {
+            "1": ["option one", "first", "one"],
+            "2": ["option two", "second", "two"],
+            "3": ["option three", "third", "three"],
         }
 
-        for num, variants in option_map.items():
+        for num, variants in spoken_map.items():
             if any(v in spoken for v in variants):
                 idx = int(num) - 1
                 chosen = alts[idx]
-
                 debug_print(f"[confirm_time_choice] 🗣️ Spoken option selected → {num}")
 
                 sd["appointment_time"] = chosen
@@ -5995,12 +5982,37 @@ def voice():
 
 
         # =====================================================================
-        # ❌ 6. INVALID RESPONSE — SPELL OUT EXACTLY WHAT USER SAID
+        # ✔ 6. TRUE DATETIME VERIFICATION (THE FIX YOU NEED)
+        # =====================================================================
+        parsed = None
+        try:
+            parsed = smart_parse_time(spoken)
+            debug_print(f"[confirm_time_choice] 🧠 Parsed time candidate → {parsed}")
+        except:
+            parsed = None
+
+        if parsed:
+            spoken_start = parsed["start"]
+
+            # Try matching spoken datetime to actual alt list
+            for i, alt in enumerate(alts):
+                if abs(isoparse(alt["start"]) - isoparse(spoken_start)) < timedelta(minutes=3):
+                    debug_print(f"[confirm_time_choice] 🟩 PERFECT MATCH: user selected alt #{i+1}")
+                    
+                    sd["appointment_time"] = alt
+                    sd["stage"] = "book_appt_confirm"
+                    save_session(call_sid)
+                    resp.redirect("/voice")
+                    return str(resp)
+
+
+        # =====================================================================
+        # ❌ 7. INVALID INPUT — SPELL OUT EXACT WRONG CHOICE
         # =====================================================================
         sd["confirm_retry"] = sd.get("confirm_retry", 0) + 1
         wrong_input = spoken if spoken else "nothing"
 
-        debug_print(f"[confirm_time_choice] ❌ Invalid choice '{wrong_input}' — retry {sd['confirm_retry']}")
+        debug_print(f"[confirm_time_choice] ❌ INVALID → '{wrong_input}' retry={sd['confirm_retry']}")
 
         resp.say(
             gpt_speak(
@@ -6011,7 +6023,6 @@ def voice():
             VOICE
         )
 
-        # 3 invalid attempts → exit
         if sd["confirm_retry"] >= 3:
             resp.say(gpt_speak(MSG_FINAL_FAIL), VOICE)
             resp.hangup()
@@ -6020,7 +6031,7 @@ def voice():
 
 
         # =====================================================================
-        # 🔁 7. RE-PROMPT OPTIONS WITH SSML BREAKS
+        # 🔁 8. RE-PROMPT OPTIONS WITH SSML BREAKS
         # =====================================================================
         msg = "<speak>"
         for i, alt in enumerate(alts, 1):
@@ -6028,15 +6039,11 @@ def voice():
             msg += f"<break time='{MAX_SILENT_TIME}ms'/>"
         msg += "Please choose one of these options or say yes or no.</speak>"
 
-        g = make_gather(
-            msg,
-            input="speech dtmf",
-            timeout=8,
-            action="/voice"
-        )
+        g = make_gather(msg, input="speech dtmf", timeout=8, action="/voice")
         resp.append(g)
         save_session(call_sid)
         return str(resp)
+
 
 
 
