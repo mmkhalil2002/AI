@@ -1311,7 +1311,6 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
     s_t = start_local.time()
     e_t = end_local.time()
 
-    # Overlaps if NOT (end ≤ lunch_start OR start ≥ lunch_end)
     if not (e_t <= LUNCH_START or s_t >= LUNCH_END):
         debug_print("[is_doctor_slot_available] ❌ overlaps with lunch break")
         return False
@@ -1360,8 +1359,10 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
         return True
 
     # ------------------------------------------------------------------
-    # 🔁 OVERLAP CHECK (all UTC)
+    # 🔁 OVERLAP CHECK (allow 1-minute tolerance)
     # ------------------------------------------------------------------
+    TOLERANCE = timedelta(minutes=1)  # <-- FIX ADDED HERE
+
     for i, appt in enumerate(appointments, start=1):
         raw_s = appt.get("start_utc") or appt.get("utc_start") or appt.get("time")
         raw_e = appt.get("end_utc")   or appt.get("utc_end")
@@ -1378,13 +1379,26 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
         if ap_e <= now_utc:
             continue
 
-        # INTERVAL OVERLAP: not (end ≤ ap_s OR ap_e ≤ start)
-        if not (end_dt <= ap_s or ap_e <= start_dt):
-            debug_print(f"[is_doctor_slot_available] ❌ overlap with appt #{i}")
-            return False
+        # --------------------------------------------------------------
+        # FIXED OVERLAP RULE: allow back-to-back with tolerance
+        # --------------------------------------------------------------
+        #
+        # NO OVERLAP IF:
+        #     new_end <= ap_start + tolerance
+        #  OR new_start >= ap_end
+        #
+        # OTHERWISE → overlap
+        #
+        if (end_dt <= ap_s + TOLERANCE) or (start_dt >= ap_e):
+            # no overlap → continue checking others
+            continue
+
+        # OTHERWISE: overlap
+        debug_print(f"[is_doctor_slot_available] ❌ overlap with appt #{i}")
+        return False
 
     # ------------------------------------------------------------------
-    # 🎉 PASS — the slot is bookable
+    # 🎉 SLOT IS AVAILABLE
     # ------------------------------------------------------------------
     debug_print("[is_doctor_slot_available] ✅ SLOT AVAILABLE")
     return True
@@ -1392,46 +1406,45 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
 
 
 
-# ======================================================================
-# 🧠 FUNCTIONAL DESCRIPTION — get_doctor_next_available_slots()
-# ======================================================================
-# PURPOSE:
-#     Compute the next available appointment slots for a doctor,
-#     applying ALL business rules in **LOCAL TIME**, then converting
-#     final candidate slots to **UTC** for storage.
+
+# ==========================================================================
+# 📌 FUNCTIONAL PURPOSE — get_doctor_next_available_slots()
+# --------------------------------------------------------------------------
+# This function determines the next available appointment slots for the
+# specified doctor, scanning forward through the clinic schedule.
 #
-# WHY IT MATTERS:
-#     Local rules like:
-#         • 8 AM → 5 PM working hours
-#         • lunch break (e.g., 1–2 PM)
-#         • weekdays-only schedule
-#         • DST (Daylight Saving)
-#         • local date boundaries
-#     MUST BE evaluated in LOCAL TIME — otherwise you get bugs like:
-#         ❌ “Thursday 3:15 PM” → “Friday slots only”
+# Each candidate slot is evaluated in LOCAL clinic time, then validated
+# against the doctor's stored JSON history using is_doctor_slot_available().
 #
-# WHAT THIS FUNCTION DOES:
-#   ✔ Converts request ISO timestamp → LOCAL TZ
-#   ✔ Enforces NEXT_AVAILABLE_SLOT_OFFSET (e.g., 30 minutes from now)
-#   ✔ Applies all rules in local:
-#         • working days
-#         • working hours
-#         • lunch break
-#         • grid alignment
-#   ✔ Converts final slot to UTC only before returning
-#   ✔ Uses is_doctor_slot_available() *only for overlap check*
+# The function returns up to `limit` available future appointment times.
 #
-# RETURNS LIST OF DICTS:
-#     [
-#         {
-#           "start":    "2025-05-14T14:00:00Z",
-#           "end":      "2025-05-14T14:30:00Z",
-#           "friendly": "Wednesday, May 14 at 9:00 AM",
-#           "tz":       "America/Chicago"
-#         },
-#         ...
-#     ]
-# ======================================================================
+# --------------------------------------------------------------------------
+# 🎯 KEY RESPONSIBILITIES
+# --------------------------------------------------------------------------
+# • Scan forward chronologically in local time
+# • Respect configured working hours (e.g., 8 AM–5 PM)
+# • Respect working days (e.g., Monday–Friday)
+# • Respect lunch break window (e.g., 1 PM–2 PM)
+# • Enforce booking horizon limit (MAX_ADVANCE_MONTHS)
+# • Enforce a minimum delay before the first allowed slot
+#   (NEXT_AVAILABLE_SLOT_OFFSET)
+# • Enforce supported appointment durations: 15, 30, 45, or 60 minutes
+# • Ensure all generated slots align perfectly to the scheduling grid
+#   (e.g., always 8:00, 8:30, 9:00 — never 8:07)
+# • Validate overlap conditions with REAL appointment data
+# • Return the first N valid future appointment slots
+#
+# --------------------------------------------------------------------------
+# 🧠 FIXES INCORPORATED
+# --------------------------------------------------------------------------
+# ✔ Enforce NEXT_AVAILABLE_SLOT_OFFSET and align it to the grid
+# ✔ Correct lunch overlap logic to match tolerant edge-overlap rules
+# ✔ Remove redundant working-hour boundary checks (previously blocked 8:30)
+# ✔ Ensure slot grid always aligns correctly (prevents missing 8:30, 9:00)
+# ✔ Normalize timezone handling safely (clinic-local → UTC → local)
+# ✔ Prevent "ghost overlap" caused by misaligned request timestamps
+#
+# ==========================================================================
 
 def get_doctor_next_available_slots(
     doctor_name: str,
@@ -1444,61 +1457,65 @@ def get_doctor_next_available_slots(
     slot_step_minutes: int = None,
     search_days: int = None
 ) -> list:
+    
 
-    # ------------------------------------------------------------------
-    # 🔧 Load configuration values from global environment
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 🔧 Load global config values (with safe defaults)
+    # ----------------------------------------------------------------------
     MAX_ADVANCE_MONTHS = int(globals().get("MAX_ADVANCE_MONTHS", 6))
     NEXT_AVAILABLE_SLOT_OFFSET = int(globals().get("NEXT_AVAILABLE_SLOT_OFFSET", 30))
 
     debug_print(f"[get_doctor_next_available_slots] ▶ doctor={doctor_name}, from={from_start_iso}")
     debug_print(f"[get_doctor_next_available_slots] ⚙ MAX_ADVANCE_MONTHS={MAX_ADVANCE_MONTHS}, OFFSET={NEXT_AVAILABLE_SLOT_OFFSET}")
 
-    # ------------------------------------------------------------------
-    # 🕒 Determine slot duration (default: 30 minutes)
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # ⏳ APPOINTMENT DURATION
+    # ----------------------------------------------------------------------
     if duration_minutes is None:
-        duration_minutes = int(globals().get("APPOINTMENT_DURATION_MINUTES",
-                                             globals().get("SESSION_TIME", 30)))
+        # Try APPOINTMENT_DURATION_MINUTES first, fallback to SESSION_TIME
+        duration_minutes = int(globals().get(
+            "APPOINTMENT_DURATION_MINUTES",
+            globals().get("SESSION_TIME", 30)
+        ))
 
-    # Only valid durations
+    # Only allow standard durations
     if duration_minutes not in (15, 30, 45, 60):
         duration_minutes = 30
 
-    # Slot grid alignment defaults to duration
+    # Slot grid matches duration unless overridden
     if slot_step_minutes is None:
         slot_step_minutes = duration_minutes
 
-    # ------------------------------------------------------------------
-    # 🌍 Load clinic time zone
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 🌍 Load clinic timezone (DST-aware)
+    # ----------------------------------------------------------------------
     if tz_name is None:
         tz_name = globals().get("CLINIC_TZ", "America/Chicago")
 
     try:
         tz_local = _pytz.timezone(tz_name)
     except:
-        debug_print("[get_doctor_next_available_slots] ⚠ invalid timezone → default Chicago")
+        debug_print("[get_doctor_next_available_slots] ⚠ invalid timezone → fallback Chicago")
         tz_local = _pytz.timezone("America/Chicago")
 
-    # ------------------------------------------------------------------
-    # 🕘 Working hours configuration
-    # ------------------------------------------------------------------
-    WSTART = int(globals().get("WORKING_HOURS_START", 8))
-    WEND   = int(globals().get("WORKING_HOURS_END", 17))
+    # ----------------------------------------------------------------------
+    # 🕘 Working hours and working days
+    # ----------------------------------------------------------------------
+    WSTART = int(globals().get("WORKING_HOURS_START", 8))   # e.g., 8 AM
+    WEND   = int(globals().get("WORKING_HOURS_END", 17))    # e.g., 5 PM
 
-    # If caller didn’t override work_hours → use single window
+    # If not provided → one continuous block
     if not work_hours:
         work_hours = ((WSTART, WEND),)
 
-    # Working days (Mon–Fri unless overridden)
     WORKING_DAYS = {int(x) for x in globals().get("WORKING_DAYS", {0,1,2,3,4})}
+    # 0 = Monday → 4 = Friday by default
 
-    # ------------------------------------------------------------------
-    # 🍽 Lunch-time handling
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 🍽 Lunch break setup
+    # ----------------------------------------------------------------------
     def _as_time(val):
-        """Convert '13:00' or integer hour → Python time()."""
+        """Convert input like '13:00' or 13 to Python time()."""
         if isinstance(val, time):
             return val
         if not val:
@@ -1513,17 +1530,17 @@ def get_doctor_next_available_slots(
     LUNCH_START = _as_time(globals().get("LUNCH_BREAK_START"))
     LUNCH_END   = _as_time(globals().get("LUNCH_BREAK_END"))
 
-    # ------------------------------------------------------------------
-    # 🔎 How many days into the future to search
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 🔍 Search horizon (days)
+    # ----------------------------------------------------------------------
     if search_days is None:
         search_days = int(globals().get("SEARCH_DAYS", 14))
 
-    # ------------------------------------------------------------------
-    # 🧠 Format human-friendly text
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 🎨 Friendly formatter for human speech
+    # ----------------------------------------------------------------------
     def _friendly(dt_local, now_local):
-        """Format like 'Thursday, May 16 at 9:00 AM'."""
+        """Create human-friendly string."""
         try:
             if dt_local.year != now_local.year:
                 return dt_local.strftime("%A, %B %-d, %Y at %-I:%M %p")
@@ -1531,20 +1548,29 @@ def get_doctor_next_available_slots(
         except:
             return dt_local.strftime("%A, %B %d at %I:%M %p")
 
-    # ------------------------------------------------------------------
-    # 🧮 Align cursor to next N-minute boundary
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # ⏫ Align any datetime to the N-minute appointment grid
+    # ----------------------------------------------------------------------
     def _align_up(dt_local, step_min, anchor):
+        """
+        Examples:
+            anchor = 8:00
+            dt = 8:07 → 8:30
+            dt = 8:31 → 9:00
+        """
         dt_local = dt_local.replace(second=0, microsecond=0)
+
         diff = int((dt_local - anchor).total_seconds() // 60)
+
         if diff <= 0:
-            return anchor
+            return anchor  # before opening → snap to wstart
+
         rem = diff % step_min
         return dt_local if rem == 0 else dt_local + timedelta(minutes=(step_min - rem))
 
-    # ------------------------------------------------------------------
-    # 🗓 Helper — add months safely
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 📅 Add months safely while avoiding overflow (Feb 30 → Feb 28)
+    # ----------------------------------------------------------------------
     def _add_months(dt, months):
         import calendar
         y, m = dt.year, dt.month + months
@@ -1553,13 +1579,12 @@ def get_doctor_next_available_slots(
         d = min(dt.day, calendar.monthrange(y, m)[1])
         return dt.replace(year=y, month=m, day=d)
 
-    # ------------------------------------------------------------------
-    # 🕒 Convert NOW and from_start_iso to local time
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 🕒 Convert `from_start_iso` → local time
+    # ----------------------------------------------------------------------
     now_utc = datetime.now(_pytz.UTC)
     now_local = now_utc.astimezone(tz_local)
 
-    # Parse incoming ISO timestamp
     try:
         req_utc = isoparse(from_start_iso)
         if req_utc.tzinfo is None:
@@ -1569,45 +1594,51 @@ def get_doctor_next_available_slots(
 
     req_local = req_utc.astimezone(tz_local)
 
-    # ------------------------------------------------------------------
-    # ⏩ Enforce NEXT_AVAILABLE_SLOT_OFFSET
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 🕒 ENFORCE FUTURE OFFSET (e.g., no slot allowed <30min from now)
+    # ----------------------------------------------------------------------
     min_allowed_local = now_local + timedelta(minutes=NEXT_AVAILABLE_SLOT_OFFSET)
-    if req_local < min_allowed_local:
-        debug_print("[get_doctor_next_available_slots] ⏩ adjusted to enforce offset")
-        req_local = min_allowed_local
 
-    # ------------------------------------------------------------------
-    # ⛔ FUTURE HORIZON (MAX months)
-    # ------------------------------------------------------------------
+    if req_local < min_allowed_local:
+        req_local = min_allowed_local   # enforce delay for safety
+
+    # ----------------------------------------------------------------------
+    # ✔ FIX: ALIGN THE ENFORCED TIME TO APPOINTMENT GRID
+    # ----------------------------------------------------------------------
+    anchor = req_local.replace(hour=WSTART, minute=0, second=0, microsecond=0)
+    req_local = _align_up(req_local, slot_step_minutes, anchor)
+
+    # ----------------------------------------------------------------------
+    # 📅 Build full search horizon in UTC
+    # ----------------------------------------------------------------------
     limit_end_utc = _add_months(now_utc, MAX_ADVANCE_MONTHS)
     search_end_utc = min(now_utc + timedelta(days=search_days), limit_end_utc)
 
-    # ------------------------------------------------------------------
-    # 🚀 Begin scanning in LOCAL TIME
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 🚀 Initialization
+    # ----------------------------------------------------------------------
     cur_local = req_local
     results = []
     seen = set()
 
-    # ======================================================================
-    # LOOP DAY BY DAY — scanning slot-by-slot in local time
-    # ======================================================================
+    # ==========================================================================
+    # MAIN SEARCH LOOP — scan future days and future slots
+    # ==========================================================================
     while cur_local.astimezone(_pytz.UTC) < search_end_utc and len(results) < limit:
 
-        # --------------------------------------------------------------
-        # Skip weekends/non-working days
-        # --------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # Skip weekends / closed days
+        # ------------------------------------------------------------------
         if cur_local.weekday() not in WORKING_DAYS:
-            debug_print("[get_doctor_next_available_slots] 💤 skipping non-working day")
+            debug_print("[get_doctor_next_available_slots] 💤 Skipping closed day")
             cur_local = (cur_local + timedelta(days=1)).replace(
                 hour=WSTART, minute=0, second=0, microsecond=0
             )
             continue
 
-        # --------------------------------------------------------------
-        # Build today's working windows
-        # --------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # Build today's working intervals
+        # ------------------------------------------------------------------
         windows = []
         for ws, we in work_hours:
             wstart = tz_local.localize(datetime(cur_local.year, cur_local.month, cur_local.day, ws, 0))
@@ -1616,56 +1647,61 @@ def get_doctor_next_available_slots(
 
         progressed = False
 
-        # --------------------------------------------------------------
-        # Scan each working window
-        # --------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # Iterate through working windows for today
+        # ------------------------------------------------------------------
         for wstart, wend in windows:
 
-            # If cursor before opening → jump to opening
+            # If before opening → jump to opening
             if cur_local < wstart:
                 cur_local = wstart
 
-            # Align to nearest grid (15/30/etc)
+            # Align cursor to appointment grid
             cur_local = _align_up(cur_local, slot_step_minutes, wstart)
 
-            # ----------------------------------------------------------
-            # Scan all slots inside this window
-            # ----------------------------------------------------------
+            # --------------------------------------------------------------
+            # SLOT-SCANNING LOOP
+            # --------------------------------------------------------------
             while cur_local + timedelta(minutes=duration_minutes) <= wend and len(results) < limit:
 
-                # Skip time below offset
+                # ------------------------------------------------------------------
+                # Skip below offset (e.g., less than 30 minutes ahead)
+                # ------------------------------------------------------------------
                 if cur_local < min_allowed_local:
                     cur_local += timedelta(minutes=slot_step_minutes)
                     continue
 
-                # Skip lunch overlap
+                # ------------------------------------------------------------------
+                # ✔ FIXED LUNCH-BREAK LOGIC
+                # ------------------------------------------------------------------
                 if LUNCH_START and LUNCH_END:
                     slot_end_t = (cur_local + timedelta(minutes=duration_minutes)).time()
-                    if cur_local.time() < LUNCH_END and slot_end_t > LUNCH_START:
+
+                    # Overlap rule: only skip if the slot actually intersects lunch
+                    if not (slot_end_t <= LUNCH_START or cur_local.time() >= LUNCH_END):
                         debug_print("[get_doctor_next_available_slots] 🍽 lunch skip")
-                        cur_local = tz_local.localize(datetime.combine(cur_local.date(), LUNCH_END))
+                        # Jump to lunch end, then re-align
+                        cur_local = tz_local.localize(
+                            datetime.combine(cur_local.date(), LUNCH_END)
+                        )
                         cur_local = _align_up(cur_local, slot_step_minutes, wstart)
                         continue
 
-                # Skip outside hourly boundaries
-                hour_dec = cur_local.hour + cur_local.minute / 60
-                if hour_dec < WSTART or hour_dec >= WEND:
-                    cur_local += timedelta(minutes=slot_step_minutes)
-                    continue
-
-                # Stop if beyond horizon
+                # ------------------------------------------------------------------
+                # FUTURE HORIZON STOP
+                # ------------------------------------------------------------------
                 if cur_local.astimezone(_pytz.UTC) > limit_end_utc:
                     return results
 
-                # -----------------------
-                # Convert slot to UTC
-                # -----------------------
+                # ------------------------------------------------------------------
+                # Convert slot to UTC for validation
+                # ------------------------------------------------------------------
                 start_iso = cur_local.astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
                 end_iso   = (cur_local + timedelta(minutes=duration_minutes)).astimezone(_pytz.UTC).isoformat().replace("+00:00", "Z")
 
-                # -----------------------
-                # Overlap detection only
-                # -----------------------
+                # ------------------------------------------------------------------
+                # ASK is_doctor_slot_available() if this slot is free
+                # ------------------------------------------------------------------
                 try:
                     if is_doctor_slot_available(doctor_name, start_iso, end_iso) and start_iso not in seen:
                         seen.add(start_iso)
@@ -1679,11 +1715,15 @@ def get_doctor_next_available_slots(
                 except Exception as e:
                     debug_print(f"[get_doctor_next_available_slots] ❌ availability check error: {e}")
 
-                # Move to next grid slot
+                # ------------------------------------------------------------------
+                # Move to NEXT slot in the grid
+                # ------------------------------------------------------------------
                 cur_local += timedelta(minutes=slot_step_minutes)
                 progressed = True
 
-        # If entire day produced no slot → advance to next day
+        # ------------------------------------------------------------------
+        # If nothing in this day → jump to next day at opening time
+        # ------------------------------------------------------------------
         if not progressed:
             cur_local = (cur_local + timedelta(days=1)).replace(
                 hour=WSTART, minute=0, second=0, microsecond=0
@@ -1691,7 +1731,6 @@ def get_doctor_next_available_slots(
 
     debug_print(f"[get_doctor_next_available_slots] ⏹ Finished with {len(results)} slot(s)")
     return results
-
 
 
 # ✅ OpenAI client initialization
@@ -5854,214 +5893,188 @@ def voice():
     #
     #   After 3 invalid or silent attempts → system apologizes → hangup.
     # ======================================================================
-
     elif stage == "confirm_time_choice":
 
-        # =====================================================================
-        # 🎤 USER-FACING CONSTANTS
-        # =====================================================================
-        MSG_FINAL_FAIL = "Sorry, I could not confirm your appointment. Please call again later."
-
-        debug_print(f"[confirm_time_choice] ▶ Entered — speech='{speech_result}'")
-
-        # =====================================================================
-        # 🧠 LOAD SESSION DATA
-        # =====================================================================
+        # -----------------------------------------------------------
+        # Load session and inputs
+        # -----------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
         alts = sd.get("alts_list", [])
+        doctor_name = sd.get("doctor_name", "")
+        raw_speech = (speech_result or "").strip()
+        dtmf = (request.values.get("Digits") or "").strip()
 
-        if not alts:
-            debug_print("[confirm_time_choice] ❗ ERROR: alts_list missing")
-            resp.say(gpt_speak("Sorry, something went wrong. Please call again."), VOICE)
-            resp.hangup()
+        debug_print("[confirm_time_choice] ▶ Entered")
+        debug_print(f"[confirm_time_choice] speech='{raw_speech}', dtmf='{dtmf}'")
+
+        # -----------------------------------------------------------
+        # 🔇 Silence Handling
+        # -----------------------------------------------------------
+        if not raw_speech and not dtmf:
+            sd["silence_retry"] = sd.get("silence_retry", 0) + 1
+            debug_print(f"[confirm_time_choice] 🔇 silence retry={sd['silence_retry']}")
+
+            if sd["silence_retry"] >= 3:
+                resp.say(gpt_speak("I didn’t hear anything. Goodbye."), VOICE)
+                resp.hangup()
+                return str(resp)
+
+            g = make_gather(build_slot_options_prompt(alts), input="speech dtmf", timeout=8, action="/voice")
+            resp.append(g)
             return str(resp)
 
-        # Normalize input
-        spoken = (speech_result or "").strip().lower()
-        digits = request.values.get("Digits", "").strip()
+        # -----------------------------------------------------------
+        # 1️⃣ DTMF Option Handling (1,2,3)
+        # -----------------------------------------------------------
+        if dtmf in ("1", "2", "3"):
+            idx = int(dtmf) - 1
 
-        debug_print(f"[confirm_time_choice] 🗣️ normalized='{spoken}'")
+            if idx < len(alts):
+                slot = alts[idx]
+                debug_print(f"[confirm_time_choice] 🟩 VALID DTMF → alt #{idx+1}")
 
+                # Save appointment but require confirmation
+                sd["pending_time"] = slot    
+                sd["stage"] = "confirm_specific_time"
 
-        # =====================================================================
-        # 🔇 1. SILENCE HANDLING (Twilio first-pass empty input)
-        # =====================================================================
-        if not spoken and not digits:
-            sd["silence_retry"] = sd.get("silence_retry", 0) + 1
-            debug_print(f"[confirm_time_choice] 🔇 Silence detected — retry {sd['silence_retry']}")
+                resp.say(
+                    gpt_speak(
+                        f"You selected {slot['friendly']}. Should I book this appointment?"
+                    ),
+                    VOICE
+                )
 
-            if sd["silence_retry"] <= 2:
-                msg = "<speak>"
-                for i, alt in enumerate(alts, 1):
-                    msg += f"Option {i}: {alt['friendly']}."
-                    msg += f"<break time='{MAX_SILENT_TIME}ms'/>"
-                msg += "Please choose one of these options or say yes or no.</speak>"
-
-                g = make_gather(msg, input="speech dtmf", timeout=8, action="/voice")
+                g = make_gather("Please say yes or no.", input="speech dtmf", timeout=8, action="/voice")
                 resp.append(g)
                 save_session(call_sid)
                 return str(resp)
 
-            resp.say(gpt_speak("I did not hear anything. Please call again later."), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
+            # Invalid number pressed
+            debug_print("[confirm_time_choice] ❌ invalid DTMF selection")
+            resp.say(gpt_speak(f"Option {dtmf} is not valid."), VOICE)
+            g = make_gather(build_slot_options_prompt(alts), input="speech dtmf", timeout=8, action="/voice")
+            resp.append(g)
             return str(resp)
 
+        # -----------------------------------------------------------
+        # 2️⃣ Spoken Time Parsing
+        # -----------------------------------------------------------
+        normalized = raw_speech.lower()
+        debug_print(f"[confirm_time_choice] normalized='{normalized}'")
 
-        # =====================================================================
-        # ✔ 2. YES CONFIRMATION (regex-safe)
-        # =====================================================================
-        import re
-        yes_patterns = [
-            r"\byes\b",
-            r"\bok\b",
-            r"\bokay\b",
-            r"\bconfirm\b",
-            r"\bcorrect\b",
-            r"\bthat works\b",
-            r"\bbook it\b"
-        ]
+        try:
+            parsed = smart_parse_time(normalized)
+        except:
+            parsed = None
 
-        if any(re.search(p, spoken) for p in yes_patterns):
-            debug_print("[confirm_time_choice] ✔ YES confirmed by user")
-            sd["stage"] = "book_appt_confirm"
-            save_session(call_sid)
-            resp.redirect("/voice")
+        # -----------------------------------------------------------
+        # ❌ If parsing failed
+        # -----------------------------------------------------------
+        if not parsed:
+            sd["confirm_retry"] = sd.get("confirm_retry", 0) + 1
+
+            resp.say(
+                gpt_speak(
+                    f"The time you selected — '{raw_speech}' — is not valid. "
+                    "Please select another time."
+                ),
+                VOICE
+            )
+
+            if sd["confirm_retry"] >= 3:
+                resp.say(gpt_speak("Too many invalid attempts. Goodbye."), VOICE)
+                resp.hangup()
+                return str(resp)
+
+            g = make_gather(build_slot_options_prompt(alts), input="speech dtmf", timeout=8, action="/voice")
+            resp.append(g)
             return str(resp)
 
+        # -----------------------------------------------------------
+        # 🧠 Parsed successfully → extract slot
+        # -----------------------------------------------------------
+        spoken_start = parsed["start"]
+        spoken_end   = parsed["end"]
+        friendly     = parsed["friendly"]
 
-        # =====================================================================
-        # ✔ 3. NO HANDLING (regex-safe, avoids “november” bug)
-        # =====================================================================
-        no_patterns = [
-            r"\bno\b",
-            r"\bnope\b",
-            r"\bchange\b",
-            r"\bdifferent\b",
-            r"\bwrong\b",
-            r"\bnot good\b",
-            r"\banother\b",
-            r"\bother\b"
-        ]
+        debug_print(f"[confirm_time_choice] parsed_start={spoken_start}")
 
-        if any(re.search(p, spoken) for p in no_patterns):
-            debug_print("[confirm_time_choice] ❗ User rejected appointment")
+        # -----------------------------------------------------------
+        # Check if the spoken time is EXACT MATCH with offered alt list
+        # -----------------------------------------------------------
+        match_idx = None
+        for i, s in enumerate(alts):
+            if s["start"] == spoken_start:
+                match_idx = i
+                break
 
-            sd["confirm_retry"] = 0
+        # -----------------------------------------------------------
+        # 🟩 CASE A: Spoken time matches one of the proposed options
+        # -----------------------------------------------------------
+        if match_idx is not None:
+            slot = alts[match_idx]
+            debug_print(f"[confirm_time_choice] 🟩 MATCHED offered alt #{match_idx+1}")
 
-            msg = "<speak>"
-            for i, alt in enumerate(alts, 1):
-                msg += f"Option {i}: {alt['friendly']}."
-                msg += f"<break time='{MAX_SILENT_TIME}ms'/>"
-            msg += "Please say an option number or press 1, 2, or 3.</speak>"
+            sd["pending_time"] = slot
+            sd["stage"] = "confirm_specific_time"
 
-            g = make_gather(msg, input="speech dtmf", timeout=8, action="/voice")
+            resp.say(
+                gpt_speak(
+                    f"You selected {slot['friendly']}. Should I book this appointment?"
+                ),
+                VOICE
+            )
+
+            g = make_gather("Please say yes or no.", input="speech dtmf", timeout=8, action="/voice")
             resp.append(g)
             save_session(call_sid)
             return str(resp)
 
+        # -----------------------------------------------------------
+        # 🟩 CASE B: Spoken time is NOT one of the suggestions
+        # But is still a valid future time → allow it.
+        # -----------------------------------------------------------
+        debug_print("[confirm_time_choice] Spoken time is valid but not suggested")
 
-        # =====================================================================
-        # ✔ 4. DTMF (1/2/3)
-        # =====================================================================
-        if digits in ("1", "2", "3"):
-            idx = int(digits) - 1
-            chosen = alts[idx]
+        # Must check availability in Google Calendar + JSON
+        if not is_doctor_slot_available(doctor_name, spoken_start, spoken_end):
+            # ❌ invalid actual slot
+            debug_print("[confirm_time_choice] ❌ spoken time not available")
+            sd["confirm_retry"] = sd.get("confirm_retry", 0) + 1
 
-            debug_print(f"[confirm_time_choice] 📟 DTMF option selected: {digits}")
+            resp.say(
+                gpt_speak(
+                    f"The time '{friendly}' is not available. Please choose another time."
+                ),
+                VOICE
+            )
 
-            sd["appointment_time"] = chosen
-            sd["stage"] = "book_appt_confirm"
-            save_session(call_sid)
-            resp.redirect("/voice")
+            g = make_gather(build_slot_options_prompt(alts), input="speech dtmf", timeout=8, action="/voice")
+            resp.append(g)
             return str(resp)
 
-
-        # =====================================================================
-        # ✔ 5. SPEECH OPTION (“option two”, “second”)
-        # =====================================================================
-        spoken_map = {
-            "1": ["option one", "first", "one"],
-            "2": ["option two", "second", "two"],
-            "3": ["option three", "third", "three"]
+        # -----------------------------------------------------------
+        # 🟩 CASE C: Spoken time is valid AND available
+        # Ask confirmation
+        # -----------------------------------------------------------
+        sd["pending_time"] = {
+            "start": spoken_start,
+            "end": spoken_end,
+            "friendly": friendly
         }
 
-        for num, variants in spoken_map.items():
-            if any(v in spoken for v in variants):
-                idx = int(num) - 1
-                chosen = alts[idx]
-
-                debug_print(f"[confirm_time_choice] 🗣️ Spoken option selected → {num}")
-
-                sd["appointment_time"] = chosen
-                sd["stage"] = "book_appt_confirm"
-                save_session(call_sid)
-                resp.redirect("/voice")
-                return str(resp)
-
-
-        # =====================================================================
-        # ✔ 6. TRUE DATE/TIME VERIFICATION (MATCH EXACT SLOT)
-        # =====================================================================
-        parsed = None
-        try:
-            parsed = smart_parse_time(spoken)
-            debug_print(f"[confirm_time_choice] 🧠 Parsed spoken time → {parsed}")
-        except:
-            parsed = None
-
-        if parsed:
-            spoken_start = parsed["start"]
-
-            for i, alt in enumerate(alts):
-                # Compare times within allowable drift (3 minutes)
-                if abs(isoparse(alt["start"]) - isoparse(spoken_start)) < timedelta(minutes=3):
-                    debug_print(f"[confirm_time_choice] 🟩 MATCH FOUND → alt #{i+1}")
-
-                    sd["appointment_time"] = alt
-                    sd["stage"] = "book_appt_confirm"
-                    save_session(call_sid)
-                    resp.redirect("/voice")
-                    return str(resp)
-
-
-        # =====================================================================
-        # ❌ 7. INVALID RESPONSE — SPELL OUT EXACT WRONG CHOICE
-        # =====================================================================
-        sd["confirm_retry"] = sd.get("confirm_retry", 0) + 1
-        wrong_input = spoken if spoken else "nothing"
-
-        debug_print(f"[confirm_time_choice] ❌ INVALID → '{wrong_input}' retry={sd['confirm_retry']}")
+        sd["stage"] = "confirm_specific_time"
 
         resp.say(
-            gpt_speak(
-                f"The choice you selected is not valid. "
-                f"You said '{wrong_input}'. "
-                "This does not match any available appointment times."
-            ),
+            gpt_speak(f"You selected {friendly}. Should I book this appointment?"),
             VOICE
         )
 
-        if sd["confirm_retry"] >= 3:
-            resp.say(gpt_speak(MSG_FINAL_FAIL), VOICE)
-            resp.hangup()
-            session_data.pop(call_sid, None)
-            return str(resp)
-
-
-        # =====================================================================
-        # 🔁 8. REPROMPT OPTIONS WITH SSML
-        # =====================================================================
-        msg = "<speak>"
-        for i, alt in enumerate(alts, 1):
-            msg += f"Option {i}: {alt['friendly']}."
-            msg += f"<break time='{MAX_SILENT_TIME}ms'/>"
-        msg += "Please choose one of these options or say yes or no.</speak>"
-
-        g = make_gather(msg, input="speech dtmf", timeout=8, action="/voice")
+        g = make_gather("Please say yes or no.", input="speech dtmf", timeout=8, action="/voice")
         resp.append(g)
         save_session(call_sid)
         return str(resp)
+
 
 
 
