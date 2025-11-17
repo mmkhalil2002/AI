@@ -5910,9 +5910,9 @@ def voice():
    
     elif stage == "confirm_time_choice":
 
-        # ------------------------------------------------------------------
-        # 🎙 AUDIO PROMPT MESSAGES (ALL DECLARED HERE)
-        # ------------------------------------------------------------------
+        # ---------------------------------------------------------
+        # 🎙 ALL AUDIO MESSAGES DECLARED AT THE TOP
+        # ---------------------------------------------------------
         MSG_REASK = (
             "I did not hear you. Here are the available appointment times again. "
         )
@@ -5922,23 +5922,22 @@ def voice():
         MSG_NOT_IN_LIST = (
             "The option you selected is not one of the available choices. "
         )
-        MSG_TOO_MANY_RETRIES = (
-            "I'm sorry, we were not able to confirm an appointment. "
-            "Please call us back to try again. Goodbye."
-        )
         MSG_CONFIRM_CHOICE = (
             "You selected {friendly}. Is this correct? Please say yes or no."
         )
+        MSG_TOO_MANY_RETRIES = (
+            "I'm sorry, we were not able to confirm an appointment. Goodbye."
+        )
 
-        # ------------------------------------------------------------------
-        # ⚙ CONFIG VALUES (LOCAL COPIES)
-        # ------------------------------------------------------------------
+        # ---------------------------------------------------------
+        # CONFIG
+        # ---------------------------------------------------------
         MAX_SILENT_TIME = int(globals().get("MAX_SILENT_TIME", 3))
         MAX_RETRIES = int(globals().get("MAX_TIME_RETRIES", 3))
 
-        # ------------------------------------------------------------------
-        # 🧠 LOAD SESSION & INPUTS
-        # ------------------------------------------------------------------
+        # ---------------------------------------------------------
+        # LOAD SESSION
+        # ---------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
         raw_speech = (speech_result or "").strip()
         raw_dtmf = (dtmf_digits or "").strip()
@@ -5948,40 +5947,37 @@ def voice():
 
         alts = sd.get("alts_list", [])
 
-        # Ensure counters exist
         sd.setdefault("retries", 0)
         sd.setdefault("silence_retry", 0)
         sd.setdefault("menu_presented", False)
 
-        # ================================================================
-        # 0️⃣ HANDLE FAKE SILENCE (Twilio initial empty POST)
-        # ================================================================
+        # =========================================================
+        # 0️⃣ FAKE SILENCE — first POST after Gather
+        # =========================================================
         if raw_speech == "" and raw_dtmf == "" and not sd["menu_presented"]:
             debug_print("[confirm_time_choice] 🔄 FIRST EMPTY POST → FAKE SILENCE IGNORED")
 
-            sd["menu_presented"] = True  # Next silence will be real
+            sd["menu_presented"] = True
 
-            # Rebuild menu
             g = Gather(
                 input="speech dtmf",
                 timeout=MAX_SILENT_TIME,
                 speechTimeout="auto",
-                action="/voice",
-                method="POST"
+                action="/voice"
             )
 
-            full_menu = "Here are the available appointment times. "
+            menu = "Here are the available appointment times. "
             for i, slot in enumerate(alts, start=1):
-                full_menu += f"Option {i}: {slot['friendly']}. "
-            full_menu += "Please say Option 1, Option 2, or Option 3. Or press 1, 2, or 3."
+                menu += f"Option {i}: {slot['friendly']}. "
+            menu += "Please say Option 1, 2, or 3. Or press 1, 2, or 3."
 
-            g.say(full_menu)
+            g.say(menu)
             resp.append(g)
             return str(resp)
 
-        # ================================================================
-        # 1️⃣ REAL SILENCE (menu already shown)
-        # ================================================================
+        # =========================================================
+        # 1️⃣ REAL SILENCE
+        # =========================================================
         if raw_speech == "" and raw_dtmf == "":
             sd["silence_retry"] += 1
             debug_print(f"[confirm_time_choice] 🔇 REAL silence retry={sd['silence_retry']}")
@@ -5991,43 +5987,33 @@ def voice():
                 resp.hangup()
                 return str(resp)
 
-            # replay full menu
             g = Gather(
                 input="speech dtmf",
                 timeout=MAX_SILENT_TIME,
                 speechTimeout="auto",
-                action="/voice",
-                method="POST"
+                action="/voice"
             )
-
             menu = MSG_REASK
             for i, slot in enumerate(alts, start=1):
                 menu += f"Option {i}: {slot['friendly']}. "
-            menu += "Please say Option 1, Option 2, or Option 3. Or press 1, 2, or 3."
-
             g.say(menu)
             resp.append(g)
             return str(resp)
 
-        # ================================================================
-        # 2️⃣ USER SELECTED DTMF OPTION (1,2,3)
-        # ================================================================
+        # =========================================================
+        # 2️⃣ DTMF selection
+        # =========================================================
         if raw_dtmf in ("1", "2", "3"):
             idx = int(raw_dtmf) - 1
 
-            # Invalid selection
             if idx >= len(alts):
                 sd["retries"] += 1
-                debug_print("[confirm_time_choice] ❌ DTMF NOT IN LIST")
-
                 if sd["retries"] >= MAX_RETRIES:
                     resp.say(MSG_TOO_MANY_RETRIES)
                     resp.hangup()
                     return str(resp)
 
                 resp.say(MSG_NOT_IN_LIST)
-
-                # replay full menu
                 g = Gather(input="speech dtmf", timeout=MAX_SILENT_TIME, action="/voice")
                 menu = ""
                 for i, slot in enumerate(alts, start=1):
@@ -6036,21 +6022,29 @@ def voice():
                 resp.append(g)
                 return str(resp)
 
-            # Valid → confirm
+            # VALID CHOICE → CONFIRM
             chosen = alts[idx]
             sd["appointment_time"] = chosen
 
-            resp.say(MSG_CONFIRM_CHOICE.format(friendly=chosen["friendly"]))
+            # 🔥 MUST USE GATHER HERE TO LET USER SAY YES/NO
+            g = Gather(
+                input="speech",
+                timeout=MAX_SILENT_TIME,
+                speechTimeout="auto",
+                action="/voice"
+            )
+            g.say(MSG_CONFIRM_CHOICE.format(friendly=chosen["friendly"]))
+            resp.append(g)
+
             sd["stage"] = "confirm_specific_choice"
             return str(resp)
 
-        # ================================================================
-        # 3️⃣ USER SPOKE A DATE/TIME (“October 8 at 9 AM”)
-        # ================================================================
+        # =========================================================
+        # 3️⃣ USER SPOKE A DATE/TIME
+        # =========================================================
         parsed = smart_parse_time(raw_speech)
-        debug_print(f"[confirm_time_choice] 🧠 Parsed spoken time → {parsed}")
+        debug_print(f"[confirm_time_choice] 🧠 Parsed → {parsed}")
 
-        # Invalid or past date spoken
         if not parsed or parsed.get("is_past"):
             sd["retries"] += 1
 
@@ -6060,9 +6054,7 @@ def voice():
                 return str(resp)
 
             resp.say(MSG_INVALID)
-
-            # replay menu
-            g = Gather(input="speech dtmf", timeout=MAX_SILENT_TIME, action="/voice")
+            g = Gather(input="speech", timeout=MAX_SILENT_TIME, action="/voice")
             menu = ""
             for i, slot in enumerate(alts, start=1):
                 menu += f"Option {i}: {slot['friendly']}. "
@@ -6070,23 +6062,41 @@ def voice():
             resp.append(g)
             return str(resp)
 
-        # ================================================================
-        # 4️⃣ SPOKEN TIME EXACTLY MATCHES ONE OF THE ALTS
-        # ================================================================
+        # =========================================================
+        # 4️⃣ MATCHES ONE OF THE AVAILABLE OPTIONS
+        # =========================================================
         spoken_start = parsed["start"]
         match = next((slot for slot in alts if slot["start"] == spoken_start), None)
 
         if match:
             sd["appointment_time"] = match
-            resp.say(MSG_CONFIRM_CHOICE.format(friendly=match["friendly"]))
+
+            g = Gather(
+                input="speech",
+                timeout=MAX_SILENT_TIME,
+                speechTimeout="auto",
+                action="/voice"
+            )
+            g.say(MSG_CONFIRM_CHOICE.format(friendly=match["friendly"]))
+            resp.append(g)
+
             sd["stage"] = "confirm_specific_choice"
             return str(resp)
 
-        # ================================================================
-        # 5️⃣ SPOKEN TIME IS VALID BUT NOT IN LIST → STILL ALLOW IT
-        # ================================================================
+        # =========================================================
+        # 5️⃣ VALID TIME NOT IN LIST → STILL ACCEPT
+        # =========================================================
         sd["appointment_time"] = parsed
-        resp.say(MSG_CONFIRM_CHOICE.format(friendly=parsed["friendly"]))
+
+        g = Gather(
+            input="speech",
+            timeout=MAX_SILENT_TIME,
+            speechTimeout="auto",
+            action="/voice"
+        )
+        g.say(MSG_CONFIRM_CHOICE.format(friendly=parsed["friendly"]))
+        resp.append(g)
+
         sd["stage"] = "confirm_specific_choice"
         return str(resp)
 
