@@ -415,7 +415,7 @@ LUNCH_BREAK_END = time(
 #   • Ensures adequate preparation time and avoids last-minute bookings.
 #   • Example:
 #       If now = 8:15 AM and offset = 30, first slot ≥ 8:45 AM.
-NEXT_AVAILABLE_SLOT_OFFSET = int(os.getenv("NEXT_AVAILABLE_SLOT_OFFSET", 30))
+NEXT_AVAILABLE_SLOT_OFFSET = int(os.getenv("NEXT_AVAILABLE_SLOT_OFFSET", 20))
 
 # ----------------------------------------------------------------------
 # 🏥 Global Insurance Companies
