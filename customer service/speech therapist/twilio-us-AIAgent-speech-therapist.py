@@ -5971,7 +5971,7 @@ def voice():
             # Empty gather for real input
             g = Gather(
                 input="speech dtmf",
-                timeout=MAX_SILENT_TIME,
+                timeout=20,
                 speechTimeout="auto",
                 action="/voice",
                 method="POST"
