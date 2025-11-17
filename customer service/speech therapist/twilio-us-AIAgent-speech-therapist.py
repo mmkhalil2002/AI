@@ -6124,59 +6124,57 @@ def voice():
 
     elif stage == "confirm_specific_choice":
 
-        # ===============================================================
-        # 🎙 ALL AUDIO MESSAGES DECLARED AT THE TOP
-        # ===============================================================
+        # --------------------------------------------------------------
+        # 🎙️ ALL MESSAGES DECLARED HERE
+        # --------------------------------------------------------------
         MSG_SILENCE_RETRY = (
             "I didn't hear your answer. Should I book this appointment?"
         )
-
         MSG_MAX_RETRIES = (
             "I'm sorry, I still could not confirm your choice. Goodbye."
         )
-
         MSG_CONFIRM_REQUEST = (
-            "Should I book this appointment?"
+            "Should I book this appointment? Please say yes or no."
         )
-
         MSG_CONFIRM_ACK = (
-            "Great, I will book this appointment now."
+            "Great. I will book this appointment now."
         )
-
         MSG_REJECT_ACK = (
             "No problem. Please choose another available time."
         )
-
         MSG_INVALID = (
-            "I did not understand that. Please say yes if this appointment is correct, "
+            "I did not understand that. Please say yes if the appointment is correct, "
             "or no if you want to choose another time."
         )
-
         MSG_ERROR_NO_APPT = (
             "There seems to be an error retrieving your appointment time. Let's try again."
         )
 
-        # ===============================================================
-        # 📌 SAFE SESSION INITIALIZATION
-        # ===============================================================
+        # --------------------------------------------------------------
+        # 📌 Load session
+        # --------------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
-        sd.setdefault("confirm_retry", 0)
-        sd.setdefault("confirm_prompt_played", False)
 
-        # ===============================================================
-        # 🔧 CONFIG LIMITS
-        # ===============================================================
+        # --------------------------------------------------------------
+        # 🔢 Load retry limit
+        # --------------------------------------------------------------
         MAX_RETRIES = int(globals().get("MAX_CONFIRM_RETRIES", 3))
 
-        # ===============================================================
-        # 🗣 Normalize & log speech input
-        # ===============================================================
+        # --------------------------------------------------------------
+        # 🧹 Normalize speech (remove punctuation)
+        # --------------------------------------------------------------
         raw = (speech_result or "").strip().lower()
-        debug_print(f"[confirm_specific_choice] speech='{raw}'")
 
-        # ===============================================================
-        # 🗓 Load the appointment being confirmed
-        # ===============================================================
+        import re
+        # Remove all punctuation: "yes.", "yes!", "ok," → "yes"
+        raw_clean = re.sub(r"[^a-z ]", "", raw)
+        raw_clean = re.sub(r"\s+", " ", raw_clean).strip()
+
+        debug_print(f"[confirm_specific_choice] raw='{raw}' → clean='{raw_clean}'")
+
+        # --------------------------------------------------------------
+        # 📌 Retrieve chosen appointment
+        # --------------------------------------------------------------
         appt = sd.get("appointment_time")
 
         if not appt:
@@ -6184,67 +6182,59 @@ def voice():
             sd["stage"] = "confirm_time_choice"
             return str(resp)
 
-        # ===============================================================
-        # 0️⃣ FAKE SILENCE (Twilio's FIRST empty POST)
-        # ===============================================================
-        if raw == "" and not sd["confirm_prompt_played"]:
-            debug_print("[confirm_specific_choice] 🔄 FAKE silence ignored")
-            sd["confirm_prompt_played"] = True
-            resp.say(MSG_CONFIRM_REQUEST, VOICE)
-            return str(resp)
+        # --------------------------------------------------------------
+        # 🔇 SILENCE OR EMPTY INPUT
+        # --------------------------------------------------------------
+        if not raw_clean:
+            retry = sd.get("confirm_retry", 0) + 1
+            sd["confirm_retry"] = retry
 
-        # ===============================================================
-        # 1️⃣ REAL SILENCE (user spoke nothing after prompt)
-        # ===============================================================
-        if raw == "":
-            sd["confirm_retry"] += 1
-            debug_print(f"[confirm_specific_choice] 🔇 REAL silence retry={sd['confirm_retry']}")
-
-            if sd["confirm_retry"] >= MAX_RETRIES:
+            if retry >= MAX_RETRIES:
                 resp.say(MSG_MAX_RETRIES, VOICE)
                 sd["stage"] = "hangup"
                 return str(resp)
 
+            # Re-ask confirmation
             resp.say(MSG_SILENCE_RETRY, VOICE)
-            sd["confirm_prompt_played"] = True
             return str(resp)
 
-        # ===============================================================
-        # 2️⃣ YES RESPONSES
-        # ===============================================================
+        # --------------------------------------------------------------
+        # 👍 YES RESPONSES
+        # --------------------------------------------------------------
         YES_WORDS = {
-            "yes", "yeah", "yep", "correct",
-            "book", "confirm", "sure", "ok", "okay", "that's fine"
+            "yes", "yeah", "yep", "correct", "book", "confirm", "sure", "ok", "okay"
         }
 
-        if any(word in raw for word in YES_WORDS):
+        if any(y in raw_clean for y in YES_WORDS):
             resp.say(MSG_CONFIRM_ACK, VOICE)
             sd["stage"] = "book_appt_confirm"
             return str(resp)
 
-        # ===============================================================
-        # 3️⃣ NO RESPONSES
-        # ===============================================================
+        # --------------------------------------------------------------
+        # ❌ NO RESPONSES
+        # --------------------------------------------------------------
         NO_WORDS = {
-            "no", "nope", "change", "another", "different",
-            "incorrect", "not correct", "choose again"
+            "no", "nope", "change", "another", "different", "not correct", "incorrect"
         }
 
-        if any(word in raw for word in NO_WORDS):
+        if any(n in raw_clean for n in NO_WORDS):
             resp.say(MSG_REJECT_ACK, VOICE)
-            sd["confirm_retry"] = 0
             sd["stage"] = "confirm_time_choice"
             return str(resp)
 
-        # ===============================================================
-        # 4️⃣ INVALID RESPONSE
-        # ===============================================================
+        # --------------------------------------------------------------
+        # ❓ INVALID RESPONSE → ASK AGAIN
+        # --------------------------------------------------------------
+        retry = sd.get("confirm_retry", 0) + 1
+        sd["confirm_retry"] = retry
+
+        if retry >= MAX_RETRIES:
+            resp.say(MSG_MAX_RETRIES, VOICE)
+            sd["stage"] = "hangup"
+            return str(resp)
+
         resp.say(MSG_INVALID, VOICE)
-        resp.say(MSG_CONFIRM_REQUEST, VOICE)
-        sd["confirm_prompt_played"] = True
         return str(resp)
-
-
 
 
 
