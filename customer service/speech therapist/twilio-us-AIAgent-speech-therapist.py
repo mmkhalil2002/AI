@@ -5881,13 +5881,13 @@ def voice():
         sd["appointment_time"] = {
             "start": appointment_start,
             "end": appointment_end,
-            "friendly": friendly,   # ✅ keep friendly label for later
+            "friendly": friendly,
         }
         sd["stage"] = "confirm_time_choice"
 
-        # ✅ Also reset confirm-time state so confirm_time_choice starts clean
+        # ✅ Reset confirm-time state so confirm_time_choice starts clean
         sd["confirm_mode"] = False
-        sd["alts_list"] = sd.get("alts_list", [])
+        sd["alts_list"] = []
         sd["alts_spoken"] = False
         sd["silence_retry"] = 0
         sd["retry_count"] = 0
@@ -5897,6 +5897,7 @@ def voice():
         save_session(call_sid)
         resp.redirect("/voice", method="POST")
         return str(resp)
+
 
 
 
@@ -5937,15 +5938,18 @@ def voice():
         # 🎤 MESSAGE DECLARATIONS
         # --------------------------------------------------------------
         MSG_MENU_INTRO = "The next available appointments are: "
-        MSG_MENU_END = "Please say the appointment date and time you prefer. For example, Monday December first at 9 AM."
+        MSG_MENU_END = (
+            "Please say the appointment date and time you prefer. "
+            "For example, Monday December first at 9 AM."
+        )
         MSG_CONFIRM = (
             "You selected {friendly}. "
             "Please say YES to confirm or NO to cancel."
         )
         MSG_SILENCE_TIME = "I did not hear you. Please say the appointment time again."
         MSG_INVALID_TIME = "I did not understand that time. Please say the appointment time again."
-        MSG_PAST = "This time has already passed. Please say another appointment time."
-        MSG_RESERVED = "This time is already reserved. Please say another appointment time."
+        MSG_PAST = "This time has already passed."
+        MSG_RESERVED = "This time is already reserved."
         MSG_GOODBYE = "No problem. Goodbye."
         MSG_TOO_MANY = "Sorry, we were unable to complete your request. Goodbye."
 
@@ -5969,13 +5973,13 @@ def voice():
         sd.setdefault("alts_spoken", False)      # True → we already read out alternatives
 
         alts = sd.get("alts_list", [])           # alternatives filled by collect_book_time_date
+        appt = sd.get("appointment_time")
 
         raw_speech = (speech_result or "").strip().lower()
         debug_print(f"[confirm_time_choice] speech='{raw_speech}'")
 
         # 🔢 Also capture DTMF (keys) if available
         raw_dtmf = (digits or "").strip() if "digits" in locals() or "digits" in globals() else ""
-        # Optional: log DTMF as well
         debug_print(f"[confirm_time_choice] dtmf='{raw_dtmf}'")
 
         # 🧹 Normalize speech text for YES/NO matching (remove punctuation, split into tokens)
@@ -5983,8 +5987,37 @@ def voice():
         speech_clean = _re.sub(r"\s+", " ", speech_clean).strip()
         tokens = speech_clean.split() if speech_clean else []
 
+        # Helper: speak a list of alternative slots and wait for user response
+        def _speak_alts_and_wait(alts_list):
+            menu_msg = MSG_MENU_INTRO
+            for i, slot in enumerate(alts_list, start=1):
+                # e.g. "Option 1: Monday, December 1 at 9 AM."
+                menu_msg += f"Option {i}: {slot['friendly']}. "
+            menu_msg += MSG_MENU_END
+
+            g_local = Gather(input="speech", timeout=8, action="/voice", method="POST")
+            g_local.say(menu_msg, voice=VOICE)
+            resp.append(g_local)
+
         # ==============================================================
-        # 0️⃣ CONFIRMATION MODE — EXPECTING YES / NO
+        # 0️⃣ FIRST ENTRY AFTER A VALID TIME (no alts, not in confirm_mode)
+        #    → ASK YES/NO ABOUT EXISTING appointment_time
+        # ==============================================================
+        if appt and not sd["confirm_mode"] and not alts:
+            debug_print("[confirm_time_choice] initial confirm for existing appointment_time")
+
+            sd["confirm_mode"] = True
+            sd["silence_retry"] = 0
+            sd["retry_count"] = 0
+
+            friendly = appt.get("friendly", "your appointment time")
+            g = Gather(input="speech dtmf", timeout=5, action="/voice", method="POST")
+            g.say(MSG_CONFIRM.format(friendly=friendly), voice=VOICE)
+            resp.append(g)
+            return str(resp)
+
+        # ==============================================================
+        # 1️⃣ CONFIRMATION MODE — EXPECTING YES / NO
         # ==============================================================
         if sd["confirm_mode"]:
             debug_print("[confirm_time_choice] IN CONFIRMATION MODE")
@@ -6014,7 +6047,7 @@ def voice():
             is_yes = is_yes_speech or is_yes_dtmf
             is_no  = is_no_speech or is_no_dtmf
 
-            # ✅ YES → go to booking stage
+            # ✅ YES → go to booking stage (new request)
             if is_yes and not is_no:
                 debug_print("[confirm_time_choice] YES → book_appt_confirm")
                 sd["confirm_mode"] = False
@@ -6023,7 +6056,7 @@ def voice():
                 sd["alts_spoken"] = False
                 sd["stage"] = "book_appt_confirm"
 
-                # ✅ IMPORTANT: redirect so Twilio calls /voice again and runs book_appt_confirm
+                save_session(call_sid)
                 resp.redirect("/voice", method="POST")
                 return str(resp)
 
@@ -6046,35 +6079,24 @@ def voice():
             return str(resp)
 
         # ==============================================================
-        # 1️⃣ FIRST ENTRY AFTER ALTERNATIVES GENERATED
+        # 2️⃣ FIRST ENTRY AFTER ALTERNATIVES GENERATED (alts_list)
         #    → READ ALTERNATIVES & ASK FOR A NEW TIME
         # ==============================================================
         if not sd["alts_spoken"] and alts:
-            debug_print("[confirm_time_choice] first entry → read alternatives")
+            debug_print("[confirm_time_choice] first entry → read alternatives from alts_list")
 
-            # Build a natural sentence with all options
-            menu_msg = MSG_MENU_INTRO
-            for i, slot in enumerate(alts, start=1):
-                # e.g. "Option 1: Monday, December 1 at 9 AM."
-                menu_msg += f"Option {i}: {slot['friendly']}. "
-            menu_msg += MSG_MENU_END
-
-            # Mark that we have spoken alternatives
             sd["alts_spoken"] = True
             sd["silence_retry"] = 0
             sd["retry_count"] = 0
 
-            # Use Gather so Twilio waits for the user to say a NEW time
-            g = Gather(input="speech", timeout=8, action="/voice", method="POST")
-            g.say(menu_msg, voice=VOICE)
-            resp.append(g)
+            _speak_alts_and_wait(alts)
             return str(resp)
 
         # ==============================================================
-        # 2️⃣ EXPECTING USER TO SAY A FULL DATE/TIME
+        # 3️⃣ EXPECTING USER TO SAY A FULL DATE/TIME
         # ==============================================================
 
-        # 🔇 Silence (after alternatives already spoken)
+        # 🔇 Silence (no speech at all)
         if not raw_speech:
             sd["silence_retry"] += 1
             debug_print(f"[confirm_time_choice] time-input silence #{sd['silence_retry']}")
@@ -6090,7 +6112,7 @@ def voice():
             return str(resp)
 
         # --------------------------------------------------------------
-        # 3️⃣ USER SPOKE A FULL DATE/TIME → PARSE IT
+        # 4️⃣ USER SPOKE A FULL DATE/TIME → PARSE IT
         # --------------------------------------------------------------
         parsed = smart_parse_time(raw_speech)
         debug_print(f"[confirm_time_choice] PARSED → {parsed}")
@@ -6111,30 +6133,84 @@ def voice():
             return str(resp)
 
         # --------------------------------------------------------------
-        # 4️⃣ PAST CHECK
+        # 5️⃣ PAST CHECK → SUGGEST ALTERNATIVES IF POSSIBLE
         # --------------------------------------------------------------
         if parsed.get("is_past"):
-            debug_print("[confirm_time_choice] time is in the past")
+            debug_print("[confirm_time_choice] time is in the past → suggest alternatives if possible")
 
-            g = Gather(input="speech", timeout=5, action="/voice", method="POST")
-            g.say(MSG_PAST, voice=VOICE)
-            resp.append(g)
+            doctor = sd.get("doctor_name")
+            now_utc = _pytz.UTC.localize(_dt.utcnow())
+
+            alts = []
+            if doctor:
+                try:
+                    alts = get_doctor_next_available_slots(
+                        doctor,
+                        from_start_iso=now_utc.isoformat(),
+                        limit=3,
+                    )
+                    debug_print(f"[confirm_time_choice] past-time alts count={len(alts)}")
+                except Exception as e:
+                    debug_print(f"[confirm_time_choice] ⚠️ get_doctor_next_available_slots failed → {e}")
+                    alts = []
+
+            if not alts:
+                # fallback – no alts → simple re-prompt
+                g = Gather(input="speech", timeout=5, action="/voice", method="POST")
+                g.say(MSG_PAST + " Please say another appointment time.", voice=VOICE)
+                resp.append(g)
+                return str(resp)
+
+            # ✅ We have alternative slots → store and read them out
+            sd["alts_list"] = alts
+            sd["confirm_mode"] = False
+            sd["alts_spoken"] = True   # we are about to speak them now
+            sd["silence_retry"] = 0
+            sd["retry_count"] = 0
+
+            _speak_alts_and_wait(alts)
             return str(resp)
 
         # --------------------------------------------------------------
-        # 5️⃣ RESERVED CHECK — SLOT ALREADY BOOKED?
+        # 6️⃣ RESERVED CHECK — SLOT ALREADY BOOKED? → SUGGEST ALTS
         # --------------------------------------------------------------
         doctor = sd.get("doctor_name")
         if doctor and not is_doctor_slot_available(doctor, parsed["start"], parsed["end"]):
-            debug_print("[confirm_time_choice] time already reserved")
+            debug_print("[confirm_time_choice] time already reserved → suggest alternatives if possible")
 
-            g = Gather(input="speech", timeout=5, action="/voice", method="POST")
-            g.say(MSG_RESERVED, voice=VOICE)
-            resp.append(g)
+            now_utc = _pytz.UTC.localize(_dt.utcnow())
+
+            alts = []
+            try:
+                alts = get_doctor_next_available_slots(
+                    doctor,
+                    from_start_iso=now_utc.isoformat(),
+                    limit=3,
+                )
+                debug_print(f"[confirm_time_choice] reserved-time alts count={len(alts)}")
+            except Exception as e:
+                debug_print(f"[confirm_time_choice] ⚠️ get_doctor_next_available_slots failed → {e}")
+                alts = []
+
+            if not alts:
+                # fallback – no alts → simple re-prompt
+                g = Gather(input="speech", timeout=5, action="/voice", method="POST")
+                g.say(MSG_RESERVED + " Please say another appointment time.", voice=VOICE)
+                resp.append(g)
+                return str(resp)
+
+            # ✅ We have alternative slots → store and read them out
+            sd["alts_list"] = alts
+            sd["confirm_mode"] = False
+            sd["alts_spoken"] = True
+            sd["silence_retry"] = 0
+            sd["retry_count"] = 0
+
+            _speak_alts_and_wait(alts)
             return str(resp)
 
         # --------------------------------------------------------------
-        # 6️⃣ VALID & FREE SLOT → REPEAT TIME AND ASK YES/NO
+        # 7️⃣ VALID & FREE SLOT → REPEAT TIME AND ASK YES/NO
         # --------------------------------------------------------------
         debug_print("[confirm_time_choice] valid, free slot → ask YES/NO")
 
@@ -6148,6 +6224,7 @@ def voice():
         g.say(MSG_CONFIRM.format(friendly=parsed["friendly"]), voice=VOICE)
         resp.append(g)
         return str(resp)
+
 
 
 
