@@ -5952,14 +5952,25 @@ def voice():
         raw_speech = (speech_result or "").strip().lower()
         debug_print(f"[confirm_time_choice] speech='{raw_speech}'")
 
+        # 🔢 Also capture DTMF (keys) if available
+        raw_dtmf = (digits or "").strip() if "digits" in locals() or "digits" in globals() else ""
+        # Optional: log DTMF as well
+        debug_print(f"[confirm_time_choice] dtmf='{raw_dtmf}'")
+
+        # 🧹 Normalize speech text for YES/NO matching (remove punctuation, split into tokens)
+        import re as _re
+        speech_clean = _re.sub(r"[^\w\s]", " ", raw_speech)   # remove .,?! etc.
+        speech_clean = _re.sub(r"\s+", " ", speech_clean).strip()
+        tokens = speech_clean.split() if speech_clean else []
+
         # ==============================================================
         # 0️⃣ CONFIRMATION MODE — EXPECTING YES / NO
         # ==============================================================
         if sd["confirm_mode"]:
             debug_print("[confirm_time_choice] IN CONFIRMATION MODE")
 
-            # 🔇 Silence while waiting for YES/NO
-            if not raw_speech:
+            # 🔇 Silence while waiting for YES/NO (no speech and no key press)
+            if not raw_speech and not raw_dtmf:
                 sd["silence_retry"] += 1
                 debug_print(f"[confirm_time_choice] confirm silence #{sd['silence_retry']}")
 
@@ -5968,13 +5979,23 @@ def voice():
                     resp.hangup()
                     return str(resp)
 
-                g = Gather(input="speech", timeout=5, action="/voice", method="POST")
+                # Accept both speech and keys for YES/NO
+                g = Gather(input="speech dtmf", timeout=5, action="/voice", method="POST")
                 g.say("Please say YES to confirm or NO to cancel.", voice=VOICE)
                 resp.append(g)
                 return str(resp)
 
+            # ✅ Detect YES / NO from speech tokens and keys
+            is_yes_speech = any(t in YES_WORDS for t in tokens)
+            is_no_speech  = any(t in NO_WORDS for t in tokens)
+            is_yes_dtmf   = (raw_dtmf == "1")    # key 1 = YES / confirm
+            is_no_dtmf    = (raw_dtmf == "2")    # key 2 = NO / cancel
+
+            is_yes = is_yes_speech or is_yes_dtmf
+            is_no  = is_no_speech or is_no_dtmf
+
             # ✅ YES → go to booking stage
-            if raw_speech in YES_WORDS:
+            if is_yes and not is_no:
                 debug_print("[confirm_time_choice] YES → book_appt_confirm")
                 sd["confirm_mode"] = False
                 sd["silence_retry"] = 0
@@ -5984,7 +6005,7 @@ def voice():
                 return str(resp)   # next webhook will execute book_appt_confirm
 
             # ❌ NO → cancel and hang up
-            if raw_speech in NO_WORDS:
+            if is_no and not is_yes:
                 debug_print("[confirm_time_choice] NO → hangup")
                 sd["confirm_mode"] = False
                 sd["silence_retry"] = 0
@@ -5996,7 +6017,7 @@ def voice():
 
             # ❓ Invalid YES/NO → repeat question
             debug_print("[confirm_time_choice] invalid YES/NO → re-prompt")
-            g = Gather(input="speech", timeout=5, action="/voice", method="POST")
+            g = Gather(input="speech dtmf", timeout=5, action="/voice", method="POST")
             g.say("Please say YES to confirm or NO to cancel.", voice=VOICE)
             resp.append(g)
             return str(resp)
@@ -6099,11 +6120,12 @@ def voice():
         sd["silence_retry"] = 0
         sd["retry_count"] = 0
 
-        # Now we *must* use Gather so Twilio waits for YES/NO
-        g = Gather(input="speech", timeout=5, action="/voice", method="POST")
+        # Now we *must* use Gather so Twilio waits for YES/NO (speech or keys)
+        g = Gather(input="speech dtmf", timeout=5, action="/voice", method="POST")
         g.say(MSG_CONFIRM.format(friendly=parsed["friendly"]), voice=VOICE)
         resp.append(g)
         return str(resp)
+
 
 
 
