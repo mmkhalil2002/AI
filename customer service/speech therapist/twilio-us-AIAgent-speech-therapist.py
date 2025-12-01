@@ -5908,20 +5908,21 @@ def voice():
     #
     #   🔥 THIS IS NOW THE ONLY STAGE NEEDED FOR APPOINTMENT CONFIRMATION.
     # ======================================================================
-
     elif stage == "confirm_time_choice":
 
-        debug_print("=== ENTER confirm_time_choice (FINAL SIMPLE YES/NO) ===")
+        debug_print("=== ENTER confirm_time_choice (ALTS + SIMPLE YES/NO) ===")
 
         # --------------------------------------------------------------
         # 🎤 MESSAGE DECLARATIONS
         # --------------------------------------------------------------
+        MSG_MENU_INTRO = "The next available appointments are: "
+        MSG_MENU_END = "Please say the appointment date and time you prefer. For example, Monday December first at 9 AM."
         MSG_CONFIRM = (
             "You selected {friendly}. "
             "Please say YES to confirm or NO to cancel."
         )
-        MSG_SILENCE = "I did not hear you. Please say the appointment time again."
-        MSG_INVALID = "I did not understand that. Please say the appointment time again."
+        MSG_SILENCE_TIME = "I did not hear you. Please say the appointment time again."
+        MSG_INVALID_TIME = "I did not understand that time. Please say the appointment time again."
         MSG_PAST = "This time has already passed. Please say another appointment time."
         MSG_RESERVED = "This time is already reserved. Please say another appointment time."
         MSG_GOODBYE = "No problem. Goodbye."
@@ -5931,17 +5932,22 @@ def voice():
         YES_WORDS = {"yes", "yeah", "yep", "ok", "okay", "sure", "confirm", "book"}
         NO_WORDS = {"no", "nope", "cancel", "stop"}
 
-        # Limits (taken from globals with fallback)
+        # Limits (read from globals with defaults)
         MAX_SILENT = int(globals().get("MAX_SILENT_TIME", 3))
         MAX_RETRIES = int(globals().get("MAX_CONFIRM_RETRIES", 3))
 
         # --------------------------------------------------------------
-        # 📌 LOAD SESSION AND NORMALIZE INPUT
+        # 📌 LOAD SESSION & INPUT
         # --------------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
-        sd.setdefault("silence_retry", 0)      # how many times user was silent
-        sd.setdefault("retry_count", 0)        # invalid time retries
-        sd.setdefault("confirm_mode", False)   # True → expecting YES/NO now
+
+        # flags and counters
+        sd.setdefault("silence_retry", 0)        # silence while asking for time or YES/NO
+        sd.setdefault("retry_count", 0)          # invalid time retries
+        sd.setdefault("confirm_mode", False)     # True → waiting for YES/NO
+        sd.setdefault("alts_spoken", False)      # True → we already read out alternatives
+
+        alts = sd.get("alts_list", [])           # alternatives filled by collect_book_time_date
 
         raw_speech = (speech_result or "").strip().lower()
         debug_print(f"[confirm_time_choice] speech='{raw_speech}'")
@@ -5952,7 +5958,7 @@ def voice():
         if sd["confirm_mode"]:
             debug_print("[confirm_time_choice] IN CONFIRMATION MODE")
 
-            # 🔇 Silence while we are waiting for YES/NO
+            # 🔇 Silence while waiting for YES/NO
             if not raw_speech:
                 sd["silence_retry"] += 1
                 debug_print(f"[confirm_time_choice] confirm silence #{sd['silence_retry']}")
@@ -5962,20 +5968,20 @@ def voice():
                     resp.hangup()
                     return str(resp)
 
-                # Re-ask YES/NO with a new Gather
                 g = Gather(input="speech", timeout=5, action="/voice", method="POST")
                 g.say("Please say YES to confirm or NO to cancel.", voice=VOICE)
                 resp.append(g)
                 return str(resp)
 
-            # ✅ YES → proceed to booking
+            # ✅ YES → go to booking stage
             if raw_speech in YES_WORDS:
                 debug_print("[confirm_time_choice] YES → book_appt_confirm")
                 sd["confirm_mode"] = False
                 sd["silence_retry"] = 0
                 sd["retry_count"] = 0
+                sd["alts_spoken"] = False
                 sd["stage"] = "book_appt_confirm"
-                return str(resp)   # booking stage will run on next webhook
+                return str(resp)   # next webhook will execute book_appt_confirm
 
             # ❌ NO → cancel and hang up
             if raw_speech in NO_WORDS:
@@ -5983,11 +5989,12 @@ def voice():
                 sd["confirm_mode"] = False
                 sd["silence_retry"] = 0
                 sd["retry_count"] = 0
+                sd["alts_spoken"] = False
                 resp.say(MSG_GOODBYE, voice=VOICE)
                 resp.hangup()
                 return str(resp)
 
-            # ❓ Invalid answer → repeat YES/NO with Gather
+            # ❓ Invalid YES/NO → repeat question
             debug_print("[confirm_time_choice] invalid YES/NO → re-prompt")
             g = Gather(input="speech", timeout=5, action="/voice", method="POST")
             g.say("Please say YES to confirm or NO to cancel.", voice=VOICE)
@@ -5995,10 +6002,35 @@ def voice():
             return str(resp)
 
         # ==============================================================
-        # 1️⃣ NOT IN CONFIRMATION MODE — EXPECTING A TIME (DATE/TIME PHRASE)
+        # 1️⃣ FIRST ENTRY AFTER ALTERNATIVES GENERATED
+        #    → READ ALTERNATIVES & ASK FOR A NEW TIME
+        # ==============================================================
+        if not sd["alts_spoken"] and alts:
+            debug_print("[confirm_time_choice] first entry → read alternatives")
+
+            # Build a natural sentence with all options
+            menu_msg = MSG_MENU_INTRO
+            for i, slot in enumerate(alts, start=1):
+                # e.g. "Option 1: Monday, December 1 at 9 AM."
+                menu_msg += f"Option {i}: {slot['friendly']}. "
+            menu_msg += MSG_MENU_END
+
+            # Mark that we have spoken alternatives
+            sd["alts_spoken"] = True
+            sd["silence_retry"] = 0
+            sd["retry_count"] = 0
+
+            # Use Gather so Twilio waits for the user to say a NEW time
+            g = Gather(input="speech", timeout=8, action="/voice", method="POST")
+            g.say(menu_msg, voice=VOICE)
+            resp.append(g)
+            return str(resp)
+
+        # ==============================================================
+        # 2️⃣ EXPECTING USER TO SAY A FULL DATE/TIME
         # ==============================================================
 
-        # 🔇 Silence: user did not say a time yet
+        # 🔇 Silence (after alternatives already spoken)
         if not raw_speech:
             sd["silence_retry"] += 1
             debug_print(f"[confirm_time_choice] time-input silence #{sd['silence_retry']}")
@@ -6008,19 +6040,18 @@ def voice():
                 resp.hangup()
                 return str(resp)
 
-            # Ask again for appointment time
             g = Gather(input="speech", timeout=5, action="/voice", method="POST")
-            g.say(MSG_SILENCE, voice=VOICE)
+            g.say(MSG_SILENCE_TIME, voice=VOICE)
             resp.append(g)
             return str(resp)
 
         # --------------------------------------------------------------
-        # 2️⃣ USER SPOKE A FULL DATE/TIME → PARSE IT
+        # 3️⃣ USER SPOKE A FULL DATE/TIME → PARSE IT
         # --------------------------------------------------------------
         parsed = smart_parse_time(raw_speech)
         debug_print(f"[confirm_time_choice] PARSED → {parsed}")
 
-        # 🧩 Not recognized at all
+        # Not recognized at all
         if not parsed:
             sd["retry_count"] += 1
             debug_print(f"[confirm_time_choice] invalid time, retry_count={sd['retry_count']}")
@@ -6031,12 +6062,12 @@ def voice():
                 return str(resp)
 
             g = Gather(input="speech", timeout=5, action="/voice", method="POST")
-            g.say(MSG_INVALID, voice=VOICE)
+            g.say(MSG_INVALID_TIME, voice=VOICE)
             resp.append(g)
             return str(resp)
 
         # --------------------------------------------------------------
-        # 3️⃣ PAST CHECK
+        # 4️⃣ PAST CHECK
         # --------------------------------------------------------------
         if parsed.get("is_past"):
             debug_print("[confirm_time_choice] time is in the past")
@@ -6047,7 +6078,7 @@ def voice():
             return str(resp)
 
         # --------------------------------------------------------------
-        # 4️⃣ RESERVED CHECK — SLOT ALREADY BOOKED?
+        # 5️⃣ RESERVED CHECK — SLOT ALREADY BOOKED?
         # --------------------------------------------------------------
         doctor = sd.get("doctor_name")
         if doctor and not is_doctor_slot_available(doctor, parsed["start"], parsed["end"]):
@@ -6059,23 +6090,20 @@ def voice():
             return str(resp)
 
         # --------------------------------------------------------------
-        # 5️⃣ VALID & FREE SLOT → REPEAT TIME AND ASK YES/NO
+        # 6️⃣ VALID & FREE SLOT → REPEAT TIME AND ASK YES/NO
         # --------------------------------------------------------------
-        debug_print("[confirm_time_choice] valid, free slot → ask for YES/NO")
+        debug_print("[confirm_time_choice] valid, free slot → ask YES/NO")
 
-        # Save chosen appointment
         sd["appointment_time"] = parsed
         sd["confirm_mode"] = True
         sd["silence_retry"] = 0
         sd["retry_count"] = 0
 
-        # Ask user to confirm, WITH a Gather so Twilio will hear YES/NO
+        # Now we *must* use Gather so Twilio waits for YES/NO
         g = Gather(input="speech", timeout=5, action="/voice", method="POST")
         g.say(MSG_CONFIRM.format(friendly=parsed["friendly"]), voice=VOICE)
         resp.append(g)
         return str(resp)
-
-
 
 
 
