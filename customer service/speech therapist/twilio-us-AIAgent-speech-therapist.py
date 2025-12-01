@@ -6022,7 +6022,10 @@ def voice():
                 sd["retry_count"] = 0
                 sd["alts_spoken"] = False
                 sd["stage"] = "book_appt_confirm"
-                return str(resp)   # next webhook will execute book_appt_confirm
+
+                # ✅ IMPORTANT: redirect so Twilio calls /voice again and runs book_appt_confirm
+                resp.redirect("/voice", method="POST")
+                return str(resp)
 
             # ❌ NO → cancel and hang up
             if is_no and not is_yes:
