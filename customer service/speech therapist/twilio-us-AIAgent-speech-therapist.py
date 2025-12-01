@@ -1,5 +1,5 @@
 #=======
-# updated  11/17/2025
+# updated  12/01/2025
 #  
 # =========================
 # Standard library imports
@@ -5921,122 +5921,160 @@ def voice():
             "Please say YES to confirm or NO to cancel."
         )
         MSG_SILENCE = "I did not hear you. Please say the appointment time again."
-        MSG_INVALID = "I did not understand that. Please try again."
+        MSG_INVALID = "I did not understand that. Please say the appointment time again."
         MSG_PAST = "This time has already passed. Please say another appointment time."
         MSG_RESERVED = "This time is already reserved. Please say another appointment time."
         MSG_GOODBYE = "No problem. Goodbye."
         MSG_TOO_MANY = "Sorry, we were unable to complete your request. Goodbye."
 
+        # Words interpreted as YES / NO
         YES_WORDS = {"yes", "yeah", "yep", "ok", "okay", "sure", "confirm", "book"}
         NO_WORDS = {"no", "nope", "cancel", "stop"}
 
+        # Limits (taken from globals with fallback)
         MAX_SILENT = int(globals().get("MAX_SILENT_TIME", 3))
         MAX_RETRIES = int(globals().get("MAX_CONFIRM_RETRIES", 3))
 
         # --------------------------------------------------------------
-        # 📌 LOAD SESSION
+        # 📌 LOAD SESSION AND NORMALIZE INPUT
         # --------------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
-        sd.setdefault("silence_retry", 0)
-        sd.setdefault("retry_count", 0)
-        sd.setdefault("confirm_mode", False)
+        sd.setdefault("silence_retry", 0)      # how many times user was silent
+        sd.setdefault("retry_count", 0)        # invalid time retries
+        sd.setdefault("confirm_mode", False)   # True → expecting YES/NO now
 
         raw_speech = (speech_result or "").strip().lower()
         debug_print(f"[confirm_time_choice] speech='{raw_speech}'")
 
         # ==============================================================
-        # 0️⃣ CONFIRMATION MODE (YES / NO)
+        # 0️⃣ CONFIRMATION MODE — EXPECTING YES / NO
         # ==============================================================
         if sd["confirm_mode"]:
             debug_print("[confirm_time_choice] IN CONFIRMATION MODE")
 
+            # 🔇 Silence while we are waiting for YES/NO
+            if not raw_speech:
+                sd["silence_retry"] += 1
+                debug_print(f"[confirm_time_choice] confirm silence #{sd['silence_retry']}")
+
+                if sd["silence_retry"] >= MAX_SILENT:
+                    resp.say(MSG_TOO_MANY, voice=VOICE)
+                    resp.hangup()
+                    return str(resp)
+
+                # Re-ask YES/NO with a new Gather
+                g = Gather(input="speech", timeout=5, action="/voice", method="POST")
+                g.say("Please say YES to confirm or NO to cancel.", voice=VOICE)
+                resp.append(g)
+                return str(resp)
+
+            # ✅ YES → proceed to booking
             if raw_speech in YES_WORDS:
                 debug_print("[confirm_time_choice] YES → book_appt_confirm")
                 sd["confirm_mode"] = False
+                sd["silence_retry"] = 0
+                sd["retry_count"] = 0
                 sd["stage"] = "book_appt_confirm"
-                return str(resp)
+                return str(resp)   # booking stage will run on next webhook
 
+            # ❌ NO → cancel and hang up
             if raw_speech in NO_WORDS:
                 debug_print("[confirm_time_choice] NO → hangup")
                 sd["confirm_mode"] = False
+                sd["silence_retry"] = 0
+                sd["retry_count"] = 0
                 resp.say(MSG_GOODBYE, voice=VOICE)
                 resp.hangup()
                 return str(resp)
 
-            # Invalid YES/NO → repeat the question
-            resp.say(
-                f"Please say YES to confirm or NO to cancel.",
-                voice=VOICE
-            )
+            # ❓ Invalid answer → repeat YES/NO with Gather
+            debug_print("[confirm_time_choice] invalid YES/NO → re-prompt")
+            g = Gather(input="speech", timeout=5, action="/voice", method="POST")
+            g.say("Please say YES to confirm or NO to cancel.", voice=VOICE)
+            resp.append(g)
             return str(resp)
 
         # ==============================================================
-        # 1️⃣ REAL SILENCE BEFORE CONFIRMATION
+        # 1️⃣ NOT IN CONFIRMATION MODE — EXPECTING A TIME (DATE/TIME PHRASE)
         # ==============================================================
-        if raw_speech == "":
+
+        # 🔇 Silence: user did not say a time yet
+        if not raw_speech:
             sd["silence_retry"] += 1
+            debug_print(f"[confirm_time_choice] time-input silence #{sd['silence_retry']}")
 
             if sd["silence_retry"] >= MAX_SILENT:
                 resp.say(MSG_TOO_MANY, voice=VOICE)
                 resp.hangup()
                 return str(resp)
 
-            g = Gather(input="speech", timeout=5, action="/voice")
+            # Ask again for appointment time
+            g = Gather(input="speech", timeout=5, action="/voice", method="POST")
             g.say(MSG_SILENCE, voice=VOICE)
             resp.append(g)
             return str(resp)
 
-        # ==============================================================
+        # --------------------------------------------------------------
         # 2️⃣ USER SPOKE A FULL DATE/TIME → PARSE IT
-        # ==============================================================
+        # --------------------------------------------------------------
         parsed = smart_parse_time(raw_speech)
         debug_print(f"[confirm_time_choice] PARSED → {parsed}")
 
-        # Not recognized
+        # 🧩 Not recognized at all
         if not parsed:
             sd["retry_count"] += 1
+            debug_print(f"[confirm_time_choice] invalid time, retry_count={sd['retry_count']}")
 
             if sd["retry_count"] >= MAX_RETRIES:
                 resp.say(MSG_TOO_MANY, voice=VOICE)
                 resp.hangup()
                 return str(resp)
 
-            g = Gather(input="speech", timeout=5, action="/voice")
+            g = Gather(input="speech", timeout=5, action="/voice", method="POST")
             g.say(MSG_INVALID, voice=VOICE)
             resp.append(g)
             return str(resp)
 
-        # ==============================================================
+        # --------------------------------------------------------------
         # 3️⃣ PAST CHECK
-        # ==============================================================
+        # --------------------------------------------------------------
         if parsed.get("is_past"):
-            g = Gather(input="speech", timeout=5, action="/voice")
+            debug_print("[confirm_time_choice] time is in the past")
+
+            g = Gather(input="speech", timeout=5, action="/voice", method="POST")
             g.say(MSG_PAST, voice=VOICE)
             resp.append(g)
             return str(resp)
 
-        # ==============================================================
-        # 4️⃣ RESERVED CHECK
-        # ==============================================================
+        # --------------------------------------------------------------
+        # 4️⃣ RESERVED CHECK — SLOT ALREADY BOOKED?
+        # --------------------------------------------------------------
         doctor = sd.get("doctor_name")
-        if not is_doctor_slot_available(doctor, parsed["start"], parsed["end"]):
-            g = Gather(input="speech", timeout=5, action="/voice")
+        if doctor and not is_doctor_slot_available(doctor, parsed["start"], parsed["end"]):
+            debug_print("[confirm_time_choice] time already reserved")
+
+            g = Gather(input="speech", timeout=5, action="/voice", method="POST")
             g.say(MSG_RESERVED, voice=VOICE)
             resp.append(g)
             return str(resp)
 
-        # ==============================================================
-        # 5️⃣ VALID SLOT → REPEAT TIME & ASK YES/NO
-        # ==============================================================
+        # --------------------------------------------------------------
+        # 5️⃣ VALID & FREE SLOT → REPEAT TIME AND ASK YES/NO
+        # --------------------------------------------------------------
+        debug_print("[confirm_time_choice] valid, free slot → ask for YES/NO")
+
+        # Save chosen appointment
         sd["appointment_time"] = parsed
         sd["confirm_mode"] = True
+        sd["silence_retry"] = 0
+        sd["retry_count"] = 0
 
-        resp.say(
-            MSG_CONFIRM.format(friendly=parsed["friendly"]),
-            voice=VOICE
-        )
-
+        # Ask user to confirm, WITH a Gather so Twilio will hear YES/NO
+        g = Gather(input="speech", timeout=5, action="/voice", method="POST")
+        g.say(MSG_CONFIRM.format(friendly=parsed["friendly"]), voice=VOICE)
+        resp.append(g)
         return str(resp)
+
 
 
 
