@@ -5669,7 +5669,6 @@ def voice():
     #
     #   Confirmation happens in NEW STAGE: `confirm_time_choice`
     # ======================================================================
-
     elif stage == "collect_book_time_date":
 
         # ==================================================================
@@ -5832,11 +5831,17 @@ def voice():
                 resp.hangup()
                 return str(resp)
 
+            # ✅ Prepare state for confirm_time_choice (fresh start)
             sd["alts_list"] = alts
             sd["stage"] = "confirm_time_choice"
+            sd["confirm_mode"] = False         # not yet asking YES/NO
+            sd["alts_spoken"] = False          # alternatives not spoken yet
+            sd["silence_retry"] = 0            # reset silence counter
+            sd["retry_count"] = 0              # reset confirm retries
+            sd["retry_time"] = 0               # reset time-parse retries
 
-            resp.redirect("/voice")
             save_session(call_sid)
+            resp.redirect("/voice", method="POST")
             return str(resp)
 
         # ------------------------------------------------------------------
@@ -5857,10 +5862,17 @@ def voice():
                 resp.hangup()
                 return str(resp)
 
+            # ✅ Prepare state for confirm_time_choice (fresh start)
             sd["alts_list"] = alts
             sd["stage"] = "confirm_time_choice"
-            resp.redirect("/voice")
+            sd["confirm_mode"] = False
+            sd["alts_spoken"] = False
+            sd["silence_retry"] = 0
+            sd["retry_count"] = 0
+            sd["retry_time"] = 0
+
             save_session(call_sid)
+            resp.redirect("/voice", method="POST")
             return str(resp)
 
         # ------------------------------------------------------------------
@@ -5868,13 +5880,22 @@ def voice():
         # ------------------------------------------------------------------
         sd["appointment_time"] = {
             "start": appointment_start,
-            "end": appointment_end
+            "end": appointment_end,
+            "friendly": friendly,   # ✅ keep friendly label for later
         }
         sd["stage"] = "confirm_time_choice"
 
+        # ✅ Also reset confirm-time state so confirm_time_choice starts clean
+        sd["confirm_mode"] = False
+        sd["alts_list"] = sd.get("alts_list", [])
+        sd["alts_spoken"] = False
+        sd["silence_retry"] = 0
+        sd["retry_count"] = 0
+        sd["retry_time"] = 0
+
         # Redirect to next stage
-        resp.redirect("/voice")
         save_session(call_sid)
+        resp.redirect("/voice", method="POST")
         return str(resp)
 
 
@@ -5958,7 +5979,6 @@ def voice():
         debug_print(f"[confirm_time_choice] dtmf='{raw_dtmf}'")
 
         # 🧹 Normalize speech text for YES/NO matching (remove punctuation, split into tokens)
-        #import re as _re
         speech_clean = _re.sub(r"[^\w\s]", " ", raw_speech)   # remove .,?! etc.
         speech_clean = _re.sub(r"\s+", " ", speech_clean).strip()
         tokens = speech_clean.split() if speech_clean else []
@@ -6125,6 +6145,7 @@ def voice():
         g.say(MSG_CONFIRM.format(friendly=parsed["friendly"]), voice=VOICE)
         resp.append(g)
         return str(resp)
+
 
 
 
