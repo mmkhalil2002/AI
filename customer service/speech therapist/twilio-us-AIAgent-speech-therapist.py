@@ -5958,7 +5958,7 @@ def voice():
         debug_print(f"[confirm_time_choice] dtmf='{raw_dtmf}'")
 
         # 🧹 Normalize speech text for YES/NO matching (remove punctuation, split into tokens)
-        import re as _re
+        #import re as _re
         speech_clean = _re.sub(r"[^\w\s]", " ", raw_speech)   # remove .,?! etc.
         speech_clean = _re.sub(r"\s+", " ", speech_clean).strip()
         tokens = speech_clean.split() if speech_clean else []
