@@ -4940,7 +4940,7 @@ def voice():
         # 🎙️ Capture input (speech + keypad)
         # ----------------------------------------------------------------------
         raw_speech = (speech_result or "").strip()
-        raw_dtmf = (request.values.get("Digits") or "").strip()
+        raw_dtmf   = (request.values.get("Digits") or "").strip()
         debug_print(f"collect_insurance_information: speech='{raw_speech}', dtmf='{raw_dtmf}'")
 
         # ----------------------------------------------------------------------
@@ -4954,6 +4954,7 @@ def voice():
             ).split(",")
             if n.strip()
         ]
+        # Map: "1" → first company, "2" → second, etc.
         keypad_map = {str(i + 1): n for i, n in enumerate(INSURANCE_COMPANIES_LIST)}
         debug_print(f"collect_insurance_information: keypad_map={keypad_map}")
 
@@ -4970,6 +4971,7 @@ def voice():
             # 🔢 Handle keypad (DTMF) input
             # --------------------------------------------------------------
             if raw_dtmf:
+                # We only care about the first digit that matches one of our menu options.
                 first_digit = next((ch for ch in raw_dtmf if ch in keypad_map), "")
                 if first_digit:
                     insurance_name = keypad_map[first_digit]
@@ -4994,18 +4996,20 @@ def voice():
                         method="POST",
                     )
                     resp.append(g)
+                    # Stay in this stage; on next POST we will be in step "id"
                     resp.redirect("/voice")
                     return str(resp)
 
             # --------------------------------------------------------------
-            # 🤐 Handle silence (no input) — allow up to 3 retries
+            # 🤐 Handle silence (no valid DTMF) — allow up to 3 retries
             # --------------------------------------------------------------
             tries = sd.get("insurance_silence_tries", 0) + 1
             sd["insurance_silence_tries"] = tries
-            debug_print(f"collect_insurance_information: 🤐 silence tries={tries}/3")
+            debug_print(f"collect_insurance_information: 🤐 company silence tries={tries}/3")
 
             if tries >= 3:
-                resp.say(MSG_SILENCE_EXIT, VOICE)
+                # Too many attempts with no valid company selection
+                resp.say(gpt_speak(MSG_SILENCE_EXIT), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
@@ -5013,7 +5017,7 @@ def voice():
             # --------------------------------------------------------------
             # 📞 Re-prompt with company menu
             # --------------------------------------------------------------
-            # Build spoken list: “Press 1 for Blue Cross, Press 2 for Aetna...”
+            # Build spoken list: “Press 1 for Blue Cross..., Press 2 for Aetna...”
             menu_text = MSG_PROMPT_INSURANCE_COMPANY
             for i, name in enumerate(INSURANCE_COMPANIES_LIST, start=1):
                 menu_text += f"Press {i} for {name}. "
@@ -5022,7 +5026,7 @@ def voice():
             g = make_gather(
                 menu_text,
                 input="dtmf",
-                timeout=4,              # short delay before repeat
+                timeout=4,          # short delay before repeat
                 num_digits=1,
                 barge_in=True,
                 finish_on_key="#",
@@ -5047,7 +5051,8 @@ def voice():
                 debug_print(f"collect_insurance_information: 🤐 ID silence tries={tries}/3")
 
                 if tries >= 3:
-                    resp.say(MSG_MEMBERID_SILENCE_EXIT, VOICE)
+                    # After 3 silent attempts → apologize and end call
+                    resp.say(gpt_speak(MSG_MEMBERID_SILENCE_EXIT), VOICE)
                     resp.hangup()
                     session_data.pop(call_sid, None)
                     return str(resp)
@@ -5073,6 +5078,7 @@ def voice():
             # --------------------------------------------------------------
             # 🧾 Capture and save insurance member ID
             # --------------------------------------------------------------
+            # Prefer DTMF digits (if present), otherwise the spoken value.
             member_id = (raw_dtmf or raw_speech).strip().upper()
             customer["insurance_member_id"] = member_id
             debug_print(f"✅ Captured insurance_member_id='{member_id}'")
@@ -5081,6 +5087,7 @@ def voice():
             # 🔄 Move to next stage (collect_first_name)
             # --------------------------------------------------------------
             sd["stage"] = "collect_first_name"
+            # Clean up sub-step state
             sd.pop("insurance_step", None)
             sd.pop("insurance_silence_tries", None)
             sd.pop("insurance_id_silence", None)
@@ -5099,8 +5106,6 @@ def voice():
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
-
-
 
 
 
