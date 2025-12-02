@@ -5085,17 +5085,19 @@ def voice():
             # --------------------------------------------------------------
             # 🔄 Move to next stage (collect_first_name)
             # --------------------------------------------------------------
-            sd["stage"] = "collect_first_name"
+                        # 🔄 Move directly to appointment confirmation
+            sd["stage"] = "book_appt_confirm"
+
             # Clean up sub-step state
             sd.pop("insurance_step", None)
             sd.pop("insurance_silence_tries", None)
             sd.pop("insurance_id_silence", None)
 
-            # Prompt for first name next
+            # Inform the patient and continue
             g = make_gather(
-                MSG_THANK_YOU_NEXT_FIRST_NAME,
+                "Thank you. Your insurance information has been saved. Let's confirm your appointment now.",
                 input="speech dtmf",
-                timeout=10,
+                timeout=6,
                 speech_timeout="auto",
                 barge_in=True,
                 language="en-US",
