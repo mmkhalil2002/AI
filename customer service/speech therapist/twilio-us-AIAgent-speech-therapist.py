@@ -4904,7 +4904,6 @@ def voice():
     #   session_data[call_sid]["customer"]["insurance_name"]
     #   session_data[call_sid]["customer"]["insurance_member_id"]
     # ======================================================================
-
     elif stage == "collect_insurance_information":
 
         # ----------------------------------------------------------------------
@@ -5106,6 +5105,7 @@ def voice():
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
+
 
 
 
