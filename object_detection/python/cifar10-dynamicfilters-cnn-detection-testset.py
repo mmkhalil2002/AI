@@ -85,11 +85,12 @@ class ObjectDetectionCNN(nn.Module):
               param.requires_grad = False
 
             # Define the filters (you can load or define them as needed)
-        self.filters = self.get_static_filters()  # Static filter method (predefined or user-defined)
+        if _dynamic_learning == False:
+            self.filters = self.get_static_filters()  # Static filter method (predefined or user-defined)
 
-            # Initialize static filters for both convolutional layers
-        self.initialize_static_filters_conv1(self.conv1, self.filters[:16])     # Assign first 16 filters to Conv1
-        self.initialize_static_filters_conv2(self.conv2, self.filters[16:48])   # Assign next 32 filters to Conv2
+                # Initialize static filters for both convolutional layers
+            self.initialize_static_filters_conv1(self.conv1, self.filters[:16])     # Assign first 16 filters to Conv1
+            self.initialize_static_filters_conv2(self.conv2, self.filters[16:48])   # Assign next 32 filters to Conv2
 
             # Max pooling layer to reduce spatial dimensions
         self.pool = nn.MaxPool2d(2, 2)
