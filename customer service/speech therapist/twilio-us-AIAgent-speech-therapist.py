@@ -5159,7 +5159,7 @@ def voice():
                     method="POST",
                 )
                 resp.append(g)
-                resp.redirect("/voice")
+                #resp.redirect("/voice")
                 return str(resp)
 
             # --------------------------------------------------------------
@@ -5190,6 +5190,7 @@ def voice():
                 method="POST",
             )
             resp.append(g)
+            resp.redirect("/voice")
             return str(resp)
 
 
