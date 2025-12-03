@@ -5159,6 +5159,7 @@ def voice():
                     method="POST",
                 )
                 resp.append(g)
+                resp.redirect("/voice")
                 return str(resp)
 
             # --------------------------------------------------------------
