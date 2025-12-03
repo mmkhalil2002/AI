@@ -4927,7 +4927,6 @@ def voice():
         )
         MSG_THANK_YOU_NEXT = (
             "Thank you. Your insurance information has been saved. "
-            "Let's confirm your appointment now."
         )
 
         # ----------------------------------------------------------------------
