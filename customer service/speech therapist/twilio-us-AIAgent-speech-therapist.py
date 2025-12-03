@@ -1,5 +1,5 @@
 #=======
-# updated  12/02/2025
+# updated  12/03/2025
 #  
 # =========================
 # Standard library imports
@@ -883,7 +883,7 @@ def make_gather(
       - hints provides contextual phrases for better accuracy.
       - SSML markup (<break>, <emphasis>) automatically enabled.
     """
-    import re  # local import to avoid global dependency if not needed
+    #import re  # local import to avoid global dependency if not needed
 
     # ------------------------------------------------------------------
     # 🧹 Normalize speech_timeout — convert numeric strings to int
@@ -1328,7 +1328,7 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
 
     # helper to compute dt + n months
     def _add_months(dt, months):
-        import calendar
+        #import calendar
         y, m = dt.year, dt.month + months
         y += (m - 1) // 12
         m = ((m - 1) % 12) + 1
@@ -7512,7 +7512,7 @@ def voice():
             )
             resp.append(gather)
             try:
-                from flask import url_for
+                #from flask import url_for
                 resp.redirect(url_for("voice"))
             except Exception:
                 resp.redirect("/voice")
@@ -7543,7 +7543,7 @@ def voice():
         )
         resp.append(gather)
         try:
-            from flask import url_for
+            #from flask import url_for
             resp.redirect(url_for("voice"))
         except Exception:
             resp.redirect("/voice")
@@ -9031,6 +9031,12 @@ def voice():
             "before scheduling an appointment. Please contact the clinic to complete "
             "your registration. Goodbye!"
         )
+        # 🔹 NEW: message for REGISTER state
+        VOICE_REGISTER_MSG = (
+            "Thank you {name}. Your registration has been received. "
+            "Please call the clinic to get your PIN number before scheduling an appointment. "
+            "Goodbye!"
+        )
         VOICE_MISSING_APPT_MSG = "Sorry, appointment time is missing. Please try again."
         VOICE_CONFIRMATION_ERROR_MSG = "Sorry, we couldn't confirm the appointment time."
         VOICE_SLOT_TAKEN_MSG = "Sorry, that slot was just taken. Please choose another time."
@@ -9049,8 +9055,6 @@ def voice():
         # ----------------------------------------------------------------------
         # 👤 Extract customer information from session
         # ----------------------------------------------------------------------
-        #   These fields are collected earlier in the flow.
-        # ----------------------------------------------------------------------
         customer = sd.get("customer", {}) or {}
         first_name       = (customer.get("first_name") or "").strip()
         last_name        = (customer.get("last_name")  or "").strip()
@@ -9059,6 +9063,48 @@ def voice():
         phone_e164       = (customer.get("phone_e164") or "").strip()
         insurance_name   = (customer.get("insurance_name") or "").strip()
         insurance_member_id = (customer.get("insurance_member_id") or "").strip()
+
+        # ----------------------------------------------------------------------
+        # 🆕 REGISTERED BUT NOT VERIFIED FLOW (state == REGISTER)
+        # ----------------------------------------------------------------------
+        #   If the system state/customer_status is REGISTER, we:
+        #     • Store the customer information in the local DB
+        #     • Tell the caller to call the clinic to get a PIN number
+        #     • Do NOT book an appointment
+        #     • End the call politely
+        # ----------------------------------------------------------------------
+        if str(customer_status).upper() == "REGISTER":
+            debug_print("book_appt_confirm: 🆕 REGISTER state → store customer, no booking")
+
+            try:
+                inserted_ok = insert_customer(
+                    phone=phone_e164,
+                    dob=customer_dob,
+                    first_name=first_name,
+                    last_name=last_name,
+                    address=customer_address,
+                    cc_name=f"{first_name} {last_name}",
+                    cc_number="",
+                    cc_exp="",
+                    cc_cvv="",
+                    insurance_name=insurance_name,
+                    insurance_member_id=insurance_member_id,
+                    customer_status="REGISTER",
+                    pin_number=0,  # no PIN yet; must call clinic
+                )
+                debug_print(f"book_appt_confirm: ✅ insert_customer (REGISTER) → {inserted_ok}")
+            except Exception as e:
+                debug_print(f"book_appt_confirm: ❌ insert_customer failed for REGISTER → {e}")
+
+            # 🗣 Tell the caller they must call the clinic to get a PIN
+            msg = VOICE_REGISTER_MSG.format(name=first_name or "there")
+            resp.say(gpt_speak(msg), VOICE)
+
+            # Cleanup and end the call
+            resp.hangup()
+            session_data.pop(call_sid, None)
+            debug_print(f"book_appt_confirm: ✅ REGISTER flow completed in {_time_mod.perf_counter() - t_stage_start:.3f}s")
+            return str(resp)
 
         # ----------------------------------------------------------------------
         # 🆕 NEW CUSTOMER FLOW
@@ -9100,8 +9146,6 @@ def voice():
         # ----------------------------------------------------------------------
         # 👤 CURRENT CUSTOMER FLOW
         # ----------------------------------------------------------------------
-        #   This handles confirmed returning customers with full booking logic.
-        # ----------------------------------------------------------------------
         debug_print("book_appt_confirm: 👤 current customer flow continues")
 
         # Retrieve doctor and appointment slot from session
@@ -9129,10 +9173,8 @@ def voice():
             tz = _pytz.timezone("America/Chicago")
 
         try:
-            # Parse appointment time and convert for local readability
             dt_utc   = datetime.fromisoformat(appointment_start.replace("Z", "+00:00"))
             dt_local = dt_utc.astimezone(tz)
-            # Convert to readable format, e.g. “Monday, October 28 at 9:00 AM”
             formatted_time = dt_local.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
         except Exception as e:
             debug_print(f"book_appt_confirm: time format error → {e}")
@@ -9163,7 +9205,6 @@ def voice():
             debug_print(f"book_appt_confirm: ⚠️ slot check failed → {e}")
             slot_ok = False
 
-        # If slot unavailable → redirect caller to reschedule
         if not slot_ok:
             sd["stage"] = "collect_book_time_date"
             resp.append(make_gather(VOICE_SLOT_TAKEN_MSG))
@@ -9171,8 +9212,6 @@ def voice():
 
         # ----------------------------------------------------------------------
         # 💾 Insert or Update Customer Record Locally
-        # ----------------------------------------------------------------------
-        #   Ensures that even existing customers have up-to-date info stored.
         # ----------------------------------------------------------------------
         try:
             inserted_ok = insert_customer(
@@ -9196,8 +9235,6 @@ def voice():
 
         # ----------------------------------------------------------------------
         # 🗂️ Log the appointment locally for the doctor
-        # ----------------------------------------------------------------------
-        #   This writes the booking record into the doctor's JSON file.
         # ----------------------------------------------------------------------
         try:
             full_name = f"{first_name} {last_name}".strip()
@@ -9223,7 +9260,6 @@ def voice():
         resp.say(gpt_speak(msg), VOICE)
 
         try:
-            # Build SMS confirmation string
             sms = (
                 f"Hi {first_name or 'there'}, your appointment with {doctor_name} is confirmed "
                 f"on {formatted_time}. Thank you for choosing Epic Therapist Clinic."
@@ -9233,9 +9269,6 @@ def voice():
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ SMS failed → {e}")
 
-        # ----------------------------------------------------------------------
-        # 🧹 Cleanup session data and gracefully end the call
-        # ----------------------------------------------------------------------
         resp.hangup()
         session_data.pop(call_sid, None)
         debug_print(f"book_appt_confirm: ✅ completed in {_time_mod.perf_counter() - t_stage_start:.3f}s")
