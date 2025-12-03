@@ -912,7 +912,7 @@ def make_gather(
     #    - IMPORTANT: When SSML is present, we pass RAW prompt (no gpt_speak())
     #      to avoid escaping angle brackets which would break SSML.
     # ------------------------------------------------------------------
-    _contains_ssml = bool(re.search(r"<\s*(break|emphasis|prosody|say-as)\b", prompt, re.IGNORECASE))
+    _contains_ssml = bool(_re.search(r"<\s*(break|emphasis|prosody|say-as)\b", prompt, re.IGNORECASE))
 
     try:
         # ===============================================================
