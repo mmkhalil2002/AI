@@ -4907,445 +4907,246 @@ def voice():
     elif stage == "collect_insurance_information":
 
         # ----------------------------------------------------------------------
-        # 🎙️ VOICE MESSAGES
+        # 🎙️ VOICE MESSAGES — centralized for clarity and localization
         # ----------------------------------------------------------------------
         MSG_SILENCE_EXIT = "I’m still not hearing anything. Please call again later."
         MSG_MEMBERID_SILENCE_EXIT = "I’m still not hearing your member ID. Please call again later."
-        MSG_COMPANY_SILENCE_RETRY = "I didn’t hear your insurance company. Let’s try again."
-        MSG_MEMBERID_SILENCE_RETRY = "I didn’t hear your insurance member ID. Let’s try again."
-        MSG_PROMPT_INSURANCE_COMPANY = "Please choose your insurance company."
-        MSG_PROMPT_MEMBER_ID = "Please say or enter your insurance member ID, then press pound."
-        MSG_AFTER_SELECTION = "Thank you. You selected {insurance}. Now please enter your member ID."
-
-        # ----------------------------------------------------------------------
-        # 🧭 SESSION PREP
-        # ----------------------------------------------------------------------
-        sd = session_data.setdefault(call_sid, {})
-        customer = sd.setdefault("customer", {})
-
-        raw_speech = (speech_result or "").strip()
-        raw_dtmf   = (request.values.get("Digits") or "").strip()
-
-        debug_print(f"collect_insurance_information speech='{raw_speech}' dtmf='{raw_dtmf}'")
-
-        # ----------------------------------------------------------------------
-        # ✅ USE YOUR GLOBAL COMPANY LIST
-        # ----------------------------------------------------------------------
-        keypad_map = {str(i + 1): name for i, name in enumerate(INSURANCE_COMPANIES_LIST)}
-
-        # Spoken digit map ("one", "two", "3", etc)
-        speech_digit_map = {
-            "one": "1", "1": "1",
-            "two": "2", "to": "2", "too": "2", "2": "2",
-            "three": "3", "3": "3",
-            "four": "4", "for": "4", "4": "4",
-            "five": "5", "5": "5",
-            "six": "6", "6": "6",
-            "seven": "7", "7": "7",
-            "eight": "8", "ate": "8", "8": "8",
-            "nine": "9", "9": "9"
-        }
-
-        step = sd.get("insurance_step", "company")
-
-        # ======================================================================
-        # STEP 1 — CHOOSE INSURANCE COMPANY
-        # ======================================================================
-        if step == "company":
-
-            # ✅ DTMF SELECTION
-            if raw_dtmf:
-                key = next((d for d in raw_dtmf if d in keypad_map), "")
-                if key:
-                    company = keypad_map[key]
-                    customer["insurance_name"] = company
-                    sd["insurance_step"] = "id"
-                    debug_print(f"✅ Insurance selected by DTMF: {company}")
-
-                    g = make_gather(
-                        MSG_AFTER_SELECTION.format(insurance=company),
-                        input="speech dtmf",
-                        timeout=25,
-                        finish_on_key="#",
-                        action="/voice"
-                    )
-                    resp.append(g); resp.redirect("/voice")
-                    return str(resp)
-
-            # ✅ SPOKEN SELECTION (digit or company name)
-            if raw_speech:
-                txt = raw_speech.lower()
-
-                # Digit words
-                for word, digit in speech_digit_map.items():
-                    if word in txt and digit in keypad_map:
-                        company = keypad_map[digit]
-                        customer["insurance_name"] = company
-                        sd["insurance_step"] = "id"
-                        debug_print(f"✅ Insurance via spoken digit: {company}")
-
-                        g = make_gather(
-                            MSG_AFTER_SELECTION.format(insurance=company),
-                            input="speech dtmf",
-                            timeout=25,
-                            finish_on_key="#",
-                            action="/voice"
-                        )
-                        resp.append(g); resp.redirect("/voice")
-                        return str(resp)
-
-                # Company name match
-                for company in INSURANCE_COMPANIES_LIST:
-                    if company.lower() in txt:
-                        customer["insurance_name"] = company
-                        sd["insurance_step"] = "id"
-                        debug_print(f"✅ Insurance via spoken name: {company}")
-
-                        g = make_gather(
-                            MSG_AFTER_SELECTION.format(insurance=company),
-                            input="speech dtmf",
-                            timeout=25,
-                            finish_on_key="#",
-                            action="/voice"
-                        )
-                        resp.append(g); resp.redirect("/voice")
-                        return str(resp)
-
-            # ❌ SILENCE / INVALID
-            tries = sd.get("insurance_silence", 0) + 1
-            sd["insurance_silence"] = tries
-
-            if tries >= 3:
-                resp.say(MSG_SILENCE_EXIT, VOICE)
-                resp.hangup()
-                session_data.pop(call_sid, None)
-                return str(resp)
-
-            # Menu
-            menu = MSG_COMPANY_SILENCE_RETRY + " "
-            for i, name in enumerate(INSURANCE_COMPANIES_LIST, 1):
-                menu += f"Press {i} for {name}. "
-
-            g = make_gather(menu, input="dtmf", num_digits=1, timeout=6, action="/voice")
-            resp.append(g); resp.redirect("/voice")
-            return str(resp)
-
-
-        # ======================================================================
-        # STEP 2 — MEMBER ID
-        # ======================================================================
-        if step == "id":
-
-            # ❌ SILENCE HANDLING
-            if not raw_speech and not raw_dtmf:
-                tries = sd.get("insurance_id_silence", 0) + 1
-                sd["insurance_id_silence"] = tries
-
-                if tries >= 3:
-                    resp.say(MSG_MEMBERID_SILENCE_EXIT, VOICE)
-                    resp.hangup()
-                    session_data.pop(call_sid, None)
-                    return str(resp)
-
-                g = make_gather(
-                    MSG_MEMBERID_SILENCE_RETRY + " " + MSG_PROMPT_MEMBER_ID,
-                    input="speech dtmf",
-                    timeout=25,
-                    finish_on_key="#",
-                    action="/voice"
-                )
-                resp.append(g); resp.redirect("/voice")
-                return str(resp)
-
-            # ✅ SAVE ID
-            customer["insurance_member_id"] = (raw_dtmf or raw_speech).strip().upper()
-            debug_print(f"✅ Insurance ID = {customer['insurance_member_id']}")
-
-            # ✅ ROUTE TO CONFIRM APPOINTMENT
-            sd["stage"] = "book_appt_confirm"
-
-            sd.pop("insurance_step", None)
-            sd.pop("insurance_silence", None)
-            sd.pop("insurance_id_silence", None)
-
-            g = make_gather(
-                "Thank you. Your insurance information has been saved. Let's confirm your appointment now.",
-                input="speech dtmf",
-                timeout=6,
-                action="/voice"
-            )
-            resp.append(g); resp.redirect("/voice")
-            return str(resp)
-
-
-
-
-
-    # ----------------------------------------------------------------------
-    # 🔢 Stage: collect_pin_number
-    #
-    # PURPOSE
-    #   • Verify the caller's identity using their 6-digit PIN.
-    #
-    # FLOW
-    #   1️⃣ Ask user to enter or say their 6-digit PIN (DTMF or speech).
-    #   2️⃣ Compare against stored PIN using get_pin_number().
-    #   3️⃣ If correct → branch based on origin_stage:
-    #         - "book"       → collect_dr_info ✅
-    #         - "cancel"     → cancel_appt_get_time_date
-    #         - "update_cc"  → collect_cc
-    #         - otherwise    → intro (main menu)
-    #   4️⃣ If incorrect → allow up to 3 retries before terminating politely.
-    #
-    # FEATURES
-    #   ✅ Handles silence locally (3 retries, then hang up).
-    #   ✅ Tracks invalid PIN attempts (3 max).
-    #   ✅ Supports both DTMF and speech.
-    # ----------------------------------------------------------------------
-
-    elif stage == "collect_pin_number":
-        """
-        🔢 Stage: collect_pin_number
-        ----------------------------------------------------------------------
-        PURPOSE
-        • Verify the caller’s current 6-digit PIN.
-        • Handle multiple flows (book, cancel, update credit card, update PIN).
-        • If origin_stage == "update_pin_number":
-                - Verify old PIN.
-                - Ask for a new one.
-                - Call update_pin_number(phone_e164, dob, new_pin) to save it.
-
-        FEATURES
-        ✅ Speech & DTMF support
-        ✅ Local silence handling
-        ✅ Adaptive retry limits
-        ✅ Dynamic flow routing
-        ----------------------------------------------------------------------
-        """
-
-        debug_print("collect_pin_number: 📍 Stage entered")
-
-        # ----------------------------------------------------------------------
-        # 💬 Voice messages
-        # ----------------------------------------------------------------------
-        VOICE_PIN_PROMPT_MSG = "Please enter your six digit PIN now, followed by the pound key."
-        VOICE_NEW_PIN_MSG = "Your current PIN is verified. Please say or enter your new six digit PIN number, followed by the pound key."
-        VOICE_CONFIRM_SUCCESS_MSG = "Your PIN has been updated successfully. Thank you!"
-        VOICE_CONFIRM_FAIL_MSG = "Sorry, I couldn’t update your PIN at this time. Please call the clinic for assistance."
-        VOICE_SILENCE_MSG = "I didn’t hear anything. Please enter or say your six digit PIN now."
-        VOICE_INVALID_LENGTH_MSG = "That doesn’t seem like a valid six digit PIN. Please try again now."
-        VOICE_WRONG_PIN_MSG = "That PIN number is incorrect. Please try again now."
-        VOICE_CC_AUTH_MSG = (
-            "We couldn’t verify your PIN number after multiple attempts. "
-            "Let's authenticate you securely using your payment information."
+        MSG_PROMPT_INSURANCE_COMPANY = (
+            "Please choose your insurance company. "
+            "You can press the number on your keypad or say the company name. "
         )
-        VOICE_TOO_MANY_INVALID_MSG = (
-            "That doesn’t seem like a valid six digit PIN. Please contact the clinic to verify or reset your PIN. Goodbye."
+        MSG_PROMPT_MEMBER_ID = (
+            "Please say or enter your insurance member ID or policy number now. "
+            "You can include both letters and numbers, then press pound when done."
+        )
+        MSG_AFTER_SELECTION = (
+            "Thank you. You selected {insurance_name}. "
+            "Now please say or enter your insurance member ID or policy number. "
+            "You can include both letters and numbers, then press pound when done."
+        )
+        MSG_THANK_YOU_NEXT = (
+            "Thank you. Your insurance information has been saved. "
+            "Let's confirm your appointment now."
         )
 
         # ----------------------------------------------------------------------
-        # 🗂️ SESSION SETUP
+        # 🧭 Initialize session safely (ensure nested dicts exist)
         # ----------------------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
         sd.setdefault("customer", {})
         customer = sd["customer"]
 
-        origin_stage = sd.get("origin_stage", "book")
-        phone_e164 = (customer.get("phone_e164") or sd.get("phone_e164") or "").strip()
-        dob = (customer.get("dob") or "").strip()
-
-        debug_print(f"collect_pin_number: 🔎 origin_stage={origin_stage}")
-
         # ----------------------------------------------------------------------
-        # 🎧 CAPTURE INPUT
+        # 🎙️ Capture input (speech + keypad)
         # ----------------------------------------------------------------------
-        raw_dtmf = (request.values.get("Digits") or "").strip()
         raw_speech = (speech_result or "").strip()
-        debug_print(f"collect_pin_number: 🔢 DTMF='{raw_dtmf}' 🗣 speech='{raw_speech}'")
+        raw_dtmf   = (request.values.get("Digits") or "").strip()
+        debug_print(f"collect_insurance_information: speech='{raw_speech}', dtmf='{raw_dtmf}'")
 
         # ----------------------------------------------------------------------
-        # 🤐 SILENCE HANDLING
+        # 🏢 Load insurance companies from GLOBAL (configured at top of file)
         # ----------------------------------------------------------------------
-        if not raw_dtmf and not raw_speech:
-            tries = sd.get("silence_pin", 0) + 1
-            sd["silence_pin"] = tries
-            debug_print(f"collect_pin_number: 🤐 silence tries={tries}/3")
+        # Expected global declaration somewhere near the top of file:
+        # INSURANCE_COMPANIES_LIST = [
+        #     name.strip() for name in os.getenv(
+        #         "INSURANCE_COMPANIES",
+        #         "Blue Cross Blue Shield,Aetna,Cigna,United Healthcare,Humana,Kaiser Permanente"
+        #     ).split(",")
+        # ]
+        global INSURANCE_COMPANIES_LIST
+        INSURANCE_COMPANIES_LIST = [
+            name.strip() for name in os.getenv(
+                "INSURANCE_COMPANIES",
+                "Blue Cross Blue Shield,Aetna,Cigna,United Healthcare,Humana,Kaiser Permanente"
+            ).split(",")
+            if name.strip()
+        ]
 
-            if tries >= 3:
-                if origin_stage == "update_pin_number":
-                    sd["stage"] = "collect_cc"
-                    resp.say(gpt_speak(VOICE_CC_AUTH_MSG), VOICE)
+        # Map: "1" → first company, "2" → second, etc.
+        keypad_map = {str(i + 1): name for i, name in enumerate(INSURANCE_COMPANIES_LIST)}
+        debug_print(f"collect_insurance_information: keypad_map={keypad_map}")
+
+        # ----------------------------------------------------------------------
+        # 🧩 Determine current sub-step ("company" or "id")
+        # ----------------------------------------------------------------------
+        step = sd.get("insurance_step", "company")
+        origin_stage = (sd.get("origin_stage") or "").lower()
+
+        # ======================================================================
+        # 🧩 STEP 1 — SELECT INSURANCE COMPANY (keypad OR voice)
+        # ======================================================================
+        if step == "company":
+            # --------------------------------------------------------------
+            # 1️⃣ Handle keypad (DTMF) input
+            # --------------------------------------------------------------
+            if raw_dtmf:
+                first_digit = next((ch for ch in raw_dtmf if ch in keypad_map), "")
+                if first_digit:
+                    insurance_name = keypad_map[first_digit]
+                    customer["insurance_name"] = insurance_name
+                    sd["insurance_step"] = "id"
+                    debug_print(f"✅ Selected insurance_name='{insurance_name}' via DTMF '{raw_dtmf}'")
+
+                    g = make_gather(
+                        MSG_AFTER_SELECTION.format(insurance_name=insurance_name),
+                        input="speech dtmf",
+                        timeout=25,
+                        speech_timeout="auto",
+                        barge_in=False,
+                        finish_on_key="#",
+                        language="en-US",
+                        action="/voice",
+                        method="POST",
+                    )
+                    resp.append(g)
                     resp.redirect("/voice")
                     return str(resp)
 
-                resp.say(gpt_speak("I’m still not hearing anything. Goodbye!"), VOICE)
+            # --------------------------------------------------------------
+            # 2️⃣ Handle voice selection of company name
+            # --------------------------------------------------------------
+            if raw_speech:
+                spoken = raw_speech.lower()
+                # Very simple fuzzy selection: check if company name (or a distinctive part)
+                # appears in the spoken text.
+                selected_name = None
+                for name in INSURANCE_COMPANIES_LIST:
+                    # Example: "blue cross" subset of "blue cross blue shield"
+                    tokens = name.lower().split()
+                    # If any non-trivial token appears in the speech, treat as match
+                    if any(tok in spoken for tok in tokens if len(tok) > 2):
+                        selected_name = name
+                        break
+
+                if selected_name:
+                    customer["insurance_name"] = selected_name
+                    sd["insurance_step"] = "id"
+                    debug_print(f"✅ Selected insurance_name='{selected_name}' via speech='{raw_speech}'")
+
+                    g = make_gather(
+                        MSG_AFTER_SELECTION.format(insurance_name=selected_name),
+                        input="speech dtmf",
+                        timeout=25,
+                        speech_timeout="auto",
+                        barge_in=False,
+                        finish_on_key="#",
+                        language="en-US",
+                        action="/voice",
+                        method="POST",
+                    )
+                    resp.append(g)
+                    resp.redirect("/voice")
+                    return str(resp)
+                else:
+                    debug_print("collect_insurance_information: ❌ speech did not match any company")
+
+            # --------------------------------------------------------------
+            # 3️⃣ Silence / invalid input handling (max 3 tries)
+            # --------------------------------------------------------------
+            if not raw_dtmf and not raw_speech:
+                tries = sd.get("insurance_silence_tries", 0) + 1
+                sd["insurance_silence_tries"] = tries
+                debug_print(f"collect_insurance_information: 🤐 company silence tries={tries}/3")
+            else:
+                # Speech present but not matched → treat as invalid attempt
+                tries = sd.get("insurance_invalid_tries", 0) + 1
+                sd["insurance_invalid_tries"] = tries
+                debug_print(f"collect_insurance_information: ❌ invalid company selection tries={tries}/3")
+
+            if (sd.get("insurance_silence_tries", 0) >= 3 or
+                sd.get("insurance_invalid_tries", 0) >= 3):
+                resp.say(gpt_speak(MSG_SILENCE_EXIT), VOICE)
                 resp.hangup()
+                session_data.pop(call_sid, None)
                 return str(resp)
 
+            # --------------------------------------------------------------
+            # 4️⃣ Re-prompt with company menu (DTMF + speech)
+            # --------------------------------------------------------------
+            menu_text = MSG_PROMPT_INSURANCE_COMPANY
+            for i, name in enumerate(INSURANCE_COMPANIES_LIST, start=1):
+                # “Press 1 or say Blue Cross Blue Shield. Press 2 or say Aetna. ...”
+                menu_text += f"Press {i} or say {name}. "
+
             g = make_gather(
-                VOICE_PIN_PROMPT_MSG,
+                menu_text,
                 input="speech dtmf",
-                timeout=6,
+                timeout=8,
                 speech_timeout="auto",
                 barge_in=True,
                 finish_on_key="#",
                 language="en-US",
+                action="/voice",
+                method="POST",
             )
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
 
-        # Reset silence counter
-        sd.pop("silence_pin", None)
+        # ======================================================================
+        # 🧩 STEP 2 — COLLECT INSURANCE MEMBER ID / POLICY NUMBER
+        # ======================================================================
+        if step == "id":
+            # --------------------------------------------------------------
+            # 🔇 Handle silence with retry logic (max 3)
+            # --------------------------------------------------------------
+            if not raw_speech and not raw_dtmf:
+                tries = sd.get("insurance_id_silence", 0) + 1
+                sd["insurance_id_silence"] = tries
+                debug_print(f"collect_insurance_information: 🤐 ID silence tries={tries}/3")
 
-        # ----------------------------------------------------------------------
-        # 🔢 Extract numeric digits
-        # ----------------------------------------------------------------------
-        digits = _re.sub(r"\D", "", raw_dtmf or raw_speech)
-        debug_print(f"collect_pin_number: normalized digits='{digits}'")
-
-        if len(digits) != 6:
-            sd["pin_attempts"] = sd.get("pin_attempts", 0) + 1
-            debug_print(f"collect_pin_number: ⚠️ invalid PIN length (attempt {sd['pin_attempts']}/3)")
-
-            if sd["pin_attempts"] >= 3:
-                if origin_stage == "update_pin_number":
-                    sd["stage"] = "collect_cc"
-                    resp.say(gpt_speak(VOICE_CC_AUTH_MSG), VOICE)
-                    resp.redirect("/voice")
+                if tries >= 3:
+                    resp.say(gpt_speak(MSG_MEMBERID_SILENCE_EXIT), VOICE)
+                    resp.hangup()
+                    session_data.pop(call_sid, None)
                     return str(resp)
 
-                resp.say(gpt_speak(VOICE_TOO_MANY_INVALID_MSG), VOICE)
-                resp.hangup()
-                return str(resp)
-
-            g = make_gather(
-                VOICE_INVALID_LENGTH_MSG,
-                input="speech dtmf",
-                timeout=6,
-                speech_timeout="auto",
-                barge_in=True,
-                finish_on_key="#",
-                language="en-US",
-            )
-            resp.append(g)
-            resp.redirect("/voice")
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # 🧩 Validate current PIN if this is first phase
-        # ----------------------------------------------------------------------
-        try:
-            stored_pin = get_pin_number(phone_e164, dob)
-            debug_print(f"collect_pin_number: 🔍 stored_pin={stored_pin} for {phone_e164}|{dob}")
-        except Exception as e:
-            debug_print(f"collect_pin_number: ⚠️ PIN lookup failed → {e}")
-            stored_pin = None
-
-        # ----------------------------------------------------------------------
-        # ✅ CORRECT PIN CASE
-        # ----------------------------------------------------------------------
-        if stored_pin and digits == str(stored_pin).zfill(6):
-            debug_print(f"collect_pin_number: ✅ PIN verified (origin={origin_stage})")
-            sd.pop("pin_attempts", None)
-
-            # 🆕 Handle PIN UPDATE scenario
-            if origin_stage == "update_pin_number":
-                debug_print("collect_pin_number: 🔄 origin_stage=update_pin_number → ask for new PIN")
-                sd["stage"] = "update_pin_entry"
-
-                # Prompt user to enter a new PIN
                 g = make_gather(
-                    VOICE_NEW_PIN_MSG,
+                    MSG_PROMPT_MEMBER_ID,
                     input="speech dtmf",
-                    timeout=6,
+                    timeout=30,
                     speech_timeout="auto",
-                    barge_in=True,
+                    barge_in=False,
                     finish_on_key="#",
                     language="en-US",
+                    action="/voice",
+                    method="POST",
                 )
                 resp.append(g)
                 resp.redirect("/voice")
                 return str(resp)
 
-            # ✅ Other origins follow standard routing
-            next_stage = {
-                "book": "collect_dr_info",
-                "cancel": "collect_dr_info",
-                "reschedule": "collect_dr_info",
-                "update_cc": "collect_cc"
-            }.get(origin_stage, "intro")
+            # --------------------------------------------------------------
+            # 🧾 Capture and save insurance member ID / policy number
+            # --------------------------------------------------------------
+            member_id = (raw_dtmf or raw_speech).strip().upper()
+            customer["insurance_member_id"] = member_id
+            debug_print(f"✅ Captured insurance_member_id='{member_id}'")
 
-            msg = {
-                "book": "Your PIN has been verified. Let's continue booking your appointment.",
-                "cancel": "Your PIN has been verified. Let's find your appointment to cancel.",
-                "reschedule": "PIN verified. Let's reschedule your appointment.",
-                "update_cc": "PIN verified. Let's update your payment information."
-            }.get(origin_stage, "Your PIN is verified. Returning to the main menu.")
+            # Cleanup step state
+            sd.pop("insurance_step", None)
+            sd.pop("insurance_silence_tries", None)
+            sd.pop("insurance_invalid_tries", None)
+            sd.pop("insurance_id_silence", None)
 
-            sd["stage"] = next_stage
-            resp.say(gpt_speak(msg), VOICE)
-            resp.redirect("/voice")
-            return str(resp)
+            # Next we go to booking confirmation (REGISTER or CURRENT will be
+            # handled inside book_appt_confirm).
+            sd["stage"] = "book_appt_confirm"
 
-        # ----------------------------------------------------------------------
-        # 🧠 SECOND PHASE — Handle update_pin_entry (new PIN capture)
-        # ----------------------------------------------------------------------
-        if stage == "update_pin_entry":
-            new_pin = digits
-            debug_print(f"update_pin_entry: 🆕 Captured new PIN → {new_pin}")
-
-            try:
-                success = update_pin_number(phone_e164, dob, int(new_pin))
-                debug_print(f"update_pin_entry: ✅ update_pin_number() returned {success}")
-            except Exception as e:
-                debug_print(f"update_pin_entry: ⚠️ Error updating PIN → {e}")
-                success = False
-
-            # ✅ Confirm success/failure
-            if success:
-                resp.say(gpt_speak(VOICE_CONFIRM_SUCCESS_MSG), VOICE)
-            else:
-                resp.say(gpt_speak(VOICE_CONFIRM_FAIL_MSG), VOICE)
-
-            sd["stage"] = "intro"
-            resp.redirect("/voice")
-            return str(resp)
-
-        # ----------------------------------------------------------------------
-        # ❌ WRONG PIN CASE
-        # ----------------------------------------------------------------------
-        sd["pin_attempts"] = sd.get("pin_attempts", 0) + 1
-        tries = sd["pin_attempts"]
-        debug_print(f"collect_pin_number: ❌ incorrect PIN (try {tries}/3)")
-
-        # Too many failures → redirect to CC if this is a PIN update flow
-        if tries >= 3 and origin_stage == "update_pin_number":
-            sd["stage"] = "collect_cc"
-            resp.say(gpt_speak(VOICE_CC_AUTH_MSG), VOICE)
-            resp.redirect("/voice")
-            return str(resp)
-
-        # Otherwise retry
-        if tries < 3:
             g = make_gather(
-                VOICE_WRONG_PIN_MSG,
+                MSG_THANK_YOU_NEXT,
                 input="speech dtmf",
                 timeout=6,
                 speech_timeout="auto",
                 barge_in=True,
-                finish_on_key="#",
                 language="en-US",
+                action="/voice",
+                method="POST",
             )
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
 
-        # Too many generic invalid attempts → hang up politely
-        resp.say(gpt_speak(VOICE_TOO_MANY_INVALID_MSG), VOICE)
-        resp.hangup()
-        session_data.pop(call_sid, None)
-        return str(resp)
 
 
 
@@ -8983,6 +8784,7 @@ def voice():
     #     → Hang up (booking complete)
     #
     # ======================================================================
+    
     elif stage == "book_appt_confirm":
     
         # Start execution timer (for performance diagnostics)
@@ -9017,12 +8819,27 @@ def voice():
         sd = session_data.get(call_sid, {})
         customer = sd.get("customer", {}) or {}
 
+        # Also look at the origin_stage to understand how we got here
+        origin_stage = (sd.get("origin_stage") or "").strip().lower()
+        debug_print(f"book_appt_confirm: 🧭 origin_stage={origin_stage}")
+
         # Prefer the value saved in `customer["customer_status"]` (from collect_dob),
         # but fall back to the session-level flag if present.
         customer_status = (
             (customer.get("customer_status") or "").strip().lower()
             or (sd.get("customer_status") or "current").strip().lower()
         )
+
+        # ------------------------------------------------------------------
+        # 🔧 Fix: if we came here from REGISTER flow but status is still "current",
+        #         force it to "register" so we don't try to book an appointment.
+        # ------------------------------------------------------------------
+        if origin_stage == "register" and customer_status == "current":
+            debug_print("book_appt_confirm: ⚙️ origin_stage=register but status=current → forcing status='register'")
+            customer_status = "register"
+            customer["customer_status"] = "register"
+            sd["customer_status"] = "register"
+
         debug_print(f"book_appt_confirm: 🧾 customer_status={customer_status}")
 
         # ------------------------------------------------------------------
@@ -9248,6 +9065,8 @@ def voice():
             f"{_time_mod.perf_counter() - t_stage_start:.3f}s"
         )
         return str(resp)
+
+
 
 
 
