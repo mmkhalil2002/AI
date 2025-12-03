@@ -4995,7 +4995,7 @@ def voice():
                     g = make_gather(
                         MSG_AFTER_SELECTION.format(insurance_name=insurance_name),
                         input="speech dtmf",
-                        timeout=25,
+                        timeout=8,
                         speech_timeout="auto",
                         barge_in=False,
                         finish_on_key="#",
