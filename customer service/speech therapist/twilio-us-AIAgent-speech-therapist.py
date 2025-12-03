@@ -5027,7 +5027,7 @@ def voice():
                         MSG_AFTER_SELECTION.format(insurance_name=insurance_name),
                         input="speech dtmf",
                         timeout=8,
-                        speech_timeout="2",
+                        speech_timeout="auto",
                         barge_in=False,
                         finish_on_key="#",
                         language="en-US",
@@ -5074,7 +5074,7 @@ def voice():
                     MSG_AFTER_SELECTION.format(insurance_name=selected_name),
                     input="speech dtmf",
                     timeout=8,
-                    speech_timeout="2",
+                    speech_timeout="auto",
                     barge_in=False,
                     finish_on_key="#",
                     language="en-US",
@@ -5119,7 +5119,7 @@ def voice():
                 menu_text,
                 input="speech dtmf",
                 timeout=10,
-                speech_timeout="3",
+                speech_timeout="auto",
                 barge_in=True,
                 finish_on_key="#",
                 language="en-US",
@@ -8843,8 +8843,8 @@ def voice():
         # 💬 VOICE MESSAGES — centralized
         # ------------------------------------------------------------------
         VOICE_REGISTER_MSG = (
-            "Thank you {name}. Your registration information has been received. "
-            "Please contact the clinic to get your PIN number and complete your registration "
+            "Thank you {name}. Your registration procedure is completed. "
+            "Please contact the clinic to get your PIN number and review your registration info with the clinic front disk"
             "before scheduling an appointment. Goodbye!"
         )
 
