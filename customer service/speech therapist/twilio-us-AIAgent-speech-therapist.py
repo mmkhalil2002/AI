@@ -7173,7 +7173,7 @@ def voice():
         )
 
         PROMPT_CONFIRM_NEXT = (
-            "Thank you. Now, please enter or say your card number, then press pound."
+            "Thank you. Now, please enter your card number, then press pound."
         )
 
         PROMPT_SILENCE_FINAL = (
@@ -7268,21 +7268,24 @@ def voice():
         debug_print(f"collect_address: 🧽 Normalized → '{addr}'")
 
         # ----------------------------------------------------------------------
-        # ✅ Basic validation for readability + ZIP presence
+        # ✅ Basic validation for readability (ZIP no longer mandatory)
         # ----------------------------------------------------------------------
-        # Require:
-        #   • at least one alphabetic character
-        #   • reasonable length
-        #   • AND a ZIP-like pattern: 5 digits, optional "-4" suffix
+        # We require:
+        #   • At least one alphabetic character  → avoids "75094" alone
+        #   • A reasonable length (>= 10 chars) → avoids "94", "118 Oak"
+        #
+        # We NO LONGER require a 5-digit ZIP pattern. This allows:
+        #   "118 Bryer Oak Murphy Texas 75" to pass as a full address.
+        # ----------------------------------------------------------------------
         has_letters = _re.search(r"[A-Za-z]", addr) is not None
-        zip_match   = _re.search(r"\b\d{5}(?:-\d{4})?\b", addr) is not None
+        long_enough = len(addr) >= 10
 
-        if (not addr) or (not has_letters) or (len(addr) < 10) or (not zip_match):
+        if (not addr) or (not has_letters) or (not long_enough):
             r = sd.get("retry_address", 0) + 1
             sd["retry_address"] = r
             debug_print(
                 f"collect_address: ❌ looks invalid/partial → retry={r} "
-                f"(len={len(addr)}, has_letters={has_letters}, zip_match={zip_match})"
+                f"(len={len(addr)}, has_letters={has_letters})"
             )
 
             if r >= 3:
@@ -7342,6 +7345,7 @@ def voice():
             resp.redirect("/voice")
 
         return str(resp)
+
 
 
 
