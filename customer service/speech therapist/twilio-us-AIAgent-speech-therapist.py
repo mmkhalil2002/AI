@@ -7152,7 +7152,6 @@ def voice():
     #   preventing hangs from silence and guaranteeing normalized text for
     #   downstream use (e.g., confirmation or billing).
     # ======================================================================
-
     elif stage == "collect_address":
         # ----------------------------------------------------------------------
         # 🎙️ ALL VOICE PROMPTS — DECLARED AT THE BEGINNING
@@ -7176,43 +7175,55 @@ def voice():
             "Thank you. Now, please enter your card number, then press pound."
         )
 
+        PROMPT_SILENCE_FINAL = (
+            "I’m still not hearing anything. Please call again later."
+        )
+
+        PROMPT_CAPTURE_FAIL = (
+            "Sorry, I couldn’t capture your address. Please call again later."
+        )
+
         # ----------------------------------------------------------------------
         # 🔧 Initialize or retrieve session context
         # ----------------------------------------------------------------------
-        session_data.setdefault(call_sid, {}).setdefault("customer", {})
+        sd = session_data.setdefault(call_sid, {})
+        sd.setdefault("customer", {})
+        customer = sd["customer"]
 
         # ----------------------------------------------------------------------
-        # 🗣️ Retrieve caller’s speech safely
+        # 🗣️ Retrieve caller’s speech + DTMF safely
         # ----------------------------------------------------------------------
         try:
-            raw = (speech_result or request.values.get("SpeechResult") or "").strip()
+            raw_speech = (speech_result or request.values.get("SpeechResult") or "").strip()
         except Exception:
-            raw = (speech_result or "").strip()
+            raw_speech = (speech_result or "").strip()
 
-        debug_print(f"collect_address: 📬 Collected address (raw): {raw}")
+        raw_dtmf = (request.values.get("Digits") or "").strip()
+
+        debug_print(f"collect_address: 🗣️ speech_raw='{raw_speech}', dtmf_raw='{raw_dtmf}'")
 
         # ----------------------------------------------------------------------
-        # 🔇 Handle silence (nothing heard)
+        # 🔇 Handle silence (nothing heard / no DTMF)
         # ----------------------------------------------------------------------
-        if not raw:
+        if not raw_speech and not raw_dtmf:
             # Increment silence counter for this stage
-            tries = session_data[call_sid].get("silence_address", 0) + 1
-            session_data[call_sid]["silence_address"] = tries
+            tries = sd.get("silence_address", 0) + 1
+            sd["silence_address"] = tries
             debug_print(f"collect_address: 🤐 silence; tries={tries}")
 
             if tries >= 3:
                 # After 3 failed attempts → politely end call
-                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
+                resp.say(gpt_speak(PROMPT_SILENCE_FINAL), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # 🕓 FIX: Give the caller more time to speak the full address
+            # 🕓 Give the caller MORE time to speak the full address
             gather = make_gather(
                 PROMPT_RETRY_SILENCE,
                 input="speech dtmf",
                 language="en-US",
-                timeout=15,              # ⏱ total listening time before timeout
+                timeout=30,              # ⏱ total listening time before timeout
                 speech_timeout="auto",   # ⏳ automatically waits for pause completion
                 barge_in=False,          # prevents premature cutoff mid-sentence
                 finish_on_key="#",
@@ -7227,12 +7238,14 @@ def voice():
             return str(resp)
 
         # ✅ Some input received → reset silence counter
-        session_data[call_sid].pop("silence_address", None)
+        sd.pop("silence_address", None)
 
         # ----------------------------------------------------------------------
         # 🧹 Normalize and clean address text
         # ----------------------------------------------------------------------
-        addr = raw
+        # Prefer spoken address; if user typed something on keypad, use that.
+        addr = (raw_speech or raw_dtmf).strip()
+        debug_print(f"collect_address: 📬 Collected address (raw): {addr!r}")
 
         # 1️⃣ Collapse multiple spaces (e.g., “Murphy   Texas” → “Murphy Texas”)
         addr = _re.sub(r"\s+", " ", addr)
@@ -7256,26 +7269,32 @@ def voice():
         # ----------------------------------------------------------------------
         # ✅ Basic validation for readability
         # ----------------------------------------------------------------------
-        # Require at least one alphabetic character and a reasonable length.
-        # This filters out blank or nonsensical STT artifacts.
-        if (not addr) or (_re.search(r"[A-Za-z]", addr) is None) or (len(addr) < 6):
-            r = session_data[call_sid].get("retry_address", 0) + 1
-            session_data[call_sid]["retry_address"] = r
-            debug_print(f"collect_address: ❌ looks invalid/too short → retry={r}")
+        # Require at least:
+        #   • one alphabetic character
+        #   • a reasonable length (>= 10 chars)
+        # This filters out blank or nonsensical STT artifacts such as "1185094".
+        has_letters = _re.search(r"[A-Za-z]", addr) is not None
+        if (not addr) or (not has_letters) or (len(addr) < 10):
+            r = sd.get("retry_address", 0) + 1
+            sd["retry_address"] = r
+            debug_print(
+                f"collect_address: ❌ looks invalid/too short → retry={r} "
+                f"(len={len(addr)}, has_letters={has_letters})"
+            )
 
             if r >= 3:
                 # After 3 invalid attempts → hang up politely
-                resp.say(gpt_speak("Sorry, I couldn’t capture your address. Please call again later."), VOICE)
+                resp.say(gpt_speak(PROMPT_CAPTURE_FAIL), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # 🕓 FIX: use extended listening window for retries too
+            # 🕓 use extended listening window for retries too
             gather = make_gather(
                 PROMPT_INVALID_ADDRESS,
                 input="speech dtmf",
                 language="en-US",
-                timeout=15,
+                timeout=30,              # more time to speak full address
                 speech_timeout="auto",
                 barge_in=False,
                 finish_on_key="#",
@@ -7283,7 +7302,7 @@ def voice():
             )
             resp.append(gather)
             try:
-                #from flask import url_for
+                from flask import url_for
                 resp.redirect(url_for("voice"))
             except Exception:
                 resp.redirect("/voice")
@@ -7293,7 +7312,7 @@ def voice():
         # 💾 Persist valid address
         # ----------------------------------------------------------------------
         session_data[call_sid]["customer"]["address"] = addr
-        session_data[call_sid].pop("retry_address", None)  # reset retry counter
+        sd.pop("retry_address", None)  # reset retry counter
         debug_print(f"collect_address: ✅ Saved address='{addr}'")
 
         # ----------------------------------------------------------------------
@@ -7306,7 +7325,7 @@ def voice():
             PROMPT_CONFIRM_NEXT,
             input="speech dtmf",
             language="en-US",
-            timeout=6,
+            timeout=10,
             speech_timeout="auto",
             barge_in=True,
             finish_on_key="#",
@@ -7314,12 +7333,13 @@ def voice():
         )
         resp.append(gather)
         try:
-            #from flask import url_for
+            from flask import url_for
             resp.redirect(url_for("voice"))
         except Exception:
             resp.redirect("/voice")
 
         return str(resp)
+
 
 
 
@@ -7854,9 +7874,16 @@ def voice():
         MSG_EXP_FORMAT = "Please say or enter the expiration date as month and year, for example, zero nine two seven, then press pound."
         MSG_PIN_UPDATED = "Your PIN has been updated successfully. Thank you!"
         MSG_PIN_UPDATE_FAIL = "We couldn’t verify your card, so we can’t update your PIN. Please call the clinic for assistance."
+        # 🔁 NOTE:
+        #   Previously this prompt told the caller to "say or enter your insurance provider
+        #   and policy number". That caused confusion, because the *next* stage
+        #   (collect_insurance_information) already:
+        #       • lists insurance companies
+        #       • then separately asks for member / policy ID.
+        #   We now make this a simple transition message only.
         MSG_INSURANCE_PROMPT = (
             "Now let's collect your insurance information. "
-            "Please say or enter your insurance provider and policy number, then press pound."
+            "I will first ask you to choose your insurance company, then I will ask for your member ID."
         )
 
         # ----------------------------------------------------------------------
@@ -8153,8 +8180,6 @@ def voice():
             debug_print(f"collect_cc: 🔁 origin_stage after CVV = '{origin_stage2}'")
 
             if origin_stage2 == "update_cc":
-                # Existing behavior: after capturing full CC in update_cc flow,
-                # move to the stage that actually writes it to the DB.
                 next_stage = "update_customer_cc"
                 session_data[call_sid]["stage"] = next_stage
                 session_data[call_sid]["skip_silence_once"] = True
@@ -8163,8 +8188,6 @@ def voice():
                 return str(resp)
 
             if origin_stage2 in ("book", "reschedule"):
-                # Booking / reschedule flows: appointment_time should already be set
-                # by collect_book_time_date. Now go to final confirmation & save.
                 next_stage = "book_appt_confirm"
                 session_data[call_sid]["stage"] = next_stage
                 session_data[call_sid]["skip_silence_once"] = True
@@ -8220,8 +8243,6 @@ def voice():
         )
         resp.append(gather)
         return str(resp)
-
-
 
 
 
