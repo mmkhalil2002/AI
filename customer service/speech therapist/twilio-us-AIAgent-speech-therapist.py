@@ -7160,161 +7160,171 @@ def voice():
     # ======================================================================
     elif stage == "collect_address":
         # ----------------------------------------------------------------------
-        # 🎙️ VOICE PROMPTS — CENTRALIZED
+        # 🎙️ ALL VOICE PROMPTS — DECLARED AT THE BEGINNING
         # ----------------------------------------------------------------------
         PROMPT_INTRO = (
-            "Please tell me your full address, including street, city, state, and ZIP code. "
+            "Please tell me your full address, including street number, city, and ZIP code. "
+            "For example, say one one eight Briar Oak, Murphy, Texas seven five zero nine four."
+        )
+
+        PROMPT_RETRY_SILENCE = (
+            "I didn't catch that. Please say your street address, city, and ZIP. "
             "For example, one one eight Briar Oak, Murphy, Texas seven five zero nine four."
         )
 
-        PROMPT_SILENCE = (
-            "I didn't hear anything. Please say your full address clearly in one sentence. "
+        PROMPT_INVALID_ADDRESS = (
+            "Please repeat your full mailing address — street, city, state, and ZIP. "
             "For example, one one eight Briar Oak, Murphy, Texas seven five zero nine four."
         )
 
-        PROMPT_PARTIAL = (
-            "I think I only heard part of your address. Please repeat your full mailing address — "
-            "street, city, state, and ZIP code — in one sentence."
+        PROMPT_CONFIRM_NEXT = (
+            "Thank you. Now, please enter your card number, then press pound."
         )
 
-        PROMPT_FAILED = (
-            "Sorry, I could not capture your full address. "
-            "Please call the clinic again to complete registration."
-        )
-
-        PROMPT_NEXT = "Thank you. Now, please enter or say your card number, then press pound."
+        # ----------------------------------------------------------------------
+        # 🔧 Initialize or retrieve session context
+        # ----------------------------------------------------------------------
+        session_data.setdefault(call_sid, {}).setdefault("customer", {})
 
         # ----------------------------------------------------------------------
-        # 🔧 SESSION SAFETY INIT
+        # 🗣️ Retrieve caller’s speech safely
         # ----------------------------------------------------------------------
-        sd = session_data.setdefault(call_sid, {})
-        customer = sd.setdefault("customer", {})
+        try:
+            raw = (speech_result or request.values.get("SpeechResult") or "").strip()
+        except Exception:
+            raw = (speech_result or "").strip()
+
+        debug_print(f"collect_address: 📬 Collected address (raw): {raw}")
 
         # ----------------------------------------------------------------------
-        # 🎧 CAPTURE INPUT
+        # 🔇 Handle silence (nothing heard)
         # ----------------------------------------------------------------------
-        speech_raw = (speech_result or "").strip()
-        dtmf_raw   = (request.values.get("Digits") or "").strip()
-
-        debug_print(f"collect_address: 🗣️ raw_speech='{speech_raw}', dtmf='{dtmf_raw}'")
-
-        # ----------------------------------------------------------------------
-        # 🔇 SILENCE HANDLING
-        # ----------------------------------------------------------------------
-        if not speech_raw and not dtmf_raw:
-            tries = sd.get("address_silence", 0) + 1
-            sd["address_silence"] = tries
-            debug_print(f"collect_address: 🤐 silence attempt={tries}/3")
+        if not raw:
+            # Increment silence counter for this stage
+            tries = session_data[call_sid].get("silence_address", 0) + 1
+            session_data[call_sid]["silence_address"] = tries
+            debug_print(f"collect_address: 🤐 silence; tries={tries}")
 
             if tries >= 3:
-                resp.say(gpt_speak(PROMPT_FAILED), VOICE)
+                # After 3 failed attempts → politely end call
+                resp.say(gpt_speak("I’m still not hearing anything. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            g = make_gather(
-                PROMPT_SILENCE,
-                input="speech",
-                timeout=20,
-                speech_timeout="auto",
-                barge_in=False,
+            # 🕓 FIX: Give the caller more time to speak the full address
+            gather = make_gather(
+                PROMPT_RETRY_SILENCE,
+                input="speech dtmf",
                 language="en-US",
-                action="/voice",
-                method="POST",
+                timeout=15,              # ⏱ total listening time before timeout
+                speech_timeout="auto",   # ⏳ automatically waits for pause completion
+                barge_in=False,          # prevents premature cutoff mid-sentence
+                finish_on_key="#",
+                action="/voice", method="POST",
             )
-            resp.append(g)
-            resp.redirect("/voice")
+            resp.append(gather)
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))  # redirect ensures Twilio posts back
+            except Exception:
+                resp.redirect("/voice")
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🧹 NORMALIZE INPUT
-        # ----------------------------------------------------------------------
-        addr = speech_raw
-        addr = _re.sub(r"\s+", " ", addr)           # collapse spaces
-        addr = _re.sub(r"\s*([.,])\s*", r"\1 ", addr)  # fix commas/periods
-        addr = _re.sub(r"\.{2,}", ".", addr)        # reduce dots
-        addr = addr.strip(" ,.")
+        # ✅ Some input received → reset silence counter
+        session_data[call_sid].pop("silence_address", None)
 
         # ----------------------------------------------------------------------
-        # 🛠 ZIP FIX (MERGE SPLIT DIGITS: '75 094' → '75094')
+        # 🧹 Normalize and clean address text
         # ----------------------------------------------------------------------
-        addr = _re.sub(r"\b(\d{2})\s+(\d{3})\b", r"\1\2", addr)
-        addr = _re.sub(r"\b(\d{1})\s+(\d{4})\b", r"\1\2", addr)
-        addr = _re.sub(r"\b(\d{3})\s+(\d{2})\b", r"\1\2", addr)
-        addr = _re.sub(r"\b(\d\s+){4}\d\b", lambda m: m.group(0).replace(" ", ""), addr)
+        addr = raw
 
-        debug_print(f"collect_address: 🔧 ZIPfix → '{addr}'")
+        # 1️⃣ Collapse multiple spaces (e.g., “Murphy   Texas” → “Murphy Texas”)
+        addr = _re.sub(r"\s+", " ", addr)
+
+        # 2️⃣ Normalize spacing around commas, hashes, and periods
+        #     Example: "Murphy , Texas . 75094" → "Murphy, Texas. 75094"
+        addr = _re.sub(r"\s*([,#\.])\s*", r"\1 ", addr)
+
+        # 3️⃣ Remove repeated punctuation (“..” or “,,,” → single instance)
+        addr = _re.sub(r"\.{2,}", ".", addr)
+        addr = _re.sub(r",\s*,+", ", ", addr)
+
+        # 4️⃣ Trim stray punctuation and whitespace at edges
+        addr = addr.strip(" .,")
+
+        # 5️⃣ Final pass — collapse any spaces introduced during cleanup
+        addr = _re.sub(r"\s+", " ", addr).strip()
+
+        debug_print(f"collect_address: 🧽 Normalized → '{addr}'")
 
         # ----------------------------------------------------------------------
-        # ✅ VALIDATION
+        # ✅ Basic validation for readability
         # ----------------------------------------------------------------------
-        has_letters = bool(_re.search(r"[A-Za-z]", addr))
-        has_digits  = bool(_re.search(r"\d", addr))
-        zip_match   = bool(_re.search(r"\b\d{5}\b", addr))
-        length_ok   = len(addr) >= 10
+        # Require at least one alphabetic character and a reasonable length.
+        # This filters out blank or nonsensical STT artifacts.
+        if (not addr) or (_re.search(r"[A-Za-z]", addr) is None) or (len(addr) < 6):
+            r = session_data[call_sid].get("retry_address", 0) + 1
+            session_data[call_sid]["retry_address"] = r
+            debug_print(f"collect_address: ❌ looks invalid/too short → retry={r}")
 
-        debug_print(
-            f"collect_address: ✅ validation → len={len(addr)}, "
-            f"letters={has_letters}, digits={has_digits}, zip={zip_match}"
-        )
-
-        # ----------------------------------------------------------------------
-        # ❌ PARTIAL ADDRESS
-        # ----------------------------------------------------------------------
-        if not (has_letters and has_digits and zip_match and length_ok):
-            tries = sd.get("retry_address", 0) + 1
-            sd["retry_address"] = tries
-            debug_print(f"collect_address: ❌ partial retry={tries}/3")
-
-            if tries >= 3:
-                resp.say(gpt_speak(PROMPT_FAILED), VOICE)
+            if r >= 3:
+                # After 3 invalid attempts → hang up politely
+                resp.say(gpt_speak("Sorry, I couldn’t capture your address. Please call again later."), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            g = make_gather(
-                PROMPT_PARTIAL,
-                input="speech",
-                timeout=25,
+            # 🕓 FIX: use extended listening window for retries too
+            gather = make_gather(
+                PROMPT_INVALID_ADDRESS,
+                input="speech dtmf",
+                language="en-US",
+                timeout=15,
                 speech_timeout="auto",
                 barge_in=False,
-                language="en-US",
-                action="/voice",
-                method="POST",
+                finish_on_key="#",
+                action="/voice", method="POST",
             )
-            resp.append(g)
-            resp.redirect("/voice")
+            resp.append(gather)
+            try:
+                from flask import url_for
+                resp.redirect(url_for("voice"))
+            except Exception:
+                resp.redirect("/voice")
             return str(resp)
 
         # ----------------------------------------------------------------------
-        # 💾 SAVE ADDRESS
+        # 💾 Persist valid address
         # ----------------------------------------------------------------------
-        customer["address"] = addr
-
-        sd.pop("retry_address", None)
-        sd.pop("address_silence", None)
-
-        debug_print(f"collect_address: ✅ SAVED address='{addr}'")
+        session_data[call_sid]["customer"]["address"] = addr
+        session_data[call_sid].pop("retry_address", None)  # reset retry counter
+        debug_print(f"collect_address: ✅ Saved address='{addr}'")
 
         # ----------------------------------------------------------------------
-        # 🔁 MOVE TO CREDIT CARD (STRICT CONTROL – NO MIXING)
+        # 🔁 Advance to next stage
         # ----------------------------------------------------------------------
-        sd["stage"] = "collect_cc"
+        session_data[call_sid]["stage"] = "collect_cc"
 
-        g = make_gather(
-            PROMPT_NEXT,
+        # Prompt user for credit card (or next data item)
+        gather = make_gather(
+            PROMPT_CONFIRM_NEXT,
             input="speech dtmf",
-            timeout=15,
-            speech_timeout="auto",
-            barge_in=False,
             language="en-US",
-            action="/voice",
-            method="POST",
+            timeout=6,
+            speech_timeout="auto",
+            barge_in=True,
+            finish_on_key="#",
+            action="/voice", method="POST",
         )
-        resp.append(g)
-        resp.redirect("/voice")
-        return str(resp)
+        resp.append(gather)
+        try:
+            from flask import url_for
+            resp.redirect(url_for("voice"))
+        except Exception:
+            resp.redirect("/voice")
 
+        return str(resp)
 
 
 
