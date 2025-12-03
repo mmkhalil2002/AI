@@ -4907,206 +4907,176 @@ def voice():
     elif stage == "collect_insurance_information":
 
         # ----------------------------------------------------------------------
-        # 🎙️ VOICE MESSAGES — centralized for clarity and localization
+        # 🎙️ VOICE MESSAGES
         # ----------------------------------------------------------------------
         MSG_SILENCE_EXIT = "I’m still not hearing anything. Please call again later."
         MSG_MEMBERID_SILENCE_EXIT = "I’m still not hearing your member ID. Please call again later."
-        MSG_PROMPT_INSURANCE_COMPANY = (
-            "Please choose your insurance company using your keypad. "
-            "Press the number now while I’m speaking. "
-        )
-        MSG_PROMPT_MEMBER_ID = (
-            "Please say or enter your insurance member ID now. "
-            "You can include both letters and numbers, then press pound when done."
-        )
-        MSG_AFTER_SELECTION = (
-            "Thank you. You selected {insurance_name}. "
-            "Now please say or enter your insurance member ID. "
-            "You can include both letters and numbers, then press pound when done."
-        )
-        MSG_THANK_YOU_NEXT_FIRST_NAME = (
-            "Thank you. Now, please tell me your first name."
-        )
+        MSG_COMPANY_SILENCE_RETRY = "I didn’t hear your insurance company. Let’s try again."
+        MSG_MEMBERID_SILENCE_RETRY = "I didn’t hear your insurance member ID. Let’s try again."
+        MSG_PROMPT_INSURANCE_COMPANY = "Please choose your insurance company."
+        MSG_PROMPT_MEMBER_ID = "Please say or enter your insurance member ID, then press pound."
+        MSG_AFTER_SELECTION = "Thank you. You selected {insurance}. Now please enter your member ID."
 
         # ----------------------------------------------------------------------
-        # 🧭 Initialize session safely (ensure nested dicts exist)
+        # 🧭 SESSION PREP
         # ----------------------------------------------------------------------
         sd = session_data.setdefault(call_sid, {})
-        sd.setdefault("customer", {})
-        customer = sd["customer"]
+        customer = sd.setdefault("customer", {})
 
-        # ----------------------------------------------------------------------
-        # 🎙️ Capture input (speech + keypad)
-        # ----------------------------------------------------------------------
         raw_speech = (speech_result or "").strip()
         raw_dtmf   = (request.values.get("Digits") or "").strip()
-        debug_print(f"collect_insurance_information: speech='{raw_speech}', dtmf='{raw_dtmf}'")
+
+        debug_print(f"collect_insurance_information speech='{raw_speech}' dtmf='{raw_dtmf}'")
 
         # ----------------------------------------------------------------------
-        # 🏢 Load insurance companies (from environment variable or defaults)
+        # ✅ USE YOUR GLOBAL COMPANY LIST
         # ----------------------------------------------------------------------
-        INSURANCE_COMPANIES_LIST = [
-            n.strip()
-            for n in os.getenv(
-                "INSURANCE_COMPANIES",
-                "Blue Cross Blue Shield,Aetna,Cigna,United Healthcare,Humana,Kaiser Permanente",
-            ).split(",")
-            if n.strip()
-        ]
-        # Map: "1" → first company, "2" → second, etc.
-        keypad_map = {str(i + 1): n for i, n in enumerate(INSURANCE_COMPANIES_LIST)}
-        debug_print(f"collect_insurance_information: keypad_map={keypad_map}")
+        keypad_map = {str(i + 1): name for i, name in enumerate(INSURANCE_COMPANIES_LIST)}
 
-        # ----------------------------------------------------------------------
-        # 🧩 Determine current sub-step ("company" or "id")
-        # ----------------------------------------------------------------------
+        # Spoken digit map ("one", "two", "3", etc)
+        speech_digit_map = {
+            "one": "1", "1": "1",
+            "two": "2", "to": "2", "too": "2", "2": "2",
+            "three": "3", "3": "3",
+            "four": "4", "for": "4", "4": "4",
+            "five": "5", "5": "5",
+            "six": "6", "6": "6",
+            "seven": "7", "7": "7",
+            "eight": "8", "ate": "8", "8": "8",
+            "nine": "9", "9": "9"
+        }
+
         step = sd.get("insurance_step", "company")
 
         # ======================================================================
-        # 🧩 STEP 1 — SELECT INSURANCE COMPANY
+        # STEP 1 — CHOOSE INSURANCE COMPANY
         # ======================================================================
         if step == "company":
-            # --------------------------------------------------------------
-            # 🔢 Handle keypad (DTMF) input
-            # --------------------------------------------------------------
-            if raw_dtmf:
-                # We only care about the first digit that matches one of our menu options.
-                first_digit = next((ch for ch in raw_dtmf if ch in keypad_map), "")
-                if first_digit:
-                    insurance_name = keypad_map[first_digit]
-                    customer["insurance_name"] = insurance_name
-                    sd["insurance_step"] = "id"  # Move to ID collection step
-                    debug_print(f"✅ Selected insurance_name='{insurance_name}' via DTMF '{raw_dtmf}'")
 
-                    # ------------------------------------------------------
-                    # 🕐 Prompt for member ID (longer listening window)
-                    # ------------------------------------------------------
-                    # timeout=25 ensures the system waits long enough for slow speech.
-                    # barge_in=False prevents early cutoff mid-sentence.
+            # ✅ DTMF SELECTION
+            if raw_dtmf:
+                key = next((d for d in raw_dtmf if d in keypad_map), "")
+                if key:
+                    company = keypad_map[key]
+                    customer["insurance_name"] = company
+                    sd["insurance_step"] = "id"
+                    debug_print(f"✅ Insurance selected by DTMF: {company}")
+
                     g = make_gather(
-                        MSG_AFTER_SELECTION.format(insurance_name=insurance_name),
+                        MSG_AFTER_SELECTION.format(insurance=company),
                         input="speech dtmf",
                         timeout=25,
-                        speech_timeout="auto",
-                        barge_in=False,
                         finish_on_key="#",
-                        language="en-US",
-                        action="/voice",
-                        method="POST",
+                        action="/voice"
                     )
-                    resp.append(g)
-                    # Stay in this stage; on next POST we will be in step "id"
-                    resp.redirect("/voice")
+                    resp.append(g); resp.redirect("/voice")
                     return str(resp)
 
-            # --------------------------------------------------------------
-            # 🤐 Handle silence (no valid DTMF) — allow up to 3 retries
-            # --------------------------------------------------------------
-            tries = sd.get("insurance_silence_tries", 0) + 1
-            sd["insurance_silence_tries"] = tries
-            debug_print(f"collect_insurance_information: 🤐 company silence tries={tries}/3")
+            # ✅ SPOKEN SELECTION (digit or company name)
+            if raw_speech:
+                txt = raw_speech.lower()
+
+                # Digit words
+                for word, digit in speech_digit_map.items():
+                    if word in txt and digit in keypad_map:
+                        company = keypad_map[digit]
+                        customer["insurance_name"] = company
+                        sd["insurance_step"] = "id"
+                        debug_print(f"✅ Insurance via spoken digit: {company}")
+
+                        g = make_gather(
+                            MSG_AFTER_SELECTION.format(insurance=company),
+                            input="speech dtmf",
+                            timeout=25,
+                            finish_on_key="#",
+                            action="/voice"
+                        )
+                        resp.append(g); resp.redirect("/voice")
+                        return str(resp)
+
+                # Company name match
+                for company in INSURANCE_COMPANIES_LIST:
+                    if company.lower() in txt:
+                        customer["insurance_name"] = company
+                        sd["insurance_step"] = "id"
+                        debug_print(f"✅ Insurance via spoken name: {company}")
+
+                        g = make_gather(
+                            MSG_AFTER_SELECTION.format(insurance=company),
+                            input="speech dtmf",
+                            timeout=25,
+                            finish_on_key="#",
+                            action="/voice"
+                        )
+                        resp.append(g); resp.redirect("/voice")
+                        return str(resp)
+
+            # ❌ SILENCE / INVALID
+            tries = sd.get("insurance_silence", 0) + 1
+            sd["insurance_silence"] = tries
 
             if tries >= 3:
-                # Too many attempts with no valid company selection
-                resp.say(gpt_speak(MSG_SILENCE_EXIT), VOICE)
+                resp.say(MSG_SILENCE_EXIT, VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # --------------------------------------------------------------
-            # 📞 Re-prompt with company menu
-            # --------------------------------------------------------------
-            # Build spoken list: “Press 1 for Blue Cross..., Press 2 for Aetna...”
-            menu_text = MSG_PROMPT_INSURANCE_COMPANY
-            for i, name in enumerate(INSURANCE_COMPANIES_LIST, start=1):
-                menu_text += f"Press {i} for {name}. "
+            # Menu
+            menu = MSG_COMPANY_SILENCE_RETRY + " "
+            for i, name in enumerate(INSURANCE_COMPANIES_LIST, 1):
+                menu += f"Press {i} for {name}. "
 
-            # Quick DTMF-only gather — instant response when key pressed
-            g = make_gather(
-                menu_text,
-                input="dtmf",
-                timeout=4,          # short delay before repeat
-                num_digits=1,
-                barge_in=True,
-                finish_on_key="#",
-                language="en-US",
-                action="/voice",
-                method="POST",
-            )
-            resp.append(g)
-            resp.redirect("/voice")
+            g = make_gather(menu, input="dtmf", num_digits=1, timeout=6, action="/voice")
+            resp.append(g); resp.redirect("/voice")
             return str(resp)
 
+
         # ======================================================================
-        # 🧩 STEP 2 — COLLECT INSURANCE MEMBER ID
+        # STEP 2 — MEMBER ID
         # ======================================================================
         if step == "id":
-            # --------------------------------------------------------------
-            # 🔇 Handle silence with retry logic (max 3)
-            # --------------------------------------------------------------
+
+            # ❌ SILENCE HANDLING
             if not raw_speech and not raw_dtmf:
                 tries = sd.get("insurance_id_silence", 0) + 1
                 sd["insurance_id_silence"] = tries
-                debug_print(f"collect_insurance_information: 🤐 ID silence tries={tries}/3")
 
                 if tries >= 3:
-                    # After 3 silent attempts → apologize and end call
-                    resp.say(gpt_speak(MSG_MEMBERID_SILENCE_EXIT), VOICE)
+                    resp.say(MSG_MEMBERID_SILENCE_EXIT, VOICE)
                     resp.hangup()
                     session_data.pop(call_sid, None)
                     return str(resp)
 
-                # ----------------------------------------------------------
-                # 🗣️ Re-prompt for ID (extended timeout)
-                # ----------------------------------------------------------
                 g = make_gather(
-                    MSG_PROMPT_MEMBER_ID,
+                    MSG_MEMBERID_SILENCE_RETRY + " " + MSG_PROMPT_MEMBER_ID,
                     input="speech dtmf",
-                    timeout=30,              # plenty of time for speaking ID
-                    speech_timeout="auto",   # stops when user actually silent
-                    barge_in=False,          # ensures no early cutoff
+                    timeout=25,
                     finish_on_key="#",
-                    language="en-US",
-                    action="/voice",
-                    method="POST",
+                    action="/voice"
                 )
-                resp.append(g)
-                resp.redirect("/voice")
+                resp.append(g); resp.redirect("/voice")
                 return str(resp)
 
-            # --------------------------------------------------------------
-            # 🧾 Capture and save insurance member ID
-            # --------------------------------------------------------------
-            # Prefer DTMF digits (if present), otherwise the spoken value.
-            member_id = (raw_dtmf or raw_speech).strip().upper()
-            customer["insurance_member_id"] = member_id
-            debug_print(f"✅ Captured insurance_member_id='{member_id}'")
+            # ✅ SAVE ID
+            customer["insurance_member_id"] = (raw_dtmf or raw_speech).strip().upper()
+            debug_print(f"✅ Insurance ID = {customer['insurance_member_id']}")
 
-            # --------------------------------------------------------------
-            # 🔄 Move to next stage (collect_first_name)
-            # --------------------------------------------------------------
-                        # 🔄 Move directly to appointment confirmation
+            # ✅ ROUTE TO CONFIRM APPOINTMENT
             sd["stage"] = "book_appt_confirm"
 
-            # Clean up sub-step state
             sd.pop("insurance_step", None)
-            sd.pop("insurance_silence_tries", None)
+            sd.pop("insurance_silence", None)
             sd.pop("insurance_id_silence", None)
 
-            # Inform the patient and continue
             g = make_gather(
                 "Thank you. Your insurance information has been saved. Let's confirm your appointment now.",
                 input="speech dtmf",
                 timeout=6,
-                speech_timeout="auto",
-                barge_in=True,
-                language="en-US",
-                action="/voice",
-                method="POST",
+                action="/voice"
             )
-            resp.append(g)
-            resp.redirect("/voice")
+            resp.append(g); resp.redirect("/voice")
             return str(resp)
+
 
 
 
@@ -9013,29 +8983,25 @@ def voice():
     #     → Hang up (booking complete)
     #
     # ======================================================================
-
     elif stage == "book_appt_confirm":
     
         # Start execution timer (for performance diagnostics)
         t_stage_start = _time_mod.perf_counter()
         debug_print("book_appt_confirm: 📍 Stage entered")
 
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # 💬 VOICE MESSAGES — centralized for maintainability & localization
-        # ----------------------------------------------------------------------
-        #   These message templates are reused for TTS responses and can
-        #   easily be localized to other languages if needed.
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         VOICE_NEW_CUSTOMER_MSG = (
             "Thank you {name}. You need to verify your information with the clinic "
             "before scheduling an appointment. Please contact the clinic to complete "
             "your registration. Goodbye!"
         )
-        # 🔹 NEW: message for REGISTER state
+        # For callers that are in REGISTER state (newly captured data)
         VOICE_REGISTER_MSG = (
-            "Thank you {name}. Your registration has been received. "
-            "Please call the clinic to get your PIN number before scheduling an appointment. "
-            "Goodbye!"
+            "Thank you {name}. Your registration information has been received. "
+            "Please contact the clinic to get your PIN number and complete your registration "
+            "before scheduling an appointment. Goodbye!"
         )
         VOICE_MISSING_APPT_MSG = "Sorry, appointment time is missing. Please try again."
         VOICE_CONFIRMATION_ERROR_MSG = "Sorry, we couldn't confirm the appointment time."
@@ -9045,35 +9011,42 @@ def voice():
             "We look forward to seeing you. Goodbye!"
         )
 
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # 🧩 Retrieve session data for this call
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         sd = session_data.get(call_sid, {})
-        customer_status = sd.get("customer_status", "current")
+        customer = sd.get("customer", {}) or {}
+
+        # Prefer the value saved in `customer["customer_status"]` (from collect_dob),
+        # but fall back to the session-level flag if present.
+        customer_status = (
+            (customer.get("customer_status") or "").strip().lower()
+            or (sd.get("customer_status") or "current").strip().lower()
+        )
         debug_print(f"book_appt_confirm: 🧾 customer_status={customer_status}")
 
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # 👤 Extract customer information from session
-        # ----------------------------------------------------------------------
-        customer = sd.get("customer", {}) or {}
+        # ------------------------------------------------------------------
         first_name       = (customer.get("first_name") or "").strip()
         last_name        = (customer.get("last_name")  or "").strip()
         customer_address = (customer.get("address")    or "").strip()
         customer_dob     = (customer.get("dob")        or "").strip()
-        phone_e164       = (customer.get("phone_e164") or "").strip()
+        phone_e164       = (customer.get("phone_e164") or sd.get("phone_e164") or "").strip()
         insurance_name   = (customer.get("insurance_name") or "").strip()
         insurance_member_id = (customer.get("insurance_member_id") or "").strip()
 
-        # ----------------------------------------------------------------------
-        # 🆕 REGISTERED BUT NOT VERIFIED FLOW (state == REGISTER)
-        # ----------------------------------------------------------------------
-        #   If the system state/customer_status is REGISTER, we:
-        #     • Store the customer information in the local DB
-        #     • Tell the caller to call the clinic to get a PIN number
-        #     • Do NOT book an appointment
-        #     • End the call politely
-        # ----------------------------------------------------------------------
-        if str(customer_status).upper() == "REGISTER":
+        # ------------------------------------------------------------------
+        # 🆕 REGISTER STATE FLOW
+        # ------------------------------------------------------------------
+        # If the caller just went through REGISTER flow (e.g. via DOB + registration
+        # path), we:
+        #   • Insert their information into the local DB with status="REGISTER"
+        #   • Inform them that registration is received
+        #   • Ask them to contact the clinic to get a PIN and complete registration
+        #   • Do NOT book an appointment
+        # ------------------------------------------------------------------
+        if customer_status == "register":
             debug_print("book_appt_confirm: 🆕 REGISTER state → store customer, no booking")
 
             try:
@@ -9083,47 +9056,48 @@ def voice():
                     first_name=first_name,
                     last_name=last_name,
                     address=customer_address,
-                    cc_name=f"{first_name} {last_name}",
-                    cc_number="",
+                    cc_name=f"{first_name} {last_name}".strip(),
+                    cc_number="",          # (optional) can be filled if you store CC
                     cc_exp="",
                     cc_cvv="",
                     insurance_name=insurance_name,
                     insurance_member_id=insurance_member_id,
                     customer_status="REGISTER",
-                    pin_number=0,  # no PIN yet; must call clinic
+                    pin_number=0,          # PIN not yet assigned; clinic will provide
                 )
                 debug_print(f"book_appt_confirm: ✅ insert_customer (REGISTER) → {inserted_ok}")
             except Exception as e:
                 debug_print(f"book_appt_confirm: ❌ insert_customer failed for REGISTER → {e}")
 
-            # 🗣 Tell the caller they must call the clinic to get a PIN
+            # Tell the caller what to do next
             msg = VOICE_REGISTER_MSG.format(name=first_name or "there")
             resp.say(gpt_speak(msg), VOICE)
 
-            # Cleanup and end the call
+            # Cleanup and hang up
             resp.hangup()
             session_data.pop(call_sid, None)
-            debug_print(f"book_appt_confirm: ✅ REGISTER flow completed in {_time_mod.perf_counter() - t_stage_start:.3f}s")
+            debug_print(
+                f"book_appt_confirm: ✅ REGISTER flow completed in "
+                f"{_time_mod.perf_counter() - t_stage_start:.3f}s"
+            )
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 🆕 NEW CUSTOMER FLOW
-        # ----------------------------------------------------------------------
-        #   If this is a first-time caller, insert their record locally but
-        #   do not schedule an appointment. The system ends politely.
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 🆕 NEW CUSTOMER FLOW (not previously in DB)
+        # ------------------------------------------------------------------
+        # Insert them as "new" and ask them to verify with clinic.
+        # ------------------------------------------------------------------
         if customer_status == "new":
             debug_print("book_appt_confirm: 🆕 new customer → skipping appointment booking")
 
             try:
-                # Store new customer details in local database
                 inserted_ok = insert_customer(
                     phone=phone_e164,
                     dob=customer_dob,
                     first_name=first_name,
                     last_name=last_name,
                     address=customer_address,
-                    cc_name=f"{first_name} {last_name}",
+                    cc_name=f"{first_name} {last_name}".strip(),
                     cc_number="",
                     cc_exp="",
                     cc_cvv="",
@@ -9136,36 +9110,34 @@ def voice():
             except Exception as e:
                 debug_print(f"book_appt_confirm: ❌ insert_customer failed for new customer → {e}")
 
-            # 🗣 Speak polite final message and end the call
             msg = VOICE_NEW_CUSTOMER_MSG.format(name=first_name or "there")
             resp.say(gpt_speak(msg), VOICE)
             resp.hangup()
             session_data.pop(call_sid, None)
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 👤 CURRENT CUSTOMER FLOW
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 👤 CURRENT CUSTOMER FLOW — proceed with booking
+        # ------------------------------------------------------------------
         debug_print("book_appt_confirm: 👤 current customer flow continues")
 
-        # Retrieve doctor and appointment slot from session
         doctor_name = sd.get("doctor_name", "the doctor")
         appt = sd.get("appointment_time", {}) or {}
         appointment_start = appt.get("start")
         appointment_end   = appt.get("end")
 
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # ❌ Handle missing appointment info (no start time)
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         if not appointment_start:
             debug_print("book_appt_confirm: ❌ appointment_start missing for current customer")
             resp.say(gpt_speak(VOICE_MISSING_APPT_MSG), VOICE)
             resp.hangup()
             return str(resp)
 
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # 🕒 Convert UTC → Local timezone for spoken confirmation
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         tz_name = globals().get("CLINIC_TZ", "America/Chicago")
         try:
             tz = _pytz.timezone(tz_name)
@@ -9182,9 +9154,9 @@ def voice():
             resp.hangup()
             return str(resp)
 
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # 🕓 Compute missing end time (defaults to 30 minutes)
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         if not appointment_end:
             try:
                 dur = int(globals().get("APPOINTMENT_DURATION_MINUTES", 30))
@@ -9196,9 +9168,9 @@ def voice():
                 resp.hangup()
                 return str(resp)
 
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # ✅ Verify that the selected time slot is still available
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         try:
             slot_ok = is_doctor_slot_available(doctor_name, appointment_start, appointment_end)
         except Exception as e:
@@ -9210,9 +9182,9 @@ def voice():
             resp.append(make_gather(VOICE_SLOT_TAKEN_MSG))
             return str(resp)
 
-        # ----------------------------------------------------------------------
-        # 💾 Insert or Update Customer Record Locally
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 💾 Insert/Update Customer Record as CURRENT
+        # ------------------------------------------------------------------
         try:
             inserted_ok = insert_customer(
                 phone=phone_e164,
@@ -9220,7 +9192,7 @@ def voice():
                 first_name=first_name,
                 last_name=last_name,
                 address=customer_address,
-                cc_name=f"{first_name} {last_name}",
+                cc_name=f"{first_name} {last_name}".strip(),
                 cc_number="",
                 cc_exp="",
                 cc_cvv="",
@@ -9233,9 +9205,9 @@ def voice():
         except Exception as e:
             debug_print(f"book_appt_confirm: ❌ insert_customer failed → {e}")
 
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # 🗂️ Log the appointment locally for the doctor
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         try:
             full_name = f"{first_name} {last_name}".strip()
             book_appointment_for_dr_name(
@@ -9253,9 +9225,9 @@ def voice():
         except Exception as e:
             debug_print(f"book_appt_confirm: ⚠️ failed to log appointment locally → {e}")
 
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # ✅ Final confirmation message + SMS notification
-        # ----------------------------------------------------------------------
+        # ------------------------------------------------------------------
         msg = VOICE_APPT_CONFIRMED_MSG.format(doctor=doctor_name, time=formatted_time)
         resp.say(gpt_speak(msg), VOICE)
 
@@ -9271,7 +9243,10 @@ def voice():
 
         resp.hangup()
         session_data.pop(call_sid, None)
-        debug_print(f"book_appt_confirm: ✅ completed in {_time_mod.perf_counter() - t_stage_start:.3f}s")
+        debug_print(
+            f"book_appt_confirm: ✅ completed in "
+            f"{_time_mod.perf_counter() - t_stage_start:.3f}s"
+        )
         return str(resp)
 
 
