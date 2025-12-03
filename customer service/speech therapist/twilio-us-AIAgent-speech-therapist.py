@@ -912,7 +912,7 @@ def make_gather(
     #    - IMPORTANT: When SSML is present, we pass RAW prompt (no gpt_speak())
     #      to avoid escaping angle brackets which would break SSML.
     # ------------------------------------------------------------------
-    _contains_ssml = bool(_re.search(r"<\s*(break|emphasis|prosody|say-as)\b", prompt, re.IGNORECASE))
+    _contains_ssml = bool(_re.search(r"<\s*(break|emphasis|prosody|say-as)\b", prompt, _re.IGNORECASE))
 
     try:
         # ===============================================================
@@ -1572,7 +1572,7 @@ def get_doctor_next_available_slots(
     # 📅 Add months safely while avoiding overflow (Feb 30 → Feb 28)
     # ----------------------------------------------------------------------
     def _add_months(dt, months):
-        import calendar
+        #import calendar
         y, m = dt.year, dt.month + months
         y += (m - 1) // 12
         m = ((m - 1) % 12) + 1
