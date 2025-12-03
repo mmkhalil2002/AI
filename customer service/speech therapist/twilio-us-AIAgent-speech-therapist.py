@@ -7157,22 +7157,23 @@ def voice():
         # 🎙️ ALL VOICE PROMPTS — DECLARED AT THE BEGINNING
         # ----------------------------------------------------------------------
         PROMPT_INTRO = (
-            "Please tell me your full address, including street number, city, and ZIP code. "
+            "Please tell me your full address, including street number, city, state, and ZIP code. "
             "For example, say one one eight Briar Oak, Murphy, Texas seven five zero nine four."
         )
 
         PROMPT_RETRY_SILENCE = (
-            "I didn't catch that. Please say your street address, city, and ZIP. "
-            "For example, one one eight Briar Oak, Murphy, Texas seven five zero nine four."
+            "I didn't catch that. Please say your full street address, city, state, and ZIP code "
+            "in one sentence. For example, one one eight Briar Oak, Murphy, Texas seven five zero nine four."
         )
 
         PROMPT_INVALID_ADDRESS = (
-            "Please repeat your full mailing address — street, city, state, and ZIP. "
-            "For example, one one eight Briar Oak, Murphy, Texas seven five zero nine four."
+            "I think I only heard part of your address. "
+            "Please repeat your full mailing address — street, city, state, and ZIP code — "
+            "in one sentence. For example, one one eight Briar Oak, Murphy, Texas seven five zero nine four."
         )
 
         PROMPT_CONFIRM_NEXT = (
-            "Thank you. Now, please enter your card number, then press pound."
+            "Thank you. Now, please enter or say your card number, then press pound."
         )
 
         PROMPT_SILENCE_FINAL = (
@@ -7267,19 +7268,21 @@ def voice():
         debug_print(f"collect_address: 🧽 Normalized → '{addr}'")
 
         # ----------------------------------------------------------------------
-        # ✅ Basic validation for readability
+        # ✅ Basic validation for readability + ZIP presence
         # ----------------------------------------------------------------------
-        # Require at least:
-        #   • one alphabetic character
-        #   • a reasonable length (>= 10 chars)
-        # This filters out blank or nonsensical STT artifacts such as "1185094".
+        # Require:
+        #   • at least one alphabetic character
+        #   • reasonable length
+        #   • AND a ZIP-like pattern: 5 digits, optional "-4" suffix
         has_letters = _re.search(r"[A-Za-z]", addr) is not None
-        if (not addr) or (not has_letters) or (len(addr) < 10):
+        zip_match   = _re.search(r"\b\d{5}(?:-\d{4})?\b", addr) is not None
+
+        if (not addr) or (not has_letters) or (len(addr) < 10) or (not zip_match):
             r = sd.get("retry_address", 0) + 1
             sd["retry_address"] = r
             debug_print(
-                f"collect_address: ❌ looks invalid/too short → retry={r} "
-                f"(len={len(addr)}, has_letters={has_letters})"
+                f"collect_address: ❌ looks invalid/partial → retry={r} "
+                f"(len={len(addr)}, has_letters={has_letters}, zip_match={zip_match})"
             )
 
             if r >= 3:
@@ -7339,6 +7342,7 @@ def voice():
             resp.redirect("/voice")
 
         return str(resp)
+
 
 
 
