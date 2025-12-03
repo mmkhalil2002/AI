@@ -4925,8 +4925,10 @@ def voice():
             "Now please say or enter your insurance member ID or policy number. "
             "You can include both letters and numbers, then press pound when done."
         )
+        # Make this neutral (no 'confirm your appointment' phrasing)
         MSG_THANK_YOU_NEXT = (
             "Thank you. Your insurance information has been saved. "
+            "We will now continue with your registration."
         )
 
         # ----------------------------------------------------------------------
@@ -4943,10 +4945,15 @@ def voice():
         raw_dtmf   = (request.values.get("Digits") or "").strip()
         debug_print(f"collect_insurance_information: speech='{raw_speech}', dtmf='{raw_dtmf}'")
 
+        # Normalized version for fuzzy matching
+        spoken_norm = _re.sub(r"[^a-z0-9 ]", " ", (raw_speech or "").lower())
+        spoken_norm = _re.sub(r"\s+", " ", spoken_norm).strip()
+        debug_print(f"collect_insurance_information: spoken_norm='{spoken_norm}'")
+
         # ----------------------------------------------------------------------
         # 🏢 Load insurance companies from GLOBAL (configured at top of file)
         # ----------------------------------------------------------------------
-        # Expected near top of file:
+        # Expected global declaration somewhere near the top of file:
         # INSURANCE_COMPANIES_LIST = [
         #     name.strip() for name in os.getenv(
         #         "INSURANCE_COMPANIES",
@@ -4954,21 +4961,46 @@ def voice():
         #     ).split(",")
         # ]
         global INSURANCE_COMPANIES_LIST
-        companies = [name for name in INSURANCE_COMPANIES_LIST if name.strip()]
-        if not companies:
-            companies = [
-                name.strip() for name in os.getenv(
-                    "INSURANCE_COMPANIES",
-                    "Blue Cross Blue Shield,Aetna,Cigna,United Healthcare,Humana,Kaiser Permanente"
-                ).split(",") if name.strip()
-            ]
-
-        # Only announce first 9 (DTMF 1–9); typically you use 5
-        companies = companies[:9]
+        INSURANCE_COMPANIES_LIST = [
+            name.strip() for name in os.getenv(
+                "INSURANCE_COMPANIES",
+                "Blue Cross Blue Shield,Aetna,Cigna,United Healthcare,Humana,Kaiser Permanente"
+            ).split(",")
+            if name.strip()
+        ]
 
         # Map: "1" → first company, "2" → second, etc.
-        keypad_map = {str(i + 1): name for i, name in enumerate(companies)}
+        keypad_map = {str(i + 1): name for i, name in enumerate(INSURANCE_COMPANIES_LIST)}
         debug_print(f"collect_insurance_information: keypad_map={keypad_map}")
+
+        # ----------------------------------------------------------------------
+        # 🤖 Fuzzy alias map for speech → canonical company name
+        # ----------------------------------------------------------------------
+        # We handle common mis-hearings (e.g., 'Aetna' → 'if no', 'et na', etc.).
+        alias_map = {}
+        for name in INSURANCE_COMPANIES_LIST:
+            key = name.lower()
+            aliases = [key]
+
+            # Special handling for "Aetna" (commonly mis-recognized)
+            if "aetna" in key:
+                aliases.extend([
+                    "aetna",          # correct
+                    "etna",           # dropped "a"
+                    "et na",          # spaced
+                    "edna",           # common mis-hear
+                    "if no",          # what STT produced in your log
+                    "ifno",
+                    "eight na",
+                    "eight now",
+                ])
+
+            # You can add similar blocks for other companies if STT is bad
+            # (e.g., "blue cross blue shield" having "blue shield", etc.)
+
+            alias_map[key] = list({a.strip() for a in aliases if a.strip()})
+
+        debug_print(f"collect_insurance_information: alias_map={alias_map}")
 
         # ----------------------------------------------------------------------
         # 🧩 Determine current sub-step ("company" or "id")
@@ -4984,7 +5016,6 @@ def voice():
             # 1️⃣ Handle keypad (DTMF) input
             # --------------------------------------------------------------
             if raw_dtmf:
-                # We only care about the first digit that matches one of our menu options.
                 first_digit = next((ch for ch in raw_dtmf if ch in keypad_map), "")
                 if first_digit:
                     insurance_name = keypad_map[first_digit]
@@ -4996,7 +5027,7 @@ def voice():
                         MSG_AFTER_SELECTION.format(insurance_name=insurance_name),
                         input="speech dtmf",
                         timeout=8,
-                        speech_timeout="auto",
+                        speech_timeout="2",
                         barge_in=False,
                         finish_on_key="#",
                         language="en-US",
@@ -5004,44 +5035,56 @@ def voice():
                         method="POST",
                     )
                     resp.append(g)
-                    resp.redirect("/voice")
                     return str(resp)
 
             # --------------------------------------------------------------
             # 2️⃣ Handle voice selection of company name
             # --------------------------------------------------------------
-            if raw_speech:
-                spoken = raw_speech.lower()
-                selected_name = None
-
-                # Simple fuzzy match: if any meaningful token from the company
-                # name appears in the spoken text → treat as that company.
-                for name in companies:
-                    tokens = [t for t in name.lower().split() if len(t) > 2]
-                    if any(tok in spoken for tok in tokens):
-                        selected_name = name
+            selected_name = None
+            if spoken_norm:
+                # First pass: alias map exact/contains match
+                for canon_lower, aliases in alias_map.items():
+                    for alias in aliases:
+                        # match whole phrase or contained as a word group
+                        if (spoken_norm == alias) or (f" {alias} " in f" {spoken_norm} "):
+                            # Find original display name
+                            for display in INSURANCE_COMPANIES_LIST:
+                                if display.lower() == canon_lower:
+                                    selected_name = display
+                                    break
+                            if selected_name:
+                                break
+                    if selected_name:
                         break
 
-                if selected_name:
-                    customer["insurance_name"] = selected_name
-                    sd["insurance_step"] = "id"
-                    debug_print(f"✅ Selected insurance_name='{selected_name}' via speech='{raw_speech}'")
+                # Second pass (fallback): simple token overlap like before
+                if not selected_name:
+                    for name in INSURANCE_COMPANIES_LIST:
+                        tokens = [t for t in name.lower().split() if len(t) > 2]
+                        if any(t in spoken_norm for t in tokens):
+                            selected_name = name
+                            break
 
-                    g = make_gather(
-                        MSG_AFTER_SELECTION.format(insurance_name=selected_name),
-                        input="speech dtmf",
-                        timeout=25,
-                        speech_timeout="auto",
-                        barge_in=False,
-                        finish_on_key="#",
-                        language="en-US",
-                        action="/voice",
-                        method="POST",
-                    )
-                    resp.append(g)
-                    resp.redirect("/voice")
-                    return str(resp)
-                else:
+            if selected_name:
+                customer["insurance_name"] = selected_name
+                sd["insurance_step"] = "id"
+                debug_print(f"✅ Selected insurance_name='{selected_name}' via speech='{raw_speech}'")
+
+                g = make_gather(
+                    MSG_AFTER_SELECTION.format(insurance_name=selected_name),
+                    input="speech dtmf",
+                    timeout=8,
+                    speech_timeout="2",
+                    barge_in=False,
+                    finish_on_key="#",
+                    language="en-US",
+                    action="/voice",
+                    method="POST",
+                )
+                resp.append(g)
+                return str(resp)
+            else:
+                if raw_speech:
                     debug_print("collect_insurance_information: ❌ speech did not match any company")
 
             # --------------------------------------------------------------
@@ -5052,7 +5095,7 @@ def voice():
                 sd["insurance_silence_tries"] = tries
                 debug_print(f"collect_insurance_information: 🤐 company silence tries={tries}/3")
             else:
-                # Speech present but not matched OR DTMF not valid → invalid attempt
+                # Speech present but not matched → treat as invalid attempt
                 tries = sd.get("insurance_invalid_tries", 0) + 1
                 sd["insurance_invalid_tries"] = tries
                 debug_print(f"collect_insurance_information: ❌ invalid company selection tries={tries}/3")
@@ -5066,17 +5109,17 @@ def voice():
 
             # --------------------------------------------------------------
             # 4️⃣ Re-prompt with company menu (DTMF + speech)
-            #     → "For Blue Cross Blue Shield, press 1 or say Blue Cross Blue Shield."
-            # ------------------------------------------------------------------
+            # --------------------------------------------------------------
             menu_text = MSG_PROMPT_INSURANCE_COMPANY
-            for i, name in enumerate(companies, start=1):
+            for i, name in enumerate(INSURANCE_COMPANIES_LIST, start=1):
+                # “Press 1 or say Blue Cross Blue Shield. Press 2 or say Aetna. ...”
                 menu_text += f"For {name}, press {i} or say {name}. "
 
             g = make_gather(
                 menu_text,
                 input="speech dtmf",
-                timeout=12,             # give time to listen & respond
-                speech_timeout="auto",
+                timeout=10,
+                speech_timeout="3",
                 barge_in=True,
                 finish_on_key="#",
                 language="en-US",
@@ -5084,7 +5127,6 @@ def voice():
                 method="POST",
             )
             resp.append(g)
-            resp.redirect("/voice")
             return str(resp)
 
         # ======================================================================
@@ -5117,7 +5159,6 @@ def voice():
                     method="POST",
                 )
                 resp.append(g)
-                resp.redirect("/voice")
                 return str(resp)
 
             # --------------------------------------------------------------
@@ -5133,23 +5174,23 @@ def voice():
             sd.pop("insurance_invalid_tries", None)
             sd.pop("insurance_id_silence", None)
 
-            # Next we go to booking confirmation (REGISTER / NEW / CURRENT
-            # is handled inside book_appt_confirm).
+            # Set next stage to booking confirmation or registration completion;
+            # book_appt_confirm will decide based on customer_status ('register', 'new', 'current').
             sd["stage"] = "book_appt_confirm"
 
             g = make_gather(
                 MSG_THANK_YOU_NEXT,
                 input="speech dtmf",
-                timeout=6,
-                speech_timeout="auto",
+                timeout=4,
+                speech_timeout="2",
                 barge_in=True,
                 language="en-US",
                 action="/voice",
                 method="POST",
             )
             resp.append(g)
-            resp.redirect("/voice")
             return str(resp)
+
 
 
 
