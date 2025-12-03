@@ -4912,8 +4912,9 @@ def voice():
         MSG_SILENCE_EXIT = "I’m still not hearing anything. Please call again later."
         MSG_MEMBERID_SILENCE_EXIT = "I’m still not hearing your member ID. Please call again later."
         MSG_PROMPT_INSURANCE_COMPANY = (
-            "Please choose your insurance company. "
-            "You can press the number on your keypad or say the company name. "
+            "Now let's collect your insurance information. "
+            "You can choose your insurance company by pressing a number on your keypad, "
+            "or by saying the company name. I will list them now. "
         )
         MSG_PROMPT_MEMBER_ID = (
             "Please say or enter your insurance member ID or policy number now. "
@@ -4946,7 +4947,7 @@ def voice():
         # ----------------------------------------------------------------------
         # 🏢 Load insurance companies from GLOBAL (configured at top of file)
         # ----------------------------------------------------------------------
-        # Expected global declaration somewhere near the top of file:
+        # Expected near top of file:
         # INSURANCE_COMPANIES_LIST = [
         #     name.strip() for name in os.getenv(
         #         "INSURANCE_COMPANIES",
@@ -4954,16 +4955,20 @@ def voice():
         #     ).split(",")
         # ]
         global INSURANCE_COMPANIES_LIST
-        INSURANCE_COMPANIES_LIST = [
-            name.strip() for name in os.getenv(
-                "INSURANCE_COMPANIES",
-                "Blue Cross Blue Shield,Aetna,Cigna,United Healthcare,Humana,Kaiser Permanente"
-            ).split(",")
-            if name.strip()
-        ]
+        companies = [name for name in INSURANCE_COMPANIES_LIST if name.strip()]
+        if not companies:
+            companies = [
+                name.strip() for name in os.getenv(
+                    "INSURANCE_COMPANIES",
+                    "Blue Cross Blue Shield,Aetna,Cigna,United Healthcare,Humana,Kaiser Permanente"
+                ).split(",") if name.strip()
+            ]
+
+        # Only announce first 9 (DTMF 1–9); typically you use 5
+        companies = companies[:9]
 
         # Map: "1" → first company, "2" → second, etc.
-        keypad_map = {str(i + 1): name for i, name in enumerate(INSURANCE_COMPANIES_LIST)}
+        keypad_map = {str(i + 1): name for i, name in enumerate(companies)}
         debug_print(f"collect_insurance_information: keypad_map={keypad_map}")
 
         # ----------------------------------------------------------------------
@@ -4980,6 +4985,7 @@ def voice():
             # 1️⃣ Handle keypad (DTMF) input
             # --------------------------------------------------------------
             if raw_dtmf:
+                # We only care about the first digit that matches one of our menu options.
                 first_digit = next((ch for ch in raw_dtmf if ch in keypad_map), "")
                 if first_digit:
                     insurance_name = keypad_map[first_digit]
@@ -5007,14 +5013,13 @@ def voice():
             # --------------------------------------------------------------
             if raw_speech:
                 spoken = raw_speech.lower()
-                # Very simple fuzzy selection: check if company name (or a distinctive part)
-                # appears in the spoken text.
                 selected_name = None
-                for name in INSURANCE_COMPANIES_LIST:
-                    # Example: "blue cross" subset of "blue cross blue shield"
-                    tokens = name.lower().split()
-                    # If any non-trivial token appears in the speech, treat as match
-                    if any(tok in spoken for tok in tokens if len(tok) > 2):
+
+                # Simple fuzzy match: if any meaningful token from the company
+                # name appears in the spoken text → treat as that company.
+                for name in companies:
+                    tokens = [t for t in name.lower().split() if len(t) > 2]
+                    if any(tok in spoken for tok in tokens):
                         selected_name = name
                         break
 
@@ -5048,7 +5053,7 @@ def voice():
                 sd["insurance_silence_tries"] = tries
                 debug_print(f"collect_insurance_information: 🤐 company silence tries={tries}/3")
             else:
-                # Speech present but not matched → treat as invalid attempt
+                # Speech present but not matched OR DTMF not valid → invalid attempt
                 tries = sd.get("insurance_invalid_tries", 0) + 1
                 sd["insurance_invalid_tries"] = tries
                 debug_print(f"collect_insurance_information: ❌ invalid company selection tries={tries}/3")
@@ -5062,16 +5067,16 @@ def voice():
 
             # --------------------------------------------------------------
             # 4️⃣ Re-prompt with company menu (DTMF + speech)
-            # --------------------------------------------------------------
+            #     → "For Blue Cross Blue Shield, press 1 or say Blue Cross Blue Shield."
+            # ------------------------------------------------------------------
             menu_text = MSG_PROMPT_INSURANCE_COMPANY
-            for i, name in enumerate(INSURANCE_COMPANIES_LIST, start=1):
-                # “Press 1 or say Blue Cross Blue Shield. Press 2 or say Aetna. ...”
-                menu_text += f"Press {i} or say {name}. "
+            for i, name in enumerate(companies, start=1):
+                menu_text += f"For {name}, press {i} or say {name}. "
 
             g = make_gather(
                 menu_text,
                 input="speech dtmf",
-                timeout=8,
+                timeout=12,             # give time to listen & respond
                 speech_timeout="auto",
                 barge_in=True,
                 finish_on_key="#",
@@ -5129,8 +5134,8 @@ def voice():
             sd.pop("insurance_invalid_tries", None)
             sd.pop("insurance_id_silence", None)
 
-            # Next we go to booking confirmation (REGISTER or CURRENT will be
-            # handled inside book_appt_confirm).
+            # Next we go to booking confirmation (REGISTER / NEW / CURRENT
+            # is handled inside book_appt_confirm).
             sd["stage"] = "book_appt_confirm"
 
             g = make_gather(
@@ -5146,6 +5151,7 @@ def voice():
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
+
 
 
 
@@ -7157,31 +7163,29 @@ def voice():
         # 🎙️ ALL VOICE PROMPTS — DECLARED AT THE BEGINNING
         # ----------------------------------------------------------------------
         PROMPT_INTRO = (
-            "Please tell me your full address, including street number, city, state, and ZIP code. "
+            "Please tell me your full mailing address, including street number, "
+            "street name, city, state, and ZIP code. "
             "For example, say one one eight Briar Oak, Murphy, Texas seven five zero nine four."
         )
 
         PROMPT_RETRY_SILENCE = (
-            "I didn't catch that. Please say your full street address, city, state, and ZIP code "
-            "in one sentence. For example, one one eight Briar Oak, Murphy, Texas seven five zero nine four."
+            "I didn't catch that. Please say your full mailing address — street, city, state, "
+            "and ZIP code. For example, one one eight Briar Oak, Murphy, Texas seven five zero nine four."
         )
 
         PROMPT_INVALID_ADDRESS = (
-            "I think I only heard part of your address. "
-            "Please repeat your full mailing address — street, city, state, and ZIP code — "
-            "in one sentence. For example, one one eight Briar Oak, Murphy, Texas seven five zero nine four."
+            "I think I only heard part of your address. Please repeat your full mailing address — "
+            "street, city, state, and ZIP code — in one sentence. "
+            "For example, one one eight Briar Oak, Murphy, Texas seven five zero nine four."
+        )
+
+        PROMPT_TOO_MANY_TRIES = (
+            "Sorry, I still couldn't capture your full address. "
+            "Please call the clinic again to complete your registration."
         )
 
         PROMPT_CONFIRM_NEXT = (
-            "Thank you. Now, please enter your card number, then press pound."
-        )
-
-        PROMPT_SILENCE_FINAL = (
-            "I’m still not hearing anything. Please call again later."
-        )
-
-        PROMPT_CAPTURE_FAIL = (
-            "Sorry, I couldn’t capture your address. Please call again later."
+            "Thank you. Now, please enter or say your card number, then press pound."
         )
 
         # ----------------------------------------------------------------------
@@ -7192,21 +7196,22 @@ def voice():
         customer = sd["customer"]
 
         # ----------------------------------------------------------------------
-        # 🗣️ Retrieve caller’s speech + DTMF safely
+        # 🗣️ Retrieve caller’s speech & DTMF safely
         # ----------------------------------------------------------------------
         try:
-            raw_speech = (speech_result or request.values.get("SpeechResult") or "").strip()
+            speech_raw = (speech_result or request.values.get("SpeechResult") or "").strip()
         except Exception:
-            raw_speech = (speech_result or "").strip()
+            speech_raw = (speech_result or "").strip()
 
-        raw_dtmf = (request.values.get("Digits") or "").strip()
+        dtmf_raw = (request.values.get("Digits") or "").strip()
 
-        debug_print(f"collect_address: 🗣️ speech_raw='{raw_speech}', dtmf_raw='{raw_dtmf}'")
+        debug_print(f"collect_address: 🗣️ speech_raw='{speech_raw}', dtmf_raw='{dtmf_raw}'")
+        debug_print(f"collect_address: 📬 Collected address (raw): '{speech_raw or dtmf_raw}'")
 
         # ----------------------------------------------------------------------
-        # 🔇 Handle silence (nothing heard / no DTMF)
+        # 🔇 Handle pure silence (nothing heard, no digits)
         # ----------------------------------------------------------------------
-        if not raw_speech and not raw_dtmf:
+        if not speech_raw and not dtmf_raw:
             # Increment silence counter for this stage
             tries = sd.get("silence_address", 0) + 1
             sd["silence_address"] = tries
@@ -7214,17 +7219,17 @@ def voice():
 
             if tries >= 3:
                 # After 3 failed attempts → politely end call
-                resp.say(gpt_speak(PROMPT_SILENCE_FINAL), VOICE)
+                resp.say(gpt_speak(PROMPT_TOO_MANY_TRIES), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # 🕓 Give the caller MORE time to speak the full address
+            # 🕓 Give the caller more time to speak the full address
             gather = make_gather(
                 PROMPT_RETRY_SILENCE,
-                input="speech dtmf",
+                input="speech",          # address is expected in speech, not DTMF
                 language="en-US",
-                timeout=30,              # ⏱ total listening time before timeout
+                timeout=20,              # ⏱ total listening time before timeout
                 speech_timeout="auto",   # ⏳ automatically waits for pause completion
                 barge_in=False,          # prevents premature cutoff mid-sentence
                 finish_on_key="#",
@@ -7233,7 +7238,7 @@ def voice():
             resp.append(gather)
             try:
                 from flask import url_for
-                resp.redirect(url_for("voice"))  # redirect ensures Twilio posts back
+                resp.redirect(url_for("voice"))  # redirect ensures Twilio posts back to /voice
             except Exception:
                 resp.redirect("/voice")
             return str(resp)
@@ -7244,9 +7249,8 @@ def voice():
         # ----------------------------------------------------------------------
         # 🧹 Normalize and clean address text
         # ----------------------------------------------------------------------
-        # Prefer spoken address; if user typed something on keypad, use that.
-        addr = (raw_speech or raw_dtmf).strip()
-        debug_print(f"collect_address: 📬 Collected address (raw): {addr!r}")
+        # We ALWAYS prefer speech for the address. DTMF-only address is considered invalid.
+        addr = speech_raw or dtmf_raw
 
         # 1️⃣ Collapse multiple spaces (e.g., “Murphy   Texas” → “Murphy Texas”)
         addr = _re.sub(r"\s+", " ", addr)
@@ -7260,47 +7264,76 @@ def voice():
         addr = _re.sub(r",\s*,+", ", ", addr)
 
         # 4️⃣ Trim stray punctuation and whitespace at edges
-        addr = addr.strip(" .,")
+        addr = addr.strip(" .,")  # remove trailing/leading dots & commas
 
         # 5️⃣ Final pass — collapse any spaces introduced during cleanup
         addr = _re.sub(r"\s+", " ", addr).strip()
 
+        # ----------------------------------------------------------------------
+        # 🧵 ZIP MERGE FIX
+        #   STT often returns "75 094" for "seven five zero nine four".
+        #   Here we detect a trailing numeric chunk like:
+        #       "... Texas 75 094"
+        #   and merge it into a single 5-digit ZIP:
+        #       "... Texas 75094"
+        #
+        #   Conditions:
+        #     • Two trailing numeric groups (1–3 digits + 2–4 digits)
+        #     • Combined length == 5 → treat as ZIP and merge
+        # ----------------------------------------------------------------------
+        zip_merge_match = _re.search(r"(.*\D)(\d{1,3})\s+(\d{2,4})\s*$", addr)
+        if zip_merge_match:
+            prefix, p1, p2 = zip_merge_match.groups()
+            if len(p1 + p2) == 5:
+                addr = (prefix + p1 + p2).strip()
+                debug_print(f"collect_address: 🧵 ZIP merge → '{addr}'")
+
         debug_print(f"collect_address: 🧽 Normalized → '{addr}'")
 
         # ----------------------------------------------------------------------
-        # ✅ Basic validation for readability (ZIP no longer mandatory)
+        # ✅ Basic validation for readability & completeness
         # ----------------------------------------------------------------------
-        # We require:
-        #   • At least one alphabetic character  → avoids "75094" alone
-        #   • A reasonable length (>= 10 chars) → avoids "94", "118 Oak"
-        #
-        # We NO LONGER require a 5-digit ZIP pattern. This allows:
-        #   "118 Bryer Oak Murphy Texas 75" to pass as a full address.
+        # Heuristics:
+        #   • Must contain at least 1 alphabetic character (street/city/state)
+        #   • Must contain at least 1 digit (street number or ZIP)
+        #   • Should be at least 10 characters (to avoid "94", "118" only, etc.)
+        #   • Prefer to have a 5-digit ZIP at the end, but don't *require* it for all countries
         # ----------------------------------------------------------------------
-        has_letters = _re.search(r"[A-Za-z]", addr) is not None
-        long_enough = len(addr) >= 10
+        has_letters  = _re.search(r"[A-Za-z]", addr) is not None
+        has_digits   = _re.search(r"\d", addr) is not None
+        zip_5_match  = _re.search(r"\b\d{5}\b", addr)  # typical US ZIP (e.g., 75094)
 
-        if (not addr) or (not has_letters) or (not long_enough):
+        is_too_short = len(addr) < 10
+        is_partial   = not has_letters or not has_digits or is_too_short or (zip_5_match is None)
+
+        debug_print(
+            "collect_address: validation → "
+            f"len={len(addr)}, has_letters={has_letters}, has_digits={has_digits}, "
+            f"zip_5_match={bool(zip_5_match)}, is_partial={is_partial}"
+        )
+
+        if is_partial:
+            # Increment retry counter for invalid/partial addresses
             r = sd.get("retry_address", 0) + 1
             sd["retry_address"] = r
             debug_print(
                 f"collect_address: ❌ looks invalid/partial → retry={r} "
-                f"(len={len(addr)}, has_letters={has_letters})"
+                f"(len={len(addr)}, has_letters={has_letters}, zip_5={bool(zip_5_match)})"
             )
 
             if r >= 3:
                 # After 3 invalid attempts → hang up politely
-                resp.say(gpt_speak(PROMPT_CAPTURE_FAIL), VOICE)
+                resp.say(gpt_speak(PROMPT_TOO_MANY_TRIES), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # 🕓 use extended listening window for retries too
+            # 🕓 Give caller another chance with an extended listening window
             gather = make_gather(
                 PROMPT_INVALID_ADDRESS,
-                input="speech dtmf",
+                input="speech",
                 language="en-US",
-                timeout=30,              # more time to speak full address
+                timeout=20,              # long enough to say full US-style address
                 speech_timeout="auto",
                 barge_in=False,
                 finish_on_key="#",
@@ -7317,21 +7350,24 @@ def voice():
         # ----------------------------------------------------------------------
         # 💾 Persist valid address
         # ----------------------------------------------------------------------
-        session_data[call_sid]["customer"]["address"] = addr
-        sd.pop("retry_address", None)  # reset retry counter
+        customer["address"] = addr
+        sd.pop("retry_address", None)   # reset retry counter
         debug_print(f"collect_address: ✅ Saved address='{addr}'")
 
         # ----------------------------------------------------------------------
-        # 🔁 Advance to next stage
+        # 🔁 Advance to next stage (credit card collection)
         # ----------------------------------------------------------------------
-        session_data[call_sid]["stage"] = "collect_cc"
+        sd["stage"] = "collect_cc"
 
-        # Prompt user for credit card (or next data item)
+        # Prompt user for credit card (or next data item).
+        # NOTE:
+        #   We use a short prompt gather here; collect_cc will handle silence
+        #   and all card validation logic in its own stage.
         gather = make_gather(
             PROMPT_CONFIRM_NEXT,
             input="speech dtmf",
             language="en-US",
-            timeout=10,
+            timeout=8,
             speech_timeout="auto",
             barge_in=True,
             finish_on_key="#",
