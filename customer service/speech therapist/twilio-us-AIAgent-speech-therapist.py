@@ -8183,22 +8183,20 @@ def voice():
                 return str(resp)
 
             if origin_stage2 == "register":
-                # Registration flow: after collecting full card info,
-                # continue registration by collecting insurance information.
-                next_stage = "collect_insurance_information"
-                session_data[call_sid]["stage"] = next_stage
-                debug_print("collect_cc: ➡️ Registration flow → collect_insurance_information")
+                # Reset insurance flow state
+                session_data[call_sid].pop("insurance_step", None)
+                session_data[call_sid].pop("insurance_silence", None)
+                session_data[call_sid].pop("insurance_invalid", None)
 
-                g = make_gather(
-                    MSG_INSURANCE_PROMPT,
-                    input="speech dtmf",
-                    timeout=10,
-                    speech_timeout="auto",
-                    finish_on_key="#",
-                    action="/voice",
-                    barge_in=True,
-                )
-                resp.append(g)
+                # Move to insurance stage
+                session_data[call_sid]["stage"] = "collect_insurance_information"
+
+                debug_print("collect_cc: ✅ Transition → collect_insurance_information")
+
+                # IMPORTANT: Do NOT prompt here
+                # insurance stage will handle prompting and listing
+
+                resp.redirect("/voice")
                 return str(resp)
 
             # All other / unexpected flows: finish politely and go back to intro
