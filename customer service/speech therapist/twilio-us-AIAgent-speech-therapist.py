@@ -7163,9 +7163,9 @@ def voice():
         # 🎙️ ALL VOICE PROMPTS — DECLARED AT THE BEGINNING
         # ----------------------------------------------------------------------
         PROMPT_INTRO = (
-            "Please tell me your full address, including street number, city, state, "
-            "and ZIP code. For example, say one one eight Briar Oak, Murphy, "
-            "Texas seven five zero nine four."
+            "Please tell me your full mailing address, including street number, "
+            "city, state, and ZIP code. For example, say one one eight Briar Oak, "
+            "Murphy, Texas seven five zero nine four."
         )
 
         PROMPT_RETRY_SILENCE = (
@@ -7272,73 +7272,56 @@ def voice():
         debug_print(f"collect_address: 🧽 Normalized → '{addr}'")
 
         # ----------------------------------------------------------------------
-        # ✅ Basic + ZIP-aware validation
+        # ✅ SIMPLE, FORGIVING VALIDATION
         # ----------------------------------------------------------------------
-        # We want to:
-        #   • Reject things like "118" or "94" (too short / no letters)
-        #   • ACCEPT long sentences with letters even if ZIP is spoken as
-        #     separated digits like "seven five zero nine four" → "75 094"
+        # We don't want to over-validate. We only want to reject *obviously*
+        # bad things like:
+        #   • "118"
+        #   • "94"
+        #   • "11866"
+        #   • pure digits with no letters
         #
-        # Strategy:
-        #   1. text_len     → overall length of normalized string
-        #   2. has_letters  → at least one A–Z
-        #   3. has_digits   → at least one 0–9
-        #   4. digits_str   → all digits concatenated ("675 094" → "675094")
-        #   5. zip_candidate = last 5 digits of digits_str (if length ≥ 5)
-        #   6. has_zip5     → True if we have at least 5 digits in total
-        #   7. Mark "partial" if it's obviously too short or has no letters.
-        #      Otherwise be forgiving and accept.
+        # Rules:
+        #   - len(addr) < 6                       → invalid
+        #   - no letters at all                  → invalid
+        #   - otherwise                          → ACCEPT (even if ZIP is weird)
+        #
+        # This will ACCEPT:
+        #   "118 Brier Oak. Murphy, 675 094"
+        #   "118 Royal Oak. Murphy, Texas 75 094"
         # ----------------------------------------------------------------------
         text_len    = len(addr)
         has_letters = bool(_re.search(r"[A-Za-z]", addr))
         has_digits  = bool(_re.search(r"\d", addr))
-        digits_str  = "".join(_re.findall(r"\d", addr))  # "675 094" → "675094"
 
-        zip_candidate = digits_str[-5:] if len(digits_str) >= 5 else ""
-        has_zip5      = len(zip_candidate) == 5
-
-        # A very short string with no letters is clearly bad (e.g., "118", "94").
-        clearly_bad = (text_len < 6) or (not has_letters)
-
-        # "Partial" if clearly bad OR too short to be realistic address
-        # We treat something as partial if:
-        #   - it's clearly bad, OR
-        #   - it has letters but is still very short (< 10 chars), OR
-        #   - it has letters but no zip-like 5 digits and is shorter than ~20 chars.
-        is_partial = (
-            clearly_bad or
-            (has_letters and text_len < 10) or
-            (has_letters and not has_zip5 and text_len < 20)
-        )
-
+        # Debug info for you
         debug_print(
             "collect_address: validation → "
-            f"len={text_len}, has_letters={has_letters}, has_digits={has_digits}, "
-            f"digits_str='{digits_str}', zip_candidate='{zip_candidate}', "
-            f"has_zip5={has_zip5}, is_partial={is_partial}"
+            f"len={text_len}, has_letters={has_letters}, has_digits={has_digits}"
         )
 
-        if is_partial:
+        clearly_bad = (text_len < 6) or (not has_letters)
+
+        if clearly_bad:
             r = sd.get("retry_address", 0) + 1
             sd["retry_address"] = r
             debug_print(
-                f"collect_address: ❌ looks invalid/partial → retry={r} "
-                f"(len={text_len}, has_letters={has_letters}, zip_5={has_zip5})"
+                f"collect_address: ❌ looks invalid/too short → retry={r} "
+                f"(len={text_len}, has_letters={has_letters})"
             )
 
             if r >= 3:
-                # After 3 invalid/partial attempts → give up politely
+                # After 3 invalid attempts → give up politely
                 resp.say(gpt_speak(PROMPT_FINAL_FAIL), VOICE)
                 resp.hangup()
                 session_data.pop(call_sid, None)
                 return str(resp)
 
-            # Re-prompt with extended listening window
             g = make_gather(
                 PROMPT_INVALID_ADDRESS,
                 input="speech",
                 language="en-US",
-                timeout=20,              # a bit longer to speak everything
+                timeout=20,              # longer window for full sentence
                 speech_timeout="auto",
                 barge_in=False,
                 finish_on_key="#",
@@ -7364,7 +7347,6 @@ def voice():
         # ----------------------------------------------------------------------
         sd["stage"] = "collect_cc"
 
-        # Prompt user for credit card (or next data item)
         g = make_gather(
             PROMPT_GIVE_CARD,
             input="speech dtmf",
@@ -7383,6 +7365,7 @@ def voice():
             resp.redirect("/voice")
 
         return str(resp)
+
 
 
 
