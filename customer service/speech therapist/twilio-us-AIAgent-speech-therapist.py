@@ -7369,7 +7369,7 @@ def voice():
                 PROMPT_INVALID_ADDRESS,
                 input="speech dtmf",
                 language="en-US",
-                timeout=25,
+                timeout=30,
                 speech_timeout="auto",
                 barge_in=False,
                 finish_on_key="#",
@@ -7400,7 +7400,7 @@ def voice():
             PROMPT_CONFIRM_NEXT,
             input="speech dtmf",
             language="en-US",
-            timeout=25,
+            timeout=30,
             speech_timeout="auto",
             barge_in=True,
             finish_on_key="#",
@@ -8066,7 +8066,7 @@ def voice():
             gather = make_gather(
                 prompt,
                 input="speech dtmf",
-                timeout=30,              # ⬅️ give more time for long card numbers
+                timeout=35,              # ⬅️ give more time for long card numbers
                 speech_timeout="10",     # ⬅️ allow pauses while saying digits
                 finish_on_key="#",
                 action="/voice",
@@ -8094,7 +8094,7 @@ def voice():
                 gather = make_gather(
                     MSG_INVALID_CARD,
                     input="speech dtmf",
-                    timeout=30,              # ⬅️ longer to re-say the whole PAN
+                    timeout=35,              # ⬅️ longer to re-say the whole PAN
                     speech_timeout="10",     # ⬅️ allow natural pauses
                     finish_on_key="#",
                     action="/voice",
