@@ -8917,13 +8917,24 @@ def voice():
         # ------------------------------------------------------------------
         # 👤 Extract full customer info
         # ------------------------------------------------------------------
-        first_name       = (customer.get("first_name") or "").strip()
-        last_name        = (customer.get("last_name")  or "").strip()
-        customer_address = (customer.get("address")    or "").strip()
-        customer_dob     = (customer.get("dob")        or "").strip()
-        phone_e164       = (customer.get("phone_e164") or sd.get("phone_e164") or "").strip()
-        insurance_name   = (customer.get("insurance_name") or "").strip()
+        first_name       = (customer.get("first_name")       or "").strip()
+        last_name        = (customer.get("last_name")        or "").strip()
+        customer_address = (customer.get("address")          or "").strip()
+        customer_dob     = (customer.get("dob")              or "").strip()
+        phone_e164       = (customer.get("phone_e164")       or sd.get("phone_e164") or "").strip()
+        insurance_name   = (customer.get("insurance_name")   or "").strip()
         insurance_member_id = (customer.get("insurance_member_id") or "").strip()
+
+        # 💳 Credit-card details collected earlier in collect_cc
+        cc_number = (customer.get("cc_number")       or "").strip()
+        cc_exp    = (customer.get("cc_expiration")   or "").strip()
+        cc_cvv    = (customer.get("cc_cvv")          or "").strip()
+        cc_name   = (customer.get("cc_name")         or f"{first_name} {last_name}".strip()).strip()
+
+        debug_print(
+            f"book_appt_confirm: 💳 cc_number_len={len(cc_number)}, "
+            f"cc_exp='{cc_exp}', cc_cvv_len={len(cc_cvv)}, cc_name='{cc_name}'"
+        )
 
         # ==================================================================
         # ✅ REGISTER FLOW (FORCE NEW STATUS + INSERT)
@@ -8942,10 +8953,10 @@ def voice():
                     first_name=first_name,
                     last_name=last_name,
                     address=customer_address,
-                    cc_name=f"{first_name} {last_name}".strip(),
-                    cc_number="",
-                    cc_exp="",
-                    cc_cvv="",
+                    cc_name=cc_name,
+                    cc_number=cc_number,
+                    cc_exp=cc_exp,
+                    cc_cvv=cc_cvv,
                     insurance_name=insurance_name,
                     insurance_member_id=insurance_member_id,
                     customer_status="new",   # ✅ ALWAYS NEW IN REGISTER FLOW
@@ -9040,7 +9051,7 @@ def voice():
             return str(resp)
 
         # ------------------------------------------------------------------
-        # 💾 Upsert CURRENT customer
+        # 💾 Upsert CURRENT customer (with CC + insurance)
         # ------------------------------------------------------------------
         try:
             inserted_ok = insert_customer(
@@ -9049,10 +9060,10 @@ def voice():
                 first_name=first_name,
                 last_name=last_name,
                 address=customer_address,
-                cc_name=f"{first_name} {last_name}".strip(),
-                cc_number="",
-                cc_exp="",
-                cc_cvv="",
+                cc_name=cc_name,
+                cc_number=cc_number,
+                cc_exp=cc_exp,
+                cc_cvv=cc_cvv,
                 insurance_name=insurance_name,
                 insurance_member_id=insurance_member_id,
                 customer_status="current",
