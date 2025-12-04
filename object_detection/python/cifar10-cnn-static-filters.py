@@ -389,44 +389,179 @@ class StaticInitLearnableCNN(nn.Module):
 
 
 # ============================================================
-# TRAINING FUNCTION
+# TRAINING FUNCTION (WORKS FOR STATIC AND DYNAMIC CNN MODELS)
 # ============================================================
+# Train the CNN model for a fixed number of epochs using the provided DataLoader.
+#
+# This training function works for ALL CNN configurations, including:
+#   • CNNs with static (manually defined) filters in conv1 (e.g., Sobel, edges, corners).
+#   • CNNs with randomly initialized and learnable filters.
+#   • Networks with or without pooling layers.
+#   • Standard datasets like CIFAR-10 or any custom dataset.
+#   • Any input size supported by the model (e.g., 32×32 images).
+#
+# 💡 Why this works universally:
+# Training depends on *backpropagation*, not on how filters are initialized.
+# The optimizer updates only parameters that have requires_grad=True().
+#
+# -----------------------------------------------------------------------
+# 🧠 Learning behavior by layer:
+#
+# conv1 — Low-level feature extraction:
+#   • If FILTERS are STATIC:
+#       → Kernels are pre-defined (Sobel, corners, edges).
+#       → These filters DO NOT change during training.
+#       → They behave as a fixed feature extractor.
+#
+#   • If FILTERS are TRAINABLE:
+#       → Kernels are initialized randomly.
+#       → Each weight is updated via gradient descent.
+#       → Filters learn edges, patterns, and pixel textures directly from data.
+#
+# conv2 — Mid-level feature learning:
+#   • Receives feature maps from conv1.
+#   • Learns spatial combinations such as:
+#       → corners
+#       → shapes
+#       → textures
+#       → structural patterns.
+#   • Weights adapt to match more meaningful patterns through backprop.
+#
+# filters (in ALL convolution layers):
+#   • Every kernel is a matrix of learnable weights.
+#
+#   During training:
+#     1. Forward pass:
+#         image → conv → activation → output
+#
+#     2. Loss calculation:
+#         prediction vs expected label → error signal
+#
+#     3. Backward pass:
+#         Computes gradients for each filter weight:
+#           dLoss / dWeight
+#
+#     4. Optimization:
+#         optimizer.step() updates:
+#           weight ← weight − learning_rate × gradient
+#
+#   Over many iterations:
+#     → filters amplify useful structures
+#     → suppress noise
+#     → specialize for classification
+#
+# -----------------------------------------------------------------------
+# ✅ Why a SINGLE training loop works for all CNNs:
+#
+#   • The optimizer automatically updates:
+#         ONLY parameters where requires_grad == True
+#
+#   • Static filters have:
+#         requires_grad=False → never updated
+#
+#   • Trainable filters have:
+#         requires_grad=True → learned by backprop
+#
+# Therefore:
+#   No conditional logic or special handling is needed in the training loop.
+#   The same code trains both static and dynamic filter networks correctly.
+
 def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
-    """
-    Trains the model on the given train_loader for num_epochs.
-    Returns the trained model.
-    """
+    
+    
+    # ------------------------------------------------------------
+    # SEND MODEL TO GPU (IF AVAILABLE) OR CPU
+    # ------------------------------------------------------------
     model.to(device)
+
+    # ------------------------------------------------------------
+    # ENABLE TRAINING MODE
+    #   (activates dropout, batchnorm if they exist)
+    # ------------------------------------------------------------
     model.train()
 
+    # ------------------------------------------------------------
+    # OPTIMIZER: UPDATES ALL LEARNABLE PARAMETERS
+    # ------------------------------------------------------------
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    # ------------------------------------------------------------
+    # LOSS FUNCTION FOR MULTI-CLASS CLASSIFICATION
+    # ------------------------------------------------------------
     criterion = nn.CrossEntropyLoss()
 
+    # ------------------------------------------------------------
+    # TRAINING LOOP
+    # ------------------------------------------------------------
     for ep in range(num_epochs):
+
+        # Track statistics over the epoch
         total = 0
         correct = 0
         running_loss = 0.0
 
+        # --------------------------------------------
+        # LOOP THROUGH MINI-BATCHES
+        # --------------------------------------------
         for images, labels in train_loader:
+
+            # Move batch to device (GPU/CPU)
             images = images.to(device)
             labels = labels.to(device)
 
+            # ----------------------------------------
+            # CLEAR OLD GRADIENTS
+            # ----------------------------------------
             optimizer.zero_grad()
+
+            # ----------------------------------------
+            # FORWARD PASS
+            #   Images → Conv layers → Pooling → FC
+            # ----------------------------------------
             outputs = model(images)
+
+            # ----------------------------------------
+            # LOSS COMPUTATION
+            # ----------------------------------------
             loss = criterion(outputs, labels)
+
+            # ----------------------------------------
+            # BACKPROPAGATION
+            #   Compute gradients for:
+            #     • conv1 weights
+            #     • conv2 weights
+            #     • fully connected weights
+            # ----------------------------------------
             loss.backward()
+
+            # ----------------------------------------
+            # PARAMETER UPDATE
+            #   optimizer changes all learnable weights
+            # ----------------------------------------
             optimizer.step()
 
+            # ----------------------------------------
+            # STATISTICS
+            # ----------------------------------------
             running_loss += loss.item() * images.size(0)
             preds = outputs.argmax(1)
             correct += (preds == labels).sum().item()
             total += labels.size(0)
 
+        # --------------------------------------------
+        # PRINT EPOCH SUMMARY
+        # --------------------------------------------
         print(f"[TRAIN] Epoch {ep+1}/{num_epochs}  "
               f"Loss: {running_loss / total:.4f}  "
               f"Accuracy: {correct / total:.4f}")
 
+    # ------------------------------------------------------------
+    # RETURN TRAINED MODEL
+    # ------------------------------------------------------------
     return model
+
+
+
 
 
 # ============================================================

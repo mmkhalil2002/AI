@@ -219,47 +219,617 @@ class DynamicLearnableCNN(nn.Module):
 
 
 
+
+
+
+
 # ============================================================
-# TRAINING FUNCTION
+# TRAINING FUNCTION (WORKS FOR STATIC AND DYNAMIC CNN MODELS)
 # ============================================================
+# Train the CNN model for a fixed number of epochs using the provided DataLoader.
+#
+# This training function works for ALL CNN configurations, including:
+#   • CNNs with static (manually defined) filters in conv1 (e.g., Sobel, edges, corners).
+#   • CNNs with randomly initialized and learnable filters.
+#   • Networks with or without pooling layers.
+#   • Standard datasets like CIFAR-10 or any custom dataset.
+#   • Any input size supported by the model (e.g., 32×32 images).
+#
+# 💡 Why this works universally:
+# Training depends on *backpropagation*, not on how filters are initialized.
+# The optimizer updates only parameters that have requires_grad=True().
+#
+# -----------------------------------------------------------------------
+# 🧠 Learning behavior by layer:
+#
+# conv1 — Low-level feature extraction:
+#   • If FILTERS are STATIC:
+#       → Kernels are pre-defined (Sobel, corners, edges).
+#       → These filters DO NOT change during training.
+#       → They behave as a fixed feature extractor.
+#
+#   • If FILTERS are TRAINABLE:
+#       → Kernels are initialized randomly.
+#       → Each weight is updated via gradient descent.
+#       → Filters learn edges, patterns, and pixel textures directly from data.
+#
+# conv2 — Mid-level feature learning:
+#   • Receives feature maps from conv1.
+#   • Learns spatial combinations such as:
+#       → corners
+#       → shapes
+#       → textures
+#       → structural patterns.
+#   • Weights adapt to match more meaningful patterns through backprop.
+#
+# filters (in ALL convolution layers):
+#   • Every kernel is a matrix of learnable weights.
+#
+#   During training:
+#     1. Forward pass:
+#         image → conv → activation → output
+#
+#     2. Loss calculation:
+#         prediction vs expected label → error signal
+#
+#     3. Backward pass:
+#         Computes gradients for each filter weight:
+#           dLoss / dWeight
+#
+#     4. Optimization:
+#         optimizer.step() updates:
+#           weight ← weight − learning_rate × gradient
+#
+#   Over many iterations:
+#     → filters amplify useful structures
+#     → suppress noise
+#     → specialize for classification
+#
+# -----------------------------------------------------------------------
+# ✅ Why a SINGLE training loop works for all CNNs:
+#
+#   • The optimizer automatically updates:
+#         ONLY parameters where requires_grad == True
+#
+#   • Static filters have:
+#         requires_grad=False → never updated
+#
+#   • Trainable filters have:
+#         requires_grad=True → learned by backprop
+#
+# Therefore:
+#   No conditional logic or special handling is needed in the training loop.
+#   The same code trains both static and dynamic filter networks correctly.
+
 def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
-    """
-    Trains the model on the given train_loader for num_epochs.
-    Returns the trained model.
-    """
+    
+    
+    # ------------------------------------------------------------
+    # SEND MODEL TO GPU (IF AVAILABLE) OR CPU
+    # ------------------------------------------------------------
     model.to(device)
+
+    # ------------------------------------------------------------
+    # ENABLE TRAINING MODE
+    #   (activates dropout, batchnorm if they exist)
+    # ------------------------------------------------------------
     model.train()
 
+    # ------------------------------------------------------------
+    # OPTIMIZER: UPDATES ALL LEARNABLE PARAMETERS
+    # ------------------------------------------------------------
+   # Create the optimizer that is responsible for *training the neural network*.
+    #
+    # Adam = Adaptive Moment Estimation:
+    #   It is an advanced optimization algorithm that improves plain gradient descent.
+    #
+    # model.parameters():
+    #   • Collects ALL trainable tensors in the model:
+    #       - convolution filter weights
+    #       - bias vectors
+    #       - fully connected layers
+    #       - batch normalization parameters
+    #   • Only parameters with requires_grad = True are included.
+    #   • Static / frozen layers are automatically ignored.
+    #
+    # lr (learning rate):
+    #   • Controls how fast each weight changes.
+    #   • Larger values = faster learning (but risk instability).
+    #   • Smaller values = slower learning (but more stable training).
+    #
+    # Internally, Adam performs for EACH weight:
+    #   1) Uses backpropagation to compute the gradient:
+    #        gradient = ∂loss / ∂weight
+    #
+    #   2) Tracks moving average of gradients (momentum):
+    #        m = β1 * previous_m + (1 − β1) * gradient
+    #
+    #   3) Tracks moving average of squared gradients (variance):
+    #        v = β2 * previous_v + (1 − β2) * gradient²
+    #
+    #   4) Bias correction (makes early steps accurate):
+    #        m_hat = m / (1 − β1^t)
+    #        v_hat = v / (1 − β2^t)
+    #
+    #   5) Updates weights:
+    #        weight = weight − lr × m_hat / (sqrt(v_hat) + ε)
+    #
+    # Outcome:
+    #   • Each parameter learns at its own speed.
+    #   • Large/noisy gradients are stabilized.
+    #   • Convergence is faster and smoother than standard SGD.
+    #
+    # Without this optimizer:
+    #   • loss.backward() computes gradients only.
+    #   • optimizer.step() is required to APPLY updates.
+    #
+    # This single line controls learning for:
+    #   • conv1 kernels
+    #   • conv2 kernels
+    #   • fully connected layers
+    #   • bias terms
+    #   • normalization layers
+    #
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+
+    # ------------------------------------------------------------
+    # LOSS FUNCTION FOR MULTI-CLASS CLASSIFICATION
+    # ------------------------------------------------------------
+    # Define the loss function used to TRAIN the model.
+    #
+    # nn.CrossEntropyLoss() is used for *multi-class classification* problems,
+    # such as CIFAR-10, ImageNet, digit recognition, or object-category classification.
+    #
+    # The loss function measures:
+    #   → How wrong the model’s predictions are compared to the correct label.
+    #
+    # The model produces RAW SCORES (called "logits"), not probabilities.
+    # Example output from the network:
+    #     [2.1, -0.9, 0.5, 1.2]
+    # These values do NOT have to sum to 1.
+    #
+    # Internally, CrossEntropyLoss does TWO operations automatically:
+    #
+    #   1) LogSoftmax:
+    #       • Converts logits into probabilities.
+    #       • Ensures outputs sum to 1.
+    #       • Pushes confident predictions higher.
+    #
+    #   2) Negative Log Likelihood (NLLLoss):
+    #       • Penalizes the model based on how unlikely the correct class is.
+    #
+    # Mathematically:
+    #   loss = -log( predicted_probability_of_correct_class )
+    #
+    # Example:
+    #   true label = 0
+    #   predicted probabilities = [0.05, 0.02, 0.80, 0.13]
+    #   loss = -log(0.05) = large penalty (bad prediction)
+    #
+    #   predicted probabilities = [0.90, 0.03, 0.02, 0.05]
+    #   loss = -log(0.90) = small penalty (good prediction)
+    #
+    # Expected input:
+    #   • model output: tensor of shape (batch_size, num_classes)
+    #   • target labels: tensor of shape (batch_size)
+    #
+    # Important rules:
+    #   • DO NOT apply Softmax in the model before this loss.
+    #   • Feed RAW logits directly into CrossEntropyLoss.
+    #
+    # The output:
+    #   • A single scalar number (average loss for the batch).
+    #   • Lower value → better prediction.
+    #   • Higher value → worse prediction.
+    #
+    # This loss function drives learning:
+    #   → It creates gradients that flow backward through:
+    #         classifier
+    #         conv layers
+    #         filters
+    #         feature extractors
+    #   → Tells every trainable parameter how to change to reduce error.
+    #
+    # CrossEntropyLoss gracefully handles:
+    #   • Wrong confident predictions (large penalty)
+    #   • Slight mistakes (small penalty)
+    #   • Class competition (only the true class is rewarded)
+    #
+    # This is why CrossEntropyLoss is ideal for:
+    #   • Image classification
+    #   • NLP classification
+    #   • Speech recognition
+    #   • Any task with mutually-exclusive classes
+    #
     criterion = nn.CrossEntropyLoss()
 
+
+    # ------------------------------------------------------------
+    # TRAINING LOOP
+    # ------------------------------------------------------------
     for ep in range(num_epochs):
+
+        # Track statistics over the epoch
         total = 0
         correct = 0
         running_loss = 0.0
 
+        # --------------------------------------------
+        # LOOP THROUGH MINI-BATCHES
+        # --------------------------------------------
         for images, labels in train_loader:
+
+            # Move batch to device (GPU/CPU)
             images = images.to(device)
             labels = labels.to(device)
 
+            # ----------------------------------------
+            # CLEAR OLD GRADIENTS
+            # ----------------------------------------
             optimizer.zero_grad()
 
+            # ----------------------------------------
+            # FORWARD PASS
+            #   Images → Conv layers → Pooling → FC
+            # ----------------------------------------
+           # Run the neural network on the input images (this EXECUTES model.forward()).
+            #
+            # When you write:
+            #     outputs = model(images)
+            # PyTorch automatically calls:
+            #     model.forward(images)
+            #
+            # The __call__() method wraps forward() and also:
+            #   • sets up Autograd graph tracking
+            #   • handles hooks (if any)
+            #   • manages training/evaluation mode behaviors (Dropout, BatchNorm)
+            #
+            # What "images" contains:
+            #   A batch tensor of shape:
+            #       (batch_size, channels, height, width)
+            #   Example:
+            #       (64, 3, 32, 32) for CIFAR-10
+            #
+            # What happens internally:
+            #
+            #   1) images are passed into conv1:
+            #       - Extracts low-level features like edges and textures.
+            #
+            #   2) Output goes through activation function (e.g., ReLU):
+            #       - Adds non-linearity so the network can model complex patterns.
+            #
+            #   3) Results propagate into conv2 / deeper layers:
+            #       - These layers learn shapes, objects, and class patterns.
+            #
+            #   4) Feature maps are flattened:
+            #       - Converts spatial tensors into vectors for classification layers.
+            #
+            #   5) Fully connected layers map features → class scores.
+            #
+            #   6) The final output is a logits tensor:
+            #       - One value per class.
+            #       - Raw scores (not probabilities).
+            #
+            # What "outputs" represents:
+            #   A tensor with shape:
+            #       (batch_size, num_classes)
+            #
+            #   Each row:
+            #       → Score for each class.
+            #
+            # Development notes:
+            #   • forward() is called EXACTLY ONCE by this line.
+            #   • The execution order is defined in the model's forward method body.
+            #   • You do NOT call forward() manually.
+            #
+            # During training:
+            #   • Autograd tracks this entire computation chain.
+            #   • Every math operation builds the computational graph.
+            #   • This is required for loss.backward() to work.
+            #
+            # During inference:
+            #   • forward() still runs.
+            #   • Gradients may be disabled with torch.no_grad().
+            #
+            # IMPORTANT:
+            #   • DO NOT put Softmax at the end of the model if you use CrossEntropyLoss.
+            #   • That loss expects raw logits, not normalized probabilities.
+            #
+            # Summary:
+            #   This ONE LINE runs your CNN, extracts features, produces class scores,
+            #   and creates the graph used for gradient computation.
+            #
             outputs = model(images)
+
+
+
+            # ----------------------------------------
+            # LOSS COMPUTATION
+            # ----------------------------------------
+
+            # Compute the training LOSS between model predictions and true labels.
+            #
+            # When you write:
+            #     loss = criterion(outputs, labels)
+            # PyTorch executes the forward logic of CrossEntropyLoss (or whichever loss is assigned to 'criterion').
+            #
+            # What "outputs" contains:
+            #   • Raw logits from the model (NOT probabilities).
+            #   • Tensor shape:
+            #         (batch_size, num_classes)
+            #
+            # What "labels" contains:
+            #   • Ground truth class indices.
+            #   • Tensor shape:
+            #         (batch_size)
+            #   • Each value is the correct class index for an input sample.
+            #     Example:
+            #       outputs = [[2.1, -0.4, 1.0]]
+            #       labels  = [2]
+            #
+            # What this function does INTERNALLY:
+            #
+            #   1) Applies LogSoftmax to each output row:
+            #         logits → log(probabilities)
+            #
+            #   2) Extracts the log-probability of the correct class for each sample.
+            #
+            #   3) Applies Negative Log Likelihood loss:
+            #         loss_i = -log(p_true_class)
+            #
+            #   4) Averages across the batch to produce one scalar value:
+            #         final_loss = mean(loss_i)
+            #
+            # Mathematical form:
+            #   loss = - (1 / N) × Σ log( softmax(outputs)[i][labels[i]] )
+            #
+            # Functional meaning:
+            #   • Small loss → model is confident AND correct.
+            #   • Large loss → model is wrong or uncertain.
+            #
+            # Differentiability:
+            #   • This produces a scalar TENSOR with grad_fn attached.
+            #   • PyTorch tracks this value inside the computation graph.
+            #
+            # After this line:
+            #   • loss.backward() can compute ∂loss / ∂weights automatically.
+            #   • Each trainable parameter receives its gradient.
+            #
+            # Common mistakes to avoid:
+            #   ❌ Applying Softmax to outputs BEFORE this line.
+            #   ❌ Giving one-hot encoded labels instead of class indices.
+            #   ❌ Passing float labels instead of LongTensor class IDs.
+            #
+            # Debug tip:
+            #   • If loss == NaN or very large, inspect:
+            #         - labels range
+            #         - output magnitude
+            #         - batch normalization stability
+            #
             loss = criterion(outputs, labels)
 
+
+            # ----------------------------------------
+            # BACKPROPAGATION
+            #   Compute gradients for:
+            #     • conv1 weights
+            #     • conv2 weights
+            #     • fully connected weights
+            # ----------------------------------------
+           # Perform BACKPROPAGATION.
+            #
+            # This line computes gradients for ALL trainable parameters in the network.
+            #
+            # What exactly is happening:
+            #
+            #   1) PyTorch walks backwards through the computation graph.
+            #      (This graph was created during the forward pass when:
+            #          outputs = model(images)
+            #       and:
+            #          loss = criterion(outputs, labels)
+            #      )
+            #
+            #   2) Using the chain rule, it computes:
+            #         ∂loss / ∂parameter
+            #      for every weight and bias where requires_grad=True.
+            #
+            #   3) Each parameter tensor receives its gradient:
+            #         parameter.grad   ←  gradient value
+            #
+            #   4) These gradients indicate:
+            #         • direction to move the parameter
+            #         • how large the update should be
+            #
+            #   5) No weights are updated yet.
+            #       This ONLY computes gradients.
+            #
+            # How gradients flow:
+            #   loss
+            #     ↓
+            #   classifier
+            #     ↓
+            #   conv layers
+            #     ↓
+            #   feature extraction filters
+            #     ↓
+            #   earliest layers (conv1)
+            #
+            # Each layer contributes using the chain rule:
+            #   ∂loss/∂w = ∂loss/∂output × ∂output/∂w
+            #
+            # Importance:
+            #   Without this line:
+            #     optimizer.step()
+            #   would have NOTHING to update.
+            #
+            # Memory note:
+            #   • PyTorch frees the computation graph after backward() by default.
+            #   • To reuse the graph, you would call:
+            #         loss.backward(retain_graph=True)
+            #
+            # After this call:
+            #   • parameter.grad contains new gradient values.
+            #   • optimizer.step() can now APPLY updates.
+            #
+            # Errors you may see here:
+            #   • RuntimeError: Trying to backward twice → graph already freed.
+            #   • NaN gradients → exploding gradients or bad data.
+            #   • No gradients appear → requires_grad=False issue.
+            #
             loss.backward()
+
+
+            # ----------------------------------------
+            # PARAMETER UPDATE
+            #   optimizer changes all learnable weights
+            # ----------------------------------------
+            # Apply the optimizer update step.
+            #
+            # This is the moment where the neural network actually LEARNS.
+            #
+            # What this line does:
+            #   • Reads all gradients computed by loss.backward().
+            #   • Uses the optimization algorithm (Adam here) to update each parameter.
+            #
+            # Sequence context:
+            #   loss.backward()   → computes gradients
+            #   optimizer.step()  → applies updates
+            #
+            # Internally, for EACH trainable parameter:
+            #
+            #   1) The optimizer reads:
+            #        param.grad  (computed gradient).
+            #
+            #   2) Adam updates its internal states:
+            #        m  (first moment / momentum)
+            #        v  (second moment / variance)
+            #
+            #   3) Bias correction is applied:
+            #        m̂ = m / (1 − β1^t)
+            #        v̂ = v / (1 − β2^t)
+            #
+            #   4) Weight update is computed:
+            #        param ← param − lr × (m̂ / (sqrt(v̂) + ε))
+            #
+            # Effects:
+            #   • Large gradients are dampened.
+            #   • Small gradients are amplified.
+            #   • Each parameter gets its own adaptive step size.
+            #
+            # Results:
+            #   • Feature detectors in conv layers improve.
+            #   • Fully-connected layers become better decision makers.
+            #   • Biases and normalization layers self-adjust.
+            #
+            # Important:
+            #   • This updates ONLY parameters that have requires_grad=True.
+            #   • Frozen layers remain unchanged.
+            #
+            # What happens if you skip this line:
+            #   ❌ No learning occurs.
+            #   ❌ Model weights never change.
+            #   ❌ Loss stays constant across epochs.
+            #
+            # Debug tip:
+            #   • Check param.grad before step() to verify gradients exist.
+            #   • Print weight values before/after step() to confirm learning is happening.
+            #
+            # Note:
+            #   • Parameters are updated in-place.
+            #   • The computational graph is NOT rebuilt here.
+            #
             optimizer.step()
 
+
+            # ----------------------------------------
+            # STATISTICS
+            # ----------------------------------------
+            # Accumulate the total loss for the epoch (scaled by batch size).
+            #
+            # loss.item():
+            #   • Extracts the numerical value from the loss tensor.
+            #   • Removes it from the computation graph (no gradients attached).
+            #
+            # images.size(0):
+            #   • Batch size (number of samples in this batch).
+            #
+            # Why multiply?
+            #   • Because loss is averaged per-sample by default.
+            #   • Multiplying converts it back to TOTAL loss for this batch.
+            #   • Ensures correct averaging across batches of different sizes.
+            #
+            # running_loss:
+            #   • Tracks TOTAL loss across all batches in the epoch.
+            #
             running_loss += loss.item() * images.size(0)
+
+
+            # Compute predicted class labels from model outputs.
+            #
+            # outputs:
+            #   • Tensor shape: (batch_size, num_classes)
+            #   • Contains raw logits for each class.
+            #
+            # argmax(1):
+            #   • Selects the class with the highest score for each sample.
+            #   • Dimension "1" means across class scores.
+            #
+            # preds:
+            #   • Tensor shape: (batch_size)
+            #   • Each value is the predicted class index.
+            #
             preds = outputs.argmax(1)
+
+
+            # Count how many predictions are correct in this batch.
+            #
+            # preds == labels:
+            #   • Performs element-wise comparison.
+            #   • Result is a Boolean tensor:
+            #       True  → correct prediction
+            #       False → wrong prediction
+            #
+            # .sum():
+            #   • Counts how many True values are present.
+            #
+            # .item():
+            #   • Converts the count tensor into a Python integer.
+            #
+            # correct:
+            #   • Accumulates number of correct predictions across all batches.
+            #
             correct += (preds == labels).sum().item()
+
+
+            # Count how many total samples have been evaluated.
+            #
+            # labels.size(0):
+            #   • Number of samples in this batch.
+            #
+            # total:
+            #   • Accumulates TOTAL number of samples processed in the epoch.
+            #
             total += labels.size(0)
 
-        print(f"[TRAIN Dynamic] Epoch {ep+1}/{num_epochs}  "
+
+        # --------------------------------------------
+        # PRINT EPOCH SUMMARY
+        # --------------------------------------------
+        print(f"[TRAIN] Epoch {ep+1}/{num_epochs}  "
               f"Loss: {running_loss / total:.4f}  "
               f"Accuracy: {correct / total:.4f}")
 
+    # ------------------------------------------------------------
+    # RETURN TRAINED MODEL
+    # ------------------------------------------------------------
     return model
+
+
+
+
+
+
 
 
 # ============================================================
