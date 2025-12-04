@@ -1,5 +1,5 @@
 #=======
-# updated  12/03/2025
+# updated  12/04/2025
 #  
 # =========================
 # Standard library imports
@@ -5026,7 +5026,7 @@ def voice():
                     g = make_gather(
                         MSG_AFTER_SELECTION.format(insurance_name=insurance_name),
                         input="speech dtmf",
-                        timeout=8,
+                        timeout=3,
                         speech_timeout="auto",
                         barge_in=False,
                         finish_on_key="#",
@@ -7888,7 +7888,6 @@ def voice():
     # collect_cc - complete stage (robust digit normalization + strict Luhn)
     # ----------------------------------------------------------------------
 
-    
     elif stage == "collect_cc":
         
         # ----------------------------------------------------------------------
@@ -8020,8 +8019,8 @@ def voice():
             gather = make_gather(
                 prompt,
                 input="speech dtmf",
-                timeout=20,
-                speech_timeout="auto",
+                timeout=30,              # ⬅️ give more time for long card numbers
+                speech_timeout="10",     # ⬅️ allow pauses while saying digits
                 finish_on_key="#",
                 action="/voice",
                 barge_in=True,
@@ -8048,8 +8047,8 @@ def voice():
                 gather = make_gather(
                     MSG_INVALID_CARD,
                     input="speech dtmf",
-                    timeout=20,
-                    speech_timeout="auto",
+                    timeout=30,              # ⬅️ longer to re-say the whole PAN
+                    speech_timeout="10",     # ⬅️ allow natural pauses
                     finish_on_key="#",
                     action="/voice",
                 )
@@ -8133,7 +8132,8 @@ def voice():
         # ======================================================================
         if cc_step == 2:
             session_data[call_sid]["no_input_expected"] = True
-            digits = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=True)
+            # ⬅️ Allow BOTH speech and DTMF for expiration
+            digits = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=False)
             debug_print(f"collect_cc: Step 2 digits='{digits}'")
 
             # Accept 4 or 6 digits:
@@ -8143,7 +8143,7 @@ def voice():
                 # Build a <Gather> instruction for Twilio:
                 #  - The spoken prompt tells the caller how to give the expiration (examples).
                 #  - input="speech dtmf" lets the caller either *speak* the date or *type* it on the keypad.
-                #  - timeout=10 means Twilio will wait up to 10 seconds for user input before the gather times out.
+                #  - timeout=20 means Twilio will wait up to 20 seconds for user input before the gather times out.
                 #  - finish_on_key="#" allows the caller to press the pound key to immediately finish typing
                 #    instead of waiting for the timeout or for num_digits to be reached.
                 #  - action="/voice" tells Twilio to POST the results of this gather back to your /voice
@@ -8151,7 +8151,8 @@ def voice():
                 gather = make_gather(
                     MSG_EXP_FORMAT,
                     input="speech dtmf",
-                    timeout=10,
+                    timeout=20,          # ⬅️ more generous for spoken expiration
+                    speech_timeout="10", # ⬅️ allow pauses while speaking
                     finish_on_key="#",
                     action="/voice",
                 )
@@ -8178,7 +8179,8 @@ def voice():
         # ======================================================================
         if cc_step == 3:
             session_data[call_sid]["no_input_expected"] = True
-            digits = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=True)
+            # ⬅️ Allow BOTH speech and DTMF for CVV
+            digits = _digits_from(raw_dtmf, raw_speech, enforce_dtmf=False)
             debug_print(f"collect_cc: Step 3 CVV digits='{digits}'")
 
             # CVV must be 3–4 numeric digits
@@ -8186,7 +8188,8 @@ def voice():
                 gather = make_gather(
                     MSG_CVV_PROMPT,
                     input="speech dtmf",
-                    timeout=6,
+                    timeout=15,          # ⬅️ more time to say CVV
+                    speech_timeout="10", # ⬅️ allow a short pause
                     finish_on_key="#",
                     action="/voice",
                 )
@@ -8262,15 +8265,14 @@ def voice():
         gather = make_gather(
             MSG_CARD_PROMPT,
             input="speech dtmf",
-            timeout=20,
-            speech_timeout="auto",
+            timeout=30,              # ⬅️ match the other card gathers
+            speech_timeout="10",
             finish_on_key="#",
             action="/voice",
             barge_in=True,
         )
         resp.append(gather)
         return str(resp)
-
 
 
 

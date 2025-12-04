@@ -143,33 +143,125 @@ class StaticInitLearnableCNN(nn.Module):
     # STATIC INITIALIZATION FOR LAYER 1
     # ----------------------------------------------------------
     def _init_conv1_static(self):
+
+        # ------------------------------------------------------------
+        # Disable gradient tracking during manual weight initialization.
+        # We are NOT training here, only assigning initial filter values.
+        # ------------------------------------------------------------
         with torch.no_grad():
-            w = self.conv1.weight  # shape: [16, 3, 3, 3]
 
-            sobel_x = torch.tensor([[-1, 0, 1],
-                                    [-2, 0, 2],
-                                    [-1, 0, 2]], dtype=torch.float32)
-            sobel_y = torch.tensor([[-1, -2, -1],
-                                    [ 0,  0,  0],
-                                    [ 1,  2,  1]], dtype=torch.float32)
-            laplacian = torch.tensor([[ 0, -1,  0],
-                                      [-1,  4, -1],
-                                      [ 0, -1,  0]], dtype=torch.float32)
-            sharpen = torch.tensor([[ 0, -1,  0],
-                                    [-1,  5, -1],
-                                    [ 0, -1,  0]], dtype=torch.float32)
-            avg = (1/9) * torch.ones((3, 3), dtype=torch.float32)
+            # --------------------------------------------------------
+            # Get the weight tensor of conv1.
+            #
+            # self.conv1.weight has the shape:
+            #     [16, 3, 3, 3]
+            #
+            # Meaning:
+            #   16 = number of output filters (output channels)
+            #   3  = number of input channels (RGB)
+            #   3x3 = kernel size for each input channel
+            #
+            # Each output channel has one 3×3 filter PER input channel.
+            # --------------------------------------------------------
+            w = self.conv1.weight
+
+
+            # --------------------------------------------------------
+            # Define hand-crafted image-processing filters (3x3 kernels)
+            # --------------------------------------------------------
+
+            # Sobel X filter → detects vertical edges
+            sobel_x = torch.tensor(
+                [[-1,  0,  1],
+                [-2,  0,  2],
+                [-1,  0,  1]],
+                dtype=torch.float32
+            )
+
+            # Sobel Y filter → detects horizontal edges
+            sobel_y = torch.tensor(
+                [[-1, -2, -1],
+                [ 0,  0,  0],
+                [ 1,  2,  1]],
+                dtype=torch.float32
+            )
+
+            # Laplacian filter → detects corners and strong edges
+            laplacian = torch.tensor(
+                [[ 0, -1,  0],
+                [-1,  4, -1],
+                [ 0, -1,  0]],
+                dtype=torch.float32
+            )
+
+            # Sharpen filter → enhances edges and fine details
+            sharpen = torch.tensor(
+                [[ 0, -1,  0],
+                [-1,  5, -1],
+                [ 0, -1,  0]],
+                dtype=torch.float32
+            )
+
+            # Average filter (blur) → smooths image and removes noise
+            avg = (1 / 9) * torch.ones((3, 3), dtype=torch.float32)
+
+            # Identity filter → copies the original pixel values unchanged
             identity = torch.zeros((3, 3), dtype=torch.float32)
-            identity[1, 1] = 1.0
+            identity[1, 1] = 1.0   # middle pixel passes through unchanged
 
+
+            # --------------------------------------------------------
+            # Store all filters into a list
+            #
+            # We have 6 base kernels but 16 conv filters,
+            # so we will rotate them repeatedly.
+            # --------------------------------------------------------
             kernels = [sobel_x, sobel_y, laplacian, sharpen, avg, identity]
 
-            def rgb(k):
-                # replicate single-channel 3x3 kernel to 3 input channels (RGB)
-                return k.repeat(3, 1, 1)  # [3, 3, 3]
 
+            # --------------------------------------------------------
+            # Convert grayscale filter (3x3) into RGB filter (3x3x3)
+            #
+            # This replicates the same filter for:
+            #   R channel
+            #   G channel
+            #   B channel
+            #
+            # Output shape becomes: [3, 3, 3]
+            # --------------------------------------------------------
+            def rgb(k):
+                return k.repeat(3, 1, 1)
+
+
+            # --------------------------------------------------------
+            # Assign static filters to conv1 weights
+            #
+            # Loop through all 16 output filters
+            # --------------------------------------------------------
             for i in range(16):
-                w[i].copy_(rgb(kernels[i % len(kernels)]))
+
+                # Select kernel using modulo indexing
+                # This cycles through the kernel list:
+                #   i = 0 → sobel_x
+                #   i = 1 → sobel_y
+                #   i = 2 → laplacian
+                #   i = 3 → sharpen
+                #   i = 4 → average
+                #   i = 5 → identity
+                #   i = 6 → sobel_x again
+                base_kernel = kernels[i % len(kernels)]
+
+                # Convert kernel from grayscale to RGB format
+                rgb_kernel = rgb(base_kernel)
+
+                # Overwrite random weights with handcrafted filters
+                #
+                # w[i] represents:
+                #   the i-th output filter
+                #   shape: [3, 3, 3]
+                #
+                # .copy_() replaces values in-place
+                w[i].copy_(rgb_kernel)
 
     # ----------------------------------------------------------
     # STATIC INITIALIZATION FOR LAYER 2
