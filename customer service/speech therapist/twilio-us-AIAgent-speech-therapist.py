@@ -4995,8 +4995,45 @@ def voice():
                     "eight now",
                 ])
 
-            # You can add similar blocks for other companies if STT is bad
-            # (e.g., "blue cross blue shield" having "blue shield", etc.)
+            # Special handling for "Cigna" (commonly heard as "Signa" / "Sigma")
+            if "cigna" in key:
+                aliases.extend([
+                    "cigna",                # correct
+                    "signa",                # typical pronunciation
+                    "sigma",                # what your log showed: 'sigma'
+                    "sagna",
+                    "singa",
+                    "zigna",
+                    "cigna insurance",
+                    "signa insurance",
+                    "sigma insurance",
+                ])
+
+            # Optional: some extra variations for other plans
+            if "blue cross" in key:
+                aliases.extend([
+                    "blue cross",
+                    "blue cross blue shield",
+                    "blue shield",
+                    "bcbs",
+                ])
+            if "united healthcare" in key:
+                aliases.extend([
+                    "united healthcare",
+                    "united health care",
+                    "united health",
+                ])
+            if "humana" in key:
+                aliases.extend([
+                    "humana",
+                    "humana insurance",
+                ])
+            if "kaiser permanente" in key:
+                aliases.extend([
+                    "kaiser",
+                    "kaiser permanente",
+                    "kaiser insurance",
+                ])
 
             alias_map[key] = list({a.strip() for a in aliases if a.strip()})
 
@@ -5115,6 +5152,16 @@ def voice():
                 # “Press 1 or say Blue Cross Blue Shield. Press 2 or say Aetna. ...”
                 menu_text += f"For {name}, press {i} or say {name}. "
 
+            # Hints help STT hear the company names instead of things like "speaking now"
+            hints_text = (
+                "Blue Cross Blue Shield, Blue Cross, BCBS, "
+                "Aetna, Etna, Edna, "
+                "Cigna, Signa, Sigma, "
+                "United Healthcare, United Health, "
+                "Humana, "
+                "Kaiser, Kaiser Permanente"
+            )
+
             g = make_gather(
                 menu_text,
                 input="speech dtmf",
@@ -5125,6 +5172,7 @@ def voice():
                 language="en-US",
                 action="/voice",
                 method="POST",
+                hints=hints_text,
             )
             resp.append(g)
             return str(resp)
@@ -5192,7 +5240,6 @@ def voice():
             resp.append(g)
             resp.redirect("/voice")
             return str(resp)
-
 
 
 
