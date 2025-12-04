@@ -1079,23 +1079,125 @@ def main():
         transform=transform
     )
 
-    # --------------------------------------------------------
-    # DATA LOADERS (BATCHING)
-    # --------------------------------------------------------
-    # No change needed in logic — only datasets changed.
-    # batch_size controls how many images per training step.
-    # --------------------------------------------------------
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=64,
-        shuffle=True,
-        num_workers=2
-    )
+   # ============================================================
+    # FUNCTIONAL PURPOSE:
+    # ============================================================
+    # This DataLoader is responsible for feeding training data
+    # into the neural network in SMALL GROUPS (mini-batches)
+    # instead of sending all images at once.
+    #
+    # The DataLoader:
+    #   • Loads images from the dataset
+    #   • Applies transformations (resize, normalize, etc.)
+    #   • Groups images into batches
+    #   • Shuffles order every epoch (if enabled)
+    #   • Uses parallel workers to load data faster
+    #   • Feeds batches into the training loop
+    #
+    # During training:
+    #   → The model never sees ALL images at once.
+    #   → It sees small batches repeatedly.
+    #   → Loss is computed PER BATCH.
+    #   → Gradients are computed PER BATCH.
+    #   → Weights are updated PER BATCH.
+    #
+    # ============================================================
 
+    train_loader = DataLoader(
+
+        # --------------------------------------------------------
+        # train_dataset
+        # --------------------------------------------------------
+        # This is the DATA SOURCE.
+        #
+        # It may be:
+        #   • CIFAR10 dataset
+        #   • ImageFolder dataset
+        #   • Any custom PyTorch Dataset class
+        #
+        # When DataLoader needs data, it calls:
+        #
+        #   image, label = train_dataset[index]
+        #
+        # Which returns:
+        #   image → Tensor [C, H, W]
+        #   label → Integer class index
+        # --------------------------------------------------------
+        train_dataset,
+
+        # --------------------------------------------------------
+        # batch_size = 10
+        # --------------------------------------------------------
+        # This controls HOW MANY samples are processed before:
+        #   • computing loss
+        #   • computing gradients
+        #   • performing optimizer step
+        #
+        # Meaning:
+        #   → 10 images form ONE training step
+        #   → Loss = average over 10 images
+        #   → Weight updates use group statistics
+        #
+        # Example (1000 images total):
+        #
+        #   batch_size = 10
+        #   → 100 batches per epoch
+        # --------------------------------------------------------
+        batch_size=10,
+
+        # --------------------------------------------------------
+        # shuffle = True
+        # --------------------------------------------------------
+        # Means:
+        #
+        #   → BEFORE every epoch:
+        #       • All image indices are randomly reshuffled.
+        #
+        #   → Batch composition changes every epoch.
+        #   → No fixed grouping of classes.
+        #
+        # Prevents:
+        #   • bias from dataset ordering
+        #   • memorization due to fixed sequence
+        #
+        # Improves:
+        #   • generalization
+        #   • convergence stability
+        # --------------------------------------------------------
+        shuffle=True,
+
+        # --------------------------------------------------------
+        # num_workers = 2
+        # --------------------------------------------------------
+        # Controls HOW MANY CPU PROCESSES load data simultaneously.
+        #
+        # Instead of loading images sequentially:
+        #
+        #   worker-1 → loads batch 1
+        #   worker-2 → loads batch 2
+        #
+        # While:
+        #   GPU is training on batch 1
+        #
+        # Benefits:
+        #   ✅ Reduced waiting time
+        #   ✅ Faster throughput
+        #   ✅ Efficient CPU usage
+        #
+        # Notes:
+        #   On Windows:
+        #       Use num_workers = 0 or 1
+        #   On Linux:
+        #       2–8 is common
+        # --------------------------------------------------------
+        num_workers=2
+        )
+
+    
     # Optional: test_loader if you want evaluation later
     test_loader = DataLoader(
         test_dataset,
-        batch_size=64,
+        batch_size=2,
         shuffle=False,
         num_workers=2
     )
@@ -1119,7 +1221,7 @@ def main():
     # UPDATED: pass num_classes detected from your data
     # The rest of the model (conv/pool/etc.) stays the same.
     # --------------------------------------------------------
-    model = DynamicLearnableCNN(num_classes=num_classes)
+    model =StaticInitLearnableCNN(num_classes=num_classes)
 
     # --------------------------------------------------------
     # LOAD OR TRAIN MODEL
