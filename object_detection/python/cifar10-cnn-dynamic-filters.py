@@ -15,6 +15,7 @@ from torchvision import datasets, transforms
 #
 #   • Layer 1 (conv1) uses dynamic 3x3 filters (random init)
 #   • Layer 2 (conv2) uses dynamic 3x3 filters (random init)
+#   • Between conv layers, we apply MAX POOLING to shrink feature maps
 #   • Layer 3 (fc)    is a standard fully connected classifier
 #
 # IMPORTANT:
@@ -22,6 +23,10 @@ from torchvision import datasets, transforms
 # Here we do NOT manually define any "static" filters.
 # The convolution filters are initialized by PyTorch (randomly)
 # and are trained END-TO-END from the data.
+#
+# Pooling layers (MaxPool2d) have NO learnable parameters.
+# They only perform a fixed mathematical operation that reduces
+# spatial size and keeps the strongest responses.
 #
 # This is the standard way CNNs are usually trained.
 #
@@ -44,6 +49,8 @@ from torchvision import datasets, transforms
 #   • conv2.bias
 #   • fc.weight
 #   • fc.bias
+#
+# (Pooling has no weights/biases, so there is nothing to train there.)
 #
 # Because:
 #   - All parameters have requires_grad = True (default)
@@ -68,7 +75,7 @@ from torchvision import datasets, transforms
 #   1) Set requires_grad = False on its parameters, OR
 #   2) Do not include its parameters in the optimizer.
 #
-# We do NEITHER here, so EVERY layer is fully trainable.
+# We do NEITHER here, so EVERY learnable layer is fully trainable.
 #
 # ============================================================
 # WHY THIS IS A CLASSICAL NEURAL NETWORK
@@ -78,19 +85,22 @@ from torchvision import datasets, transforms
 #
 #   • Filters start from random initialization
 #   • Filters are updated by backpropagation
+#   • Pooling is used to reduce spatial resolution (2x2 windows)
 #   • The entire network (conv + fc) is trained on data
 #
 # This is the typical CNN used in most literature.
 #
 # ============================================================
-# NETWORK SHAPE (CIFAR-10 EXAMPLE)
+# NETWORK SHAPE (CIFAR-10 EXAMPLE WITH POOLING)
 # ============================================================
 #
-# Input image:        [3 x 32 x 32]
-# After conv1:        [16 x 32 x 32]
-# After conv2:        [32 x 32 x 32]
-# After flattening:   [32*32*32]
-# Output layer:       [C classes]
+# Input image:                [3  x 32 x 32]
+# After conv1:                [16 x 32 x 32]
+# After max-pool1 (2x2):      [16 x 16 x 16]
+# After conv2:                [32 x 16 x 16]
+# After max-pool2 (2x2):      [32 x  8 x  8]
+# After flattening:           [32*8*8] = 2048
+# Output layer (fc):          [C classes]
 #
 # ============================================================
 # SUMMARY
@@ -98,7 +108,8 @@ from torchvision import datasets, transforms
 #
 # ✅ No manual/static filters
 # ✅ Dynamic (random) initialization
-# ✅ Full learning in all layers
+# ✅ Pooling reduces spatial size and keeps strong activations
+# ✅ Full learning in all layers (conv + fc)
 # ✅ Classic CNN as used in most practice
 #
 
@@ -109,6 +120,11 @@ class DynamicLearnableCNN(nn.Module):
 
         # ------------------------------------------------------
         # LAYER 1: 3 → 16 channels with 3x3 dynamic filters
+        #
+        # in_channels  = 3  (RGB image)
+        # out_channels = 16 (number of learned feature maps)
+        # kernel_size  = 3x3
+        # padding      = 1 to keep spatial size at 32x32
         # ------------------------------------------------------
         self.conv1 = nn.Conv2d(
             in_channels=3,
@@ -120,37 +136,87 @@ class DynamicLearnableCNN(nn.Module):
 
         # ------------------------------------------------------
         # LAYER 2: 16 → 32 channels with 3x3 dynamic filters
+        #
+        # in_channels  = 16 (output of conv1)
+        # out_channels = 32 (more feature maps)
+        # kernel_size  = 3x3
+        # padding      = 1 to keep spatial size before pooling
         # ------------------------------------------------------
         self.conv2 = nn.Conv2d(
             in_channels=16,
             out_channels=32,
             kernel_size=3,
-            padding=1,   # keep 32x32
+            padding=1,   # keep 16x16 before pooling
             bias=True
         )
 
         # ------------------------------------------------------
-        # FULLY CONNECTED LAYER
-        # After conv layers (no pooling): [32 x 32 x 32]
-        # Flattened feature vector = 32 * 32 * 32
+        # POOLING LAYER: MaxPool2d(2, 2)
+        #
+        # kernel_size = 2
+        # stride      = 2
+        #
+        # Effect:
+        #   Spatial size is divided by 2 in each dimension:
+        #     32x32 → 16x16
+        #     16x16 →  8x8
+        #
+        # There are NO weights here. Pooling is a fixed operation.
+        # We will reuse this same pool after conv1 and after conv2.
         # ------------------------------------------------------
-        self.fc = nn.Linear(32 * 32 * 32, num_classes)
+        self.pool = nn.MaxPool2d(2, 2)
+
+        # ------------------------------------------------------
+        # FULLY CONNECTED LAYER
+        #
+        # After:
+        #   conv1 + pool → [16 x 16 x 16]
+        #   conv2 + pool → [32 x  8 x  8]
+        #
+        # Flattened feature vector size:
+        #   32 * 8 * 8 = 2048
+        #
+        # So fc in_features = 2048, out_features = num_classes.
+        # ------------------------------------------------------
+        self.fc = nn.Linear(32 * 8 * 8, num_classes)
 
         # NOTE:
         # We do NOT override weights with static kernels here.
         # PyTorch's default initialization is used.
-        # All parameters are learnable by default.
+        # All parameters (conv + fc) are learnable by default.
+
+
+
+
 
     # ----------------------------------------------------------
     # FORWARD PASS
     # ----------------------------------------------------------
     def forward(self, x):
-        # x: [B, 3, 32, 32]
-        x = F.relu(self.conv1(x))   # [B, 16, 32, 32]
-        x = F.relu(self.conv2(x))   # [B, 32, 32, 32]
-        x = torch.flatten(x, 1)     # [B, 32*32*32]
-        x = self.fc(x)              # [B, num_classes]
+        # x: input batch of images
+        # shape: [B, 3, 32, 32]
+        #   B = batch size
+        #   3 = RGB channels
+        #   32x32 = CIFAR-10 spatial size
+
+        x = F.relu(self.conv1(x))   # After conv1: [B, 16, 32, 32]
+        x = self.pool(x)            # After pool1: [B, 16, 16, 16]
+
+        x = F.relu(self.conv2(x))   # After conv2: [B, 32, 16, 16]
+        x = self.pool(x)            # After pool2: [B, 32,  8,  8]
+
+        # Flatten all spatial dimensions into a single feature vector
+        # Before flatten: [B, 32, 8, 8]
+        # After flatten:  [B, 32*8*8] = [B, 2048]
+        x = torch.flatten(x, 1)
+
+        # Fully connected classifier:
+        # Input:  [B, 2048]
+        # Output: [B, num_classes]
+        x = self.fc(x)
+
         return x
+
 
 
 # ============================================================
@@ -204,38 +270,63 @@ def detect_single_image(model, test_dataset, device, index=0):
     Loads one image from the test set (by index),
     runs the model in eval mode, and prints:
 
-        - True label
-        - Predicted label
+        - True label id
+        - Predicted label id
+        - True class name
+        - Predicted class name
 
-    Also returns (image_tensor, true_label, predicted_label).
+    Works with:
+        • CIFAR-10
+        • ImageFolder
+        • Custom datasets (labels auto-detected)
+
+    Returns:
+        (image_tensor, true_label, predicted_label)
     """
+    # --------------------------------------------------------
+    # MOVE MODEL TO DEVICE AND SWITCH TO EVAL MODE
+    # --------------------------------------------------------
     model.to(device)
     model.eval()
 
-    # CIFAR-10 label names for readability
-    cifar10_classes = [
-        "airplane", "automobile", "bird", "cat", "deer",
-        "dog", "frog", "horse", "ship", "truck"
-    ]
+    # --------------------------------------------------------
+    # READ CLASS NAMES FROM THE DATASET (AUTOMATIC)
+    # --------------------------------------------------------
+    # Torchvision exposes class names via dataset.classes
+    class_names = test_dataset.classes
 
-    # Get one sample from the test dataset
-    img, label = test_dataset[index]   # img: [3, 32, 32] (already transformed)
-    img_input = img.unsqueeze(0).to(device)  # add batch dimension → [1, 3, 32, 32]
+    # --------------------------------------------------------
+    # EXTRACT ONE IMAGE FROM DATASET
+    # --------------------------------------------------------
+    img, true_label = test_dataset[index]
+    
+    # Add batch dimension → [1, C, H, W]
+    img_input = img.unsqueeze(0).to(device)
 
+    # --------------------------------------------------------
+    # MODEL INFERENCE (NO GRADIENTS)
+    # --------------------------------------------------------
     with torch.no_grad():
         logits = model(img_input)
-        pred_class = logits.argmax(1).item()
+        pred_label = logits.argmax(1).item()
 
-    true_name = cifar10_classes[label]
-    pred_name = cifar10_classes[pred_class]
+    # --------------------------------------------------------
+    # LABEL ID → CLASS NAME
+    # --------------------------------------------------------
+    true_name = class_names[true_label]
+    pred_name = class_names[pred_label]
 
+    # --------------------------------------------------------
+    # DISPLAY RESULT
+    # --------------------------------------------------------
     print("--------------------------------------------------")
-    print(f"[Dynamic] DETECTION RESULT FOR TEST IMAGE INDEX: {index}")
-    print(f"True label index: {label}  →  {true_name}")
-    print(f"Pred label index: {pred_class}  →  {pred_name}")
+    print(f"DETECTION RESULT FOR TEST IMAGE INDEX: {index}")
+    print(f"True label index : {true_label} → {true_name}")
+    print(f"Pred label index : {pred_label} → {pred_name}")
     print("--------------------------------------------------")
 
-    return img, label, pred_class
+    return img, true_label, pred_label
+
 
 
 # ============================================================
