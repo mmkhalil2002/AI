@@ -924,54 +924,7 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             #
             # outputs = [L_cat, L_dog, L_man]
             #
-            # ============================================================
-            # STAGE 5 — OUTPUT = LOGITS
-            # ============================================================
-            #
-            # Example numeric logits:
-            #
-            # outputs = [2.4, 0.3, -1.2]
-            #
-            # Meaning:
-            #   CAT → strong
-            #   DOG → weak
-            #   MAN → very weak
-            #
-            # ============================================================
-            # STAGE 6 — SOFTMAX (INSIDE CrossEntropyLoss)
-            # ============================================================
-            #
-            # Convert logits to probabilities:
-            #
-            # exp(2.4) = 11.02
-            # exp(0.3) =  1.35
-            # exp(-1.2)=  0.30
-            #
-            # Sum = 12.67
-            #
-            # P(CAT) = 11.02 / 12.67 = 0.86
-            # P(DOG) =  1.35 / 12.67 = 0.11
-            # P(MAN) =  0.30 / 12.67 = 0.03
-            #
-            # ============================================================
-            # STAGE 7 — CROSSENTROPY LOSS
-            # ============================================================
-            #
-            # If true label is:
-            #
-            #   label = 0 (CAT)
-            #
-            # Then loss:
-            #
-            #   loss = -log(0.86) = LOW → GOOD
-            #
-            # If model guessed wrongly:
-            #
-            #   loss becomes HIGH → BAD
-            #
-            # ============================================================
-
-
+          
             outputs = model(images)
 
             # ============================================================
@@ -998,16 +951,76 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             #   outputs.shape = [1, 3]
             #   labels.shape  = [1]
             #
-            # Example values:
+            # ------------------------------------------------------------
+            # SHAPE EXPLANATION
+            # ------------------------------------------------------------
             #
-            #   outputs = [[ 2.4,  0.3, -1.2 ]]   # logits for [CAT, DOG, MAN]
-            #   labels  = [0]                     # true class = CAT
+            # outputs.shape = [1, 3]
             #
-            # So:
-            #   outputs[0][0] = 2.4  → score for CAT
-            #   outputs[0][1] = 0.3  → score for DOG
-            #   outputs[0][2] = -1.2 → score for MAN
+            # means:
             #
+            #   • 1 = number of images in this batch (batch_size = 1)
+            #   • 3 = number of classes (for example: CAT, DOG, MAN)
+            #
+            # So outputs contains:
+            #
+            #   one row of predictions,
+            #   and each row has ONE score for each class.
+            #
+            # Example:
+            #
+            #   outputs = [[2.4, 0.3, -1.2]]
+            #
+            # Interpretation:
+            #
+            #   outputs[0][0] → score for class CAT
+            #   outputs[0][1] → score for class DOG
+            #   outputs[0][2] → score for class MAN
+            #
+            # ------------------------------------------------------------
+            # labels.shape = [1]
+            #
+            # means:
+            #
+            #   • There is ONE correct class label
+            #     because there is ONE image in this batch.
+            #
+            # Example:
+            #
+            #   labels = [0]
+            #
+            # Meaning:
+            #
+            #   The true class for this image is:
+            #       index 0 → CAT
+            #
+            # ------------------------------------------------------------
+            # WHY THESE SHAPES MATCH
+            # ------------------------------------------------------------
+            #
+            # For every row in outputs (one image),
+            # there MUST be exactly ONE label.
+            #
+            # ------------------------------------------------------------
+            # GENERAL RULE
+            # ------------------------------------------------------------
+            #
+            # If batch_size = N and number_of_classes = C:
+            #
+            #   outputs.shape = [N, C]
+            #   labels.shape  = [N]
+            #
+            # Example for batch_size = 5 and 3 classes:
+            #
+            #   outputs.shape = [5, 3]
+            #   labels.shape  = [5]
+            #
+            # Means:
+            #
+            #   5 images → 5 prediction rows
+            #   each row has 3 class scores
+            # ------------------------------------------------------------
+
             # ------------------------------------------------------------
             # STEP 1: CrossEntropyLoss TAKES "outputs" AND "labels"
             # ------------------------------------------------------------
@@ -1126,6 +1139,99 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             #    given the true labels?"
             #
             # ============================================================
+            # ================================================================
+            # WHAT THIS LINE COMPUTES:
+            # ================================================================
+            #
+            #    loss = criterion(outputs, labels)
+            #
+            # Where:
+            #
+            #   outputs → model logits (raw class scores)
+            #   labels  → true class indices
+            #
+            # ================================================================
+            # TENSOR SHAPES
+            # ================================================================
+            #
+            #   outputs.shape = [N, C]
+            #       N = batch size (number of images)
+            #       C = number of classes
+            #
+            #   labels.shape  = [N]
+            #       Each value = correct class index for each image
+            #
+            # ================================================================
+            # MATHEMATICAL FORMULA (CrossEntropyLoss)
+            # ================================================================
+            #
+            # For each image i (from 0 to N-1):
+            #
+            #   Step 1: Apply Softmax
+            #
+            #     i → index of the image in the batch
+            #     j → index of the CLASS  
+            #     P[i, j] = exp(outputs[i, j]) / Σ exp(outputs[i, k])  j is a class
+            #                                       k = 0..C-1
+            #
+            #     → Converts raw logits into probabilities
+            #
+            # ------------------------------------------------
+            # Step 2: Pick probability of the TRUE class
+            #
+            #     P_true = P[i, labels[i]]
+            #
+            # ------------------------------------------------
+            # Step 3: Compute negative log-likelihood
+            #
+            #     Loss per image:
+            #
+            #         L[i] = -log(P_true)
+            #
+            # ------------------------------------------------
+            # Step 4: Average across batch
+            #
+            #     Final loss:
+            #
+            #         loss = (1 / N) * Σ L[i]
+            #                         i = 0..N-1
+            #
+            # ================================================================
+            # COMPACT FORM:
+            # ================================================================
+            #
+            #   loss = -(1/N) × Σ log( exp(Z[i, y[i]]) / Σ exp(Z[i, k]) )
+            #                  i                 k
+            #
+            # Where:
+            #
+            #   Z = outputs logits
+            #   y = labels ground-truth
+            #   C = number of classes
+            #   N = batch size
+            #
+            # ================================================================
+            # INTERPRETATION:
+            # ================================================================
+            #
+            # ✔ Large probability for correct class → LOW loss
+            # ✔ Small probability for correct class → HIGH loss
+            # ✔ Model is punished when it's wrong
+            # ✔ Model is rewarded when it's confident and right
+            #
+            # ================================================================
+            # IMPORTANT:
+            # ================================================================
+            #
+            # PyTorch's CrossEntropyLoss automatically:
+            #
+            #   • Applies softmax
+            #   • Computes -log
+            #   • Computes batch mean
+            #
+            # So you MUST provide RAW logits (not probabilities)
+            #
+            # ================================================================
 
            
 
@@ -1146,11 +1252,10 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             # What exactly is happening:
             #
             #   1) PyTorch walks backwards through the computation graph.
-            #      (This graph was created during the forward pass when:
+            #      This graph was created during the forward pass when:
             #          outputs = model(images)
-            #       and:
             #          loss = criterion(outputs, labels)
-            #      )
+            #      
             #
             #   2) Using the chain rule, it computes:
             #         ∂loss / ∂parameter
@@ -1199,6 +1304,400 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             #   • NaN gradients → exploding gradients or bad data.
             #   • No gradients appear → requires_grad=False issue.
             #
+            # ------------------------------------------------------------
+            # NUMERICAL EXAMPLE FOR loss.backward()
+            # ------------------------------------------------------------
+            #
+            # PROBLEM:
+            # --------
+            # Classify images into 3 classes:
+            #
+            #   0 → CAT
+            #   1 → DOG
+            #   2 → MAN
+            #
+            # Batch size = 2   (two images in one training step)
+            #
+            # ------------------------------------------------------------
+            # MODEL OUTPUTS (LOGITS)
+            # ------------------------------------------------------------
+            #
+            # When you run:
+            #
+            #    outputs = model(images)
+            #
+            # Example numeric output:
+            #
+            #    outputs =
+            #      [
+            #        [ 2.0,  0.5, -1.0 ],    # image 0 (CAT score highest)
+            #        [ 0.2,  1.8,  0.3 ]     # image 1 (DOG score highest)
+            #      ]
+            #
+            # Shape:
+            #
+            #    outputs.shape = [2, 3]
+            #
+            #   2 = batch size
+            #   3 = number of classes
+            #
+            # ------------------------------------------------------------
+            # TRUE LABELS
+            # ------------------------------------------------------------
+            #
+            # Suppose the correct answers:
+            #
+            #    labels = [0, 1]
+            #
+            # Meaning:
+            #
+            #   image 0 → CAT
+            #   image 1 → DOG
+            #
+            # Shape:
+            #
+            #   labels.shape = [2]
+            #
+            # ------------------------------------------------------------
+            # GRADIENT DERIVATION USING CHAIN RULE (SYMBOLIC FORM)
+            # ------------------------------------------------------------
+            #
+            # We want:
+            #
+            #     ∂L / ∂W
+            #
+            # Where:
+            #   L = loss
+            #   W = any weight in the network (conv or fully connected)
+            #
+            # ------------------------------------------------------------
+            # STEP 1 — Loss depends on LOGITS
+            # ------------------------------------------------------------
+            #
+            # The loss L does NOT directly depend on W.
+            # It depends on the logits Z.
+            #
+            # So we apply chain rule:
+            #
+            #     ∂L / ∂W = ∂L / ∂Z · ∂Z / ∂W
+            #
+            # ------------------------------------------------------------
+            # STEP 2 — Logits are a function of weights
+            # ------------------------------------------------------------
+            #
+            # For one neuron (or output unit):
+            #
+            #     Z = W·X + b
+            #
+            # Where:
+            #   W = weight
+            #   X = input feature vector
+            #   b = bias
+            #
+            # Then:
+            #
+            #     ∂Z / ∂W = X
+            #
+            # ------------------------------------------------------------
+            # STEP 3 — LOSS depends on probabilities (SOFTMAX)
+            # ------------------------------------------------------------
+            #
+            # Softmax definition:
+            #
+            # Z[j] = logit (raw, unnormalized score) for class j
+            #
+            # Example with 3 classes:
+            #
+            #   Z[0] → Score for CAT
+            #   Z[1] → Score for DOG
+            #   Z[2] → Score for MAN
+            #
+            # These values come from:
+            #
+            #   Z = W · X + b
+            #
+            # They are NOT probabilities.
+            # They are RAW confidence scores and will be converted
+            # into probabilities by softmax inside CrossEntropyLoss.
+
+            #     P[i] = exp(Z[i]) / Σ exp(Z[j])  i is the image index and j is the class index
+            #
+            # Loss definition:
+            #
+            #     L = - Σ y[i] · log(P[i])
+            #
+            # Where:
+            #   y[j] = true class distribution
+            #   (1 for correct class, 0 otherwise)
+            #
+            # ------------------------------------------------------------
+            # STEP 4 — APPLY CHAIN RULE
+            # ------------------------------------------------------------
+            #
+            # Expanded chain rule:
+            #
+            #     ∂L / ∂W
+            #       = ∂L / ∂P · ∂P / ∂Z · ∂Z / ∂W
+            #
+            # ------------------------------------------------------------
+            # EXPANDING THIS TERM USING THE CHAIN RULE:
+            #
+            #     ∂L / ∂P  ·  ∂P / ∂Z
+            #
+            # ------------------------------------------------------------
+            # STEP 1 — DEFINE VARIABLES
+            # ------------------------------------------------------------
+            #
+            # Let:
+            #
+            #   Z[j] = logit for class j
+            #   P[j] = softmax probability for class j
+            #   y[j] = true one-hot label:
+            #          y[j] = 1 if j is correct class
+            #          y[j] = 0 otherwise
+            #
+            #   Softmax:
+            #
+            #       P[j] = exp(Z[j]) / Σ exp(Z[k])
+            #                              k
+            #
+            #   Loss function:
+            #
+            #       L = - Σ y[j] · log(P[j])
+            #              j
+            #
+            # ------------------------------------------------------------
+            # STEP 2 — PARTIAL DERIVATIVE: ∂L / ∂P
+            # ------------------------------------------------------------
+            #
+            # Differentiate loss with respect to probability P[j]:
+            #
+            #       ∂L / ∂P[j] = - y[j] / P[j]
+            #
+            # Explanation:
+            #
+            # • If class j is correct → y[j] = 1 → loss depends on P[j]
+            # • If class j is not correct → y[j] = 0 → no contribution
+            #
+            # ------------------------------------------------------------
+            # STEP 3 — PARTIAL DERIVATIVE: ∂P / ∂Z (Softmax Jacobian)
+            # ------------------------------------------------------------
+            #
+            # Softmax is a VECTOR FUNCTION, not scalar.
+            # So its derivative is a MATRIX called the JACOBIAN:
+            #
+            #       ∂P[i] / ∂Z[j]
+            #
+            # Two cases:
+            #
+            # ------------------------------------------------
+            # Case 1: i == j (diagonal term)
+            #
+            #     ∂P[j] / ∂Z[j]
+            #       = P[j] · (1 - P[j])
+            ## ============================================================
+            # DERIVING THE SOFTMAX GRADIENT (STEP BY STEP)
+            # ============================================================
+            #
+            # Softmax definition:
+            #
+            #   P[i] = exp(Z[i]) / Σ exp(Z[k])
+            #                         k
+            #
+            # Let:
+            #
+            #   S = Σ exp(Z[k])
+            #
+            # so:
+            #
+            #   P[i] = exp(Z[i]) / S
+            #
+            # ============================================================
+            # CASE 1: i == j   (DIAGONAL TERM)
+            # ============================================================
+            #
+            # We differentiate P[j] with respect to Z[j]:
+            #
+            #       P[j] = exp(Z[j]) / S
+            #
+            # Use QUOTIENT RULE:
+            #
+            #       d/dx (f / g) = (g f' - f g') / g²
+            #
+            # Here:
+            #
+            #   f = exp(Z[j])
+            #   g = S = Σ exp(Z[k])
+            #
+            # Derivatives:
+            #
+            #   df/dZ[j] = exp(Z[j])
+            #
+            #   dg/dZ[j] = exp(Z[j])    # only one term in sum depends on Z[j]
+            #
+            # Apply quotient rule:
+            #
+            #   ∂P[j] / ∂Z[j]
+            #     = ( S·exp(Z[j]) - exp(Z[j])·exp(Z[j]) ) / S²
+            #
+            # Factor:
+            #
+            #     = exp(Z[j]) / S · (1 - exp(Z[j]) / S)
+            #
+            # Recognize:
+            #
+            #   exp(Z[j]) / S = P[j]
+            #
+            # So:
+            #
+            #   ∂P[j] / ∂Z[j] = P[j] · (1 - P[j])
+            #
+            # ============================================================
+            # CASE 2: i ≠ j   (OFF-DIAGONAL TERM)
+            # ============================================================
+            #
+            # Now differentiate P[i] where i ≠ j:
+            #
+            #       P[i] = exp(Z[i]) / S
+            #
+            # Now numerator does NOT depend on Z[j]:
+            #
+            #   df/dZ[j] = 0
+            #
+            #   dg/dZ[j] = exp(Z[j])
+            #
+            # Apply quotient rule:
+            #
+            #   ∂P[i] / ∂Z[j]
+            #     = (0·S - exp(Z[i])·exp(Z[j])) / S²
+            #
+            # Simplify:
+            #
+            #     = - (exp(Z[i]) / S) · (exp(Z[j]) / S)
+            #
+            # Recognize:
+            #
+            #   exp(Z[i]) / S = P[i]
+            #   exp(Z[j]) / S = P[j]
+            #
+            # So:
+            #
+            #   ∂P[i] / ∂Z[j] = - P[i] · P[j]
+            #
+            # ============================================================
+            # FINAL RESULT (JACOBIAN)
+            # ============================================================
+            #
+            # Diagonal:
+            #
+            #     ∂P[j] / ∂Z[j] = P[j] · (1 - P[j])
+            #
+            # Off-diagonal:
+            #
+            #     ∂P[i] / ∂Z[j] = - P[i] · P[j]   for i ≠ j
+            #
+            # ============================================================
+            # ------------------------------------------------
+            # Case 2: i ≠ j (off-diagonal terms)
+            #
+            #     ∂P[i] / ∂Z[j]
+            #       = - P[i] · P[j]
+            #
+            # ------------------------------------------------------------
+            # STEP 4 — MULTIPLY VECTORS AND MATRICES (CHAIN RULE)
+            # ------------------------------------------------------------
+            #
+            # We now compute:
+            #
+            #     ∂L / ∂P · ∂P / ∂Z
+            #
+            # In index form:
+            #
+            #     ∂L / ∂Z[j]
+            #       = Σ ∂L / ∂P[i] · ∂P[i] / ∂Z[j]
+            #               i
+            #
+            # Substitute known derivatives:
+            #
+            #     ∂L / ∂Z[j]
+            #       = Σ ( - y[i] / P[i] ) · ( ∂P[i] / ∂Z[j] )
+            #               i
+            #
+            # ------------------------------------------------------------
+            # STEP 5 — RESULT AFTER SIMPLIFICATION
+            # ------------------------------------------------------------
+            #
+            # After algebraic cancellation:
+            #
+            #     ∂L / ∂Z[j] = P[j] - y[j]
+            #
+            # ------------------------------------------------------------
+            # INTERPRETATION
+            # ------------------------------------------------------------
+            #
+            # This result happens because:
+            #
+            # • Softmax and cross-entropy are a matched pair
+            # • Their gradients simplify beautifully
+            # • The log cancels exp during differentiation
+            #
+            # ------------------------------------------------------------
+            # FINAL CHAIN RULE CONNECTION:
+            # ------------------------------------------------------------
+            #
+            #   ∂L / ∂W
+            #       = ∂L / ∂Z · ∂Z / ∂W
+            #       = (P - y) · Xᵀ
+            #
+            # ------------------------------------------------------------
+            # ------------------------------------------------------------
+            # STEP 5 — FINAL SYMBOLIC FORM
+            # ------------------------------------------------------------
+            #
+            # Combining all partial derivatives:
+            #
+            #     ∂L / ∂W
+            #       = ( ∂L / ∂Z ) · X
+            #
+            # Because:
+            #
+            #     ∂Z / ∂W = X
+            #
+            # ------------------------------------------------------------
+            # FULL DERIVATIVE EQUATION
+            # ------------------------------------------------------------
+            #
+            # Let:
+            #   Z = W·X
+            #   P = softmax(Z)
+            #   y = ground-truth distribution
+            #
+            # Then:
+            #
+            #     ∂L / ∂W = (P - y) · Xᵀ
+            #
+            # ------------------------------------------------------------
+            # FOR MULTIPLE SAMPLES (BATCH)
+            # ------------------------------------------------------------
+            #
+            # For batch size N:
+            #
+            #     ∂L / ∂W
+            #       = (1/N) · Σ (P[i] - y[i]) · X[i]ᵀ
+            #               i
+            #
+            # ------------------------------------------------------------
+            # INTERPRETATION
+            # ------------------------------------------------------------
+            #
+            # • (P - y)  = error signal
+            # • X        = input that caused the error
+            # • The gradient W is pushed in a direction that:
+            #     → decreases wrong scores
+            #     → increases correct class score
+            #
+            # ------------------------------------------------------------
+
             loss.backward()
 
 
