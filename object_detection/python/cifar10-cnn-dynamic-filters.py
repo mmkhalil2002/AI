@@ -301,6 +301,9 @@ class DynamicLearnableCNN(nn.Module):
 #   No conditional logic or special handling is needed in the training loop.
 #   The same code trains both static and dynamic filter networks correctly.
 
+import time  # ⏱ Used to measure how long each epoch takes
+
+
 def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
     
     
@@ -444,11 +447,24 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
     #
     criterion = nn.CrossEntropyLoss()
 
+    # ------------------------------------------------------------
+    # OPTIONAL: STORE EPOCH TIMES FOR ANALYSIS
+    #   • epoch_times will hold the duration (in seconds) of each epoch.
+    #   • Useful for performance debugging and estimating total training time.
+    # ------------------------------------------------------------
+    epoch_times = []
 
     # ------------------------------------------------------------
     # TRAINING LOOP
     # ------------------------------------------------------------
     for ep in range(num_epochs):
+
+        # --------------------------------------------------------
+        # START TIMER FOR THIS EPOCH
+        #   • time.perf_counter() gives a high-resolution timestamp.
+        #   • We subtract later to get the duration of this epoch.
+        # --------------------------------------------------------
+        epoch_start = time.perf_counter()
 
         # Track statistics over the epoch
         total = 0
@@ -813,17 +829,41 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             total += labels.size(0)
 
 
+        # --------------------------------------------------------
+        # END TIMER FOR THIS EPOCH
+        #   • Compute how long this epoch took in seconds.
+        #   • Store it for later summary or plotting.
+        # --------------------------------------------------------
+        epoch_time = time.perf_counter() - epoch_start
+        epoch_times.append(epoch_time)
+
         # --------------------------------------------
         # PRINT EPOCH SUMMARY
+        #   • Includes loss, accuracy, and elapsed time.
         # --------------------------------------------
-        print(f"[TRAIN] Epoch {ep+1}/{num_epochs}  "
-              f"Loss: {running_loss / total:.4f}  "
-              f"Accuracy: {correct / total:.4f}")
+        print(
+            f"[TRAIN] Epoch {ep+1}/{num_epochs}  "
+            f"Loss: {running_loss / total:.4f}  "
+            f"Accuracy: {correct / total:.4f}  "
+            f"Time: {epoch_time:.2f} sec"
+        )
+
+    # ------------------------------------------------------------
+    # OPTIONAL: PRINT TOTAL AND AVERAGE TRAINING TIME
+    # ------------------------------------------------------------
+    total_time = sum(epoch_times)
+    avg_time = total_time / len(epoch_times) if epoch_times else 0.0
+    print(
+        f"[TRAIN] Finished {num_epochs} epochs "
+        f"in {total_time:.2f} sec "
+        f"(avg {avg_time:.2f} sec/epoch)"
+    )
 
     # ------------------------------------------------------------
     # RETURN TRAINED MODEL
     # ------------------------------------------------------------
     return model
+
 
 
 

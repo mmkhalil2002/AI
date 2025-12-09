@@ -735,11 +735,24 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
    
     criterion = nn.CrossEntropyLoss()
 
+    # ------------------------------------------------------------
+    # OPTIONAL: STORE EXECUTION TIME FOR EACH EPOCH
+    #   • epoch_times will hold duration (seconds) for every epoch.
+    #   • Useful for performance diagnostics and ETA estimation.
+    # ------------------------------------------------------------
+    epoch_times = []
 
     # ------------------------------------------------------------
     # TRAINING LOOP
     # ------------------------------------------------------------
     for ep in range(num_epochs):
+
+        # --------------------------------------------------------
+        # START TIMER FOR THIS EPOCH
+        #   • Capture high-resolution start time BEFORE any work.
+        #   • At the end of the epoch we subtract to get duration.
+        # --------------------------------------------------------
+        epoch_start = time.perf_counter()
 
         # Track statistics over the epoch
         total = 0
@@ -1418,7 +1431,7 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             #
             # They are NOT probabilities.
             # They are RAW confidence scores and will be converted
-            # into probabilities by softmax inside CrossEntropyLoss.
+            # into probabilities by softmax inside CrossEntropyLoss。
 
             #     P[i] = exp(Z[i]) / Σ exp(Z[j])  i is the image index and j is the class index
             #
@@ -1504,6 +1517,10 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             #   P[i] = exp(Z[i]) / Σ exp(Z[k])
             #                         k
             #
+            # Meaning of symbols:
+            #
+            #   i = class index we are computing the probability for NOW
+            #   k = class index we are SUMMING over
             # Let:
             #
             #   S = Σ exp(Z[k])
@@ -1542,14 +1559,14 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             #
             # Factor:
             #
-            #     = exp(Z[j]) / S · (1 - exp(Z[j]) / S)
+            #     = exp(Z[j]) / S - exp(Z[j]) / S.exp(Z[j]) / S)
             #
             # Recognize:
             #
             #   exp(Z[j]) / S = P[j]
             #
             # So:
-            #
+            #   ∂P[j] / ∂Z[j] = P[j] -P[J].P[j]
             #   ∂P[j] / ∂Z[j] = P[j] · (1 - P[j])
             #
             # ============================================================
@@ -1606,30 +1623,129 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             # ------------------------------------------------------------
             # STEP 4 — MULTIPLY VECTORS AND MATRICES (CHAIN RULE)
             # ------------------------------------------------------------
-            #
-            # We now compute:
-            #
-            #     ∂L / ∂P · ∂P / ∂Z
-            #
-            # In index form:
-            #
-            #     ∂L / ∂Z[j]
-            #       = Σ ∂L / ∂P[i] · ∂P[i] / ∂Z[j]
-            #               i
-            #
-            # Substitute known derivatives:
-            #
-            #     ∂L / ∂Z[j]
-            #       = Σ ( - y[i] / P[i] ) · ( ∂P[i] / ∂Z[j] )
-            #               i
-            #
-            # ------------------------------------------------------------
-            # STEP 5 — RESULT AFTER SIMPLIFICATION
-            # ------------------------------------------------------------
-            #
-            # After algebraic cancellation:
+            # ============================================================
+            # WHY DIAGONAL + OFF-DIAGONAL TERMS SIMPLIFY TO:
             #
             #     ∂L / ∂Z[j] = P[j] - y[j]
+            #
+            # ============================================================
+            #
+            # We start from the chain rule:
+            #
+            #     L = - Σ y[j] · log(P[i])
+            #              i
+            #     ∂L / ∂Z[j] = Σ ( ∂L / ∂P[i] ) · ( ∂P[i] / ∂Z[j] )
+            #                   i
+            #
+            # We already know:
+            #
+            #   ∂L / ∂P[i] = - y[i] / P[i]
+            #
+            # Softmax derivatives:
+            #
+            #   If i == j (DIAGONAL):
+            #
+            #       ∂P[j] / ∂Z[j] = P[j] · (1 - P[j])
+            #
+            #   If i ≠ j (OFF-DIAGONAL):
+            #
+            #       ∂P[i] / ∂Z[j] = - P[i] · P[j]
+            #
+            # ============================================================
+            # SPLIT SUM INTO TWO PARTS:
+            # ============================================================
+            #
+            # One term where i == j
+            # One sum over all i ≠ j
+            #
+            # So:
+            #
+            #   ∂L / ∂Z[j]
+            #     = ( ∂L / ∂P[j] ) · ( ∂P[j] / ∂Z[j] )
+            #       + Σ_{i ≠ j} ( ∂L / ∂P[i] ) · ( ∂P[i] / ∂Z[j] )
+            #
+            # ============================================================
+            # SUBSTITUTE FORMULAS
+            # ============================================================
+            #
+            # DIAGONAL TERM:
+            #
+            #   ( - y[j] / P[j] ) · ( P[j](1 - P[j]) )
+            #
+            # OFF-DIAGONAL SUM:
+            #
+            #   Σ_{i ≠ j} ( - y[i] / P[i] ) · ( - P[i] P[j] )
+            #
+            # ============================================================
+            # SIMPLIFY EACH PART
+            # ============================================================
+            #
+            # ---------- DIAGONAL ----------
+            #
+            #   ( - y[j] / P[j] ) · P[j](1 - P[j])
+            #
+            # Cancel P[j]:
+            #
+            #   = - y[j] (1 - P[j])
+            #
+            # ---------- OFF-DIAGONAL ----------
+            #
+            #   ( - y[i] / P[i] ) · ( - P[i] P[j] )
+            #
+            # Cancel minus signs and P[i]:
+            #
+            #   = y[i] · P[j]
+            #
+            # Now sum over i ≠ j:
+            #
+            #   Σ y[i] · P[j]
+            #   = P[j] · Σ_{i ≠ j} y[i]
+            #
+            # ============================================================
+            # USE ONE-HOT PROPERTY
+            # ============================================================
+            #
+            # Because y is one-hot:
+            #
+            #   Σ y[i] = 1
+            #
+            # Therefore:
+            #
+            #   Σ_{i ≠ j} y[i] = 1 - y[j]
+            #
+            # ============================================================
+            # PUT BOTH PARTS TOGETHER
+            # ============================================================
+            #
+            #   ∂L / ∂Z[j]
+            #     = -y[j] (1 - P[j])   +   P[j] (1 - y[j])
+            #
+            # Expand:
+            #
+            #   = -y[j] + y[j]P[j] + P[j] - y[j]P[j]
+            #
+            # Cancel middle terms:
+            #
+            #   = P[j] - y[j]
+            #
+            # ============================================================
+            # FINAL RESULT
+            # ============================================================
+            #
+            #   ∂L / ∂Z[j] = P[j] - y[j]
+            #
+            # ============================================================
+            # INTERPRETATION
+            # ============================================================
+            #
+            # If model probability is TOO BIG:
+            #   P[j] > y[j]  → gradient is positive → push logit DOWN
+            #
+            # If model probability is TOO SMALL:
+            #   P[j] < y[j]  → gradient is negative → push logit UP
+            #
+            # This is why cross-entropy + softmax is perfectly matched.
+            # ============================================================
             #
             # ------------------------------------------------------------
             # INTERPRETATION
@@ -1650,20 +1766,7 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             #       = (P - y) · Xᵀ
             #
             # ------------------------------------------------------------
-            # ------------------------------------------------------------
-            # STEP 5 — FINAL SYMBOLIC FORM
-            # ------------------------------------------------------------
-            #
-            # Combining all partial derivatives:
-            #
-            #     ∂L / ∂W
-            #       = ( ∂L / ∂Z ) · X
-            #
-            # Because:
-            #
-            #     ∂Z / ∂W = X
-            #
-            # ------------------------------------------------------------
+               # ------------------------------------------------------------
             # FULL DERIVATIVE EQUATION
             # ------------------------------------------------------------
             #
@@ -1697,6 +1800,81 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             #     → increases correct class score
             #
             # ------------------------------------------------------------
+            # ============================================================
+            # FULL SOFTMAX JACOBIAN + CHAIN RULE WITH CROSS ENTROPY
+            # ============================================================
+            #
+            # GOAL:
+            #   Understand how we go from:
+            #
+            #       L = CrossEntropy(softmax(Z), y)
+            #
+            #   to the very simple gradient:
+            #
+            #       ∂L / ∂Z = P - y
+            #
+            #   where:
+            #       Z = logits (raw scores)   → shape [C]
+            #       P = softmax probabilities → shape [C]
+            #       y = one-hot true labels   → shape [C]
+            #
+            # ============================================================
+            # 1) DEFINITIONS
+            # ============================================================
+            #
+            # Let number of classes = C.
+            #
+            # Logits (vector):
+            #
+            #   Z = [Z[0], Z[1], ..., Z[C-1]]
+            #
+            # Softmax:
+            #
+            #   P[j] = exp(Z[j]) / Σ exp(Z[k])
+            #                          k
+            #
+            # True label (one-hot):
+            #
+            #   y[j] = 1 if j is correct class
+            #        = 0 otherwise
+            #
+            # Cross-entropy loss:
+            #
+            #   L = - Σ y[j] · log(P[j])
+            #           j
+            #
+            # For a single sample (no batch).
+            #
+            # ============================================================
+            # 2) JACOBIAN OF SOFTMAX: ∂P / ∂Z
+            # ============================================================
+            #
+            # We consider P as function of Z:
+            #
+            #   P : R^C → R^C
+            #
+            # Its derivative is a C×C matrix (Jacobian):
+            #
+            #     J_softmax[i, j] = ∂P[i] / ∂Z[j]
+            #
+            # We derived:
+            #
+            #   For i == j (diagonal terms):
+            #
+            #       ∂P[j] / ∂Z[j] = P[j] · (1 - P[j])
+            #
+            #   For i ≠ j (off-diagonal terms):
+            #
+            #       ∂P[i] / ∂Z[j] = - P[i] · P[j]
+            #
+            # Matrix form (for C = 3, just as a picture):
+            #
+            #   [ ∂P[0]/∂Z[0]   ∂P[0]/∂Z[1]   ∂P[0]/∂Z[2] ]   [  P[0](1-P[0])   -P[0]P[1]      -P[0]P[2]   ]
+            #   [ ∂P[1]/∂Z[0]   ∂P[1]/∂Z[1]   ∂P[1]/∂Z[2] ] = [ -P[1]P[0]       P[1](1-P[1])   -P[1]P[2]   ]
+            #   [ ∂P[2]/∂Z[0]   ∂P[2]/∂Z[1]   ∂P[2]/∂Z[2] ]   [ -P[2]P[0]      -P[2]P[1]       P[2](1-P[2])]
+            #
+            
+
 
             loss.backward()
 
@@ -1783,6 +1961,47 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             # running_loss:
             #   • Tracks TOTAL loss across all batches in the epoch.
             #
+            # ------------------------------------------------------------
+            # SIMPLE NUMERICAL EXAMPLE:
+            # ------------------------------------------------------------
+            #
+            # Suppose:
+            #
+            #   batch_size = 4 images
+            #   loss.item() = 0.5   (this is the average loss per image)
+            #
+            # Then:
+            #
+            #   total_batch_loss = loss.item() * batch_size
+            #                    = 0.5 * 4
+            #                    = 2.0
+            #
+            # So:
+            #
+            #   running_loss += 2.0
+            #
+            # ------------------------------------------------------------
+            # MULTIPLE BATCHES EXAMPLE:
+            # ------------------------------------------------------------
+            #
+            # Assume dataset has 10 images with batch_size = 4:
+            #
+            #   Batch 1: 4 images, loss.item() = 0.6 → 0.6 * 4 = 2.4
+            #   Batch 2: 4 images, loss.item() = 0.8 → 0.8 * 4 = 3.2
+            #   Batch 3: 2 images, loss.item() = 0.5 → 0.5 * 2 = 1.0
+            #
+            # Total running_loss = 2.4 + 3.2 + 1.0 = 6.6
+            #
+            # ------------------------------------------------------------
+            # FINAL EPOCH LOSS (AVERAGE):
+            # ------------------------------------------------------------
+            #
+            # To compute average loss per image:
+            #
+            #   average_epoch_loss = running_loss / total_images
+            #                      = 6.6 / 10
+            #                      = 0.66
+            #
             running_loss += loss.item() * images.size(0)
 
 
@@ -1799,6 +2018,61 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             # preds:
             #   • Tensor shape: (batch_size)
             #   • Each value is the predicted class index.
+            #
+            # ------------------------------------------------------------
+            # NUMERICAL EXAMPLE:
+            # ------------------------------------------------------------
+            #
+            # Assume 3 classes:
+            #
+            #   Class 0 → CAT
+            #   Class 1 → DOG
+            #   Class 2 → MAN
+            #
+            # Batch size = 2 images
+            #
+            # outputs =
+            # [
+            #   [ 2.5,  1.0, -0.5 ],   # Image 0 scores (logits)
+            #   [ 0.2,  3.1,  0.8 ]    # Image 1 scores (logits)
+            # ]
+            #
+            # ------------------------------------------------------------
+            # APPLY ARGMAX over DIMENSION=1 (classes):
+            # ------------------------------------------------------------
+            #
+            # For Image 0:
+            #   CAT = 2.5
+            #   DOG = 1.0
+            #   MAN = -0.5
+            #
+            #   Highest value = 2.5 (CAT)
+            #
+            #   Prediction = class 0
+            #
+            # For Image 1:
+            #   CAT = 0.2
+            #   DOG = 3.1
+            #   MAN = 0.8
+            #
+            #   Highest value = 3.1 (DOG)
+            #
+            #   Prediction = class 1
+            #
+            # ------------------------------------------------------------
+            # RESULT:
+            # ------------------------------------------------------------
+            #
+            # preds = [0, 1]
+            #
+            # ------------------------------------------------------------
+            # INTERPRETATION:
+            # ------------------------------------------------------------
+            #
+            # preds[i] = predicted class index for image i
+            #
+            # Image 0 → CAT
+            # Image 1 → DOG
             #
             preds = outputs.argmax(1)
 
@@ -1820,6 +2094,107 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             # correct:
             #   • Accumulates number of correct predictions across all batches.
             #
+            # ------------------------------------------------------------
+            # LINE EXPLAINED:
+            # ------------------------------------------------------------
+            #
+            #   correct += (preds == labels).sum().item()
+            #
+            # ------------------------------------------------------------
+            # ASSUME BATCH SIZE = 5
+            # ------------------------------------------------------------
+            #
+            # preds  → predicted classes from the model (argmax result)
+            # labels → true class labels from dataset
+            #
+            # Example:
+            #
+            # preds  = [0, 2, 1, 1, 0]   # model predictions
+            # labels = [0, 1, 1, 2, 0]   # true labels
+            #
+            # ------------------------------------------------------------
+            # STEP 1: ELEMENTWISE COMPARISON
+            # ------------------------------------------------------------
+            #
+            # preds == labels  →
+            #
+            # [ True, False, True, False, True ]
+            #
+            # Explanation:
+            #
+            #   Image 0 → 0 == 0 ✅
+            #   Image 1 → 2 != 1 ❌
+            #   Image 2 → 1 == 1 ✅
+            #   Image 3 → 1 != 2 ❌
+            #   Image 4 → 0 == 0 ✅
+            #
+            # ------------------------------------------------------------
+            # STEP 2: CONVERT TRUE/FALSE TO NUMBERS
+            # ------------------------------------------------------------
+            #
+            # PyTorch treats:
+            #
+            #   True  → 1
+            #   False → 0
+            #
+            # So tensor becomes:
+            #
+            # [ 1, 0, 1, 0, 1 ]
+            #
+            # ------------------------------------------------------------
+            # STEP 3: SUM THE VALUES
+            # ------------------------------------------------------------
+            #
+            # (preds == labels).sum() =
+            #
+            # 1 + 0 + 1 + 0 + 1 = 3
+            #
+            # ------------------------------------------------------------
+            # STEP 4: CONVERT TO PYTHON NUMBER
+            # ------------------------------------------------------------
+            #
+            # .item() converts tensor → Python integer:
+            #
+            # 3
+            #
+            # ------------------------------------------------------------
+            # STEP 5: ADD TO TOTAL CORRECT COUNTER
+            # ------------------------------------------------------------
+            #
+            # If correct was previously:
+            #
+            # correct = 10
+            #
+            # After:
+            #
+            # correct += 3
+            #
+            # New value:
+            #
+            # correct = 13
+            #
+            # ------------------------------------------------------------
+            # FINAL MEANING:
+            # ------------------------------------------------------------
+            #
+            # This line:
+            #
+            # ✅ counts how many predictions were correct in the current batch
+            # ✅ adds them to the total correct across all batches
+            #
+            # ------------------------------------------------------------
+            # USED LATER FOR ACCURACY:
+            # ------------------------------------------------------------
+            #
+            # Accuracy = correct / total
+            #
+            # Example:
+            #
+            # correct = 130
+            # total   = 200
+            #
+            # accuracy = 130 / 200 = 0.65 = 65%
+
             correct += (preds == labels).sum().item()
 
 
@@ -1833,13 +2208,37 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             #
             total += labels.size(0)
 
+        # --------------------------------------------------------
+        # END TIMER FOR THIS EPOCH
+        #   • Compute how long this epoch took in seconds.
+        #   • Store duration so we can summarize later.
+        # --------------------------------------------------------
+        epoch_time = time.perf_counter() - epoch_start
+        epoch_times.append(epoch_time)
 
         # --------------------------------------------
         # PRINT EPOCH SUMMARY
         # --------------------------------------------
-        print(f"[TRAIN] Epoch {ep+1}/{num_epochs}  "
-              f"Loss: {running_loss / total:.4f}  "
-              f"Accuracy: {correct / total:.4f}")
+        print(
+            f"[TRAIN] Epoch {ep+1}/{num_epochs}  "
+            f"Loss: {running_loss / total:.4f}  "
+            f"Accuracy: {correct / total:.4f}  "
+            f"Time: {epoch_time:.2f} sec"
+        )
+
+    # ------------------------------------------------------------
+    # OPTIONAL: PRINT TOTAL AND AVERAGE EXECUTION TIME
+    #   • total_time: sum of all epoch durations.
+    #   • avg_time:   mean seconds per epoch.
+    # ------------------------------------------------------------
+    if epoch_times:
+        total_time = sum(epoch_times)
+        avg_time = total_time / len(epoch_times)
+        print(
+            f"[TRAIN] Finished {num_epochs} epochs "
+            f"in {total_time:.2f} sec "
+            f"(avg {avg_time:.2f} sec/epoch)"
+        )
 
     # ------------------------------------------------------------
     # RETURN TRAINED MODEL
