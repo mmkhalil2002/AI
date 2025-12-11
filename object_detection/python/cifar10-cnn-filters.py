@@ -2,9 +2,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch
 import random
-import time
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 MODEL_PATH = "../../../"
@@ -15,7 +13,7 @@ CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence for valid detections
 FILTER_WIDTH = 3
 FILTER_HEIGHT = 3
 BATCH_SIZE = 32
-NUM_EPOCHS = 150
+NUM_EPOCHS = 200
 LEARNING_RATE = 0.001
 DYNAMIC_FILTERS = False
 
@@ -328,6 +326,7 @@ class StaticInitLearnableCNN(nn.Module):
 
 
 
+
     # ----------------------------------------------------------
     # FORWARD PASS
     # ----------------------------------------------------------
@@ -433,7 +432,6 @@ class StaticInitLearnableCNN(nn.Module):
 # Therefore:
 #   No conditional logic or special handling is needed in the training loop.
 #   The same code trains both static and dynamic filter networks correctly.
-
 
 def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
     
@@ -1002,7 +1000,6 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
 # ============================================================
 # DETECTION / SINGLE-IMAGE INFERENCE FUNCTION
 # ============================================================
-
 def detect_single_image(model, test_dataset, device, index=None):
     """
     Loads ONE RANDOM image from the test dataset (unless index is provided),
@@ -1071,7 +1068,6 @@ def detect_single_image(model, test_dataset, device, index=None):
     return img, true_label, pred_label
 
 
-
 # ============================================================
 # MAIN PROGRAM
 # ============================================================
@@ -1137,57 +1133,34 @@ def main():
     model_filename = os.path.join(MODEL_PATH, MODEL_FILENAME)
 
     # ------------------------------------------------------------
-# LOAD MODEL IF IT EXISTS
-# ------------------------------------------------------------
-if os.path.exists(model_filename):
-    print(f"Loading trained weights from: {model_filename}")
-    state_dict = torch.load(model_filename, map_location=device)   # load weights
-    model.load_state_dict(state_dict)                              # restore model
-else:
-    print("No saved model found. Training a new model...")
-    model = train_model(model, train_loader, device, num_epochs=NUM_EPOCHS, lr=1e-3)
-    print(f"Saving trained model to: {model_filename}")
-    torch.save(model.state_dict(), model_filename)
+    # LOAD MODEL IF IT EXISTS
+    # ------------------------------------------------------------
+    if os.path.exists(model_filename):
 
-# ------------------------------------------------------------
-# INTERACTIVE LOOP FOR USER-DRIVEN DETECTION
-# ------------------------------------------------------------
-print("\n--------------------------------------------------")
-print("Interactive Image Detection Mode")
-print("Press:")
-print("   d  → detect on an image index")
-print("   e  → exit program")
-print("--------------------------------------------------\n")
+        print(f"Loading trained weights from: {model_filename}")
 
-while True:
-    user_input = input("Enter command (d = detect, e = exit): ").strip().lower()
+        # ------------------------------------------------------------
+        # FIX: Load from FILE, not directory
+        # ------------------------------------------------------------
+        state_dict = torch.load(model_filename, map_location=device)
 
-    if user_input == 'e':
-        print("Exiting program. Goodbye!")
-        break
-
-    elif user_input == 'd':
-        # Ask user for the test image index
-        idx_str = input(f"Enter image index (0 – {len(test_dataset)-1}): ").strip()
-
-        # Validate the index
-        if not idx_str.isdigit():
-            print("❌ Invalid index. Must be a number.")
-            continue
-
-        idx = int(idx_str)
-
-        if idx < 0 or idx >= len(test_dataset):
-            print("❌ Index out of range. Try again.")
-            continue
-
-        # Run detection
-        print(f"\nRunning detection on test image index {idx} ...")
-        detect_single_image(model, test_dataset, device, index=idx)
+        model.load_state_dict(state_dict)
 
     else:
-        print("❌ Unknown command. Use 'd' for detect or 'e' to exit.")
+        print("No saved model found. Training a new model...")
 
+        model = train_model(model, train_loader, device, num_epochs=NUM_EPOCHS, lr=1e-3)
+
+        print(f"Saving trained model to: {model_filename}")
+
+        torch.save(model.state_dict(), model_filename)
+
+
+    # --------------------------------------------------------
+    # DETECTION: RUN MODEL ON A SINGLE TEST IMAGE
+    # --------------------------------------------------------
+    # Example: test on test_dataset[0]
+    detect_single_image(model, test_dataset, device, index=0)
 
 
 # ------------------------------------------------------------

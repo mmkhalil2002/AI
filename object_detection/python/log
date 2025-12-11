@@ -156218,3 +156218,4 @@ Enter load_model
 Exit load_model
 Enter get_random_test_image 
 Exit get_random_test_image
+Enter load_trin_data

@@ -1,11 +1,23 @@
 import os
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import random
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 
+MODEL_PATH = "../../../"
+MODEL_FILENAME = "cifar10_model_file"
+DATA_PATH = "../../../cifar10_data"
+MG_WIDTH, IMG_HEIGHT = 32, 32  # Based on training dataset
+CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence for valid detections
+FILTER_WIDTH = 3
+FILTER_HEIGHT = 3
+BATCH_SIZE = 64
+NUM_EPOCHS = 200
+LEARNING_RATE = 0.001
 # ============================================================
 # EXPLANATION: HOW TRAINING WORKS IN THIS NETWORK
 # ============================================================
@@ -199,122 +211,116 @@ class StaticInitLearnableCNN(nn.Module):
     # STATIC INITIALIZATION FOR LAYER 1
     # ----------------------------------------------------------
     def _init_conv1_static(self):
+        with torch.no_grad():                                              # disable gradients during manual init
+            w = self.conv1.weight                                          # conv1 weights → [out_channels, 3, 3, 3]
+            out_channels, in_channels, kh, kw = w.shape                    # get conv1 shape
+            assert in_channels == 3 and kh == 3 and kw == 3                # expect RGB input and 3x3 kernels
 
-        # Disable gradient tracking during manual weight initialization.
-        # We are NOT training here, only assigning initial filter values.
-        with torch.no_grad():
+            identity = torch.tensor([[0.,0.,0.],[0.,1.,0.],[0.,0.,0.]])    # identity filter 2D
+            edge_detection = torch.tensor([[0.,-1.,0.],[-1.,4.,-1.],[0.,-1.,0.]])   # laplacian edge 2D
+            sharpen = torch.tensor([[0.,-1.,0.],[-1.,5.,-1.],[0.,-1.,0.]]) # sharpen 2D
+            box_blur = (1/9) * torch.ones((3,3))                           # box blur 2D
+            gaussian_blur = (1/16) * torch.tensor([[1.,2.,1.],[2.,4.,2.],[1.,2.,1.]])  # gaussian 2D
 
-            # self.conv1.weight has shape: [16, 3, 3, 3]
-            #   16 = number of output filters
-            #   3  = input channels (RGB)
-            #   3x3 = kernel size
-            w = self.conv1.weight
+            edge_0   = torch.tensor([[ 1.,1.,1.],[-2.,-2.,-2.],[ 1.,1.,1.]])          # edge 0°
+            edge_45  = torch.tensor([[ 1.,-2.,1.],[1.,-2.,1.],[1.,-2.,1.]])           # edge 45°
+            edge_90  = torch.tensor([[-2.,1.,1.],[1.,-2.,1.],[1.,1.,-2.]])            # edge 90°
+            edge_135 = torch.tensor([[1.,1.,-2.],[-2.,1.,1.],[1.,-2.,-2.]])           # edge 135°
+            edge_180 = torch.tensor([[-1.,-1.,-1.],[2.,2.,2.],[-1.,-1.,-1.]])         # edge 180°
+            edge_225 = torch.tensor([[2.,-1.,-1.],[-1.,2.,-1.],[-1.,-1.,2.]])         # edge 225°
+            edge_270 = torch.tensor([[-1.,2.,-1.],[-1.,2.,-1.],[-1.,2.,-1.]])         # edge 270°
+            edge_315 = torch.tensor([[1.,-1.,-1.],[-1.,1.,1.],[-1.,-1.,1.]])          # edge 315°
 
-            # Sobel X filter → detects vertical edges
-            sobel_x = torch.tensor(
-                [[-1,  0,  1],
-                 [-2,  0,  2],
-                 [-1,  0,  1]],
-                dtype=torch.float32
-            )
+            corner_0   = torch.tensor([[1.,1.,0.],[1.,0.,-1.],[0.,-1.,-1.]])          # corner 0°
+            corner_45  = torch.tensor([[1.,0.,1.],[0.,-1.,1.],[-1.,-1.,0.]])          # corner 45°
+            corner_90  = torch.tensor([[0.,1.,1.],[-1.,0.,1.],[-1.,-1.,0.]])          # corner 90°
+            corner_135 = torch.tensor([[1.,0.,-1.],[0.,1.,1.],[0.,-1.,-1.]])          # corner 135°
+            corner_180 = corner_0.clone()                                             # corner 180°
+            corner_225 = corner_45.clone()                                            # corner 225°
+            corner_270 = corner_90.clone()                                            # corner 270°
+            corner_315 = corner_135.clone()                                           # corner 315°
 
-            # Sobel Y filter → detects horizontal edges
-            sobel_y = torch.tensor(
-                [[-1, -2, -1],
-                 [ 0,  0,  0],
-                 [ 1,  2,  1]],
-                dtype=torch.float32
-            )
+            curve_0   = torch.tensor([[ 0.,1.,0.],[-1.,1.,-1.],[0.,-1.,0.]])          # curve 0°
+            curve_45  = torch.tensor([[ 1.,0.,-1.],[0.,1.,0.],[-1.,0.,1.]])           # curve 45°
+            curve_90  = torch.tensor([[ 0.,-1.,0.],[1.,1.,1.],[0.,-1.,0.]])           # curve 90°
+            curve_135 = torch.tensor([[-1.,0.,1.],[0.,1.,0.],[1.,0.,-1.]])            # curve 135°
+            curve_180 = torch.tensor([[ 0.,-1.,0.],[-1.,1.,-1.],[0.,1.,0.]])          # curve 180°
+            curve_225 = curve_135.clone()                                             # curve 225°
+            curve_270 = curve_90.clone()                                              # curve 270°
+            curve_315 = curve_45.clone()                                              # curve 315°
 
-            # Laplacian filter → detects corners and strong edges
-            laplacian = torch.tensor(
-                [[ 0, -1,  0],
-                 [-1,  4, -1],
-                 [ 0, -1,  0]],
-                dtype=torch.float32
-            )
+            line_0   = torch.tensor([[1.,1.,1.],[-2.,-2.,-2.],[1.,1.,1.]])            # line 0°
+            line_45  = torch.tensor([[-2.,1.,1.],[1.,-2.,1.],[1.,1.,-2.]])            # line 45°
+            line_90  = torch.tensor([[-1.,-1.,-1.],[2.,2.,2.],[-1.,-1.,-1.]])         # line 90°
+            line_135 = torch.tensor([[1.,-2.,1.],[1.,-2.,1.],[1.,-2.,1.]])            # line 135°
+            line_180 = torch.tensor([[-1.,-1.,-1.],[-2.,-2.,-2.],[-1.,-1.,-1.]])      # line 180°
+            line_225 = torch.tensor([[1.,1.,-2.],[1.,-2.,1.],[-2.,1.,1.]])            # line 225°
+            line_270 = torch.tensor([[-1.,2.,-1.],[-1.,2.,-1.],[-1.,2.,-1.]])         # line 270°
+            line_315 = torch.tensor([[1.,-1.,1.],[-1.,-2.,-1.],[1.,-1.,1.]])          # line 315°
 
-            # Sharpen filter → enhances edges and fine details
-            sharpen = torch.tensor(
-                [[ 0, -1,  0],
-                 [-1,  5, -1],
-                 [ 0, -1,  0]],
-                dtype=torch.float32
-            )
+            sobel_0   = torch.tensor([[-1.,0.,1.],[-2.,0.,2.],[-1.,0.,1.]])           # sobel 0°
+            sobel_45  = torch.tensor([[0.,-1.,-2.],[1.,0.,-1.],[2.,1.,0.]])           # sobel 45°
+            sobel_90  = torch.tensor([[1.,2.,1.],[0.,0.,0.],[-1.,-2.,-1.]])           # sobel 90°
+            sobel_135 = torch.tensor([[2.,1.,0.],[1.,0.,-1.],[0.,-1.,-2.]])           # sobel 135°
+            sobel_180 = torch.tensor([[1.,0.,-1.],[2.,0.,-2.],[1.,0.,-1.]])           # sobel 180°
+            sobel_225 = torch.tensor([[0.,1.,2.],[-1.,0.,1.],[-2.,-1.,0.]])           # sobel 225°
+            sobel_270 = torch.tensor([[-1.,-2.,-1.],[0.,0.,0.],[1.,2.,1.]])           # sobel 270°
+            sobel_315 = torch.tensor([[-2.,-1.,0.],[-1.,0.,1.],[0.,1.,2.]])           # sobel 315°
 
-            # Average filter (blur) → smooths image and removes noise
-            avg = (1 / 9) * torch.ones((3, 3), dtype=torch.float32)
+            kernels = [identity, edge_detection, sharpen, box_blur, gaussian_blur,
+                    edge_0, edge_45, edge_90, edge_135, edge_180, edge_225, edge_270, edge_315,
+                    corner_0, corner_45, corner_90, corner_135, corner_180, corner_225, corner_270, corner_315,
+                    curve_0, curve_45, curve_90, curve_135, curve_180, curve_225, curve_270, curve_315,
+                    line_0, line_45, line_90, line_135, line_180, line_225, line_270, line_315,
+                    sobel_0, sobel_45, sobel_90, sobel_135, sobel_180, sobel_225, sobel_270, sobel_315]
 
-            # Identity filter → copies the original pixel values unchanged
-            identity = torch.zeros((3, 3), dtype=torch.float32)
-            identity[1, 1] = 1.0   # middle pixel passes through unchanged
+            num_kernels = len(kernels)                                      # count number of base kernels
 
-            # We have 6 base kernels but 16 conv filters,
-            # so we will cycle through them repeatedly.
-            kernels = [sobel_x, sobel_y, laplacian, sharpen, avg, identity]
+            for i in range(out_channels):                                  # loop over each output filter
+                k2d = kernels[i % num_kernels].to(w.dtype)                 # pick 2D kernel and cast dtype
+                for c in range(in_channels):                               # assign same 2D kernel to each input channel
+                    w[i, c].copy_(k2d)                                     # copy 3x3 into w[out, in, :, :]
 
-            # Convert a single-channel 3x3 kernel into an RGB 3x3x3 kernel
-            # by repeating the same 3x3 kernel for R, G, and B channels.
-            def rgb(k):
-                return k.repeat(3, 1, 1)  # [3, 3, 3]
+            print(f"[init_conv1_static] {out_channels} filters initialized with 2D 3x3 kernels")  # log
 
-            # Assign static filters to conv1 weights for all 16 output channels
-            for i in range(16):
-                base_kernel = kernels[i % len(kernels)]
-                rgb_kernel = rgb(base_kernel)
-                w[i].copy_(rgb_kernel)
+
+
+
+
+
+
 
     # ----------------------------------------------------------
     # STATIC INITIALIZATION FOR LAYER 2
     # ----------------------------------------------------------
     def _init_conv2_static(self):
+        with torch.no_grad():                                                           # disable gradients
+            w = self.conv2.weight                                                       # conv2 weights → [32,16,3,3]
+            out_channels, in_channels, kh, kw = w.shape                                 # get shape
+            assert kh == 3 and kw == 3                                                  # expect 3x3 kernels
 
-        # Disable gradients while setting initial weights for conv2
-        with torch.no_grad():
-            # conv2.weight shape:
-            #   [32, 16, 3, 3]
-            # 32 output filters, 16 input channels, 3x3 kernels
-            w = self.conv2.weight
+            edge_h = torch.tensor([[-1.,-1.,-1.],[2.,2.,2.],[-1.,-1.,-1.]])             # horizontal edge 2D
+            edge_v = torch.tensor([[-1.,2.,-1.],[-1.,2.,-1.],[-1.,2.,-1.]])             # vertical edge 2D
+            emboss = torch.tensor([[-2.,-1.,0.],[-1.,1.,1.],[0.,1.,2.]])                # emboss 2D
+            avg = (1/9) * torch.ones((3,3))                                             # average blur 2D
+            sobel_x = torch.tensor([[-1.,0.,1.],[-2.,0.,2.],[-1.,0.,1.]])               # sobel x 2D
+            sobel_y = torch.tensor([[-1.,-2.,-1.],[0.,0.,0.],[1.,2.,1.]])               # sobel y 2D
 
-            # Simple 3x3 horizontal edge filter
-            edge_h = torch.tensor(
-                [[-1, -1, -1],
-                 [ 2,  2,  2],
-                 [-1, -1, -1]],
-                dtype=torch.float32
-            )
+            kernels = [edge_h, edge_v, emboss, avg, sobel_x, sobel_y]                   # kernel bank 2D
+            num_kernels = len(kernels)                                                  # count kernels
 
-            # Simple 3x3 vertical edge filter
-            edge_v = torch.tensor(
-                [[-1,  2, -1],
-                 [-1,  2, -1],
-                 [-1,  2, -1]],
-                dtype=torch.float32
-            )
+            for out_idx in range(out_channels):                                         # loop over 32 output filters
+                for in_idx in range(in_channels):                                       # loop over 16 input channels
+                    k = kernels[(out_idx * in_idx) % num_kernels].to(w.dtype)           # choose 2D kernel pattern
+                    w[out_idx, in_idx].copy_(k)                                         # assign 3x3 into w[out,in,:,:]
 
-            # Emboss filter → gives a raised/embossed appearance
-            emboss = torch.tensor(
-                [[-2, -1,  0],
-                 [-1,  1,  1],
-                 [  0,  1,  2]],
-                dtype=torch.float32
-            )
+            print(f"[init_conv2_static] {out_channels}x{in_channels} 2D 3x3 kernels assigned")  # log
 
-            # Average filter → slight smoothing
-            avg = (1 / 9) * torch.ones((3, 3), dtype=torch.float32)
 
-            kernels = [edge_h, edge_v, emboss, avg]
 
-            # Helper to expand a single 3x3 kernel across ALL 16 input channels
-            # Input:  k → [3, 3]
-            # Output: [16, 3, 3]
-            def full(k):
-                return k.repeat(16, 1, 1)
 
-            # Assign kernels to 32 output filters in conv2
-            for i in range(32):
-                base_kernel = kernels[i % len(kernels)]
-                w[i].copy_(full(base_kernel))
+
+
 
     # ----------------------------------------------------------
     # FORWARD PASS
@@ -492,7 +498,7 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
     #   • bias terms
     #   • normalization layers
     #
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
 
     # ============================================================
@@ -2251,23 +2257,22 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
 # ============================================================
 # DETECTION / SINGLE-IMAGE INFERENCE FUNCTION
 # ============================================================
-def detect_single_image(model, test_dataset, device, index=0):
+def detect_single_image(model, test_dataset, device, index=None):
     """
-    Loads one image from the test set (by index),
-    runs the model in eval mode, and prints:
+    Loads ONE RANDOM image from the test dataset (unless index is provided),
+    runs the model, and prints:
 
-        - True label id
-        - Predicted label id
-        - True class name
-        - Predicted class name
+        • True label ID & name
+        • Predicted label ID & name
 
-    Works for:
-        • CIFAR-10
-        • ImageFolder datasets
-        • Any custom dataset (classes detected dynamically)
+    Args:
+        model ........ the trained PyTorch CNN
+        test_dataset . a torchvision dataset (CIFAR-10, ImageFolder, etc.)
+        device ....... "cuda" or "cpu"
+        index ........ optional fixed index; if None → choose random image
 
     Returns:
-        (image_tensor, true_label, predicted_label)
+        img_tensor, true_label_id, predicted_label_id
     """
 
     # --------------------------------------------------------
@@ -2277,34 +2282,39 @@ def detect_single_image(model, test_dataset, device, index=0):
     model.eval()
 
     # --------------------------------------------------------
-    # GET CLASS NAMES FROM DATASET (AUTOMATIC)
+    # AUTO-DETECT CLASS NAMES (works for CIFAR-10 + ImageFolder)
     # --------------------------------------------------------
-    # Works for ImageFolder, CIFAR-10, and torchvision datasets
     class_names = test_dataset.classes
 
     # --------------------------------------------------------
-    # EXTRACT ONE IMAGE FROM DATASET
+    # SELECT RANDOM INDEX IF NONE PROVIDED
+    # --------------------------------------------------------
+    if index is None:
+        index = random.randint(0, len(test_dataset) - 1)
+
+    # --------------------------------------------------------
+    # LOAD IMAGE + TRUE LABEL
     # --------------------------------------------------------
     img, true_label = test_dataset[index]
 
-    # Add batch dimension → [1, C, H, W]
+    # Add batch dimension → shape becomes [1, C, H, W]
     img_input = img.unsqueeze(0).to(device)
 
     # --------------------------------------------------------
-    # MODEL INFERENCE (NO GRADIENTS)
+    # FORWARD PASS (NO GRADIENT TRACKING)
     # --------------------------------------------------------
     with torch.no_grad():
         logits = model(img_input)
         pred_label = logits.argmax(1).item()
 
     # --------------------------------------------------------
-    # MAP LABEL ID → CLASS NAME
+    # CONVERT LABEL IDS → HUMAN-READABLE NAMES
     # --------------------------------------------------------
     true_name = class_names[true_label]
     pred_name = class_names[pred_label]
 
     # --------------------------------------------------------
-    # DISPLAY RESULT
+    # PRINT RESULTS
     # --------------------------------------------------------
     print("--------------------------------------------------")
     print(f"DETECTION RESULT FOR TEST IMAGE INDEX: {index}")
@@ -2330,7 +2340,7 @@ def main():
     # PATH TO SAVE / LOAD MODEL WEIGHTS
     # --------------------------------------------------------
     # UPDATED: use a different file name so you do not overwrite CIFAR-10 model
-    MODEL_PATH = "dynamic_cnn_mydata.pth"
+    #MODEL_PATH = "dynamic_cnn_mydata.pth"
 
     # --------------------------------------------------------
     # DATA TRANSFORMS FOR YOUR 128x128 DATA
@@ -2524,31 +2534,58 @@ def main():
     # --------------------------------------------------------
     # LOAD OR TRAIN MODEL
     # --------------------------------------------------------
-    if os.path.exists(MODEL_PATH):
-        print(f"Loading trained dynamic model from: {MODEL_PATH}")
-        state_dict = torch.load(MODEL_PATH, map_location=device)
-        model.load_state_dict(state_dict)
-    else:
-        print("No saved dynamic model found. Training a new model...")
-        model = train_model(
-            model,
-            train_loader,
-            device,
-            num_epochs=2,
-            lr=1e-3
-        )
-        print(f"Saving trained dynamic model to: {MODEL_PATH}")
-        torch.save(model.state_dict(), MODEL_PATH)
+    # ------------------------------------------------------------
+# LOAD MODEL IF IT EXISTS
+# ------------------------------------------------------------
+if os.path.exists(model_filename):
+    print(f"Loading trained weights from: {model_filename}")
+    state_dict = torch.load(model_filename, map_location=device)   # load weights
+    model.load_state_dict(state_dict)                              # restore model
+else:
+    print("No saved model found. Training a new model...")
+    model = train_model(model, train_loader, device, num_epochs=NUM_EPOCHS, lr=1e-3)
+    print(f"Saving trained model to: {model_filename}")
+    torch.save(model.state_dict(), model_filename)
 
-    # --------------------------------------------------------
-    # DETECTION: RUN MODEL ON A SINGLE TEST IMAGE
-    # --------------------------------------------------------
-    # detect_single_image is assumed to take:
-    #   (model, dataset, device, index)
-    # This still works the same with ImageFolder:
-    #   test_dataset[index] → (PIL-transformed image tensor, label)
-    # --------------------------------------------------------
-    detect_single_image(model, test_dataset, device, index=0)
+# ------------------------------------------------------------
+# INTERACTIVE LOOP FOR USER-DRIVEN DETECTION
+# ------------------------------------------------------------
+print("\n--------------------------------------------------")
+print("Interactive Image Detection Mode")
+print("Press:")
+print("   d  → detect on an image index")
+print("   e  → exit program")
+print("--------------------------------------------------\n")
+
+while True:
+    user_input = input("Enter command (d = detect, e = exit): ").strip().lower()
+
+    if user_input == 'e':
+        print("Exiting program. Goodbye!")
+        break
+
+    elif user_input == 'd':
+        # Ask user for the test image index
+        idx_str = input(f"Enter image index (0 – {len(test_dataset)-1}): ").strip()
+
+        # Validate the index
+        if not idx_str.isdigit():
+            print("❌ Invalid index. Must be a number.")
+            continue
+
+        idx = int(idx_str)
+
+        if idx < 0 or idx >= len(test_dataset):
+            print("❌ Index out of range. Try again.")
+            continue
+
+        # Run detection
+        print(f"\nRunning detection on test image index {idx} ...")
+        detect_single_image(model, test_dataset, device, index=idx)
+
+    else:
+        print("❌ Unknown command. Use 'd' for detect or 'e' to exit.")
+
 
 
 # ------------------------------------------------------------

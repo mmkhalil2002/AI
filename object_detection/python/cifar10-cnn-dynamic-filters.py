@@ -2,8 +2,38 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import time  # ⏱ Used to measure how long each epoch takes
+import random
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
+MODEL_PATH = "../../../"
+MODEL_FILENAME = "cifar10-cnn-dynamic-filters-model-file"
+DATA_PATH = "../../../cifar10_data"
+IMG_WIDTH, IMG_HEIGHT = 32, 32  # Based on training dataset
+CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence for valid detections
+FILTER_WIDTH = 3
+FILTER_HEIGHT = 3
+BATCH_SIZE = 64
+NUM_EPOCHS = 200
+LEARNING_RATE = 0.001
+
+
+# ======================================================================
+# GLOBAL DEBUG SWITCH
+# ======================================================================
+DEBUG_FLAG = True   # ✅ Change to False to disable debug logs
+
+
+# ======================================================================
+# DEBUG PRINT HELPER
+# ======================================================================
+def debug_print(*args, **kwargs):
+    """
+    Prints only when DEBUG_FLAG is enabled.
+    Works exactly like print().
+    """
+    if DEBUG_FLAG:
+        print(*args, **kwargs)
 
 
 # ============================================================
@@ -301,7 +331,7 @@ class DynamicLearnableCNN(nn.Module):
 #   No conditional logic or special handling is needed in the training loop.
 #   The same code trains both static and dynamic filter networks correctly.
 
-import time  # ⏱ Used to measure how long each epoch takes
+#import time  # ⏱ Used to measure how long each epoch takes
 
 
 def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
@@ -373,7 +403,7 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
     #   • bias terms
     #   • normalization layers
     #
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
 
     # ------------------------------------------------------------
@@ -872,27 +902,28 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
 
 
 
+
 # ============================================================
 # DETECTION / SINGLE-IMAGE INFERENCE FUNCTION
 # ============================================================
-def detect_single_image(model, test_dataset, device, index=0):
+def detect_single_image(model, test_dataset, device, index=None):
     """
-    Loads one image from the test set (by index),
-    runs the model in eval mode, and prints:
+    Loads ONE RANDOM image from the test dataset (unless index is provided),
+    runs the model, and prints:
 
-        - True label id
-        - Predicted label id
-        - True class name
-        - Predicted class name
+        • True label ID & name
+        • Predicted label ID & name
 
-    Works with:
-        • CIFAR-10
-        • ImageFolder
-        • Custom datasets (labels auto-detected)
+    Args:
+        model ........ the trained PyTorch CNN
+        test_dataset . a torchvision dataset (CIFAR-10, ImageFolder, etc.)
+        device ....... "cuda" or "cpu"
+        index ........ optional fixed index; if None → choose random image
 
     Returns:
-        (image_tensor, true_label, predicted_label)
+        img_tensor, true_label_id, predicted_label_id
     """
+
     # --------------------------------------------------------
     # MOVE MODEL TO DEVICE AND SWITCH TO EVAL MODE
     # --------------------------------------------------------
@@ -900,34 +931,39 @@ def detect_single_image(model, test_dataset, device, index=0):
     model.eval()
 
     # --------------------------------------------------------
-    # READ CLASS NAMES FROM THE DATASET (AUTOMATIC)
+    # AUTO-DETECT CLASS NAMES (works for CIFAR-10 + ImageFolder)
     # --------------------------------------------------------
-    # Torchvision exposes class names via dataset.classes
     class_names = test_dataset.classes
 
     # --------------------------------------------------------
-    # EXTRACT ONE IMAGE FROM DATASET
+    # SELECT RANDOM INDEX IF NONE PROVIDED
+    # --------------------------------------------------------
+    if index is None:
+        index = random.randint(0, len(test_dataset) - 1)
+
+    # --------------------------------------------------------
+    # LOAD IMAGE + TRUE LABEL
     # --------------------------------------------------------
     img, true_label = test_dataset[index]
-    
-    # Add batch dimension → [1, C, H, W]
+
+    # Add batch dimension → shape becomes [1, C, H, W]
     img_input = img.unsqueeze(0).to(device)
 
     # --------------------------------------------------------
-    # MODEL INFERENCE (NO GRADIENTS)
+    # FORWARD PASS (NO GRADIENT TRACKING)
     # --------------------------------------------------------
     with torch.no_grad():
         logits = model(img_input)
         pred_label = logits.argmax(1).item()
 
     # --------------------------------------------------------
-    # LABEL ID → CLASS NAME
+    # CONVERT LABEL IDS → HUMAN-READABLE NAMES
     # --------------------------------------------------------
     true_name = class_names[true_label]
     pred_name = class_names[pred_label]
 
     # --------------------------------------------------------
-    # DISPLAY RESULT
+    # PRINT RESULTS
     # --------------------------------------------------------
     print("--------------------------------------------------")
     print(f"DETECTION RESULT FOR TEST IMAGE INDEX: {index}")
@@ -936,7 +972,6 @@ def detect_single_image(model, test_dataset, device, index=0):
     print("--------------------------------------------------")
 
     return img, true_label, pred_label
-
 
 
 # ============================================================
@@ -953,7 +988,7 @@ def main():
     # --------------------------------------------------------
     # PATH TO SAVE / LOAD MODEL WEIGHTS
     # --------------------------------------------------------
-    MODEL_PATH = "dynamic_cnn_cifar10.pth"
+    #MODEL_PATH = "dynamic_cnn_cifar10.pth"
 
     # --------------------------------------------------------
     # CIFAR-10 DATA TRANSFORMS
@@ -964,18 +999,21 @@ def main():
                              std=[0.5, 0.5, 0.5])
     ])
 
+    
+    model_path = os.path.join(MODEL_PATH, "data")
+    print(model_path)   # → /home/user/myproject/data
     # --------------------------------------------------------
     # LOAD CIFAR-10 TRAIN AND TEST SETS
     # --------------------------------------------------------
     train_dataset = datasets.CIFAR10(
-        root="./data",
+        root=model_path,
         train=True,
         download=True,
         transform=transform
     )
 
     test_dataset = datasets.CIFAR10(
-        root="./data",
+        root=model_path,
         train=False,
         download=True,
         transform=transform
@@ -983,7 +1021,7 @@ def main():
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=64,
+        batch_size=BATCH_SIZE,
         shuffle=True,
         num_workers=2
     )
@@ -993,24 +1031,65 @@ def main():
     # --------------------------------------------------------
     model = DynamicLearnableCNN(num_classes=10)
 
-    # --------------------------------------------------------
+# --------------------------------------------------------
     # LOAD OR TRAIN MODEL
     # --------------------------------------------------------
-    if os.path.exists(MODEL_PATH):
-        print(f"Loading trained dynamic model from: {MODEL_PATH}")
-        state_dict = torch.load(MODEL_PATH, map_location=device)
-        model.load_state_dict(state_dict)
-    else:
-        print("No saved dynamic model found. Training a new model...")
-        model = train_model(model, train_loader, device,
-                            num_epochs=2, lr=1e-3)
-        print(f"Saving trained dynamic model to: {MODEL_PATH}")
-        torch.save(model.state_dict(), MODEL_PATH)
+    model_filename = os.path.join(MODEL_PATH, MODEL_FILENAME)
 
-    # --------------------------------------------------------
-    # DETECTION: RUN MODEL ON A SINGLE TEST IMAGE
-    # --------------------------------------------------------
-    detect_single_image(model, test_dataset, device, index=0)
+    # ------------------------------------------------------------
+    # LOAD MODEL IF IT EXISTS
+    # ------------------------------------------------------------
+  # ------------------------------------------------------------
+# LOAD MODEL IF IT EXISTS
+# ------------------------------------------------------------
+if os.path.exists(model_filename):
+    print(f"Loading trained weights from: {model_filename}")
+    state_dict = torch.load(model_filename, map_location=device)   # load weights
+    model.load_state_dict(state_dict)                              # restore model
+else:
+    print("No saved model found. Training a new model...")
+    model = train_model(model, train_loader, device, num_epochs=NUM_EPOCHS, lr=1e-3)
+    print(f"Saving trained model to: {model_filename}")
+    torch.save(model.state_dict(), model_filename)
+
+# ------------------------------------------------------------
+# INTERACTIVE LOOP FOR USER-DRIVEN DETECTION
+# ------------------------------------------------------------
+print("\n--------------------------------------------------")
+print("Interactive Image Detection Mode")
+print("Press:")
+print("   d  → detect on an image index")
+print("   e  → exit program")
+print("--------------------------------------------------\n")
+
+while True:
+    user_input = input("Enter command (d = detect, e = exit): ").strip().lower()
+
+    if user_input == 'e':
+        print("Exiting program. Goodbye!")
+        break
+
+    elif user_input == 'd':
+        # Ask user for the test image index
+        idx_str = input(f"Enter image index (0 – {len(test_dataset)-1}): ").strip()
+
+        # Validate the index
+        if not idx_str.isdigit():
+            print("❌ Invalid index. Must be a number.")
+            continue
+
+        idx = int(idx_str)
+
+        if idx < 0 or idx >= len(test_dataset):
+            print("❌ Index out of range. Try again.")
+            continue
+
+        # Run detection
+        print(f"\nRunning detection on test image index {idx} ...")
+        detect_single_image(model, test_dataset, device, index=idx)
+
+    else:
+        print("❌ Unknown command. Use 'd' for detect or 'e' to exit.")
 
 
 # ------------------------------------------------------------
