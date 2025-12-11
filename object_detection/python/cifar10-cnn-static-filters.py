@@ -1133,61 +1133,62 @@ def main():
     # --------------------------------------------------------
     # LOAD OR TRAIN MODEL
     # --------------------------------------------------------
+   # --------------------------------------------------------
+    # LOAD OR TRAIN MODEL
+    # --------------------------------------------------------
     model_filename = os.path.join(MODEL_PATH, MODEL_FILENAME)
-    model_filename = os.path.join(MODEL_PATH, MODEL_FILENAME)
+   
+    # ------------------------------------------------------------
+    # LOAD MODEL IF IT EXISTS
+    # ------------------------------------------------------------
+    if os.path.exists(model_filename):
+        print(f"Loading trained weights from: {model_filename}")
+        state_dict = torch.load(model_filename, map_location=device)   # load weights
+        model.load_state_dict(state_dict)                              # restore model
+    else:
+        print("No saved model found. Training a new model...")
+        model = train_model(model, train_loader, device, num_epochs=NUM_EPOCHS, lr=1e-3)
+        print(f"Saving trained model to: {model_filename}")
+        torch.save(model.state_dict(), model_filename)
 
     # ------------------------------------------------------------
-# LOAD MODEL IF IT EXISTS
-# ------------------------------------------------------------
-if os.path.exists(model_filename):
-    print(f"Loading trained weights from: {model_filename}")
-    state_dict = torch.load(model_filename, map_location=device)   # load weights
-    model.load_state_dict(state_dict)                              # restore model
-else:
-    print("No saved model found. Training a new model...")
-    model = train_model(model, train_loader, device, num_epochs=NUM_EPOCHS, lr=1e-3)
-    print(f"Saving trained model to: {model_filename}")
-    torch.save(model.state_dict(), model_filename)
+    # INTERACTIVE LOOP FOR USER-DRIVEN DETECTION
+    # ------------------------------------------------------------
+    print("\n--------------------------------------------------")
+    print("Interactive Image Detection Mode")
+    print("Press:")
+    print("   d  → detect on an image index")
+    print("   e  → exit program")
+    print("--------------------------------------------------\n")
 
-# ------------------------------------------------------------
-# INTERACTIVE LOOP FOR USER-DRIVEN DETECTION
-# ------------------------------------------------------------
-print("\n--------------------------------------------------")
-print("Interactive Image Detection Mode")
-print("Press:")
-print("   d  → detect on an image index")
-print("   e  → exit program")
-print("--------------------------------------------------\n")
+    while True:
+        user_input = input("Enter command (d = detect, e = exit): ").strip().lower()
 
-while True:
-    user_input = input("Enter command (d = detect, e = exit): ").strip().lower()
+        if user_input == 'e':
+            print("Exiting program. Goodbye!")
+            break
 
-    if user_input == 'e':
-        print("Exiting program. Goodbye!")
-        break
+        elif user_input == 'd':
+            # Ask user for the test image index
+            idx_str = input(f"Enter image index (0 – {len(test_dataset)-1}): ").strip()
 
-    elif user_input == 'd':
-        # Ask user for the test image index
-        idx_str = input(f"Enter image index (0 – {len(test_dataset)-1}): ").strip()
+            # Validate the index
+            if not idx_str.isdigit():
+                print("❌ Invalid index. Must be a number.")
+                continue
 
-        # Validate the index
-        if not idx_str.isdigit():
-            print("❌ Invalid index. Must be a number.")
-            continue
+            idx = int(idx_str)
 
-        idx = int(idx_str)
+            if idx < 0 or idx >= len(test_dataset):
+                print("❌ Index out of range. Try again.")
+                continue
 
-        if idx < 0 or idx >= len(test_dataset):
-            print("❌ Index out of range. Try again.")
-            continue
+            # Run detection
+            print(f"\nRunning detection on test image index {idx} ...")
+            detect_single_image(model, test_dataset, device, index=idx)
 
-        # Run detection
-        print(f"\nRunning detection on test image index {idx} ...")
-        detect_single_image(model, test_dataset, device, index=idx)
-
-    else:
-        print("❌ Unknown command. Use 'd' for detect or 'e' to exit.")
-
+        else:
+            print("❌ Unknown command. Use 'd' for detect or 'e' to exit.")
 
 
 # ------------------------------------------------------------
