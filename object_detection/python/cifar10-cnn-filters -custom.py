@@ -16,7 +16,7 @@ CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence for valid detections
 FILTER_WIDTH = 3
 FILTER_HEIGHT = 3
 BATCH_SIZE = 64
-NUM_EPOCHS = 200
+NUM_EPOCHS = 3000
 LEARNING_RATE = 0.001
 STATIC_FILTERS = True
 # ============================================================
@@ -205,7 +205,7 @@ class StaticInitLearnableCNN(nn.Module):
         self.fc = nn.Linear(32 * 8 * 8, num_classes)
 
         # Static initialization (starting point only)
-        if (STATIC_FILTERS)
+        if (STATIC_FILTERS):
             self._init_conv1_static()
             self._init_conv2_static()
 
