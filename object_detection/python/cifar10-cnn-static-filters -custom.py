@@ -216,72 +216,345 @@ class StaticInitLearnableCNN(nn.Module):
             out_channels, in_channels, kh, kw = w.shape                    # get conv1 shape
             assert in_channels == 3 and kh == 3 and kw == 3                # expect RGB input and 3x3 kernels
 
-            identity = torch.tensor([[0.,0.,0.],[0.,1.,0.],[0.,0.,0.]])    # identity filter 2D
-            edge_detection = torch.tensor([[0.,-1.,0.],[-1.,4.,-1.],[0.,-1.,0.]])   # laplacian edge 2D
-            sharpen = torch.tensor([[0.,-1.,0.],[-1.,5.,-1.],[0.,-1.,0.]]) # sharpen 2D
-            box_blur = (1/9) * torch.ones((3,3))                           # box blur 2D
-            gaussian_blur = (1/16) * torch.tensor([[1.,2.,1.],[2.,4.,2.],[1.,2.,1.]])  # gaussian 2D
+            # ------------------------------------------------------------------
+            # BASIC FILTERS (IDENTITY, SHARPENING, SMOOTHING)
+            #
+            # These filters detect extremely simple local patterns:
+            #   • identity: keeps pixels unchanged (baseline response)
+            #   • edge_detection (Laplacian): strong center-edge contrast extractor
+            #   • sharpen: highlights fine details and texture
+            #   • box_blur: smooths noise uniformly
+            #   • gaussian_blur: smoother blur preserving structure better
+            #
+            # These are fundamental low-level feature detectors.
+            # ------------------------------------------------------------------
 
-            edge_0   = torch.tensor([[ 1.,1.,1.],[-2.,-2.,-2.],[ 1.,1.,1.]])          # edge 0°
-            edge_45  = torch.tensor([[ 1.,-2.,1.],[1.,-2.,1.],[1.,-2.,1.]])           # edge 45°
-            edge_90  = torch.tensor([[-2.,1.,1.],[1.,-2.,1.],[1.,1.,-2.]])            # edge 90°
-            edge_135 = torch.tensor([[1.,1.,-2.],[-2.,1.,1.],[1.,-2.,-2.]])           # edge 135°
-            edge_180 = torch.tensor([[-1.,-1.,-1.],[2.,2.,2.],[-1.,-1.,-1.]])         # edge 180°
-            edge_225 = torch.tensor([[2.,-1.,-1.],[-1.,2.,-1.],[-1.,-1.,2.]])         # edge 225°
-            edge_270 = torch.tensor([[-1.,2.,-1.],[-1.,2.,-1.],[-1.,2.,-1.]])         # edge 270°
-            edge_315 = torch.tensor([[1.,-1.,-1.],[-1.,1.,1.],[-1.,-1.,1.]])          # edge 315°
+            identity = torch.tensor([
+                [0., 0., 0.],
+                [0., 1., 0.],
+                [0., 0., 0.],
+            ])    # Identity → preserves pixel value; detects no feature (baseline)
 
-            corner_0   = torch.tensor([[1.,1.,0.],[1.,0.,-1.],[0.,-1.,-1.]])          # corner 0°
-            corner_45  = torch.tensor([[1.,0.,1.],[0.,-1.,1.],[-1.,-1.,0.]])          # corner 45°
-            corner_90  = torch.tensor([[0.,1.,1.],[-1.,0.,1.],[-1.,-1.,0.]])          # corner 90°
-            corner_135 = torch.tensor([[1.,0.,-1.],[0.,1.,1.],[0.,-1.,-1.]])          # corner 135°
-            corner_180 = corner_0.clone()                                             # corner 180°
-            corner_225 = corner_45.clone()                                            # corner 225°
-            corner_270 = corner_90.clone()                                            # corner 270°
-            corner_315 = corner_135.clone()                                           # corner 315°
+            edge_detection = torch.tensor([
+                [ 0., -1.,  0.],
+                [-1.,  4., -1.],
+                [ 0., -1.,  0.],
+            ])     # Laplacian edge → detects edges from all directions equally
 
-            curve_0   = torch.tensor([[ 0.,1.,0.],[-1.,1.,-1.],[0.,-1.,0.]])          # curve 0°
-            curve_45  = torch.tensor([[ 1.,0.,-1.],[0.,1.,0.],[-1.,0.,1.]])           # curve 45°
-            curve_90  = torch.tensor([[ 0.,-1.,0.],[1.,1.,1.],[0.,-1.,0.]])           # curve 90°
-            curve_135 = torch.tensor([[-1.,0.,1.],[0.,1.,0.],[1.,0.,-1.]])            # curve 135°
-            curve_180 = torch.tensor([[ 0.,-1.,0.],[-1.,1.,-1.],[0.,1.,0.]])          # curve 180°
-            curve_225 = curve_135.clone()                                             # curve 225°
-            curve_270 = curve_90.clone()                                              # curve 270°
-            curve_315 = curve_45.clone()                                              # curve 315°
+            sharpen = torch.tensor([
+                [ 0., -1.,  0.],
+                [-1.,  5., -1.],
+                [ 0., -1.,  0.],
+            ])      # Sharpens fine details and texture; enhances edges
 
-            line_0   = torch.tensor([[1.,1.,1.],[-2.,-2.,-2.],[1.,1.,1.]])            # line 0°
-            line_45  = torch.tensor([[-2.,1.,1.],[1.,-2.,1.],[1.,1.,-2.]])            # line 45°
-            line_90  = torch.tensor([[-1.,-1.,-1.],[2.,2.,2.],[-1.,-1.,-1.]])         # line 90°
-            line_135 = torch.tensor([[1.,-2.,1.],[1.,-2.,1.],[1.,-2.,1.]])            # line 135°
-            line_180 = torch.tensor([[-1.,-1.,-1.],[-2.,-2.,-2.],[-1.,-1.,-1.]])      # line 180°
-            line_225 = torch.tensor([[1.,1.,-2.],[1.,-2.,1.],[-2.,1.,1.]])            # line 225°
-            line_270 = torch.tensor([[-1.,2.,-1.],[-1.,2.,-1.],[-1.,2.,-1.]])         # line 270°
-            line_315 = torch.tensor([[1.,-1.,1.],[-1.,-2.,-1.],[1.,-1.,1.]])          # line 315°
+            box_blur = (1/9) * torch.ones((3, 3))   # Uniform blur → reduces noise
 
-            sobel_0   = torch.tensor([[-1.,0.,1.],[-2.,0.,2.],[-1.,0.,1.]])           # sobel 0°
-            sobel_45  = torch.tensor([[0.,-1.,-2.],[1.,0.,-1.],[2.,1.,0.]])           # sobel 45°
-            sobel_90  = torch.tensor([[1.,2.,1.],[0.,0.,0.],[-1.,-2.,-1.]])           # sobel 90°
-            sobel_135 = torch.tensor([[2.,1.,0.],[1.,0.,-1.],[0.,-1.,-2.]])           # sobel 135°
-            sobel_180 = torch.tensor([[1.,0.,-1.],[2.,0.,-2.],[1.,0.,-1.]])           # sobel 180°
-            sobel_225 = torch.tensor([[0.,1.,2.],[-1.,0.,1.],[-2.,-1.,0.]])           # sobel 225°
-            sobel_270 = torch.tensor([[-1.,-2.,-1.],[0.,0.,0.],[1.,2.,1.]])           # sobel 270°
-            sobel_315 = torch.tensor([[-2.,-1.,0.],[-1.,0.,1.],[0.,1.,2.]])           # sobel 315°
+            gaussian_blur = (1/16) * torch.tensor([
+                [1., 2., 1.],
+                [2., 4., 2.],
+                [1., 2., 1.],
+            ])  # Gaussian blur → smooths but preserves structure gracefully
 
-            kernels = [identity, edge_detection, sharpen, box_blur, gaussian_blur,
-                    edge_0, edge_45, edge_90, edge_135, edge_180, edge_225, edge_270, edge_315,
-                    corner_0, corner_45, corner_90, corner_135, corner_180, corner_225, corner_270, corner_315,
-                    curve_0, curve_45, curve_90, curve_135, curve_180, curve_225, curve_270, curve_315,
-                    line_0, line_45, line_90, line_135, line_180, line_225, line_270, line_315,
-                    sobel_0, sobel_45, sobel_90, sobel_135, sobel_180, sobel_225, sobel_270, sobel_315]
+
+            # ------------------------------------------------------------------
+            # EDGE FILTERS (MULTIPLE ORIENTATIONS EVERY 45°)
+            #
+            # These detect straight edges in specific directions.
+            # Early CNN layers rely heavily on directional edges.
+            #
+            # edge_0:     horizontal edges
+            # edge_45:    diagonal edge (45°)
+            # edge_90:    vertical edges
+            # edge_135:   diagonal (135°)
+            # ...
+            #
+            # Having 8 orientations helps the CNN capture global geometry.
+            # ------------------------------------------------------------------
+
+            edge_0 = torch.tensor([
+                [ 1.,  1.,  1.],
+                [-2., -2., -2.],
+                [ 1.,  1.,  1.],
+            ])          # horizontal edges (top vs bottom contrast)
+
+            edge_45 = torch.tensor([
+                [ 1., -2.,  1.],
+                [ 1., -2.,  1.],
+                [ 1., -2.,  1.],
+            ])           # 45° edges (diagonal)
+
+            edge_90 = torch.tensor([
+                [-2.,  1.,  1.],
+                [ 1., -2.,  1.],
+                [ 1.,  1., -2.],
+            ])            # vertical edges (left vs right contrast)
+
+            edge_135 = torch.tensor([
+                [ 1.,  1., -2.],
+                [-2.,  1.,  1.],
+                [ 1., -2., -2.],
+            ])           # 135° diagonal edges
+
+            edge_180 = torch.tensor([
+                [-1., -1., -1.],
+                [ 2.,  2.,  2.],
+                [-1., -1., -1.],
+            ])         # horizontal edges reversed orientation
+
+            edge_225 = torch.tensor([
+                [ 2., -1., -1.],
+                [-1.,  2., -1.],
+                [-1., -1.,  2.],
+            ])         # diagonal 225° edge
+
+            edge_270 = torch.tensor([
+                [-1.,  2., -1.],
+                [-1.,  2., -1.],
+                [-1.,  2., -1.],
+            ])         # vertical edges (reverse orientation)
+
+            edge_315 = torch.tensor([
+                [ 1., -1., -1.],
+                [-1.,  1.,  1.],
+                [-1., -1.,  1.],
+            ])          # diagonal 315° edge
+
+
+            # ------------------------------------------------------------------
+            # CORNER DETECTION FILTERS
+            #
+            # Corners are critical primitives for shape recognition.
+            # A corner is "two edges meeting", so these filters detect L-shapes.
+            #
+            # Rotated versions detect corners in all orientations.
+            # ------------------------------------------------------------------
+
+            corner_0 = torch.tensor([
+                [ 1.,  1.,  0.],
+                [ 1.,  0., -1.],
+                [ 0., -1., -1.],
+            ])          # corner opening upward-right
+
+            corner_45 = torch.tensor([
+                [ 1.,  0.,  1.],
+                [ 0., -1.,  1.],
+                [-1., -1.,  0.],
+            ])          # corner opening upward-left
+
+            corner_90 = torch.tensor([
+                [ 0.,  1.,  1.],
+                [-1.,  0.,  1.],
+                [-1., -1.,  0.],
+            ])          # corner opening left-down
+
+            corner_135 = torch.tensor([
+                [ 1.,  0., -1.],
+                [ 0.,  1.,  1.],
+                [ 0., -1., -1.],
+            ])          # corner opening right-down
+
+            corner_180 = corner_0.clone()    
+            corner_225 = corner_45.clone()   
+            corner_270 = corner_90.clone()   
+            corner_315 = corner_135.clone()  
+
+
+            # ------------------------------------------------------------------
+            # CURVE DETECTION FILTERS
+            #
+            # Detect small curved structures, arcs, rounded shapes.
+            # Useful for detecting object silhouettes, digits, animals, etc.
+            #
+            # Each rotation detects curves bending in a different direction.
+            # ------------------------------------------------------------------
+
+            curve_0 = torch.tensor([
+                [ 0.,  1.,  0.],
+                [-1.,  1., -1.],
+                [ 0., -1.,  0.],
+            ])          # curve bending upward
+
+            curve_45 = torch.tensor([
+                [ 1.,  0., -1.],
+                [ 0.,  1.,  0.],
+                [-1.,  0.,  1.],
+            ])           # curve bending top-left to bottom-right
+
+            curve_90 = torch.tensor([
+                [ 0., -1.,  0.],
+                [ 1.,  1.,  1.],
+                [ 0., -1.,  0.],
+            ])          # vertical "bulge"
+
+            curve_135 = torch.tensor([
+                [-1.,  0.,  1.],
+                [ 0.,  1.,  0.],
+                [ 1.,  0., -1.],
+            ])          # curve bending bottom-left to top-right
+
+            curve_180 = torch.tensor([
+                [ 0., -1.,  0.],
+                [-1.,  1., -1.],
+                [ 0.,  1.,  0.],
+            ])          # curve bending downward
+
+            curve_225 = curve_135.clone()
+            curve_270 = curve_90.clone()
+            curve_315 = curve_45.clone()
+
+
+            # ------------------------------------------------------------------
+            # LINE DETECTION FILTERS
+            #
+            # These detect long straight lines of different orientations.
+            # Lines = stronger than edges because they extend across the kernel.
+            #
+            # Helps capture object boundaries & global geometry structure.
+            # ------------------------------------------------------------------
+
+            line_0 = torch.tensor([
+                [ 1.,  1.,  1.],
+                [-2., -2., -2.],
+                [ 1.,  1.,  1.],
+            ])            # horizontal line
+
+            line_45 = torch.tensor([
+                [-2.,  1.,  1.],
+                [ 1., -2.,  1.],
+                [ 1.,  1., -2.],
+            ])            # 45° diagonal line
+
+            line_90 = torch.tensor([
+                [-1., -1., -1.],
+                [ 2.,  2.,  2.],
+                [-1., -1., -1.],
+            ])         # vertical line
+
+            line_135 = torch.tensor([
+                [ 1., -2.,  1.],
+                [ 1., -2.,  1.],
+                [ 1., -2.,  1.],
+            ])          # 135° diagonal line
+
+            line_180 = torch.tensor([
+                [-1., -1., -1.],
+                [-2., -2., -2.],
+                [-1., -1., -1.],
+            ])      # reversed horizontal line
+
+            line_225 = torch.tensor([
+                [ 1.,  1., -2.],
+                [ 1., -2.,  1.],
+                [-2.,  1.,  1.],
+            ])      # diagonal variant
+
+            line_270 = torch.tensor([
+                [-1.,  2., -1.],
+                [-1.,  2., -1.],
+                [-1.,  2., -1.],
+            ])      # reversed vertical line
+
+            line_315 = torch.tensor([
+                [ 1., -1.,  1.],
+                [-1., -2., -1.],
+                [ 1., -1.,  1.],
+            ])      # diagonal 315°
+
+
+            # ------------------------------------------------------------------
+            # SOBEL FILTERS — GRADIENT MAGNITUDE IN SPECIFIC DIRECTIONS
+            #
+            # Sobel filters compute approximate derivatives.
+            #
+            # sobel_0:   detect vertical edges (dx)
+            # sobel_90:  detect horizontal edges (dy)
+            #
+            # Rotated Sobels capture gradients at 45° increments.
+            # ------------------------------------------------------------------
+
+            sobel_0 = torch.tensor([
+                [-1.,  0.,  1.],
+                [-2.,  0.,  2.],
+                [-1.,  0.,  1.],
+            ])           # gradient along x-axis
+
+            sobel_45 = torch.tensor([
+                [ 0., -1., -2.],
+                [ 1.,  0., -1.],
+                [ 2.,  1.,  0.],
+            ])           # diagonal gradient
+
+            sobel_90 = torch.tensor([
+                [ 1.,  2.,  1.],
+                [ 0.,  0.,  0.],
+                [-1., -2., -1.],
+            ])           # gradient along y-axis
+
+            sobel_135 = torch.tensor([
+                [ 2.,  1.,  0.],
+                [ 1.,  0., -1.],
+                [ 0., -1., -2.],
+            ])          # 135° gradient
+
+            sobel_180 = torch.tensor([
+                [ 1.,  0., -1.],
+                [ 2.,  0., -2.],
+                [ 1.,  0., -1.],
+            ])          # reverse x-gradient
+
+            sobel_225 = torch.tensor([
+                [ 0.,  1.,  2.],
+                [-1.,  0.,  1.],
+                [-2., -1.,  0.],
+            ])          # diagonal gradient
+
+            sobel_270 = torch.tensor([
+                [-1., -2., -1.],
+                [ 0.,  0.,  0.],
+                [ 1.,  2.,  1.],
+            ])          # reverse y-gradient
+
+            sobel_315 = torch.tensor([
+                [-2., -1.,  0.],
+                [-1.,  0.,  1.],
+                [ 0.,  1.,  2.],
+            ])          # 315° gradient
+
+
+            # ------------------------------------------------------------------
+            # COLLECT ALL KERNELS
+            # ------------------------------------------------------------------
+            kernels = [
+                identity, edge_detection, sharpen, box_blur, gaussian_blur,
+                edge_0, edge_45, edge_90, edge_135, edge_180, edge_225, edge_270, edge_315,
+                corner_0, corner_45, corner_90, corner_135, corner_180, corner_225, corner_270, corner_315,
+                curve_0, curve_45, curve_90, curve_135, curve_180, curve_225, curve_270, curve_315,
+                line_0, line_45, line_90, line_135, line_180, line_225, line_270, line_315,
+                sobel_0, sobel_45, sobel_90, sobel_135, sobel_180, sobel_225, sobel_270, sobel_315,
+            ]
 
             num_kernels = len(kernels)                                      # count number of base kernels
 
+            # ------------------------------------------------------------------
+            # ASSIGN STATIC KERNELS → conv1 WEIGHTS
+            #
+            # conv1 has out_channels filters (e.g., 16 or 32).
+            # If out_channels > number of kernels, we repeat them in order.
+            #
+            # This guarantees:
+            #   • conv1 sees edges, corners, lines, curves, gradients instantly
+            #   • training becomes easier (better inductive bias)
+            #   • the CNN behaves like a hybrid handcrafted + learned feature extractor
+            # ------------------------------------------------------------------
+
             for i in range(out_channels):                                  # loop over each output filter
                 k2d = kernels[i % num_kernels].to(w.dtype)                 # pick 2D kernel and cast dtype
-                for c in range(in_channels):                               # assign same 2D kernel to each input channel
-                    w[i, c].copy_(k2d)                                     # copy 3x3 into w[out, in, :, :]
+                for c in range(in_channels):                               # assign same 3x3 kernel to each RGB channel
+                    w[i, c].copy_(k2d)                                     # write into conv1 weight tensor
 
-            print(f"[init_conv1_static] {out_channels} filters initialized with 2D 3x3 kernels")  # log
+            print(f"[init_conv1_static] {out_channels} filters initialized with 2D 3x3 kernels")
+
+
 
 
 
@@ -294,27 +567,100 @@ class StaticInitLearnableCNN(nn.Module):
     # STATIC INITIALIZATION FOR LAYER 2
     # ----------------------------------------------------------
     def _init_conv2_static(self):
-        with torch.no_grad():                                                           # disable gradients
+        with torch.no_grad():                                                           # disable gradients (manual init)
             w = self.conv2.weight                                                       # conv2 weights → [32,16,3,3]
-            out_channels, in_channels, kh, kw = w.shape                                 # get shape
-            assert kh == 3 and kw == 3                                                  # expect 3x3 kernels
+            out_channels, in_channels, kh, kw = w.shape                                 # expected [32,16,3,3]
+            assert kh == 3 and kw == 3                                                  # ensure 3x3 kernel size
 
-            edge_h = torch.tensor([[-1.,-1.,-1.],[2.,2.,2.],[-1.,-1.,-1.]])             # horizontal edge 2D
-            edge_v = torch.tensor([[-1.,2.,-1.],[-1.,2.,-1.],[-1.,2.,-1.]])             # vertical edge 2D
-            emboss = torch.tensor([[-2.,-1.,0.],[-1.,1.,1.],[0.,1.,2.]])                # emboss 2D
-            avg = (1/9) * torch.ones((3,3))                                             # average blur 2D
-            sobel_x = torch.tensor([[-1.,0.,1.],[-2.,0.,2.],[-1.,0.,1.]])               # sobel x 2D
-            sobel_y = torch.tensor([[-1.,-2.,-1.],[0.,0.,0.],[1.,2.,1.]])               # sobel y 2D
+            # ---------------------------------------------------------------------
+            #  FILTER DEFINITIONS (EACH 3×3, WRITTEN IN THREE ROWS)
+            #  conv2 receives 16 feature maps → deeper filters detect stronger edges,
+            #  transitions, gradients, shape composition, and embossed structure.
+            # ---------------------------------------------------------------------
 
-            kernels = [edge_h, edge_v, emboss, avg, sobel_x, sobel_y]                   # kernel bank 2D
-            num_kernels = len(kernels)                                                  # count kernels
+            # 1) Horizontal edge detector
+            #    Strong response to horizontal lines and transitions.
+            edge_h = torch.tensor([
+                [-1., -1., -1.],
+                [ 2.,  2.,  2.],
+                [-1., -1., -1.],
+            ])
 
-            for out_idx in range(out_channels):                                         # loop over 32 output filters
-                for in_idx in range(in_channels):                                       # loop over 16 input channels
-                    k = kernels[(out_idx * in_idx) % num_kernels].to(w.dtype)           # choose 2D kernel pattern
-                    w[out_idx, in_idx].copy_(k)                                         # assign 3x3 into w[out,in,:,:]
+            # 2) Vertical edge detector
+            #    Strong response to vertical edges or vertical texture discontinuities.
+            edge_v = torch.tensor([
+                [-1.,  2., -1.],
+                [-1.,  2., -1.],
+                [-1.,  2., -1.],
+            ])
+
+            # 3) Emboss filter
+            #    Creates a shaded 3D-like emboss effect; highlights directional depth.
+            emboss = torch.tensor([
+                [-2., -1.,  0.],
+                [-1.,  1.,  1.],
+                [ 0.,  1.,  2.],
+            ])
+
+            # 4) Average blur (3×3 mean filter)
+            #    Smooths noise and merges nearby features.
+            avg = (1/9) * torch.ones((3, 3))
+
+            # 5) Sobel X (horizontal gradient)
+            #    Detects left–right intensity changes (vertical edges).
+            sobel_x = torch.tensor([
+                [-1.,  0.,  1.],
+                [-2.,  0.,  2.],
+                [-1.,  0.,  1.],
+            ])
+
+            # 6) Sobel Y (vertical gradient)
+            #    Detects top–bottom intensity transitions (horizontal edges).
+            sobel_y = torch.tensor([
+                [-1., -2., -1.],
+                [ 0.,  0.,  0.],
+                [ 1.,  2.,  1.],
+            ])
+
+            # Collect all filters into a kernel bank
+            kernels = [
+                edge_h,     # 0 horizontal edge
+                edge_v,     # 1 vertical edge
+                emboss,     # 2 emboss shading
+                avg,        # 3 smoothing blur
+                sobel_x,    # 4 gradient X
+                sobel_y,    # 5 gradient Y
+            ]
+
+            num_kernels = len(kernels)
+
+            # ---------------------------------------------------------------------
+            #  ASSIGN FILTERS TO ALL conv2 WEIGHTS
+            #
+            #  conv2 has: out_channels = 32   (filters)
+            #             in_channels  = 16   (input maps from conv1)
+            #
+            #  For each output filter and each input channel, we choose a kernel
+            #  using modulo indexing so the filters repeat periodically.
+            #
+            #  This creates a structured 32×16 kernel matrix where:
+            #     • Some paths detect gradients
+            #     • Some detect edges
+            #     • Some emboss or smooth
+            #
+            #  This provides conv2 with rich static feature extraction.
+            # ---------------------------------------------------------------------
+            for out_idx in range(out_channels):                       # loop over all 32 output filters
+                for in_idx in range(in_channels):                     # loop over all 16 input feature maps
+
+                    # Choose kernel pattern based on (out × in) mod #kernels
+                    k = kernels[(out_idx * in_idx) % num_kernels].to(w.dtype)
+
+                    # Copy kernel into weight tensor
+                    w[out_idx, in_idx].copy_(k)
 
             print(f"[init_conv2_static] {out_channels}x{in_channels} 2D 3x3 kernels assigned")  # log
+
 
 
 
