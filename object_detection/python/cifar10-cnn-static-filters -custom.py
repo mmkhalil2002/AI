@@ -9,8 +9,8 @@ from torchvision import datasets, transforms
 
 
 MODEL_PATH = "../../../"
-MODEL_FILENAME = "cifar10_model_file"
-DATA_PATH = "../../../cifar10_data"
+MODEL_FILENAME = "cifar10_model_custom_file"
+DATA_PATH = "../../../data/mydata"
 MG_WIDTH, IMG_HEIGHT = 32, 32  # Based on training dataset
 CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence for valid detections
 FILTER_WIDTH = 3
@@ -2377,15 +2377,29 @@ def main():
     # ImageFolder will automatically assign class indices:
     #   0, 1, 2, ... in alphabetical order of folder names.
     # --------------------------------------------------------
+    # ------------------------------------------------------------------
+    # DEFINE DATA PATHS FOR TRAIN & TEST USING os.path.join()
+    # ------------------------------------------------------------------
+    #DATA_PATH = "../../../data"     # root folder created by extraction script
+    train_path = os.path.join(DATA_PATH, "train")
+    test_path  = os.path.join(DATA_PATH, "test")
+
+    print("Training images from:", train_path)
+    print("Testing images from:", test_path)
+
+    # ------------------------------------------------------------------
+    # LOAD DATASETS USING ImageFolder
+    # ------------------------------------------------------------------
     train_dataset = datasets.ImageFolder(
-        root="./mydata/train",   # UPDATED: your train path
+        root=train_path,
         transform=transform
     )
 
     test_dataset = datasets.ImageFolder(
-        root="./mydata/test",    # UPDATED: your test path
+        root=test_path,
         transform=transform
     )
+
 
    # ============================================================
     # FUNCTIONAL PURPOSE:
