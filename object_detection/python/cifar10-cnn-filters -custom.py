@@ -16,9 +16,10 @@ CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence for valid detections
 FILTER_WIDTH = 3
 FILTER_HEIGHT = 3
 BATCH_SIZE = 64
-NUM_EPOCHS = 3000
+NUM_EPOCHS = 150
 LEARNING_RATE = 0.001
-STATIC_FILTERS = True
+STATIC_FILTERS = False
+DEBUG_FLAG = True
 # ============================================================
 # EXPLANATION: HOW TRAINING WORKS IN THIS NETWORK
 # ============================================================
@@ -158,54 +159,123 @@ class StaticInitLearnableCNN(nn.Module):
         # LAYER 1: 3 → 16 channels
         # 3 input channels (RGB) → 16 feature maps using 3x3 filters
         # Padding = 1 to keep spatial size 32x32
-        # This assumes the input has shape [B, 3, 32, 32]
-        # (either native 32x32, or resized to 32x32 in transforms).
+        #
+        # Input shape assumption:
+        #   [B, 3, 32, 32]
+        #
+        # Either native CIFAR-10 images, OR any custom dataset
+        # resized to 32×32 in transforms.
         # ------------------------------------------------------
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, padding=1, bias=True)
+        self.conv1 = nn.Conv2d(
+            in_channels=3,
+            out_channels=16,
+            kernel_size=3,
+            padding=1,
+            bias=True
+        )
+
+        # ------------------------------------------------------
+        # BatchNorm for conv1 (normalizes 16 output channels)
+        # ------------------------------------------------------
+        # WHY WE USE BATCHNORM2d(16):
+        # ---------------------------
+        # • It normalizes each of the 16 feature maps across the batch
+        # • Keeps mean ≈ 0 and variance ≈ 1
+        # • Reduces internal covariate shift
+        # • Allows faster and more stable training
+        # • Acts as light regularization (reduces overfitting)
+        #
+        # Training flow with BatchNorm:
+        #   conv1 → bn1 → ReLU → pool
+        #
+        # Result:
+        #   ➤ Faster convergence
+        #   ➤ Smoother gradients
+        #   ➤ Sometimes significantly higher accuracy
+        # ------------------------------------------------------
+        self.bn1 = nn.BatchNorm2d(16)
 
         # ------------------------------------------------------
         # LAYER 2: 16 → 32 channels
-        # 16 input feature maps → 32 feature maps using 3x3 filters
-        # Padding = 1 to keep spatial size before pooling:
-        #   input to conv2: [B, 16, 16, 16]
+        #
+        # 16 input feature maps → 32 output feature maps
+        # using 3×3 filters, padding=1 keeps spatial size.
+        #
+        # Before Pool:
+        #   input to conv2 : [B, 16, 16, 16]
         #   output of conv2: [B, 32, 16, 16]
         # ------------------------------------------------------
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1, bias=True)
+        self.conv2 = nn.Conv2d(
+            in_channels=16,
+            out_channels=32,
+            kernel_size=3,
+            padding=1,
+            bias=True
+        )
+
+        # ------------------------------------------------------
+        # BatchNorm for conv2 (normalizes 32 channels)
+        # ------------------------------------------------------
+        # Why BatchNorm2d(32)?
+        # --------------------
+        # • Conv2 outputs 32 feature maps
+        # • BatchNorm stabilizes all 32 channels
+        #
+        # Overall:
+        #   conv2 → bn2 → ReLU → pool
+        #
+        # BatchNorm especially helps deeper layers where
+        # activations become more chaotic.
+        # ------------------------------------------------------
+        self.bn2 = nn.BatchNorm2d(32)
 
         # ------------------------------------------------------
         # POOLING LAYER: MaxPool2d(2, 2)
         #
-        # Max pooling with:
-        #   kernel_size = 2
-        #   stride      = 2
+        # Max pooling:
+        #     kernel_size = 2
+        #     stride      = 2
         #
-        # Effect on spatial size:
-        #   32x32 → 16x16
-        #   16x16 →  8x8
+        # Effect on spatial dimensions:
+        #   32×32 → 16×16   (after first pool)
+        #   16×16 →  8×8    (after second pool)
         #
-        # We reuse the SAME pool layer twice (after conv1 and conv2).
+        # Both conv1 and conv2 use the SAME pooling layer.
         # ------------------------------------------------------
         self.pool = nn.MaxPool2d(2, 2)
 
         # ------------------------------------------------------
         # FULLY CONNECTED CLASSIFIER
         #
-        # After:
+        # After both conv+pool blocks:
         #   conv1 + pool → [B, 16, 16, 16]
         #   conv2 + pool → [B, 32,  8,  8]
         #
-        # Flattened feature vector size:
-        #   32 * 8 * 8 = 2048
+        # Flattened dimension:
+        #   32 * 8 * 8 = 2048 features
         #
-        # So fc in_features = 2048, out_features = num_classes.
-        # num_classes should match:
+        # num_classes:
         #   • 10 for CIFAR-10
-        #   • or len(train_dataset.classes) for custom ImageFolder
+        #   • OR dynamic based on len(train_dataset.classes)
         # ------------------------------------------------------
         self.fc = nn.Linear(32 * 8 * 8, num_classes)
 
-        # Static initialization (starting point only)
-        if (STATIC_FILTERS):
+        # ------------------------------------------------------
+        # STATIC FILTER INITIALIZATION (if enabled)
+        #
+        # These functions overwrite the conv1 and conv2 weights
+        # with your custom 3×3 static kernels:
+        #   • Edges (0°–315°)
+        #   • Corners (0°–315°)
+        #   • Curves (0°–315°)
+        #   • Lines (0°–315°)
+        #   • Sobel filters
+        #   • Sharpen, blur, Gaussian, etc.
+        #
+        # These filters act like hand-crafted feature detectors,
+        # while deeper layers learn freely.
+        # ------------------------------------------------------
+        if STATIC_FILTERS:
             self._init_conv1_static()
             self._init_conv2_static()
 
@@ -256,7 +326,6 @@ class StaticInitLearnableCNN(nn.Module):
                 [2., 4., 2.],
                 [1., 2., 1.],
             ])  # Gaussian blur → smooths but preserves structure gracefully
-
 
             # ------------------------------------------------------------------
             # EDGE FILTERS (MULTIPLE ORIENTATIONS EVERY 45°)
@@ -321,7 +390,6 @@ class StaticInitLearnableCNN(nn.Module):
                 [-1., -1.,  1.],
             ])          # diagonal 315° edge
 
-
             # ------------------------------------------------------------------
             # CORNER DETECTION FILTERS
             #
@@ -355,11 +423,10 @@ class StaticInitLearnableCNN(nn.Module):
                 [ 0., -1., -1.],
             ])          # corner opening right-down
 
-            corner_180 = corner_0.clone()    
-            corner_225 = corner_45.clone()   
-            corner_270 = corner_90.clone()   
-            corner_315 = corner_135.clone()  
-
+            corner_180 = corner_0.clone()
+            corner_225 = corner_45.clone()
+            corner_270 = corner_90.clone()
+            corner_315 = corner_135.clone()
 
             # ------------------------------------------------------------------
             # CURVE DETECTION FILTERS
@@ -403,7 +470,6 @@ class StaticInitLearnableCNN(nn.Module):
             curve_225 = curve_135.clone()
             curve_270 = curve_90.clone()
             curve_315 = curve_45.clone()
-
 
             # ------------------------------------------------------------------
             # LINE DETECTION FILTERS
@@ -461,7 +527,6 @@ class StaticInitLearnableCNN(nn.Module):
                 [-1., -2., -1.],
                 [ 1., -1.,  1.],
             ])      # diagonal 315°
-
 
             # ------------------------------------------------------------------
             # SOBEL FILTERS — GRADIENT MAGNITUDE IN SPECIFIC DIRECTIONS
@@ -522,7 +587,6 @@ class StaticInitLearnableCNN(nn.Module):
                 [ 0.,  1.,  2.],
             ])          # 315° gradient
 
-
             # ------------------------------------------------------------------
             # COLLECT ALL KERNELS
             # ------------------------------------------------------------------
@@ -555,15 +619,6 @@ class StaticInitLearnableCNN(nn.Module):
                     w[i, c].copy_(k2d)                                     # write into conv1 weight tensor
 
             print(f"[init_conv1_static] {out_channels} filters initialized with 2D 3x3 kernels")
-
-
-
-
-
-
-
-
-
 
     # ----------------------------------------------------------
     # STATIC INITIALIZATION FOR LAYER 2
@@ -663,41 +718,99 @@ class StaticInitLearnableCNN(nn.Module):
 
             print(f"[init_conv2_static] {out_channels}x{in_channels} 2D 3x3 kernels assigned")  # log
 
-
-
-
-
-
-
-
     # ----------------------------------------------------------
     # FORWARD PASS
     # ----------------------------------------------------------
+    # FORWARD PROPAGATION THROUGH THE NETWORK
+    #  ---------------------------------------
+    # This method defines how input images flow through the network.
+    #
+    # INPUT:
+    #     x : Tensor of shape [B, 3, H, W]
+    #         B = batch size
+    #         3 = RGB channels
+    #         H, W = image dimensions (ideally 32×32)
+    #
+    # OUTPUT:
+    #     logits : Tensor of shape [B, num_classes]
+    #         Raw class scores (logits) before softmax.
+    #         These are passed into CrossEntropyLoss during training.
     def forward(self, x):
-        # x shape at input:
-        #   [B, 3, 32, 32]  where:
-        #      B = batch size
-        #      3 = RGB channels
-        #     32x32 = spatial size
-        #   (either CIFAR-10 or any custom dataset resized to 32x32)
-        x = F.relu(self.conv1(x))      # After conv1: [B, 16, 32, 32]
-        x = self.pool(x)               # After pool1: [B, 16, 16, 16]
+        # At entry:
+        #   x shape → [B, 3, 32, 32]
+        #   (CIFAR-10 or resized custom data)
 
-        x = F.relu(self.conv2(x))      # After conv2: [B, 32, 16, 16]
-        x = self.pool(x)               # After pool2: [B, 32,  8,  8]
+        # -------------------
+        # BLOCK 1: CONV1 → BN1 → ReLU → POOL
+        # -------------------
 
-        # Flatten all channels and spatial dimensions into a single vector
-        # Current shape: [B, 32, 8, 8]
-        # Flattened:      [B, 32*8*8] = [B, 2048]
+        # Conv1: 3 → 16 channels, preserves H, W
+        #   [B, 3, 32, 32] → [B, 16, 32, 32]
+        x = self.conv1(x)
+
+        # BatchNorm on 16 channels (stabilizes activations)
+        x = self.bn1(x)
+
+        # Non-linearity: ReLU
+        x = F.relu(x)
+
+        # MaxPool: 32×32 → 16×16
+        #   [B, 16, 32, 32] → [B, 16, 16, 16]
+        x = self.pool(x)
+
+        # -------------------
+        # BLOCK 2: CONV2 → BN2 → ReLU → POOL
+        # -------------------
+
+        # Conv2: 16 → 32 channels
+        #   [B, 16, 16, 16] → [B, 32, 16, 16]
+        x = self.conv2(x)
+
+        # BatchNorm on 32 channels
+        x = self.bn2(x)
+
+        # ReLU
+        x = F.relu(x)
+
+        # MaxPool: 16×16 → 8×8
+        #   [B, 32, 16, 16] → [B, 32, 8, 8]
+        x = self.pool(x)
+
+        # -------------------
+        # FLATTEN + LINEAR CLASSIFIER
+        # -------------------
+
+        # Flatten all channels + spatial dims:
+        #   [B, 32, 8, 8] → [B, 32*8*8] = [B, 2048]
         x = torch.flatten(x, 1)
 
-        # Fully connected classifier:
-        # Input:  [B, 2048]
-        # Output: [B, num_classes]
-        x = self.fc(x)
+        # Fully connected layer:
+        #   [B, 2048] → [B, num_classes]
+        logits = self.fc(x)
 
-        return x
+        # logits are returned directly.
+        # CrossEntropyLoss will apply softmax internally.
+        return logits
 
+# ------------------------------------------------------------------
+# GLOBAL DEBUG FLAG + HELPER
+# ------------------------------------------
+
+
+# ------------------------------------------------------------------
+# GLOBAL DEBUG FLAG + HELPER
+# ------------------------------------------------------------------
+
+
+
+def debug_print(*args, **kwargs):
+    """
+    Simple debug print wrapper.
+    If DEBUG is True → behaves like print().
+    If DEBUG is False → does nothing.
+    """
+    if DEBUG_FLAG:
+        print(*args, **kwargs)
 
 # ============================================================
 # TRAINING FUNCTION (WORKS FOR STATIC AND DYNAMIC CNN MODELS)
@@ -847,8 +960,69 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
     #   • normalization layers
     #
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+   # ------------------------------------------------------------
+    # LEARNING RATE SCHEDULER — ReduceLROnPlateau
+    # ------------------------------------------------------------
+    #
+    # PURPOSE:
+    # --------
+    # During training, the optimizer may stop improving because the
+    # learning rate (LR) is TOO HIGH for fine adjustments.
+    #
+    # Example scenario:
+    #   Epoch 70 → loss = 0.43
+    #   Epoch 71 → loss = 0.43
+    #   Epoch 72 → loss = 0.43
+    #   Epoch 73 → loss = 0.43
+    #
+    # Loss is "plateauing" — the model is stuck.
+    #
+    # ReduceLROnPlateau monitors the loss and:
+    #   • If the loss does NOT improve for N epochs,
+    #     it REDUCES the learning rate automatically.
+    #
+    # This allows:
+    #   • Big steps early in training (fast learning)
+    #   • Small steps later (fine tuning)
+    #
+    # RESULT:
+    #   → smoother convergence
+    #   → lower final loss
+    #   → better accuracy
+    # ------------------------------------------------------------
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
 
+        mode='min',         # Scheduler monitors a quantity and tries to make it MINIMAL.
+                            # Here we monitor epoch_loss (lower is better).
 
+        factor=0.5,         # When LR needs reduction:
+                            #     new_lr = old_lr * factor
+                            #
+                            # If old_lr = 0.001:
+                            #     new_lr = 0.001 * 0.5 = 0.0005
+                            #
+                            # If LR plateaus again, scheduler reduces again:
+                            #     0.0005 → 0.00025 → 0.000125 → …
+
+        patience=5          # Number of epochs to wait with NO improvement before reducing LR.
+                            #
+                            # Example:
+                            #   Epoch 40 → loss = 0.42
+                            #   Epoch 41 → loss = 0.42
+                            #   Epoch 42 → loss = 0.43
+                            #   Epoch 43 → loss = 0.422
+                            #   Epoch 44 → loss = 0.422
+                            #   Epoch 45 → loss = 0.423
+                            #
+                            # If no improvement for 5 epochs → lower LR.
+
+        # NOTE:
+        # PyTorch 2.x REMOVED support for verbose=True.
+        # We will print LR manually after scheduler.step().
+    )
+
+    
     # ============================================================
     # COMPLETE END-TO-END EXPLANATION:
     # IMAGE → CONVOLUTION → FEATURES → LOGITS → CrossEntropyLoss
@@ -2351,7 +2525,7 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             # ------------------------------------------------------------
             #
             # To compute average loss per image:
-            #
+                       #
             #   average_epoch_loss = running_loss / total_images
             #                      = 6.6 / 10
             #                      = 0.66
@@ -2570,15 +2744,121 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
         epoch_time = time.perf_counter() - epoch_start
         epoch_times.append(epoch_time)
 
+        # --------------------------------------------------------
+        # COMPUTE AVERAGE LOSS & ACCURACY FOR THIS EPOCH
+        # --------------------------------------------------------
+        #
+        # running_loss:
+        #   • Accumulated: sum of (batch_loss * batch_size)
+        # total:
+        #   • Total number of samples seen in the epoch
+        #
+        # epoch_loss:
+        #   • True average loss PER SAMPLE over the whole epoch
+        #
+        # epoch_acc:
+        #   • Fraction of correctly classified samples
+        #
+        epoch_loss = running_loss / total
+        epoch_acc  = correct / total
+
         # --------------------------------------------
         # PRINT EPOCH SUMMARY
         # --------------------------------------------
-        print(
+        debug_print(
             f"[TRAIN] Epoch {ep+1}/{num_epochs}  "
-            f"Loss: {running_loss / total:.4f}  "
-            f"Accuracy: {correct / total:.4f}  "
+            f"Loss: {epoch_loss:.4f}  "
+            f"Accuracy: {epoch_acc:.4f}  "
             f"Time: {epoch_time:.2f} sec"
         )
+
+        # ------------------------------------------------------------
+        # HOW THE LEARNING RATE (LR) IMPROVES TRAINING
+        # ------------------------------------------------------------
+        #
+        # The optimizer (Adam, SGD, etc.) updates the model weights using:
+        #
+        #       new_weight = old_weight − LR * gradient
+        #
+        # The **learning rate (LR)** controls how BIG each update step is.
+        #
+        # ------------------------------------------------------------
+        # PHASE 1 — EARLY TRAINING (LR is HIGH)
+        # ------------------------------------------------------------
+        # • At the beginning of training, we WANT large updates.
+        # • The loss surface is rough and gradients are strong.
+        # • A higher LR helps the model quickly move toward good regions.
+        #
+        # Example:
+        #   LR = 0.001  → fast improvement during first 20–30 epochs
+        #
+        # ------------------------------------------------------------
+        # PHASE 2 — MID TRAINING (LR TOO HIGH TO IMPROVE)
+        # ------------------------------------------------------------
+        # Eventually the model reaches a “plateau”:
+        #
+        #   Epoch 70 → loss = 0.43
+        #   Epoch 71 → loss = 0.43
+        #   Epoch 72 → loss = 0.43
+        #
+        # Loss stops improving because:
+        #   → LR is now TOO LARGE to make fine updates.
+        #
+        # The optimizer jumps OVER the small valleys where the true minimum is.
+        #
+        # ------------------------------------------------------------
+        # PHASE 3 — LR Scheduler Reduces LR for FINE TUNING
+        # ------------------------------------------------------------
+        # ReduceLROnPlateau detects this plateau.
+        #
+        # If `epoch_loss` does NOT improve for `patience` epochs:
+        #
+        #       new_lr = old_lr * factor
+        #
+        # With factor=0.5:
+        #
+        #       0.001   → 0.0005   → 0.00025   → 0.000125 → ...
+        #
+        # When LR becomes smaller:
+        #   • Weight updates become more precise.
+        #   • The optimizer no longer overshoots minima.
+        #   • Loss begins to decrease again (fine convergence).
+        #
+        # RESULT:
+        #   → Lower final loss
+        #   → Higher accuracy
+        #   → More stable training
+        #
+        # ------------------------------------------------------------
+        # HOW scheduler.step(epoch_loss) WORKS:
+        # ------------------------------------------------------------
+        # When called every epoch:
+        #
+        #   scheduler.step(epoch_loss)
+        #
+        # The scheduler:
+        #   • Monitors the value of epoch_loss
+        #   • Remembers the BEST (lowest) loss so far
+        #   • If no improvement for `patience` epochs → reduce LR
+        #
+        # ------------------------------------------------------------
+        # WHY MANUAL LR LOGGING?
+        # ------------------------------------------------------------
+        # PyTorch ≥ 2.0 removed verbose=True.
+        # We print LR manually to track scheduler actions:
+        #
+        #   current_lr = optimizer.param_groups[0]['lr']
+        #   debug_print(f"[LR Scheduler] Current Learning Rate = {current_lr:.6f}")
+        #
+        # This lets you SEE when LR drops, which helps with debugging and tuning.
+        # ------------------------------------------------------------
+
+        if scheduler is not None:
+            scheduler.step(epoch_loss)
+
+            # Manual LR logging
+            current_lr = optimizer.param_groups[0]['lr']
+            debug_print(f"[LR Scheduler] Current Learning Rate = {current_lr:.6f}")
 
     # ------------------------------------------------------------
     # OPTIONAL: PRINT TOTAL AND AVERAGE EXECUTION TIME
@@ -2632,18 +2912,44 @@ def detect_single_image(model, test_dataset, device, index=None):
     # --------------------------------------------------------
     # AUTO-DETECT CLASS NAMES (works for CIFAR-10 + ImageFolder)
     # --------------------------------------------------------
-    class_names = test_dataset.classes
+    class_names = getattr(test_dataset, "classes", None)
+    if class_names is None:
+        # Fallback: no classes attribute found
+        class_names = [str(i) for i in range(10)]  # generic labels 0..9
 
     # --------------------------------------------------------
-    # SELECT RANDOM INDEX IF NONE PROVIDED
+    # NORMALIZE & VALIDATE INDEX
+    #   • If index is None → choose random
+    #   • If index is string → convert to int
+    #   • Clamp / reject out-of-range indices
     # --------------------------------------------------------
     if index is None:
+        # Select random sample if no index is given
         index = random.randint(0, len(test_dataset) - 1)
+    else:
+        # If index is passed as a string (e.g. from input()), convert it
+        if isinstance(index, str):
+            try:
+                index = int(index)
+            except ValueError:
+                print(f"[detect_single_image] Invalid index value '{index}', using 0 instead.")
+                index = 0
+
+        # Range check
+        if index < 0 or index >= len(test_dataset):
+            print(f"[detect_single_image] Index {index} is out of range 0–{len(test_dataset) - 1}, using 0 instead.")
+            index = 0
 
     # --------------------------------------------------------
     # LOAD IMAGE + TRUE LABEL
     # --------------------------------------------------------
     img, true_label = test_dataset[index]
+
+    # Some datasets may return label as tensor, normalize to Python int
+    try:
+        true_label_id = int(true_label)
+    except Exception:
+        true_label_id = true_label  # keep as-is if already int-like
 
     # Add batch dimension → shape becomes [1, C, H, W]
     img_input = img.unsqueeze(0).to(device)
@@ -2658,24 +2964,50 @@ def detect_single_image(model, test_dataset, device, index=None):
     # --------------------------------------------------------
     # CONVERT LABEL IDS → HUMAN-READABLE NAMES
     # --------------------------------------------------------
-    true_name = class_names[true_label]
-    pred_name = class_names[pred_label]
+    # Defensive check in case labels are outside class_names length
+    if 0 <= true_label_id < len(class_names):
+        true_name = class_names[true_label_id]
+    else:
+        true_name = f"class_{true_label_id}"
+
+    if 0 <= pred_label < len(class_names):
+        pred_name = class_names[pred_label]
+    else:
+        pred_name = f"class_{pred_label}"
 
     # --------------------------------------------------------
     # PRINT RESULTS
     # --------------------------------------------------------
     print("--------------------------------------------------")
     print(f"DETECTION RESULT FOR TEST IMAGE INDEX: {index}")
-    print(f"True label index : {true_label} → {true_name}")
+    print(f"True label index : {true_label_id} → {true_name}")
     print(f"Pred label index : {pred_label} → {pred_name}")
     print("--------------------------------------------------")
 
-    return img, true_label, pred_label
+    return img, true_label_id, pred_label
+
 
 
 # ============================================================
 # MAIN PROGRAM
 # ============================================================
+# assume these are defined globally somewhere above:
+# DATA_PATH = "../../../data/mydata"
+# MODEL_PATH = "../../../"
+# MODEL_FILENAME = "cifar10_model_custom_file"
+# NUM_EPOCHS = 2
+# from your_module import StaticInitLearnableCNN, train_model, detect_single_image
+
+# ------------------------------------------------------------------
+# Simple debug print helper (example)
+# ------------------------------------------------------------------
+
+
+def debug_print(msg: str):
+    """Print debug messages only when DEBUG_FLAG is True."""
+    if DEBUG_FLAG:
+        print(msg)
+
 def main():
 
     # --------------------------------------------------------
@@ -2685,227 +3017,172 @@ def main():
     print("Using device:", device)
 
     # --------------------------------------------------------
-    # PATH TO SAVE / LOAD MODEL WEIGHTS
+    # ASSUME GLOBAL DATA_PATH IS ALREADY DEFINED
     # --------------------------------------------------------
-    # UPDATED: use a different file name so you do not overwrite CIFAR-10 model
-    #MODEL_PATH = "dynamic_cnn_mydata.pth"
-
-    # --------------------------------------------------------
-    # DATA TRANSFORMS FOR YOUR 128x128 DATA
-    # --------------------------------------------------------
-    # UPDATED:
-    #   • Add Resize((32, 32)) so 128x128 images become 32x32
-    #   • Keep ToTensor + Normalize like CIFAR-10
-    #   • This way the network input shape is the same as CIFAR-10
-    # --------------------------------------------------------
-    transform = transforms.Compose([
-        transforms.Resize((32, 32)),        # UPDATED: 128x128 → 32x32
-        transforms.ToTensor(),              # convert to [C, H, W] in [0, 1]
-        transforms.Normalize(               # normalize to [-1, 1]
-            mean=[0.5, 0.5, 0.5],
-            std=[0.5, 0.5, 0.5]
-        )
-    ])
-
-    # --------------------------------------------------------
-    # LOAD YOUR CUSTOM TRAIN AND TEST SETS USING ImageFolder
-    # --------------------------------------------------------
-    # EXPECTED FOLDER STRUCTURE:
-    #   mydata/
+    # Example (outside this function):
+    #   DATA_PATH = "../../../data/mydata"
+    #
+    # Expected structure:
+    #   ../../../data/mydata/
     #       train/
-    #           class0/
-    #           class1/
+    #           classA/
+    #           classB/
     #           ...
     #       test/
-    #           class0/
-    #           class1/
+    #           classA/
+    #           classB/
     #           ...
-    #
-    # Each "classX" folder contains images for that class.
-    # ImageFolder will automatically assign class indices:
-    #   0, 1, 2, ... in alphabetical order of folder names.
     # --------------------------------------------------------
-    # ------------------------------------------------------------------
-    # DEFINE DATA PATHS FOR TRAIN & TEST USING os.path.join()
-    # ------------------------------------------------------------------
-    #DATA_PATH = "../../../data"     # root folder created by extraction script
+    debug_print(f"[main] Global DATA_PATH = {DATA_PATH!r}")
+
+    # Build train and test directories from the global DATA_PATH
     train_path = os.path.join(DATA_PATH, "train")
     test_path  = os.path.join(DATA_PATH, "test")
 
+    debug_print(f"[main] Computed train_path = {train_path}")
+    debug_print(f"[main] Computed test_path  = {test_path}")
+
     print("Training images from:", train_path)
-    print("Testing images from:", test_path)
+    print("Testing  images from:", test_path)
+
+    # --------------------------------------------------------
+    # DATA TRANSFORMS FOR YOUR DATA
+    # --------------------------------------------------------
+    # We now keep the ORIGINAL image size (no Resize here).
+    # For training:
+    #   • RandomHorizontalFlip → data augmentation (mirroring)
+    #   • RandomCrop(32, padding=4) → CIFAR-style jitter (if images >= 32x32)
+    #   • ToTensor + Normalize → standard scaling to [-1, 1]
+    #
+    # For testing:
+    #   • No augmentation (only ToTensor + Normalize)
+    #
+    # If your images are exactly 32x32 (CIFAR), this behaves like
+    # standard augmentation. If they are larger, crop will take 32x32
+    # patches. If you want to keep full resolution, remove RandomCrop.
+    # --------------------------------------------------------
+    train_transform = transforms.Compose([
+        transforms.RandomHorizontalFlip(p=0.5),      # mirror images randomly
+        transforms.RandomCrop(32, padding=4),        # CIFAR-style random crop
+        transforms.ToTensor(),                       # convert to [C, H, W] in [0, 1]
+        transforms.Normalize(                        # normalize to [-1, 1]
+            mean=[0.5, 0.5, 0.5],
+            std=[0.5, 0.5, 0.5]
+        ),
+    ])
+
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),                       # convert to [C, H, W] in [0, 1]
+        transforms.Normalize(                        # normalize to [-1, 1]
+            mean=[0.5, 0.5, 0.5],
+            std=[0.5, 0.5, 0.5]
+        ),
+    ])
 
     # ------------------------------------------------------------------
     # LOAD DATASETS USING ImageFolder
     # ------------------------------------------------------------------
     train_dataset = datasets.ImageFolder(
         root=train_path,
-        transform=transform
+        transform=train_transform      # ✅ use training transform with augmentation
     )
 
     test_dataset = datasets.ImageFolder(
         root=test_path,
-        transform=transform
+        transform=test_transform       # ✅ use test transform (no augmentation)
     )
 
+    debug_print(f"[main] Loaded train_dataset with {len(train_dataset)} images")
+    debug_print(f"[main] Loaded test_dataset  with {len(test_dataset)} images")
 
-   # ============================================================
-    # FUNCTIONAL PURPOSE:
-    # ============================================================
-    # This DataLoader is responsible for feeding training data
-    # into the neural network in SMALL GROUPS (mini-batches)
-    # instead of sending all images at once.
+    # --------------------------------------------------------
+    # FULL RANDOMIZATION OF TRAIN AND TEST DATASETS
+    # --------------------------------------------------------
+    # By default, ImageFolder builds its internal 'samples' list in
+    # alphabetical class folder order, e.g.:
+    #   airplane/, automobile/, bird/, ...
     #
-    # The DataLoader:
-    #   • Loads images from the dataset
-    #   • Applies transformations (resize, normalize, etc.)
-    #   • Groups images into batches
-    #   • Shuffles order every epoch (if enabled)
-    #   • Uses parallel workers to load data faster
-    #   • Feeds batches into the training loop
+    # That means that BEFORE shuffling, indices 0..N may all come from
+    # the first class (e.g., airplane). To achieve COMPLETE randomization:
     #
-    # During training:
-    #   → The model never sees ALL images at once.
-    #   → It sees small batches repeatedly.
-    #   → Loss is computed PER BATCH.
-    #   → Gradients are computed PER BATCH.
-    #   → Weights are updated PER BATCH.
+    #   ✅ We random.shuffle(train_dataset.samples)
+    #   ✅ We random.shuffle(test_dataset.samples)
     #
-    # ============================================================
+    # This permutes the underlying (path, label) list itself so the
+    # dataset no longer starts with a long block of one class.
+    #
+    # Combined with DataLoader(shuffle=True), this gives full randomness:
+    #   • dataset level  (samples list)
+    #   • batch order    (DataLoader index sampling)
+    # --------------------------------------------------------
+    random.shuffle(train_dataset.samples)
+    random.shuffle(test_dataset.samples)
+    debug_print("[main] Shuffled train_dataset.samples for full randomization")
+    debug_print("[main] Shuffled test_dataset.samples  for full randomization")
 
+    # Show class mapping as seen by ImageFolder
+    debug_print("[main] Class index → name mapping (from train_dataset.classes):")
+    for idx, name in enumerate(train_dataset.classes):
+        debug_print(f"   {idx}: {name}")
+
+    # Optionally show first few training samples to verify labels AFTER shuffle
+    max_show = min(5, len(train_dataset))
+    for i in range(max_show):
+        _, lbl = train_dataset[i]                  # (image_tensor, label_index)
+        cls_name = train_dataset.classes[lbl]
+        debug_print(f"[main] Sample train index {i} (after shuffle) → label {lbl} ('{cls_name}')")
+
+    # And also show a few test samples AFTER shuffle
+    max_show_test = min(5, len(test_dataset))
+    for i in range(max_show_test):
+        _, lbl = test_dataset[i]
+        cls_name = test_dataset.classes[lbl]
+        debug_print(f"[main] Sample test  index {i} (after shuffle) → label {lbl} ('{cls_name}')")
+
+    # ============================================================
+    # DATALOADERS
+    # ============================================================
     train_loader = DataLoader(
-
-        # --------------------------------------------------------
-        # train_dataset
-        # --------------------------------------------------------
-        # This is the DATA SOURCE.
-        #
-        # It may be:
-        #   • CIFAR10 dataset
-        #   • ImageFolder dataset
-        #   • Any custom PyTorch Dataset class
-        #
-        # When DataLoader needs data, it calls:
-        #
-        #   image, label = train_dataset[index]
-        #
-        # Which returns:
-        #   image → Tensor [C, H, W]
-        #   label → Integer class index
-        # --------------------------------------------------------
         train_dataset,
-
-        # --------------------------------------------------------
-        # batch_size = 10
-        # --------------------------------------------------------
-        # This controls HOW MANY samples are processed before:
-        #   • computing loss
-        #   • computing gradients
-        #   • performing optimizer step
-        #
-        # Meaning:
-        #   → 10 images form ONE training step
-        #   → Loss = average over 10 images
-        #   → Weight updates use group statistics
-        #
-        # Example (1000 images total):
-        #
-        #   batch_size = 10
-        #   → 100 batches per epoch
-        # --------------------------------------------------------
         batch_size=10,
-
-        # --------------------------------------------------------
-        # shuffle = True
-        # --------------------------------------------------------
-        # Means:
-        #
-        #   → BEFORE every epoch:
-        #       • All image indices are randomly reshuffled.
-        #
-        #   → Batch composition changes every epoch.
-        #   → No fixed grouping of classes.
-        #
-        # Prevents:
-        #   • bias from dataset ordering
-        #   • memorization due to fixed sequence
-        #
-        # Improves:
-        #   • generalization
-        #   • convergence stability
-        # --------------------------------------------------------
-        shuffle=True,
-
-        # --------------------------------------------------------
-        # num_workers = 2
-        # --------------------------------------------------------
-        # Controls HOW MANY CPU PROCESSES load data simultaneously.
-        #
-        # Instead of loading images sequentially:
-        #
-        #   worker-1 → loads batch 1
-        #   worker-2 → loads batch 2
-        #
-        # While:
-        #   GPU is training on batch 1
-        #
-        # Benefits:
-        #   ✅ Reduced waiting time
-        #   ✅ Faster throughput
-        #   ✅ Efficient CPU usage
-        #
-        # Notes:
-        #   On Windows:
-        #       Use num_workers = 0 or 1
-        #   On Linux:
-        #       2–8 is common
-        # --------------------------------------------------------
+        shuffle=True,    # ✅ still keep this True for per-epoch randomization
         num_workers=2
-        )
+    )
 
-    
-    # Optional: test_loader if you want evaluation later
+    # For *complete* randomization in testing as requested,
+    # we also use shuffle=True here. Note:
+    #   • For strict benchmark evaluation, usually shuffle=False,
+    #     but since your focus is interactive detection / exploration,
+    #     we enable full randomization as you requested.
     test_loader = DataLoader(
         test_dataset,
         batch_size=2,
-        shuffle=False,
+        shuffle=True,    # ✅ full randomization for test as well
         num_workers=2
     )
 
     # --------------------------------------------------------
     # DETERMINE NUMBER OF CLASSES FROM DATASET
     # --------------------------------------------------------
-    # UPDATED:
-    #   Instead of hard-coding num_classes=10,
-    #   we read the number of classes from the train dataset.
-    #   ImageFolder exposes:
-    #       train_dataset.classes → list of class names
-    # --------------------------------------------------------
     num_classes = len(train_dataset.classes)
-    print("Number of classes detected in mydata/train:", num_classes)
+    print("Number of classes detected in train:", num_classes)
     print("Class names:", train_dataset.classes)
 
     # --------------------------------------------------------
     # CREATE MODEL
     # --------------------------------------------------------
-    # UPDATED: pass num_classes detected from your data
-    # The rest of the model (conv/pool/etc.) stays the same.
-    # --------------------------------------------------------
-    model =StaticInitLearnableCNN(num_classes=num_classes)
+    model = StaticInitLearnableCNN(num_classes=num_classes)
 
     # --------------------------------------------------------
     # LOAD OR TRAIN MODEL
     # --------------------------------------------------------
     model_filename = os.path.join(MODEL_PATH, MODEL_FILENAME)
+    debug_print(f"[main] Model file path = {model_filename}")
 
-    
-    # ------------------------------------------------------------
-    # LOAD MODEL IF IT EXISTS
-    # ------------------------------------------------------------
     if os.path.exists(model_filename):
         print(f"Loading trained weights from: {model_filename}")
-        state_dict = torch.load(model_filename, map_location=device)   # load weights
-        model.load_state_dict(state_dict)                              # restore model
+        state_dict = torch.load(model_filename, map_location=device)
+        model.load_state_dict(state_dict)
     else:
         print("No saved model found. Training a new model...")
         model = train_model(model, train_loader, device, num_epochs=NUM_EPOCHS, lr=1e-3)
@@ -2915,41 +3192,83 @@ def main():
     # ------------------------------------------------------------
     # INTERACTIVE LOOP FOR USER-DRIVEN DETECTION
     # ------------------------------------------------------------
+    import msvcrt
+
     print("\n--------------------------------------------------")
     print("Interactive Image Detection Mode")
-    print("Press:")
-    print("   d  → detect on an image index")
-    print("   e  → exit program")
+    print("You are now ALWAYS in detection mode.")
+    print("Just type an image index and press ENTER.")
+    print("Press 'e' at any time to exit.")
     print("--------------------------------------------------\n")
 
     while True:
-        user_input = input("Enter command (d = detect, e = exit): ").strip().lower()
 
-        if user_input == 'e':
+        print(f"Enter image index (0 – {len(test_dataset)-1}) or 'e' to exit: ", end="", flush=True)
+
+        # READ ONE CHARACTER WITHOUT PRESSING ENTER
+        key = msvcrt.getch().decode().lower()
+
+        # IF USER PRESSES 'e' → EXIT IMMEDIATELY
+        if key == 'e':
+            print("e")
             print("Exiting program. Goodbye!")
             break
 
-        elif user_input == 'd':
-            # Ask user for the test image index
-            idx_str = input(f"Enter image index (0 – {len(test_dataset)-1}): ").strip()
+        # If first key is NOT a digit → invalid
+        if not key.isdigit():
+            print(key)
+            print("❌ Invalid input. Enter a number or 'e' to exit.")
+            continue
 
-            # Validate the index
-            if not idx_str.isdigit():
-                print("❌ Invalid index. Must be a number.")
+        # Echo the first digit
+        print(key, end="", flush=True)
+
+        # READ REMAINING DIGITS UNTIL ENTER
+        idx_str = key
+        while True:
+            ch = msvcrt.getch()
+            if ch in [b'\r', b'\n']:   # ENTER pressed
+                print()               # move to next line
+                break
+            try:
+                c = ch.decode()
+            except Exception:
                 continue
 
-            idx = int(idx_str)
+            # Allow EXIT inside typing
+            if c.lower() == 'e':
+                print("e")
+                print("Exiting program. Goodbye!")
+                return
 
-            if idx < 0 or idx >= len(test_dataset):
-                print("❌ Index out of range. Try again.")
+            # Accept only digits
+            if c.isdigit():
+                idx_str += c
+                print(c, end="", flush=True)
+            else:
+                # Ignore non-digit keys
                 continue
 
-            # Run detection
-            print(f"\nRunning detection on test image index {idx} ...")
-            detect_single_image(model, test_dataset, device, index=idx)
+        # ------------------------------------------------
+        # VALIDATE INDEX
+        # ------------------------------------------------
+        if not idx_str.isdigit():
+            print("❌ Invalid index. Must be a number.")
+            continue
 
-        else:
-            print("❌ Unknown command. Use 'd' for detect or 'e' to exit.")
+        idx = int(idx_str)
+
+        if idx < 0 or idx >= len(test_dataset):
+            print("❌ Index out of range. Try again.")
+            continue
+
+        # ------------------------------------------------
+        # RUN DETECTION
+        # ------------------------------------------------
+        print(f"\nRunning detection on test image index {idx} ...")
+        detect_single_image(model, test_dataset, device, index=idx)
+
+
 
 # ------------------------------------------------------------
 # RUN PROGRAM

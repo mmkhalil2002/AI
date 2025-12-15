@@ -99,33 +99,7 @@ MYDATA_ROOT = os.path.join(DATA_ROOT, "mydata")
 # Train and test root folders (as requested)
 TRAIN_ROOT = os.path.join(MYDATA_ROOT, "train")
 TEST_ROOT  = os.path.join(MYDATA_ROOT, "test")
-
-# ------------------------------------------------------------
-# CIFAR-10 CLASS NAMES (in the original order)
-# ------------------------------------------------------------
-# Index → Name mapping:
-#   0: airplane
-#   1: automobile
-#   2: bird
-#   3: cat
-#   4: deer
-#   5: dog
-#   6: frog
-#   7: horse
-#   8: ship
-#   9: truck
-CIFAR10_LABELS = [
-    "airplane",
-    "automobile",
-    "bird",
-    "cat",
-    "deer",
-    "dog",
-    "frog",
-    "horse",
-    "ship",
-    "truck",
-]
+DEBUG = True   # set to False to silence debug messages
 
 
 # ------------------------------------------------------------
@@ -292,146 +266,189 @@ def save_batch_images_to_label_dirs(batch_path, split_root, split_name, batch_na
 # MAIN
 # ------------------------------------------------------------
 def main():
-    print("===================================================")
-    print(" CIFAR-10 → mydata PNG Generator (Named Classes)")
-    print("===================================================")
-    print(f"[INFO] DATA_ROOT         : {DATA_ROOT}")
-    print(f"[INFO] TEMP_EXTRACT_DIR  : {TEMP_EXTRACT_DIR}")
-    print(f"[INFO] MYDATA_ROOT       : {MYDATA_ROOT}")
-    print(f"[INFO] TRAIN_ROOT (out)  : {TRAIN_ROOT}")
-    print(f"[INFO] TEST_ROOT  (out)  : {TEST_ROOT}")
-    print("===================================================\n")
 
-    # Step 1: Extract CIFAR archive
-    if not extract_cifar_archive():
-        print("[FATAL] Could not extract CIFAR archive. Exiting.")
-        return
+    # --------------------------------------------------------
+    # DEVICE
+    # --------------------------------------------------------
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device:", device)
 
-    # Step 2: Find the directory that contains "data_batch_1"
-    cifar_root = None
-    for root, dirs, files in os.walk(TEMP_EXTRACT_DIR):
-        if "data_batch_1" in files:
-            cifar_root = root
-            break
+    # --------------------------------------------------------
+    # ASSUME GLOBAL DATA_PATH IS ALREADY DEFINED
+    # --------------------------------------------------------
+    # Example (outside this function):
+    #   DATA_PATH = "../../../data/mydata"
+    #
+    # Expected structure:
+    #   ../../../data/mydata/
+    #       train/
+    #           classA/
+    #           classB/
+    #           ...
+    #       test/
+    #           classA/
+    #           classB/
+    #           ...
+    # --------------------------------------------------------
+    debug_print(f"[main] Global DATA_PATH = {DATA_PATH!r}")
 
-    if cifar_root is None:
-        print("[ERROR] Could not find CIFAR batch files (data_batch_1) after extraction.")
-        return
+    # Build train and test directories from the global DATA_PATH
+    train_path = os.path.join(DATA_PATH, "train")
+    test_path  = os.path.join(DATA_PATH, "test")
 
-    # Example: cifar_root = .../cifar_temp/cifar-10-batches-py
-    print(f"[INFO] Located CIFAR batch directory: {cifar_root}\n")
+    debug_print(f"[main] Computed train_path = {train_path}")
+    debug_print(f"[main] Computed test_path  = {test_path}")
 
-    # Step 3: Explain + create mydata/train and mydata/test structure
-    print("---------------------------------------------------")
-    print("[STEP] Ensuring output folder structure exists:")
-    print("---------------------------------------------------")
-    print("   mydata/")
-    print("       train/")
-    print("           airplane/")
-    print("           automobile/")
-    print("           bird/")
-    print("           cat/")
-    print("           deer/")
-    print("           dog/")
-    print("           frog/")
-    print("           horse/")
-    print("           ship/")
-    print("           truck/")
-    print("       test/")
-    print("           airplane/")
-    print("           automobile/")
-    print("           bird/")
-    print("           cat/")
-    print("           deer/")
-    print("           dog/")
-    print("           frog/")
-    print("           horse/")
-    print("           ship/")
-    print("           truck/")
-    print("---------------------------------------------------\n")
+    print("Training images from:", train_path)
+    print("Testing  images from:", test_path)
 
-    # Ensure root and split dirs exist
-    os.makedirs(MYDATA_ROOT, exist_ok=True)
-    ensure_class_dirs_with_labels(TRAIN_ROOT)
-    ensure_class_dirs_with_labels(TEST_ROOT)
-
-    # Step 4: Process training batches (data_batch_1..5)
-    print("---------------------------------------------------")
-    print("[STEP] Generating TRAIN images from data_batch_1..5")
-    print("---------------------------------------------------")
-
-    train_batches = [
-        "data_batch_1",
-        "data_batch_2",
-        "data_batch_3",
-        "data_batch_4",
-        "data_batch_5",
-    ]
-
-    total_train = 0
-    for bname in train_batches:
-        batch_path = os.path.join(cifar_root, bname)
-        total_train += save_batch_images_to_label_dirs(
-            batch_path=batch_path,
-            split_root=TRAIN_ROOT,
-            split_name="train",
-            batch_name=bname,
+    # --------------------------------------------------------
+    # DATA TRANSFORMS FOR YOUR DATA
+    # --------------------------------------------------------
+    transform = transforms.Compose([
+        transforms.Resize((32, 32)),        # 128x128 → 32x32 (if needed)
+        transforms.ToTensor(),              # convert to [C, H, W] in [0, 1]
+        transforms.Normalize(               # normalize to [-1, 1]
+            mean=[0.5, 0.5, 0.5],
+            std=[0.5, 0.5, 0.5]
         )
+    ])
 
-    print(f"[INFO] Total TRAIN images saved: {total_train}\n")
-
-    # Step 5: Process test batch (test_batch)
-    print("---------------------------------------------------")
-    print("[STEP] Generating TEST images from test_batch")
-    print("---------------------------------------------------")
-
-    test_batch_name = "test_batch"
-    test_batch_path = os.path.join(cifar_root, test_batch_name)
-    total_test = save_batch_images_to_label_dirs(
-        batch_path=test_batch_path,
-        split_root=TEST_ROOT,
-        split_name="test",
-        batch_name=test_batch_name,
+    # ------------------------------------------------------------------
+    # LOAD DATASETS USING ImageFolder
+    # ------------------------------------------------------------------
+    train_dataset = datasets.ImageFolder(
+        root=train_path,
+        transform=transform
     )
 
-    print(f"[INFO] Total TEST images saved: {total_test}\n")
+    test_dataset = datasets.ImageFolder(
+        root=test_path,
+        transform=transform
+    )
 
-    # Step 6: Remove temporary extraction directory
-    print("---------------------------------------------------")
-    print("[STEP] Cleaning up temporary extraction directory...")
-    print("---------------------------------------------------")
+    debug_print(f"[main] Loaded train_dataset with {len(train_dataset)} images")
+    debug_print(f"[main] Loaded test_dataset  with {len(test_dataset)} images")
 
-    shutil.rmtree(TEMP_EXTRACT_DIR, ignore_errors=True)
-    print("[OK] Temporary directory removed.\n")
+    # --------------------------------------------------------
+    # DYNAMIC CLASS NAMES (NO HARDCODED CIFAR-10 LABELS)
+    # --------------------------------------------------------
+    # ImageFolder automatically builds:
+    #   train_dataset.classes → ["airplane", "automobile", ...] or any custom folders
+    #
+    # We rely ONLY on these dynamic names instead of CIFAR10_LABELS.
+    # This works for:
+    #   • Original CIFAR-10 extracted into folders
+    #   • Any custom dataset with class subdirectories
+    # --------------------------------------------------------
+    global GLOBAL_LABELS
+    GLOBAL_LABELS = train_dataset.classes  # dynamic label list
+    debug_print("[main] Class index → name mapping (from train_dataset.classes):")
+    for idx, name in enumerate(GLOBAL_LABELS):
+        debug_print(f"   {idx}: {name}")
 
-    print("===================================================")
-    print(" DONE ✅  All CIFAR images written under mydata/")
-    print("---------------------------------------------------")
-    print(" FINAL OUTPUT STRUCTURE (USING REAL CLASS NAMES):")
-    print("   mydata/")
-    print("       train/")
-    print("           airplane/*.png")
-    print("           automobile/*.png")
-    print("           bird/*.png")
-    print("           cat/*.png")
-    print("           deer/*.png")
-    print("           dog/*.png")
-    print("           frog/*.png")
-    print("           horse/*.png")
-    print("           ship/*.png")
-    print("           truck/*.png")
-    print("       test/")
-    print("           airplane/*.png")
-    print("           automobile/*.png")
-    print("           bird/*.png")
-    print("           cat/*.png")
-    print("           deer/*.png")
-    print("           dog/*.png")
-    print("           frog/*.png")
-    print("           horse/*.png")
-    print("           ship/*.png")
-    print("           truck/*.png")
-    print("===================================================\n")
+    # Optionally show first few training samples to verify labels
+    max_show = min(5, len(train_dataset))
+    for i in range(max_show):
+        _, lbl = train_dataset[i]                  # (image_tensor, label_index)
+        cls_name = GLOBAL_LABELS[lbl]
+        debug_print(f"[main] Sample train index {i} → label {lbl} ('{cls_name}')")
+
+    # ============================================================
+    # DATALOADERS (with RANDOMIZATION)
+    # ============================================================
+    # train_loader:
+    #   • shuffle=True  → random order every epoch (good for training)
+    #
+    # test_loader:
+    #   • shuffle=True  → random order at evaluation time
+    #     (does NOT change labels, just which index comes first)
+    # ============================================================
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=10,
+        shuffle=True,      # full randomization for training
+        num_workers=2
+    )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=2,
+        shuffle=True,      # randomization for test iteration
+        num_workers=2
+    )
+
+    # --------------------------------------------------------
+    # DETERMINE NUMBER OF CLASSES FROM DATASET
+    # --------------------------------------------------------
+    num_classes = len(train_dataset.classes)
+    print("Number of classes detected in train:", num_classes)
+    print("Class names:", train_dataset.classes)
+
+    # --------------------------------------------------------
+    # CREATE MODEL
+    # --------------------------------------------------------
+    model = StaticInitLearnableCNN(num_classes=num_classes)
+
+    # --------------------------------------------------------
+    # LOAD OR TRAIN MODEL
+    # --------------------------------------------------------
+    model_filename = os.path.join(MODEL_PATH, MODEL_FILENAME)
+    debug_print(f"[main] Model file path = {model_filename}")
+
+    if os.path.exists(model_filename):
+        print(f"Loading trained weights from: {model_filename}")
+        state_dict = torch.load(model_filename, map_location=device)
+        model.load_state_dict(state_dict)
+    else:
+        print("No saved model found. Training a new model...")
+        model = train_model(model, train_loader, device,
+                            num_epochs=NUM_EPOCHS, lr=1e-3)
+        print(f"Saving trained model to: {model_filename}")
+        torch.save(model.state_dict(), model_filename)
+
+    # ------------------------------------------------------------
+    # INTERACTIVE LOOP FOR USER-DRIVEN DETECTION
+    # ------------------------------------------------------------
+    import msvcrt
+
+    print("\n--------------------------------------------------")
+    print("Interactive Image Detection Mode")
+    print("Press:")
+    print("   d  → detect on an image index")
+    print("   e  → exit program")
+    print("--------------------------------------------------\n")
+
+    while True:
+        print("Enter command (d = detect, e = exit): ", end="", flush=True)
+
+        # READ ONE CHARACTER WITHOUT PRESSING ENTER
+        key = msvcrt.getch().decode().lower()
+        print(key)   # echo the key
+
+        if key == 'e':
+            print("Exiting program. Goodbye!")
+            break
+
+        elif key == 'd':
+            idx_str = input(f"Enter image index (0 – {len(test_dataset)-1}): ").strip()
+
+            if not idx_str.isdigit():
+                print("❌ Invalid index. Must be a number.")
+                continue
+
+            idx = int(idx_str)
+
+            if idx < 0 or idx >= len(test_dataset):
+                print("❌ Index out of range. Try again.")
+                continue
+
+            print(f"\nRunning detection on test image index {idx} ...")
+            detect_single_image(model, test_dataset, device, index=idx)
+
+        else:
+            print("❌ Unknown command. Use 'd' for detect or 'e' to exit.")
+
 
 
 if __name__ == "__main__":
