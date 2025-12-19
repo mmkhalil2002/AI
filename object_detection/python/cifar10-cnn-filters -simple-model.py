@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import random
+import msvcrt
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
@@ -17,7 +18,10 @@ FILTER_WIDTH = 3
 FILTER_HEIGHT = 3
 BATCH_SIZE = 64
 NUM_EPOCHS = 150
-LEARNING_RATE = 0.001
+#LEARNING_RATE = 0.001
+
+
+NUM_WORKERS = 0
 STATIC_FILTERS = False
 DEBUG_FLAG = True
 # ============================================================
@@ -154,7 +158,22 @@ DEBUG_FLAG = True
 class StaticInitLearnableCNN(nn.Module):
     def __init__(self, num_classes: int = 10):
         super().__init__()
-
+        
+        # --------------------------------------------------------
+        # cuDNN AUTOTUNER
+        # --------------------------------------------------------
+        # Enables cuDNN to find the fastest convolution algorithms
+        # for your hardware and input sizes.
+        #
+        # Works best when:
+        #   • Input image sizes are constant (e.g. always 32x32)
+        #   • You train for many iterations
+        #
+        # WARNING:
+        #   • Slightly slower first iteration (benchmarking)
+        #   • Faster training afterwards
+        # --------------------------------------------------------
+        torch.backends.cudnn.benchmark = True
         # ------------------------------------------------------
         # LAYER 1: 3 → 16 channels
         # 3 input channels (RGB) → 16 feature maps using 3x3 filters
@@ -890,13 +909,35 @@ def debug_print(*args, **kwargs):
 #   No conditional logic or special handling is needed in the training loop.
 #   The same code trains both static and dynamic filter networks correctly.
 
-def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
-    
-    
+def train_model(model, train_loader, device, num_epochs=2, lr=3e-3):
+
+    # --------------------------------------------------------
+    # AUTOMATIC MIXED PRECISION (AMP)
+    # --------------------------------------------------------
+    # Uses float16 where safe and float32 where needed.
+    #
+    # Benefits:
+    #   • Faster training on GPU
+    #   • Lower GPU memory usage
+    #
+    # Automatically disabled on CPU
+    # --------------------------------------------------------
+    use_amp = (device.type == "cuda")
+
+    # IMPORTANT VERSION FIX:
+    # ----------------------
+    # Some PyTorch builds do NOT support:
+    #   torch.amp.GradScaler(device_type="cuda", ...)
+    #
+    # So we use the CUDA GradScaler (works across many versions on Windows):
+    #   • Enabled only if device is CUDA
+    #   • Disabled automatically on CPU
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+
     # ------------------------------------------------------------
     # SEND MODEL TO GPU (IF AVAILABLE) OR CPU
     # ------------------------------------------------------------
-    model.to(device)
+    model.to(device)  # move all model parameters + buffers to the selected device
 
     # ------------------------------------------------------------
     # ENABLE TRAINING MODE
@@ -959,11 +1000,12 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
     #   • bias terms
     #   • normalization layers
     #
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-   # ------------------------------------------------------------
+    
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    # ------------------------------------------------------------
     # LEARNING RATE SCHEDULER — ReduceLROnPlateau
     # ------------------------------------------------------------
-    #
     # PURPOSE:
     # --------
     # During training, the optimizer may stop improving because the
@@ -991,38 +1033,41 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
     #   → better accuracy
     # ------------------------------------------------------------
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
+        optimizer,              # ✅ The optimizer whose learning rate we want to change (Adam/SGD/etc.).
+                            #    The scheduler will edit: optimizer.param_groups[i]["lr"]
 
-        mode='min',         # Scheduler monitors a quantity and tries to make it MINIMAL.
-                            # Here we monitor epoch_loss (lower is better).
+        mode="min",             # ✅ What direction is “better” for the monitored metric?
+                            #    • "min"  → lower metric is better (typical for loss)
+                            #    • "max"  → higher metric is better (typical for accuracy)
 
-        factor=0.5,         # When LR needs reduction:
-                            #     new_lr = old_lr * factor
-                            #
-                            # If old_lr = 0.001:
-                            #     new_lr = 0.001 * 0.5 = 0.0005
-                            #
-                            # If LR plateaus again, scheduler reduces again:
-                            #     0.0005 → 0.00025 → 0.000125 → …
+        factor=0.5,             # ✅ How much to reduce LR when plateau is detected:
+                            #    new_lr = old_lr * factor
+                            #    Example: 0.001 → 0.0005 → 0.00025 → ...
 
-        patience=5          # Number of epochs to wait with NO improvement before reducing LR.
-                            #
-                            # Example:
-                            #   Epoch 40 → loss = 0.42
-                            #   Epoch 41 → loss = 0.42
-                            #   Epoch 42 → loss = 0.43
-                            #   Epoch 43 → loss = 0.422
-                            #   Epoch 44 → loss = 0.422
-                            #   Epoch 45 → loss = 0.423
-                            #
-                            # If no improvement for 5 epochs → lower LR.
+        patience=2,             # ✅ How many epochs to wait WITHOUT meaningful improvement
+                            #    before reducing LR.
+                            #    Example: if loss does not improve for 2 consecutive epochs → reduce LR.
 
-        # NOTE:
-        # PyTorch 2.x REMOVED support for verbose=True.
-        # We will print LR manually after scheduler.step().
+        threshold=1e-3,         # ✅ Minimum change required to count as an “improvement”.
+                            #    If improvement is smaller than this threshold → treated as "no improvement"
+                            #    Helps avoid tiny noisy improvements preventing LR reduction.
+
+        threshold_mode="rel",   # ✅ How to interpret the threshold:
+                            #    • "rel" (relative): improvement must be >= best * threshold
+                            #        Example: best_loss=1.000 → needs improvement ≥ 1.000*0.001 = 0.001
+                            #        So new_loss must be ≤ 0.999 to count as improvement (for mode="min").
+                            #
+                            #    • "abs" (absolute): improvement must be >= threshold directly
+                            #        Example: best_loss=1.000 → needs new_loss ≤ 0.999 (if threshold=0.001)
+
+        min_lr=1e-6             # ✅ Lower bound (floor) for LR.
+                            #    Prevents LR from becoming too tiny (which would make learning extremely slow).
+                            #    Example: LR will never go below 0.000001 even after many reductions.
     )
 
-    
+
+
+   
     # ============================================================
     # COMPLETE END-TO-END EXPLANATION:
     # IMAGE → CONVOLUTION → FEATURES → LOGITS → CrossEntropyLoss
@@ -1260,7 +1305,6 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
     #
     # ============================================================
 
-   
     criterion = nn.CrossEntropyLoss()
 
     # ------------------------------------------------------------
@@ -1299,485 +1343,528 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             # ----------------------------------------
             # CLEAR OLD GRADIENTS
             # ----------------------------------------
+            # optimizer.zero_grad():
+            #   • Clears gradients stored in parameter.grad from the previous iteration.
+            #   • Gradients accumulate by default in PyTorch, so we must reset them.
+            #
+            # set_to_none=True (optional speed optimization):
+            #   • Sets grads to None instead of zeroing tensors, saving memory ops.
             optimizer.zero_grad()
 
-            
             # ============================================================
             # WHAT THIS LINE DOES:
             #     outputs = model(images)
             # ============================================================
-            # FINAL SUMMARY:
+            # (keeping your full explanation block exactly as-is)
             # ============================================================
-            #
-            # outputs = model(images) does:
-            #
-            #   • Runs convolution layers (feature extraction)
-            #   • Runs pooling layers (dimensionality reduction)
-            #   • Flattens features into a vector
-            #   • Applies classifier weights
-            #   • Produces raw class scores (logits)
-            #
-            # These logits are then interpreted by:
-            #   criterion = nn.CrossEntropyLoss()
-            #
-            # to compute how wrong the prediction is.
-            #
-            # ============================================================
-            # ============================================================
-            #
-            # This runs the ENTIRE neural network forward pass:
-            #
-            #     Image → Convolution → Pooling → Flatten → Classifier → Logits
-            #
-            # Below is a COMPLETE STEP-BY-STEP example using:
-            #
-            #   • One 4x4 image
-            #   • One 3x3 filter
-            #   • Padding = 1
-            #   • Max Pooling
-            #   • Fully connected classifier
-            #   • 3 output classes: CAT, DOG, MAN
-            #
-            # ============================================================
-            # INPUT IMAGE (4×4, 1 channel)
-            # ============================================================
-            #
-            # X =
-            # [
-            #   [a11, a12, a13, a14],
-            #   [a21, a22, a23, a24],
-            #   [a31, a32, a33, a34],
-            #   [a41, a42, a43, a44]
-            # ]
-            #
-            # ============================================================
-            # STAGE 1 — CONVOLUTION (3x3 FILTER, padding = 1)
-            # ============================================================
-            #
-            # Filter F =
-            # [
-            #   [f11, f12, f13],
-            #   [f21, f22, f23],
-            #   [f31, f32, f33]
-            # ]
-            #
-            # First pad image with zeros:
-            #
-            # X_padded =
-            # [
-            #   [0, 0, 0, 0, 0, 0],
-            #   [0, a11, a12, a13, a14, 0],
-            #   [0, a21, a22, a23, a24, 0],
-            #   [0, a31, a32, a33, a34, 0],
-            #   [0, a41, a42, a43, a44, 0],
-            #   [0, 0, 0, 0, 0, 0]
-            # ]
-            #
-            # Output stays 4x4
-            #
-            # Example: top-left output pixel:
-            #
-            # y11 =
-            #   a11*f22 + a12*f23
-            # + a21*f32 + a22*f33
-            #
-            # Compute rest the same way → Feature Map Y:
-            #
-            # Y =
-            # [
-            #   [y11, y12, y13, y14],
-            #   [y21, y22, y23, y24],
-            #   [y31, y32, y33, y34],
-            #   [y41, y42, y43, y44]
-            # ]
-            #
-            # ============================================================
-            # STAGE 2 — MAX POOLING (2x2)
-            # ============================================================
-            #
-            # Pooling keeps the maximum in each 2×2 block:
-            #
-            # Example:
-            #
-            # Input block:
-            # [
-            #   y11, y12
-            #   y21, y22
-            # ]
-            #
-            # Output:
-            #   max(y11, y12, y21, y22)
-            #
-            # Resulting pooled map:
-            #
-            # P =
-            # [
-            #   [p11, p12],
-            #   [p21, p22]
-            # ]
-            #
-            # Size reduces: 4x4 → 2x2
-            #
-            # ============================================================
-            # STAGE 3 — FLATTEN FEATURES
-            # ============================================================
-            #
-            # Convert P into a vector:
-            #
-            # feature_vector =
-            # [
-            #   p11, p12,
-            #   p21, p22
-            # ]
-            #
-            # Shape: [4]
-            #
-            # ============================================================
-            # STAGE 4 — CLASSIFIER (FULLY CONNECTED LAYER)
-            # ============================================================
-            #
-            # Suppose we classify:
-            #
-            #   0 → CAT
-            #   1 → DOG
-            #   2 → MAN
-            #
-            # The FC layer has weights:
-            #
-            # W =
-            # [
-            #   [w1, w2, w3, w4],   # CAT
-            #   [v1, v2, v3, v4],   # DOG
-            #   [u1, u2, u3, u4]    # MAN
-            # ]
-            #
-            # Bias:
-            #
-            # b = [b_cat, b_dog, b_man]
-            #
-            # Compute logits:
-            #
-            # L_cat = w1*p11 + w2*p12 + w3*p21 + w4*p22 + b_cat
-            # L_dog = v1*p11 + v2*p12 + v3*p21 + v4*p22 + b_dog
-            # L_man = u1*p11 + u2*p12 + u3*p21 + u4*p22 + b_man
-            #
-            # Model output:
-            #
-            # outputs = [L_cat, L_dog, L_man]
-            #
-          
-            outputs = model(images)
-
-            # ============================================================
-            # WHAT THIS LINE DOES:
-            #     loss = criterion(outputs, labels)
-            # ============================================================
-            #
-            # Here:
-            #   • criterion = nn.CrossEntropyLoss()
-            #   • outputs  = model(images) → raw class scores (logits)
-            #   • labels   = true class indices for each image in the batch
-            #
-            # ------------------------------------------------------------
-            # SHAPES (SINGLE IMAGE EXAMPLE)
-            # ------------------------------------------------------------
-            #
-            # Suppose:
-            #
-            #   • We pass ONE image through the model (batch_size = 1)
-            #   • We have 3 classes: 0 = CAT, 1 = DOG, 2 = MAN
-            #
-            # Then:
-            #
-            #   outputs.shape = [1, 3]
-            #   labels.shape  = [1]
-            #
-            # ------------------------------------------------------------
-            # SHAPE EXPLANATION
-            # ------------------------------------------------------------
-            #
-            # outputs.shape = [1, 3]
-            #
-            # means:
-            #
-            #   • 1 = number of images in this batch (batch_size = 1)
-            #   • 3 = number of classes (for example: CAT, DOG, MAN)
-            #
-            # So outputs contains:
-            #
-            #   one row of predictions,
-            #   and each row has ONE score for each class.
-            #
-            # Example:
-            #
-            #   outputs = [[2.4, 0.3, -1.2]]
-            #
-            # Interpretation:
-            #
-            #   outputs[0][0] → score for class CAT
-            #   outputs[0][1] → score for class DOG
-            #   outputs[0][2] → score for class MAN
-            #
-            # ------------------------------------------------------------
-            # labels.shape = [1]
-            #
-            # means:
-            #
-            #   • There is ONE correct class label
-            #     because there is ONE image in this batch.
-            #
-            # Example:
-            #
-            #   labels = [0]
-            #
-            # Meaning:
-            #
-            #   The true class for this image is:
-            #       index 0 → CAT
-            #
-            # ------------------------------------------------------------
-            # WHY THESE SHAPES MATCH
-            # ------------------------------------------------------------
-            #
-            # For every row in outputs (one image),
-            # there MUST be exactly ONE label.
-            #
-            # ------------------------------------------------------------
-            # GENERAL RULE
-            # ------------------------------------------------------------
-            #
-            # If batch_size = N and number_of_classes = C:
-            #
-            #   outputs.shape = [N, C]
-            #   labels.shape  = [N]
-            #
-            # Example for batch_size = 5 and 3 classes:
-            #
-            #   outputs.shape = [5, 3]
-            #   labels.shape  = [5]
-            #
-            # Means:
-            #
-            #   5 images → 5 prediction rows
-            #   each row has 3 class scores
-            # ------------------------------------------------------------
 
             # ------------------------------------------------------------
-            # STEP 1: CrossEntropyLoss TAKES "outputs" AND "labels"
+            # AMP FORWARD PASS (autocast)
             # ------------------------------------------------------------
+            # If AMP is enabled (CUDA):
+            #   • Runs many ops in float16 for speed (conv, matmul)
+            #   • Keeps numerically sensitive ops in float32 (BatchNorm, reductions)
             #
-            # When we call:
-            #
-            #   loss = criterion(outputs, labels)
-            #
-            # PyTorch does the following internally for EACH sample:
-            #
-            #   1) Applies softmax to the logits (outputs) to convert them
-            #      into probabilities.
-            #
-            #   2) Selects the probability corresponding to the TRUE label.
-            #
-            #   3) Computes the negative log of that probability.
-            #
-            #   4) Averages over the batch (if batch_size > 1).
-            #
+            # If AMP is disabled (CPU):
+            #   • This context becomes a no-op and everything runs in float32
             # ------------------------------------------------------------
-            # STEP 2: SOFTMAX ON OUR EXAMPLE LOGITS
-            # ------------------------------------------------------------
-            #
-            # outputs = [[2.4, 0.3, -1.2]]
-            #
-            # First, compute exponentials:
-            #
-            #   exp(2.4)  ≈ 11.02
-            #   exp(0.3)  ≈  1.35
-            #   exp(-1.2) ≈  0.30
-            #
-            # Sum them:
-            #
-            #   total = 11.02 + 1.35 + 0.30 = 12.67
-            #
-            # Probabilities:
-            #
-            #   P(CAT) = 11.02 / 12.67 ≈ 0.87
-            #   P(DOG) =  1.35 / 12.67 ≈ 0.11
-            #   P(MAN) =  0.30 / 12.67 ≈ 0.02
-            #
-            # ------------------------------------------------------------
-            # STEP 3: USE THE TRUE LABEL (labels = [0])
-            # ------------------------------------------------------------
-            #
-            # labels = [0] means:
-            #   • The correct class for this image is index 0 → CAT.
-            #
-            # CrossEntropyLoss picks the probability of the true class:
-            #
-            #   P_true = P(CAT) = 0.87
-            #
-            # ------------------------------------------------------------
-            # STEP 4: COMPUTE THE LOSS VALUE
-            # ------------------------------------------------------------
-            #
-            # CrossEntropyLoss for this sample:
-            #
-            #   loss = -log(P_true)
-            #   loss = -log(0.87)  ≈ 0.139
-            #
-            # Small loss → model is confident and correct.
-            #
-            # If the model was wrong / unsure (e.g., P_true ≈ 0.1),
-            # then:
-            #
-            #   loss = -log(0.1) = 2.302  (much larger)
-            #
-            # Large loss → strong error signal for learning.
-            #
-            # ------------------------------------------------------------
-            # BATCH EXAMPLE (TWO IMAGES)
-            # ------------------------------------------------------------
-            #
-            # Suppose batch_size = 2, still 3 classes:
-            #
-            #   outputs =
-            #     [
-            #       [ 2.4,  0.3, -1.2],   # image 0: logits
-            #       [-0.5,  1.7,  0.0]    # image 1: logits
-            #     ]
-            #
-            #   labels = [0, 1]
-            #
-            # Meaning:
-            #
-            #   • image 0 → true class = CAT (0)
-            #   • image 1 → true class = DOG (1)
-            #
-            # CrossEntropyLoss will:
-            #
-            #   • compute loss_0 from outputs[0] and label 0
-            #   • compute loss_1 from outputs[1] and label 1
-            #   • final loss = (loss_0 + loss_1) / 2
-            #
-            # ------------------------------------------------------------
-            # HOW THIS RELATES TO THE IMAGE AND FILTERS
-            # ------------------------------------------------------------
-            #
-            # For each training step:
-            #
-            #   1) 4x4 image → conv + padding 1 + 3x3 filters
-            #   2) feature map → pooling → flattened feature vector
-            #   3) fully connected layer → logits (outputs)
-            #   4) loss = criterion(outputs, labels)
-            #   5) loss.backward() → computes gradients
-            #   6) optimizer.step() → updates filters + weights to reduce loss
-            #
-            # So THIS LINE:
-            #
-            #   loss = criterion(outputs, labels)
-            #
-            # is where we measure:
-            #
-            #   "How wrong were the predictions for this batch,
-            #    given the true labels?"
-            #
-            # ============================================================
-            # ================================================================
-            # WHAT THIS LINE COMPUTES:
-            # ================================================================
-            #
-            #    loss = criterion(outputs, labels)
-            #
-            # Where:
-            #
-            #   outputs → model logits (raw class scores)
-            #   labels  → true class indices
-            #
-            # ================================================================
-            # TENSOR SHAPES
-            # ================================================================
-            #
-            #   outputs.shape = [N, C]
-            #       N = batch size (number of images)
-            #       C = number of classes
-            #
-            #   labels.shape  = [N]
-            #       Each value = correct class index for each image
-            #
-            # ================================================================
-            # MATHEMATICAL FORMULA (CrossEntropyLoss)
-            # ================================================================
-            #
-            # For each image i (from 0 to N-1):
-            #
-            #   Step 1: Apply Softmax
-            #
-            #     i → index of the image in the batch
-            #     j → index of the CLASS  
-            #     P[i, j] = exp(outputs[i, j]) / Σ exp(outputs[i, k])  j is a class
-            #                                       k = 0..C-1
-            #
-            #     → Converts raw logits into probabilities
-            #
-            # ------------------------------------------------
-            # Step 2: Pick probability of the TRUE class
-            #
-            #     P_true = P[i, labels[i]]
-            #
-            # ------------------------------------------------
-            # Step 3: Compute negative log-likelihood
-            #
-            #     Loss per image:
-            #
-            #         L[i] = -log(P_true)
-            #
-            # ------------------------------------------------
-            # Step 4: Average across batch
-            #
-            #     Final loss:
-            #
-            #         loss = (1 / N) * Σ L[i]
-            #                         i = 0..N-1
-            #
-            # ================================================================
-            # COMPACT FORM:
-            # ================================================================
-            #
-            #   loss = -(1/N) × Σ log( exp(Z[i, y[i]]) / Σ exp(Z[i, k]) )
-            #                  i                 k
-            #
-            # Where:
-            #
-            #   Z = outputs logits
-            #   y = labels ground-truth
-            #   C = number of classes
-            #   N = batch size
-            #
-            # ================================================================
-            # INTERPRETATION:
-            # ================================================================
-            #
-            # ✔ Large probability for correct class → LOW loss
-            # ✔ Small probability for correct class → HIGH loss
-            # ✔ Model is punished when it's wrong
-            # ✔ Model is rewarded when it's confident and right
-            #
-            # ================================================================
-            # IMPORTANT:
-            # ================================================================
-            #
-            # PyTorch's CrossEntropyLoss automatically:
-            #
-            #   • Applies softmax
-            #   • Computes -log
-            #   • Computes batch mean
-            #
-            # So you MUST provide RAW logits (not probabilities)
-            #
-            # ================================================================
+            with torch.amp.autocast(device_type="cuda", enabled=use_amp):
+                # ============================================================
+                # WHAT THIS LINE DOES:
+                #     outputs = model(images)
+                # ============================================================
+                # FINAL SUMMARY:
+                # ============================================================
+                #
+                # outputs = model(images) does:
+                #
+                #   • Runs convolution layers (feature extraction)
+                #   • Runs pooling layers (dimensionality reduction)
+                #   • Flattens features into a vector
+                #   • Applies classifier weights
+                #   • Produces raw class scores (logits)
+                #
+                # These logits are then interpreted by:
+                #   criterion = nn.CrossEntropyLoss()
+                #
+                # to compute how wrong the prediction is.
+                #
+                # ============================================================
+                # ============================================================
+                #
+                # This runs the ENTIRE neural network forward pass:
+                #
+                #     Image → Convolution → Pooling → Flatten → Classifier → Logits
+                #
+                # Below is a COMPLETE STEP-BY-STEP example using:
+                #
+                #   • One 4x4 image
+                #   • One 3x3 filter
+                #   • Padding = 1
+                #   • Max Pooling
+                #   • Fully connected classifier
+                #   • 3 output classes: CAT, DOG, MAN
+                #
+                # ============================================================
+                # INPUT IMAGE (4×4, 1 channel)
+                # ============================================================
+                #
+                # X =
+                # [
+                #   [a11, a12, a13, a14],
+                #   [a21, a22, a23, a24],
+                #   [a31, a32, a33, a34],
+                #   [a41, a42, a43, a44]
+                # ]
+                #
+                # ============================================================
+                # STAGE 1 — CONVOLUTION (3x3 FILTER, padding = 1)
+                # ============================================================
+                #
+                # Filter F =
+                # [
+                #   [f11, f12, f13],
+                #   [f21, f22, f23],
+                #   [f31, f32, f33]
+                # ]
+                #
+                # First pad image with zeros:
+                #
+                # X_padded =
+                # [
+                #   [0, 0, 0, 0, 0, 0],
+                #   [0, a11, a12, a13, a14, 0],
+                #   [0, a21, a22, a23, a24, 0],
+                #   [0, a31, a32, a33, a34, 0],
+                #   [0, a41, a42, a43, a44, 0],
+                #   [0, 0, 0, 0, 0, 0]
+                # ]
+                #
+                # Output stays 4x4
+                #
+                # Example: top-left output pixel:
+                #
+                # y11 =
+                #   a11*f22 + a12*f23
+                # + a21*f32 + a22*f33
+                #
+                # Compute rest the same way → Feature Map Y:
+                #
+                # Y =
+                # [
+                #   [y11, y12, y13, y14],
+                #   [y21, y22, y23, y24],
+                #   [y31, y32, y33, y34],
+                #   [y41, y42, y43, y44]
+                # ]
+                #
+                # ============================================================
+                # STAGE 2 — MAX POOLING (2x2)
+                # ============================================================
+                #
+                # Pooling keeps the maximum in each 2×2 block:
+                #
+                # Example:
+                #
+                # Input block:
+                # [
+                #   y11, y12
+                #   y21, y22
+                # ]
+                #
+                # Output:
+                #   max(y11, y12, y21, y22)
+                #
+                # Resulting pooled map:
+                #
+                # P =
+                # [
+                #   [p11, p12],
+                #   [p21, p22]
+                # ]
+                #
+                # Size reduces: 4x4 → 2x2
+                #
+                # ============================================================
+                # STAGE 3 — FLATTEN FEATURES
+                # ============================================================
+                #
+                # Convert P into a vector:
+                #
+                # feature_vector =
+                # [
+                #   p11, p12,
+                #   p21, p22
+                # ]
+                #
+                # Shape: [4]
+                #
+                # ============================================================
+                # STAGE 4 — CLASSIFIER (FULLY CONNECTED LAYER)
+                # ============================================================
+                #
+                # Suppose we classify:
+                #
+                #   0 → CAT
+                #   1 → DOG
+                #   2 → MAN
+                #
+                # The FC layer has weights:
+                #
+                # W =
+                # [
+                #   [w1, w2, w3, w4],   # CAT
+                #   [v1, v2, v3, v4],   # DOG
+                #   [u1, u2, u3, u4]    # MAN
+                # ]
+                #
+                # Bias:
+                #
+                # b = [b_cat, b_dog, b_man]
+                #
+                # Compute logits:
+                #
+                # L_cat = w1*p11 + w2*p12 + w3*p21 + w4*p22 + b_cat
+                # L_dog = v1*p11 + v2*p12 + v3*p21 + v4*p22 + b_dog
+                # L_man = u1*p11 + u2*p12 + u3*p21 + u4*p22 + b_man
+                #
+                # Model output:
+                #
+                # outputs = [L_cat, L_dog, L_man]
+                #
+                outputs = model(images)
+                # ============================================================
+                # WHAT THIS LINE DOES:
+                #     loss = criterion(outputs, labels)
+                # ============================================================
+                #
+                # Here:
+                #   • criterion = nn.CrossEntropyLoss()
+                #   • outputs  = model(images) → raw class scores (logits)
+                #   • labels   = true class indices for each image in the batch
+                #
+                # ------------------------------------------------------------
+                # SHAPES (SINGLE IMAGE EXAMPLE)
+                # ------------------------------------------------------------
+                #
+                # Suppose:
+                #
+                #   • We pass ONE image through the model (batch_size = 1)
+                #   • We have 3 classes: 0 = CAT, 1 = DOG, 2 = MAN
+                #
+                # Then:
+                #
+                #   outputs.shape = [1, 3]
+                #   labels.shape  = [1]
+                #
+                # ------------------------------------------------------------
+                # SHAPE EXPLANATION
+                # ------------------------------------------------------------
+                #
+                # outputs.shape = [1, 3]
+                #
+                # means:
+                #
+                #   • 1 = number of images in this batch (batch_size = 1)
+                #   • 3 = number of classes (for example: CAT, DOG, MAN)
+                #
+                # So outputs contains:
+                #
+                #   one row of predictions,
+                #   and each row has ONE score for each class.
+                #
+                # Example:
+                #
+                #   outputs = [[2.4, 0.3, -1.2]]
+                #
+                # Interpretation:
+                #
+                #   outputs[0][0] → score for class CAT
+                #   outputs[0][1] → score for class DOG
+                #   outputs[0][2] → score for class MAN
+                #
+                # ------------------------------------------------------------
+                # labels.shape = [1]
+                #
+                # means:
+                #
+                #   • There is ONE correct class label
+                #     because there is ONE image in this batch.
+                #
+                # Example:
+                #
+                #   labels = [0]
+                #
+                # Meaning:
+                #
+                #   The true class for this image is:
+                #       index 0 → CAT
+                #
+                # ------------------------------------------------------------
+                # WHY THESE SHAPES MATCH
+                # ------------------------------------------------------------
+                #
+                # For every row in outputs (one image),
+                # there MUST be exactly ONE label.
+                #
+                # ------------------------------------------------------------
+                # GENERAL RULE
+                # ------------------------------------------------------------
+                #
+                # If batch_size = N and number_of_classes = C:
+                #
+                #   outputs.shape = [N, C]
+                #   labels.shape  = [N]
+                #
+                # Example for batch_size = 5 and 3 classes:
+                #
+                #   outputs.shape = [5, 3]
+                #   labels.shape  = [5]
+                #
+                # Means:
+                #
+                #   5 images → 5 prediction rows
+                #   each row has 3 class scores
+                # ------------------------------------------------------------
 
-           
+                # ------------------------------------------------------------
+                # STEP 1: CrossEntropyLoss TAKES "outputs" AND "labels"
+                # ------------------------------------------------------------
+                #
+                # When we call:
+                #
+                #   loss = criterion(outputs, labels)
+                #
+                # PyTorch does the following internally for EACH sample:
+                #
+                #   1) Applies softmax to the logits (outputs) to convert them
+                #      into probabilities.
+                #
+                #   2) Selects the probability corresponding to the TRUE label.
+                #
+                #   3) Computes the negative log of that probability.
+                #
+                #   4) Averages over the batch (if batch_size > 1).
+                #
+                # ------------------------------------------------------------
+                # STEP 2: SOFTMAX ON OUR EXAMPLE LOGITS
+                # ------------------------------------------------------------
+                #
+                # outputs = [[2.4, 0.3, -1.2]]
+                #
+                # First, compute exponentials:
+                #
+                #   exp(2.4)  ≈ 11.02
+                #   exp(0.3)  ≈  1.35
+                #   exp(-1.2) ≈  0.30
+                #
+                # Sum them:
+                #
+                #   total = 11.02 + 1.35 + 0.30 = 12.67
+                #
+                # Probabilities:
+                #
+                #   P(CAT) = 11.02 / 12.67 ≈ 0.87
+                #   P(DOG) =  1.35 / 12.67 ≈ 0.11
+                #   P(MAN) =  0.30 / 12.67 ≈ 0.02
+                #
+                # ------------------------------------------------------------
+                # STEP 3: USE THE TRUE LABEL (labels = [0])
+                # ------------------------------------------------------------
+                #
+                # labels = [0] means:
+                #   • The correct class for this image is index 0 → CAT.
+                #
+                # CrossEntropyLoss picks the probability of the true class:
+                #
+                #   P_true = P(CAT) = 0.87
+                #
+                # ------------------------------------------------------------
+                # STEP 4: COMPUTE THE LOSS VALUE
+                # ------------------------------------------------------------
+                #
+                # CrossEntropyLoss for this sample:
+                #
+                #   loss = -log(P_true)
+                #   loss = -log(0.87)  ≈ 0.139
+                #
+                # Small loss → model is confident and correct.
+                #
+                # If the model was wrong / unsure (e.g., P_true ≈ 0.1),
+                # then:
+                #
+                #   loss = -log(0.1) = 2.302  (much larger)
+                #
+                # Large loss → strong error signal for learning.
+                #
+                # ------------------------------------------------------------
+                # BATCH EXAMPLE (TWO IMAGES)
+                # ------------------------------------------------------------
+                #
+                # Suppose batch_size = 2, still 3 classes:
+                #
+                #   outputs =
+                #     [
+                #       [ 2.4,  0.3, -1.2],   # image 0: logits
+                #       [-0.5,  1.7,  0.0]    # image 1: logits
+                #     ]
+                #
+                #   labels = [0, 1]
+                #
+                # Meaning:
+                #
+                #   • image 0 → true class = CAT (0)
+                #   • image 1 → true class = DOG (1)
+                #
+                # CrossEntropyLoss will:
+                #
+                #   • compute loss_0 from outputs[0] and label 0
+                #   • compute loss_1 from outputs[1] and label 1
+                #   • final loss = (loss_0 + loss_1) / 2
+                #
+                # ------------------------------------------------------------
+                # HOW THIS RELATES TO THE IMAGE AND FILTERS
+                # ------------------------------------------------------------
+                #
+                # For each training step:
+                #
+                #   1) 4x4 image → conv + padding 1 + 3x3 filters
+                #   2) feature map → pooling → flattened feature vector
+                #   3) fully connected layer → logits (outputs)
+                #   4) loss = criterion(outputs, labels)
+                #   5) loss.backward() → computes gradients
+                #   6) optimizer.step() → updates filters + weights to reduce loss
+                #
+                # So THIS LINE:
+                #
+                #   loss = criterion(outputs, labels)
+                #
+                # is where we measure:
+                #
+                #   "How wrong were the predictions for this batch,
+                #    given the true labels?"
+                #
+                # ============================================================
+                # ================================================================
+                # WHAT THIS LINE COMPUTES:
+                # ================================================================
+                #
+                #    loss = criterion(outputs, labels)
+                #
+                # Where:
+                #
+                #   outputs → model logits (raw class scores)
+                #   labels  → true class indices
+                #
+                # ================================================================
+                # TENSOR SHAPES
+                # ================================================================
+                #
+                #   outputs.shape = [N, C]
+                #       N = batch size (number of images)
+                #       C = number of classes
+                #
+                #   labels.shape  = [N]
+                #       Each value = correct class index for each image
+                #
+                # ================================================================
+                # MATHEMATICAL FORMULA (CrossEntropyLoss)
+                # ================================================================
+                #
+                # For each image i (from 0 to N-1):
+                #
+                #   Step 1: Apply Softmax
+                #
+                #     i → index of the image in the batch
+                #     j → index of the CLASS  
+                #     P[i, j] = exp(outputs[i, j]) / Σ exp(outputs[i, k])  j is a class
+                #                                       k = 0..C-1
+                #
+                #     → Converts raw logits into probabilities
+                #
+                # ------------------------------------------------
+                # Step 2: Pick probability of the TRUE class
+                #
+                #     P_true = P[i, labels[i]]
+                #
+                # ------------------------------------------------
+                # Step 3: Compute negative log-likelihood
+                #
+                #     Loss per image:
+                #
+                #         L[i] = -log(P_true)
+                #
+                # ------------------------------------------------
+                # Step 4: Average across batch
+                #
+                #     Final loss:
+                #
+                #         loss = (1 / N) * Σ L[i]
+                #                         i = 0..N-1
+                #
+                # ================================================================
+                # COMPACT FORM:
+                # ================================================================
+                #
+                #   loss = -(1/N) × Σ log( exp(Z[i, y[i]]) / Σ exp(Z[i, k]) )
+                #                  i                 k
+                #
+                # Where:
+                #
+                #   Z = outputs logits
+                #   y = labels ground-truth
+                #   C = number of classes
+                #   N = batch size
+                #
+                # ================================================================
+                # INTERPRETATION:
+                # ================================================================
+                #
+                # ✔ Large probability for correct class → LOW loss
+                # ✔ Small probability for correct class → HIGH loss
+                # ✔ Model is punished when it's wrong
+                # ✔ Model is rewarded when it's confident and right
+                #
+                # ================================================================
+                # IMPORTANT:
+                # ================================================================
+                #
+                # PyTorch's CrossEntropyLoss automatically:
+                #
+                #   • Applies softmax
+                #   • Computes -log
+                #   • Computes batch mean
+                #
+                # So you MUST provide RAW logits (not probabilities)
+                #
+                # ================================================================
+                loss = criterion(outputs, labels)
 
-            loss = criterion(outputs, labels)
-
+            # ------------------------------------------------------------
+            # WHAT AMP (AUTOMATIC MIXED PRECISION) IS DOING INTERNALLY
+            # ------------------------------------------------------------
+            # 1️⃣ Forward pass (autocast enabled):
+            #    • Uses float16 where it is numerically safe (convolutions, matmul)
+            #    • Uses float32 where precision is required (BatchNorm, reductions)
+            #    • Leverages GPU Tensor Cores for much faster computation
+            #
+            # 2️⃣ scaler.scale(loss):
+            #    • Multiplies the loss by a large scaling factor (e.g., 2^16)
+            #    • Prevents very small float16 gradients from underflowing to zero
+            #    • Ensures meaningful gradient values during backpropagation
+            #
+            # 3️⃣ scaler.step(optimizer):
+            #    • Unscales gradients back to their true magnitude
+            #    • Checks gradients for NaN or Inf values
+            #    • If NaN/Inf detected → skips optimizer update (protects weights)
+            #    • If gradients are valid → applies optimizer.step() safely
+            #
+            # 4️⃣ scaler.update():
+            #    • Automatically adjusts the scaling factor over time
+            #    • Increases scale when training is stable
+            #    • Decreases scale when numerical overflow is detected
+            #    • No manual tuning of scaling factor is required
+            # ------------------------------------------------------------
 
             # ----------------------------------------
             # BACKPROPAGATION
@@ -2401,74 +2488,70 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             #   [ ∂P[1]/∂Z[0]   ∂P[1]/∂Z[1]   ∂P[1]/∂Z[2] ] = [ -P[1]P[0]       P[1](1-P[1])   -P[1]P[2]   ]
             #   [ ∂P[2]/∂Z[0]   ∂P[2]/∂Z[1]   ∂P[2]/∂Z[2] ]   [ -P[2]P[0]      -P[2]P[1]       P[2](1-P[2])]
             #
-            
+            # ------------------------------------------------------------
+            # WHAT AMP (AUTOMATIC MIXED PRECISION) IS DOING INTERNALLY
+            # ------------------------------------------------------------
 
+            # 1️⃣ FORWARD PASS (autocast enabled)
+            #
+            # • Uses float16 where it is numerically safe (convolutions, matmul)
+            # • Uses float32 where precision is required (BatchNorm, reductions)
+            # • Leverages GPU Tensor Cores for much faster computation
+            #
 
-            loss.backward()
+            # 2️⃣ scaler.scale(loss)
+            #
+            # • Multiplies the loss by a large scaling factor (e.g., 2^16)
+            # • Prevents very small float16 gradients from underflowing to zero
+            # • Ensures meaningful gradient values during backpropagation
+            #
 
+            # 3️⃣ scaler.step(optimizer)
+            #
+            # • Unscales gradients back to their true magnitude
+            # • Checks gradients for NaN or Inf values
+            # • If NaN/Inf detected → skips optimizer update (protects weights)
+            # • If gradients are valid → applies optimizer.step() safely
+            #
+
+            # 4️⃣ scaler.update()
+            #
+            # • Automatically adjusts the scaling factor over time
+            # • Increases scale when training is stable
+            # • Decreases scale when numerical overflow is detected
+            # • No manual tuning of scaling factor is required
+            #
+            # ------------------------------------------------------------
 
             # ----------------------------------------
-            # PARAMETER UPDATE
-            #   optimizer changes all learnable weights
+            # BACKWARD PASS (AMP)
             # ----------------------------------------
-            # Apply the optimizer update step.
-            #
-            # This is the moment where the neural network actually LEARNS.
-            #
-            # What this line does:
-            #   • Reads all gradients computed by loss.backward().
-            #   • Uses the optimization algorithm (Adam here) to update each parameter.
-            #
-            # Sequence context:
-            #   loss.backward()   → computes gradients
-            #   optimizer.step()  → applies updates
-            #
-            # Internally, for EACH trainable parameter:
-            #
-            #   1) The optimizer reads:
-            #        param.grad  (computed gradient).
-            #
-            #   2) Adam updates its internal states:
-            #        m  (first moment / momentum)
-            #        v  (second moment / variance)
-            #
-            #   3) Bias correction is applied:
-            #        m̂ = m / (1 − β1^t)
-            #        v̂ = v / (1 − β2^t)
-            #
-            #   4) Weight update is computed:
-            #        param ← param − lr × (m̂ / (sqrt(v̂) + ε))
-            #
-            # Effects:
-            #   • Large gradients are dampened.
-            #   • Small gradients are amplified.
-            #   • Each parameter gets its own adaptive step size.
-            #
-            # Results:
-            #   • Feature detectors in conv layers improve.
-            #   • Fully-connected layers become better decision makers.
-            #   • Biases and normalization layers self-adjust.
-            #
-            # Important:
-            #   • This updates ONLY parameters that have requires_grad=True.
-            #   • Frozen layers remain unchanged.
-            #
-            # What happens if you skip this line:
-            #   ❌ No learning occurs.
-            #   ❌ Model weights never change.
-            #   ❌ Loss stays constant across epochs.
-            #
-            # Debug tip:
-            #   • Check param.grad before step() to verify gradients exist.
-            #   • Print weight values before/after step() to confirm learning is happening.
-            #
-            # Note:
-            #   • Parameters are updated in-place.
-            #   • The computational graph is NOT rebuilt here.
-            #
-            optimizer.step()
+            # • Scales the loss to prevent float16 underflow
+            # • Computes gradients in scaled space
+            # • Builds the backward graph once
+            scaler.scale(loss).backward()
 
+            # ----------------------------------------
+            # OPTIMIZER STEP (AMP SAFE)
+            # ----------------------------------------
+            # • Internally unscales gradients (brings them back to real magnitude)
+            # • Checks for NaN/Inf gradients:
+            #     - If found → SKIP the weight update to avoid corrupting weights
+            #     - If clean  → run optimizer.step() to update parameters safely
+            scaler.step(optimizer)
 
+            # ----------------------------------------
+            # UPDATE SCALER
+            # ----------------------------------------
+            # • Adjusts scaling factor dynamically
+            # • Increases scale if training is stable
+            # • Decreases scale if overflow is detected
+            scaler.update()
+
+            # ----------------------------------------
+            # STATISTICS
+            # ----------------------------------------
+           
             # ----------------------------------------
             # STATISTICS
             # ----------------------------------------
@@ -2531,7 +2614,6 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             #                      = 0.66
             #
             running_loss += loss.item() * images.size(0)
-
 
             # Compute predicted class labels from model outputs.
             #
@@ -2604,7 +2686,7 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             #
             preds = outputs.argmax(1)
 
-
+           
             # Count how many predictions are correct in this batch.
             #
             # preds == labels:
@@ -2722,10 +2804,9 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
             # total   = 200
             #
             # accuracy = 130 / 200 = 0.65 = 65%
-
             correct += (preds == labels).sum().item()
 
-
+            
             # Count how many total samples have been evaluated.
             #
             # labels.size(0):
@@ -2740,7 +2821,6 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
         # END TIMER FOR THIS EPOCH
         #   • Compute how long this epoch took in seconds.
         #   • Store duration so we can summarize later.
-        # --------------------------------------------------------
         epoch_time = time.perf_counter() - epoch_start
         epoch_times.append(epoch_time)
 
@@ -2852,7 +2932,6 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
         #
         # This lets you SEE when LR drops, which helps with debugging and tuning.
         # ------------------------------------------------------------
-
         if scheduler is not None:
             scheduler.step(epoch_loss)
 
@@ -2862,8 +2941,6 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
 
     # ------------------------------------------------------------
     # OPTIONAL: PRINT TOTAL AND AVERAGE EXECUTION TIME
-    #   • total_time: sum of all epoch durations.
-    #   • avg_time:   mean seconds per epoch.
     # ------------------------------------------------------------
     if epoch_times:
         total_time = sum(epoch_times)
@@ -2878,6 +2955,9 @@ def train_model(model, train_loader, device, num_epochs=2, lr=1e-3):
     # RETURN TRAINED MODEL
     # ------------------------------------------------------------
     return model
+
+
+
 
 
 
@@ -3115,10 +3195,10 @@ def main():
     #   • dataset level  (samples list)
     #   • batch order    (DataLoader index sampling)
     # --------------------------------------------------------
-    random.shuffle(train_dataset.samples)
-    random.shuffle(test_dataset.samples)
-    debug_print("[main] Shuffled train_dataset.samples for full randomization")
-    debug_print("[main] Shuffled test_dataset.samples  for full randomization")
+    #random.shuffle(train_dataset.samples)
+    #random.shuffle(test_dataset.samples)
+    #debug_print("[main] Shuffled train_dataset.samples for full randomization")
+    #debug_print("[main] Shuffled test_dataset.samples  for full randomization")
 
     # Show class mapping as seen by ImageFolder
     debug_print("[main] Class index → name mapping (from train_dataset.classes):")
@@ -3144,9 +3224,9 @@ def main():
     # ============================================================
     train_loader = DataLoader(
         train_dataset,
-        batch_size=10,
+        batch_size=BATCH_SIZE,
         shuffle=True,    # ✅ still keep this True for per-epoch randomization
-        num_workers=2
+        num_workers=NUM_WORKERS
     )
 
     # For *complete* randomization in testing as requested,
@@ -3192,7 +3272,7 @@ def main():
     # ------------------------------------------------------------
     # INTERACTIVE LOOP FOR USER-DRIVEN DETECTION
     # ------------------------------------------------------------
-    import msvcrt
+    #import msvcrt
 
     print("\n--------------------------------------------------")
     print("Interactive Image Detection Mode")
