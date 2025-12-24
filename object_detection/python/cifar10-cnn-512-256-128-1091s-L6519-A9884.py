@@ -10,12 +10,8 @@ from torchvision import datasets, transforms
 
 
 MODEL_PATH = "../../../"
-MODEL_FILENAME = "cifar10-cnn-64-128-256-300s-L76-A93"
+MODEL_FILENAME = "cifar10-cnn-512-256-128-1091s-L6519-A9884"
 DATA_PATH = "../../../data/mydata"
-MG_WIDTH, IMG_HEIGHT = 32, 32  # Based on training dataset
-CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence for valid detections
-FILTER_WIDTH = 3
-FILTER_HEIGHT = 3
 BATCH_SIZE = 128
 NUM_EPOCHS = 100
 #LEARNING_RATE = 0.001
@@ -100,9 +96,9 @@ DEBUG_FLAG = True
 #
 # These include:
 #
-#   • conv1.weight, conv1.bias      (128-channel low-level filters)
-#   • conv2.weight, conv2.bias      (64-channel mid-level filters)
-#   • conv3.weight, conv3.bias      (32-channel higher-level filters)
+#   • conv1.weight, conv1.bias      (512-channel low-level filters) ✅ UPDATED
+#   • conv2.weight, conv2.bias      (256-channel mid-level filters) ✅ UPDATED
+#   • conv3.weight, conv3.bias      (128-channel higher-level filters) ✅ UPDATED
 #
 #   • bn1.weight, bn1.bias          (BatchNorm scale/shift for conv1)
 #   • bn2.weight, bn2.bias          (BatchNorm scale/shift for conv2)
@@ -187,18 +183,18 @@ DEBUG_FLAG = True
 # NETWORK SHAPE (IMAGE-SIZE INDEPENDENT WITH GAP)
 # ============================================================
 #
-# Input image:                [3   x H x W]
+# Input image:                [3    x H   x W]
 #
-# After conv1:                [128 x H   x W]
-# After pool1:                [128 x H/2 x W/2]
+# After conv1:                [512  x H   x W]       ✅ UPDATED
+# After pool1:                [512  x H/2 x W/2]     ✅ UPDATED
 #
-# After conv2:                [64  x H/2 x W/2]
+# After conv2:                [256  x H/2 x W/2]     ✅ UPDATED
 #   (NO pooling here to preserve spatial detail)
 #
-# After conv3:                [32  x H/2 x W/2]
+# After conv3:                [128  x H/2 x W/2]     ✅ UPDATED
 #
-# After GAP:                  [32  x 1   x 1]
-# After flatten:              [32]
+# After GAP:                  [128  x 1   x 1]       ✅ UPDATED
+# After flatten:              [128]                  ✅ UPDATED
 # Output layer (fc):          [num_classes]
 #
 # ============================================================
@@ -211,7 +207,6 @@ DEBUG_FLAG = True
 # ✅ GAP makes the model work with ANY image size
 # ✅ Classical CNN trained end-to-end with backpropagation
 
-#
 
 
 class StaticInitLearnableCNN(nn.Module):
@@ -240,9 +235,9 @@ class StaticInitLearnableCNN(nn.Module):
         torch.backends.cudnn.benchmark = True
 
         # ------------------------------------------------------
-        # LAYER 1: 3 → 128 channels ✅ UPDATED
+        # ✅ LAYER 1: 3 → 512 channels ✅ UPDATED
         # ------------------------------------------------------
-        # 3 input channels (RGB) → 128 feature maps using 3x3 filters
+        # 3 input channels (RGB) → 512 feature maps using 3x3 filters
         # Padding = 1 to keep spatial size
         #
         # Input shape assumption:
@@ -253,18 +248,18 @@ class StaticInitLearnableCNN(nn.Module):
         # ------------------------------------------------------
         self.conv1 = nn.Conv2d(
             in_channels=3,
-            out_channels=128,
+            out_channels=512,
             kernel_size=3,
             padding=1,
             bias=True
         )
 
         # ------------------------------------------------------
-        # BatchNorm for conv1 (normalizes 128 output channels) ✅ UPDATED
+        # ✅ BatchNorm for conv1 (normalizes 512 output channels) ✅ UPDATED
         # ------------------------------------------------------
-        # WHY WE USE BATCHNORM2d(128):
+        # WHY WE USE BATCHNORM2d(512):
         # ----------------------------
-        # • It normalizes each of the 128 feature maps across the batch
+        # • It normalizes each of the 512 feature maps across the batch
         # • Keeps mean ≈ 0 and variance ≈ 1
         # • Reduces internal covariate shift
         # • Allows faster and more stable training
@@ -278,33 +273,33 @@ class StaticInitLearnableCNN(nn.Module):
         #   ➤ Smoother gradients
         #   ➤ Sometimes significantly higher accuracy
         # ------------------------------------------------------
-        self.bn1 = nn.BatchNorm2d(128)
+        self.bn1 = nn.BatchNorm2d(512)
 
         # ------------------------------------------------------
-        # LAYER 2: 128 → 64 channels ✅ UPDATED
+        # ✅ LAYER 2: 512 → 256 channels ✅ UPDATED
         # ------------------------------------------------------
-        # 128 input feature maps → 64 output feature maps
+        # 512 input feature maps → 256 output feature maps
         # using 3×3 filters, padding=1 keeps spatial size.
         #
         # After first pooling:
-        #   input to conv2 : [B, 128, H/2, W/2]
-        #   output of conv2: [B,  64, H/2, W/2]
+        #   input to conv2 : [B, 512, H/2, W/2]
+        #   output of conv2: [B, 256, H/2, W/2]
         # ------------------------------------------------------
         self.conv2 = nn.Conv2d(
-            in_channels=128,
-            out_channels=64,
+            in_channels=512,
+            out_channels=256,
             kernel_size=3,
             padding=1,
             bias=True
         )
 
         # ------------------------------------------------------
-        # BatchNorm for conv2 (normalizes 64 channels) ✅ UPDATED
+        # ✅ BatchNorm for conv2 (normalizes 256 channels) ✅ UPDATED
         # ------------------------------------------------------
-        # Why BatchNorm2d(64)?
-        # --------------------
-        # • Conv2 outputs 64 feature maps
-        # • BatchNorm stabilizes all 64 channels
+        # Why BatchNorm2d(256)?
+        # ---------------------
+        # • Conv2 outputs 256 feature maps
+        # • BatchNorm stabilizes all 256 channels
         #
         # Overall:
         #   conv2 → bn2 → ReLU → pool
@@ -312,7 +307,7 @@ class StaticInitLearnableCNN(nn.Module):
         # BatchNorm especially helps deeper layers where
         # activations become more chaotic.
         # ------------------------------------------------------
-        self.bn2 = nn.BatchNorm2d(64)
+        self.bn2 = nn.BatchNorm2d(256)
 
         # ------------------------------------------------------
         # POOLING LAYER: MaxPool2d(2, 2)
@@ -330,7 +325,7 @@ class StaticInitLearnableCNN(nn.Module):
         self.pool = nn.MaxPool2d(2, 2)
 
         # ------------------------------------------------------
-        # ✅ LAYER 3: 64 → 32 channels ✅ UPDATED
+        # ✅ LAYER 3: 256 → 128 channels ✅ UPDATED
         # ------------------------------------------------------
         # WHY THIS IMPROVES PREDICTION QUALITY:
         # ------------------------------------
@@ -344,27 +339,27 @@ class StaticInitLearnableCNN(nn.Module):
         # • Works for ANY input H, W
         #
         # After second pooling:
-        #   input to conv3 : [B,  64, H/4, W/4]
-        #   output of conv3: [B,  32, H/4, W/4]
+        #   input to conv3 : [B, 256, H/4, W/4]
+        #   output of conv3: [B, 128, H/4, W/4]
         # ------------------------------------------------------
         self.conv3 = nn.Conv2d(
-            in_channels=64,
-            out_channels=32,
+            in_channels=256,
+            out_channels=128,
             kernel_size=3,
             padding=1,
             bias=True
         )
 
         # ------------------------------------------------------
-        # ✅ BatchNorm for conv3 (normalizes 32 channels) ✅ UPDATED
+        # ✅ BatchNorm for conv3 (normalizes 128 channels) ✅ UPDATED
         # ------------------------------------------------------
-        # Why BatchNorm2d(32)?
-        # --------------------
-        # • Conv3 outputs 32 feature maps
+        # Why BatchNorm2d(128)?
+        # ---------------------
+        # • Conv3 outputs 128 feature maps
         # • BN helps stabilize deeper activations
         # • Makes training smoother and improves generalization
         # ------------------------------------------------------
-        self.bn3 = nn.BatchNorm2d(32)
+        self.bn3 = nn.BatchNorm2d(128)
 
         # ------------------------------------------------------
         # 🔑 GLOBAL AVERAGE POOLING (IMAGE-SIZE INDEPENDENT)
@@ -374,8 +369,8 @@ class StaticInitLearnableCNN(nn.Module):
         # Converts:
         #   [B, C, H, W] → [B, C, 1, 1]
         #
-        # In THIS model after conv3, C = 32:
-        #   [B, 32, H', W'] → [B, 32, 1, 1]
+        # In THIS model after conv3, C = 128:
+        #   [B, 128, H', W'] → [B, 128, 1, 1]
         #
         # This makes the model work with ANY image size.
         # ------------------------------------------------------
@@ -407,13 +402,13 @@ class StaticInitLearnableCNN(nn.Module):
         # ------------------------------------------------------
         # ✅ IMPORTANT UPDATE:
         # -------------------
-        # Because conv3 now outputs 32 channels, GAP now outputs:
-        #   [B, 32, 1, 1] → flatten → [B, 32]
+        # Because conv3 now outputs 128 channels, GAP now outputs:
+        #   [B, 128, 1, 1] → flatten → [B, 128]
         #
         # Therefore the classifier must be:
-        #   nn.Linear(32, num_classes)
+        #   nn.Linear(128, num_classes)
         # ------------------------------------------------------
-        self.fc = nn.Linear(32, num_classes)
+        self.fc = nn.Linear(128, num_classes)
 
         # ------------------------------------------------------
         # STATIC FILTER INITIALIZATION (if enabled)
@@ -434,11 +429,14 @@ class StaticInitLearnableCNN(nn.Module):
         # ----------------------------------
         # If conv1 is overwritten with static filters, it may LIMIT
         # the benefit of increasing conv1 channels unless your
-        # static filter bank actually fills/uses all 128 output maps.
+        # static filter bank actually fills/uses all 512 output maps.
         # ------------------------------------------------------
         if STATIC_FILTERS:
             self._init_conv1_static()
             # self._init_conv2_static()
+
+
+
 
 
     # ----------------------------------------------------------
@@ -453,11 +451,11 @@ class StaticInitLearnableCNN(nn.Module):
             # -----------------------------
             # Your conv1 is now:
             #   in_channels  = 3    (RGB)
-            #   out_channels = 128  (128 feature maps / 128 filters) ✅ UPDATED
+            #   out_channels = 512  (512 feature maps / 512 filters) ✅ UPDATED
             #   kernel       = 3x3
             #
             # So conv1 produces:
-            #   [B, 3, H, W] → [B, 128, H, W] ✅ UPDATED
+            #   [B, 3, H, W] → [B, 512, H, W] ✅ UPDATED
             #
             # This gives the network MUCH higher early capacity than 16 channels.
             assert in_channels == 3 and kh == 3 and kw == 3                # expect RGB input and 3x3 kernels
@@ -743,25 +741,25 @@ class StaticInitLearnableCNN(nn.Module):
             num_kernels = len(kernels)                                      # total number of base kernels
 
             # ------------------------------------------------------------------
-            # ASSIGN STATIC KERNELS → conv1 WEIGHTS (UPDATED FOR 128 CHANNELS)
+            # ASSIGN STATIC KERNELS → conv1 WEIGHTS (UPDATED FOR 512 CHANNELS)
             #
-            # ✅ Your conv1 now has 128 output channels:
-            #   out_channels = 128 ✅ UPDATED
+            # ✅ Your conv1 now has 512 output channels:
+            #   out_channels = 512 ✅ UPDATED
             #
             # We currently have:
             #   num_kernels = 45 handcrafted 3×3 kernels
             #
-            # Because 128 > 45:
+            # Because 512 > 45:
             #   • The first 45 conv1 filters get UNIQUE handcrafted kernels
-            #   • The remaining 83 filters repeat from the beginning (wrap-around) ✅ UPDATED
+            #   • The remaining 467 filters repeat from the beginning (wrap-around) ✅ UPDATED
             #
             # This guarantees:
             #   • conv1 starts with strong edge/corner/curve/line/gradient detectors
             #   • training converges easier (better inductive bias)
-            #   • extra channels still exist (via repetition) so the network has 128 feature maps
+            #   • extra channels still exist (via repetition) so the network has 512 feature maps ✅ UPDATED
             # ------------------------------------------------------------------
 
-            for i in range(out_channels):                                  # loop over each output filter (0..127) ✅ UPDATED
+            for i in range(out_channels):                                  # loop over each output filter (0..511) ✅ UPDATED
                 k2d = kernels[i % num_kernels].to(w.dtype)                 # pick kernel (wrap-around) and cast dtype
                 for c in range(in_channels):                               # copy same kernel into each RGB channel
                     w[i, c].copy_(k2d)                                     # write into conv1 weight tensor
@@ -776,7 +774,7 @@ class StaticInitLearnableCNN(nn.Module):
 
 
     # ----------------------------------------------------------
-    # STATIC INITIALIZATION FOR LAYER 2 (UPDATED FOR 128×64) ✅ UPDATED
+    # STATIC INITIALIZATION FOR LAYER 2 (UPDATED FOR 512×256) ✅ UPDATED
     # ----------------------------------------------------------
     def _init_conv2_static(self):
         with torch.no_grad():                                                           # disable gradients (manual init)
@@ -786,12 +784,12 @@ class StaticInitLearnableCNN(nn.Module):
             # ✅ UPDATED FOR YOUR NEW MODEL:
             # -----------------------------
             # Your conv2 is now:
-            #   in_channels  = 128   (from conv1 out_channels) ✅ UPDATED
-            #   out_channels = 64    (64 feature maps / filters) ✅ UPDATED
+            #   in_channels  = 512   (from conv1 out_channels) ✅ UPDATED
+            #   out_channels = 256   (256 feature maps / filters) ✅ UPDATED
             #   kernel       = 3x3
             #
             # So conv2 produces:
-            #   [B, 128, H/2, W/2] → [B, 64, H/2, W/2] ✅ UPDATED
+            #   [B, 512, H/2, W/2] → [B, 256, H/2, W/2] ✅ UPDATED
             #
             # This is a structured mid-level feature builder after a high-capacity conv1.
             assert kh == 3 and kw == 3                                                  # ensure 3x3 kernel size
@@ -799,17 +797,17 @@ class StaticInitLearnableCNN(nn.Module):
             # ---------------------------------------------------------------------
             # FILTER DEFINITIONS (EACH 3×3, WRITTEN IN THREE ROWS)
             #
-            # conv2 receives 128 feature maps (NOT 64 anymore). ✅ UPDATED
+            # conv2 receives 512 feature maps (NOT 128 anymore). ✅ UPDATED
             #
             # Meaning:
             #   • conv1 already produced many primitive detectors (edges/corners/etc.)
-            #   • conv2 now combines those 128 maps into 64 stronger mid-level features:
+            #   • conv2 now combines those 512 maps into 256 stronger mid-level features:
             #       - parts, textures, repeated patterns
             #       - more stable gradients (especially with BN)
             #       - richer combinations of the static conv1 responses
             #
             # NOTE:
-            #   Even though out_channels is smaller than in_channels (64 < 128),
+            #   Even though out_channels is smaller than in_channels (256 < 512),
             #   this is NOT wrong — it is a deliberate "feature compression" step:
             #     • reduces compute
             #     • forces useful combinations of conv1 maps
@@ -872,17 +870,17 @@ class StaticInitLearnableCNN(nn.Module):
             num_kernels = len(kernels)
 
             # ---------------------------------------------------------------------
-            # ASSIGN FILTERS TO ALL conv2 WEIGHTS (UPDATED FOR 64×128) ✅ UPDATED
+            # ASSIGN FILTERS TO ALL conv2 WEIGHTS (UPDATED FOR 256×512) ✅ UPDATED
             #
             # conv2 has:
-            #   out_channels = 64   (filters) ✅ UPDATED
-            #   in_channels  = 128  (input feature maps from conv1) ✅ UPDATED
+            #   out_channels = 256  (filters) ✅ UPDATED
+            #   in_channels  = 512  (input feature maps from conv1) ✅ UPDATED
             #
             # For each output filter and each input channel, we choose a kernel
             # using modulo indexing so the filters repeat periodically.
             #
             # ✅ Why repetition is OK here:
-            #   • conv2 has 64×128 = 8192 small 3×3 kernels  ✅ UPDATED (same count, swapped dimensions)
+            #   • conv2 has 256×512 = 131072 small 3×3 kernels ✅ UPDATED
             #   • we only define 6 base kernels
             #   • repeating them still creates many different paths because each output
             #     channel mixes MANY input channels, and training learns useful combos
@@ -893,8 +891,8 @@ class StaticInitLearnableCNN(nn.Module):
             #   • some smooth (avg)
             #   • some emboss (directional structure)
             # ---------------------------------------------------------------------
-            for out_idx in range(out_channels):                                       # loop over all 64 output filters ✅ UPDATED
-                for in_idx in range(in_channels):                                     # loop over all 128 input feature maps ✅ UPDATED
+            for out_idx in range(out_channels):                                       # loop over all 256 output filters ✅ UPDATED
+                for in_idx in range(in_channels):                                     # loop over all 512 input feature maps ✅ UPDATED
 
                     # Choose kernel pattern based on (out × in) mod #kernels
                     # NOTE:
@@ -907,8 +905,10 @@ class StaticInitLearnableCNN(nn.Module):
             print(f"[init_conv2_static] {out_channels}x{in_channels} 2D 3x3 kernels assigned")  # log ✅ UPDATED
 
 
+
+
     # ----------------------------------------------------------
-    # STATIC INITIALIZATION FOR LAYER 3 (UPDATED FOR 32 FEATURES) ✅ UPDATED
+    # STATIC INITIALIZATION FOR LAYER 3 (UPDATED FOR 128 FEATURES) ✅ UPDATED
     # ----------------------------------------------------------
     def _init_conv3_static(self):
         with torch.no_grad():                                                           # disable gradients (manual init)
@@ -918,12 +918,12 @@ class StaticInitLearnableCNN(nn.Module):
             # ✅ UPDATED FOR YOUR NEW MODEL:
             # -----------------------------
             # Your conv3 is now:
-            #   in_channels  = 64    (from conv2 out_channels) ✅ UPDATED
-            #   out_channels = 32    (32 feature maps / filters) ✅ UPDATED
+            #   in_channels  = 256    (from conv2 out_channels) ✅ UPDATED
+            #   out_channels = 128    (128 feature maps / filters) ✅ UPDATED
             #   kernel       = 3x3
             #
             # So conv3 produces:
-            #   [B, 64, H/2, W/2] → [B, 32, H/2, W/2] ✅ UPDATED
+            #   [B, 256, H/2, W/2] → [B, 128, H/2, W/2] ✅ UPDATED
             #
             # This layer is where the network starts forming higher-level patterns:
             #   • textures and repeated structures
@@ -935,12 +935,12 @@ class StaticInitLearnableCNN(nn.Module):
             # -------------------------------------------------------------------------------
             # If someone accidentally changes conv2/conv3 channel counts later, this will fail fast
             # instead of silently initializing wrong shapes.
-            assert in_channels == 64 and out_channels == 32                             # expect exact conv3 shape ✅ UPDATED
+            assert in_channels == 256 and out_channels == 128                            # expect exact conv3 shape ✅ UPDATED
 
             # ---------------------------------------------------------------------
             # FILTER DEFINITIONS (EACH 3×3, WRITTEN IN THREE ROWS)
             #
-            # conv3 receives 64 feature maps (NOT raw RGB anymore). ✅ UPDATED
+            # conv3 receives 256 feature maps (NOT raw RGB anymore). ✅ UPDATED
             #
             # Meaning:
             #   • conv1: low-level primitives (edges/corners/lines)
@@ -1035,15 +1035,15 @@ class StaticInitLearnableCNN(nn.Module):
             num_kernels = len(kernels)
 
             # ---------------------------------------------------------------------
-            # ASSIGN FILTERS TO ALL conv3 WEIGHTS (UPDATED FOR 32×64) ✅ UPDATED
+            # ASSIGN FILTERS TO ALL conv3 WEIGHTS (UPDATED FOR 128×256) ✅ UPDATED
             #
             # conv3 has:
-            #   out_channels = 32  (filters / output features) ✅ UPDATED
-            #   in_channels  = 64  (input features from conv2) ✅ UPDATED
+            #   out_channels = 128  (filters / output features) ✅ UPDATED
+            #   in_channels  = 256  (input features from conv2) ✅ UPDATED
             #
             # Strategy:
             # ---------
-            # We repeat a small bank of useful kernels across the 32×64 connections.
+            # We repeat a small bank of useful kernels across the 128×256 connections.
             #
             # Why this can help:
             #   • conv3 sees already-processed feature maps, not raw pixels
@@ -1056,8 +1056,8 @@ class StaticInitLearnableCNN(nn.Module):
             # If conv3 is trainable (requires_grad=True), training will refine these
             # weights beyond the initial static patterns.
             # ---------------------------------------------------------------------
-            for out_idx in range(out_channels):                                       # loop over all 32 output filters ✅ UPDATED
-                for in_idx in range(in_channels):                                     # loop over all 64 input feature maps ✅ UPDATED
+            for out_idx in range(out_channels):                                       # loop over all 128 output filters ✅ UPDATED
+                for in_idx in range(in_channels):                                     # loop over all 256 input feature maps ✅ UPDATED
 
                     # Choose kernel pattern based on a mixed index to reduce repetition artifacts
                     # (still deterministic, but spreads kernels across channels more evenly)
@@ -1069,103 +1069,9 @@ class StaticInitLearnableCNN(nn.Module):
             print(f"[init_conv3_static] {out_channels}x{in_channels} 2D 3x3 kernels assigned")  # log ✅ UPDATED
 
 
-   # ----------------------------------------------------------
-    # FORWARD PASS
-    # ----------------------------------------------------------
-    # FORWARD PROPAGATION THROUGH THE NETWORK
-    # --------------------------------------
-    # This method defines EXACTLY how input images flow
-    # through the convolutional neural network from pixels
-    # to final class predictions.
-    #
-    # DESIGN GOALS:
-    # -------------
-    # ✔ Work with ANY image size (no fixed 32×32 assumption)
-    # ✔ Preserve spatial detail early (better accuracy)
-    # ✔ Extract progressively higher-level features
-    # ✔ Produce stable logits for CrossEntropyLoss
-    #
-    # ----------------------------------------------------------
-    # INPUT:
-    # ----------------------------------------------------------
-    #     x : Tensor of shape [B, 3, H, W]
-    #
-    #     Where:
-    #       B = batch size
-    #       3 = RGB color channels
-    #       H = image height   (can be ANY value ≥ ~16)
-    #       W = image width    (can be ANY value ≥ ~16)
-    #
-    #     Examples:
-    #       • CIFAR-10 images        → [B, 3, 32, 32]
-    #       • Resized dataset images → [B, 3, 64, 64]
-    #       • High-res images        → [B, 3, 256, 256]
-    #
-    #     IMPORTANT:
-    #     ----------
-    #     This network is FULLY IMAGE-SIZE INDEPENDENT because:
-    #       • No hard-coded flattening of H×W
-    #       • Uses Global Average Pooling (GAP)
-    #
-    # ----------------------------------------------------------
-    # NETWORK FLOW (HIGH LEVEL):
-    # ----------------------------------------------------------
-    #
-    #     Input Image
-    #         ↓
-    #     Conv1 → BatchNorm → ReLU → MaxPool
-    #         ↓
-    #     Conv2 → BatchNorm → ReLU        (NO pooling here)
-    #         ↓
-    #     Conv3 → BatchNorm → ReLU
-    #         ↓
-    #     Global Average Pooling (GAP)
-    #         ↓
-    #     Dropout (regularization)
-    #         ↓
-    #     Fully Connected Layer
-    #         ↓
-    #     Logits (raw class scores)
-    #
-    # ----------------------------------------------------------
-    # OUTPUT:
-    # ----------------------------------------------------------
-    #     logits : Tensor of shape [B, num_classes]
-    #
-    #     Where:
-    #       B = batch size
-    #       num_classes = number of target classes (e.g. 10 for CIFAR-10)
-    #
-    #     Meaning:
-    #     --------
-    #     • Each row corresponds to ONE image
-    #     • Each column corresponds to ONE class
-    #     • Values are RAW SCORES (logits), NOT probabilities
-    #
-    # ----------------------------------------------------------
-    # WHY LOGITS (NOT SOFTMAX OUTPUT):
-    # ----------------------------------------------------------
-    # • Softmax is applied INTERNALLY by nn.CrossEntropyLoss
-    # • Using raw logits is:
-    #     ✔ numerically more stable
-    #     ✔ faster
-    #     ✔ the correct PyTorch practice
-    #
-    # During training:
-    #     loss = CrossEntropyLoss(logits, labels)
-    #
-    # During inference:
-    #     predictions = argmax(logits, dim=1)
-    #
-    # ----------------------------------------------------------
-    # KEY QUALITY IMPROVEMENTS IN THIS FORWARD PASS:
-    # ----------------------------------------------------------
-    # ✔ Only ONE early pooling layer → preserves spatial detail
-    # ✔ Deeper feature extraction (128 → 64 → 32 channels)
-    # ✔ GAP removes dependency on image resolution
-    # ✔ Dropout improves generalization and test accuracy
-    #
-    # ----------------------------------------------------------
+
+
+
 
     def forward(self, x):
         # At entry:
@@ -1176,29 +1082,29 @@ class StaticInitLearnableCNN(nn.Module):
         # BLOCK 1: CONV1 → BN1 → ReLU → POOL
         # -------------------
 
-        # Conv1: 3 → 128 channels, preserves H, W   ✅ UPDATED
-        #   [B, 3, H, W] → [B, 128, H, W]
+        # Conv1: 3 → 512 channels, preserves H, W   ✅ UPDATED
+        #   [B, 3, H, W] → [B, 512, H, W]
         x = self.conv1(x)
 
-        # BatchNorm on 128 channels (stabilizes activations) ✅ UPDATED
+        # BatchNorm on 512 channels (stabilizes activations) ✅ UPDATED
         x = self.bn1(x)
 
         # Non-linearity: ReLU
         x = F.relu(x)
 
         # MaxPool: H×W → H/2×W/2
-        #   [B, 128, H, W] → [B, 128, H/2, W/2] ✅ UPDATED
+        #   [B, 512, H, W] → [B, 512, H/2, W/2] ✅ UPDATED
         x = self.pool(x)
 
         # -------------------
         # BLOCK 2: CONV2 → BN2 → ReLU
         # -------------------
 
-        # Conv2: 128 → 64 channels ✅ UPDATED
-        #   [B, 128, H/2, W/2] → [B, 64, H/2, W/2]
+        # Conv2: 512 → 256 channels ✅ UPDATED
+        #   [B, 512, H/2, W/2] → [B, 256, H/2, W/2]
         x = self.conv2(x)
 
-        # BatchNorm on 64 channels ✅ UPDATED
+        # BatchNorm on 256 channels ✅ UPDATED
         x = self.bn2(x)
 
         # ReLU
@@ -1216,14 +1122,14 @@ class StaticInitLearnableCNN(nn.Module):
         #   x = self.pool(x)
 
         # -------------------
-        # ✅ BLOCK 3: CONV3 → BN3 → ReLU
+        # BLOCK 3: CONV3 → BN3 → ReLU
         # -------------------
 
-        # Conv3: 64 → 32 channels ✅ UPDATED
-        #   [B, 64, H/2, W/2] → [B, 32, H/2, W/2]
+        # Conv3: 256 → 128 channels ✅ UPDATED
+        #   [B, 256, H/2, W/2] → [B, 128, H/2, W/2]
         x = self.conv3(x)
 
-        # BatchNorm on 32 channels ✅ UPDATED
+        # BatchNorm on 128 channels ✅ UPDATED
         x = self.bn3(x)
 
         # ReLU
@@ -1236,17 +1142,17 @@ class StaticInitLearnableCNN(nn.Module):
         # Replaces hard-coded spatial flattening.
         #
         # Converts:
-        #   [B, 32, H/2, W/2] → [B, 32, 1, 1] ✅ UPDATED
+        #   [B, 128, H/2, W/2] → [B, 128, 1, 1] ✅ UPDATED
         #
         # This step removes dependence on image size.
         x = self.gap(x)
 
         # Flatten channel dimension only
-        #   [B, 32, 1, 1] → [B, 32] ✅ UPDATED
+        #   [B, 128, 1, 1] → [B, 128] ✅ UPDATED
         x = torch.flatten(x, 1)
 
         # -------------------
-        # ✅ DROPOUT (GENERALIZATION BOOST)
+        # DROPOUT (GENERALIZATION BOOST)
         # -------------------
         x = self.dropout(x)
 
@@ -1255,12 +1161,13 @@ class StaticInitLearnableCNN(nn.Module):
         # -------------------
 
         # Fully connected layer:
-        #   [B, 32] → [B, num_classes] ✅ UPDATED
+        #   [B, 128] → [B, num_classes] ✅ UPDATED
         logits = self.fc(x)
 
         # logits are returned directly.
         # CrossEntropyLoss will apply softmax internally.
         return logits
+
 
 
 
@@ -1280,14 +1187,13 @@ def debug_print(*args, **kwargs):
     """
     if DEBUG_FLAG:
         print(*args, **kwargs)
-
 # ============================================================
 # TRAINING FUNCTION (WORKS FOR STATIC AND DYNAMIC CNN MODELS)
 # ============================================================
 # Train the CNN model for a fixed number of epochs using the provided DataLoader.
 #
 # This training function works for ALL CNN configurations, including:
-#   • CNNs with static (manually defined) filters in conv1 (e.g., Sobel, edges, corners).
+#   • CNNs with static-INITIALIZED filters in conv layers (e.g., Sobel, edges, corners).
 #   • CNNs with randomly initialized and learnable filters.
 #   • Networks with or without pooling layers.
 #   • Standard datasets like CIFAR-10 or any custom dataset.
@@ -1295,18 +1201,23 @@ def debug_print(*args, **kwargs):
 #
 # 💡 Why this works universally:
 # Training depends on *backpropagation*, not on how filters are initialized.
-# The optimizer updates only parameters that have requires_grad=True().
+# The optimizer updates only parameters that have requires_grad=True.
 #
 # -----------------------------------------------------------------------
-# 🧠 Learning behavior by layer:
+# 🧠 Learning behavior by layer (UPDATED FOR STATIC INIT vs TRUE FREEZE):
 #
 # conv1 — Low-level feature extraction:
-#   • If FILTERS are STATIC:
-#       → Kernels are pre-defined (Sobel, corners, edges).
-#       → These filters DO NOT change during training.
-#       → They behave as a fixed feature extractor.
+#   • If FILTERS are STATIC-INITIALIZED:
+#       → Kernels are pre-defined (Sobel, corners, edges) ONLY AT INIT TIME.
+#       → After that, they will STILL LEARN normally if requires_grad=True (default).
+#       → They become a "smart starting point", not automatically frozen filters.
 #
-#   • If FILTERS are TRAINABLE:
+#   • If FILTERS are TRULY STATIC / FROZEN:
+#       → You explicitly set requires_grad=False for conv1.
+#       → Then conv1 kernels DO NOT change during training.
+#       → conv1 behaves as a fixed feature extractor.
+#
+#   • If FILTERS are RANDOM/TRAINABLE:
 #       → Kernels are initialized randomly.
 #       → Each weight is updated via gradient descent.
 #       → Filters learn edges, patterns, and pixel textures directly from data.
@@ -1318,10 +1229,15 @@ def debug_print(*args, **kwargs):
 #       → shapes
 #       → textures
 #       → structural patterns.
-#   • Weights adapt to match more meaningful patterns through backprop.
+#   • If static-initialized, it starts from a helpful bias but still learns unless frozen.
+#
+# conv3 — Higher-level feature learning:
+#   • Combines conv1+conv2 features into stronger compositions:
+#       → repeated structures, parts, object patterns.
+#   • If static-initialized, it starts from useful kernels but still learns unless frozen.
 #
 # filters (in ALL convolution layers):
-#   • Every kernel is a matrix of learnable weights.
+#   • Every kernel is a matrix of weights.
 #
 #   During training:
 #     1. Forward pass:
@@ -1349,17 +1265,64 @@ def debug_print(*args, **kwargs):
 #   • The optimizer automatically updates:
 #         ONLY parameters where requires_grad == True
 #
-#   • Static filters have:
+#   • Frozen layers have:
 #         requires_grad=False → never updated
 #
-#   • Trainable filters have:
+#   • Trainable layers have:
 #         requires_grad=True → learned by backprop
 #
 # Therefore:
 #   No conditional logic or special handling is needed in the training loop.
-#   The same code trains both static and dynamic filter networks correctly.
-
-def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=None):
+#   The same code trains both static-init and fully dynamic networks correctly.
+#
+# ============================================================
+# IMPORTANT ARCHITECTURE NOTE (UPDATED FOR YOUR MODEL)
+# ============================================================
+#
+# Your current CNN uses:
+#   • conv1: 3   → 512
+#   • pool: ONLY ONCE (after conv1)
+#   • conv2: 512 → 256
+#   • conv3: 256 → 128
+#   • GAP:  [B, 128, H/2, W/2] → [B, 128, 1, 1]
+#   • FC:   128 → num_classes
+#
+# This training loop DOES NOT need to change with channel sizes.
+# It will train whatever parameters exist in your model.
+# ============================================================
+def train_model(
+    model,
+    train_loader,
+    device,
+    num_epochs=2,
+    lr=3e-3,
+    test_loader=None,
+    # ------------------------------------------------------------
+    # ✅ GENERALIZATION IMPROVEMENTS (NEW)
+    # ------------------------------------------------------------
+    # These options improve TEST accuracy (generalization), not just TRAIN accuracy.
+    #
+    # early_stop_patience:
+    #   • If test_loader is provided, we monitor test accuracy.
+    #   • If test accuracy does not improve for this many epochs → stop early.
+    #
+    # restore_best_weights:
+    #   • If True, we load the best-performing (highest test-accuracy) weights at the end.
+    #
+    # weight_decay:
+    #   • Regularization strength (AdamW). Higher can reduce overfitting.
+    #   • Your previous fixed value was 1e-4; you can try 5e-4 or 1e-3.
+    #
+    # use_ema / ema_decay:
+    #   • EMA (Exponential Moving Average) of weights often improves test accuracy slightly.
+    #   • During evaluation, we temporarily swap to EMA weights (if enabled).
+    # ------------------------------------------------------------
+    early_stop_patience=15,
+    restore_best_weights=True,
+    weight_decay=1e-4,
+    use_ema=False,
+    ema_decay=0.999,
+):
 
     # --------------------------------------------------------
     # AUTOMATIC MIXED PRECISION (AMP)
@@ -1422,6 +1385,20 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
     # This print helps you confirm you are actually training on CUDA when available.
     # ------------------------------------------------------------
     debug_print(f"[TRAIN] device={device}  use_amp={use_amp}")
+
+    # ------------------------------------------------------------
+    # ✅ FIX: EARLY SAFETY CHECKS (PREVENT OneCycleLR total_steps=0)
+    # ------------------------------------------------------------
+    # If train_loader is empty, len(train_loader)=0 which breaks OneCycleLR.
+    # Also, num_epochs must be >= 1 to do meaningful training.
+    # ------------------------------------------------------------
+    if num_epochs <= 0:
+        print("❌ num_epochs must be >= 1.")
+        return model
+
+    if len(train_loader) <= 0:
+        print("❌ train_loader is empty (len(train_loader)=0). Cannot train.")
+        return model
 
     # ------------------------------------------------------------
     # ✅ AUTO LR SCALING BASED ON BATCH SIZE (NEW)
@@ -1531,8 +1508,8 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
     # ------------------------------------------------------------
     # Create the optimizer that is responsible for *training the neural network*.
     #
-    # Adam = Adaptive Moment Estimation:
-    #   It is an advanced optimization algorithm that improves plain gradient descent.
+    # AdamW = Adam with weight-decoupled regularization:
+    #   • Similar to Adam, but weight_decay behaves more predictably for deep nets.
     #
     # model.parameters():
     #   • Collects ALL trainable tensors in the model:
@@ -1541,34 +1518,12 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
     #       - fully connected layers
     #       - batch normalization parameters
     #   • Only parameters with requires_grad = True are included.
-    #   • Static / frozen layers are automatically ignored.
+    #   • Frozen layers are automatically ignored.
     #
     # lr (learning rate):
     #   • Controls how fast each weight changes.
     #   • Larger values = faster learning (but risk instability).
     #   • Smaller values = slower learning (but more stable training).
-    #
-    # Internally, Adam performs for EACH weight:
-    #   1) Uses backpropagation to compute the gradient:
-    #        gradient = ∂loss / ∂weight
-    #
-    #   2) Tracks moving average of gradients (momentum):
-    #        m = β1 * previous_m + (1 − β1) * gradient
-    #
-    #   3) Tracks moving average of squared gradients (variance):
-    #        v = β2 * previous_v + (1 − β2) * gradient²
-    #
-    #   4) Bias correction (makes early steps accurate):
-    #        m_hat = m / (1 − β1^t)
-    #        v_hat = v / (1 − β2^t)
-    #
-    #   5) Updates weights:
-    #        weight = weight − lr × m_hat / (sqrt(v_hat) + ε)
-    #
-    # Outcome:
-    #   • Each parameter learns at its own speed.
-    #   • Large/noisy gradients are stabilized.
-    #   • Convergence is faster and smoother than standard SGD.
     #
     # Without this optimizer:
     #   • loss.backward() computes gradients only.
@@ -1577,23 +1532,14 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
     # This single line controls learning for:
     #   • conv1 kernels
     #   • conv2 kernels
-    #   • fully connected layers
-    #   • bias terms
-    #   • normalization layers
-    #
+    #   • conv3 kernels
+    #   • batchnorm layers
+    #   • fc layer
     # ------------------------------------------------------------
-    # OPTIMIZER: AdamW (Weight-decoupled Adam)
-    # ------------------------------------------------------------
-    # IMPORTANT FIX:
-    # --------------
-    # • OneCycleLR expects the optimizer LR to MATCH max_lr logic
-    # • We therefore use `lr=lr` (the function argument)
-    # • This avoids mismatches between base LR and OneCycle peak LR
-    #
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=lr_scaled,               # ✅ AUTO-SCALED LR BASED ON BATCH SIZE
-        weight_decay=1e-4
+        weight_decay=weight_decay   # ✅ NOW CONFIGURABLE (GENERALIZATION)
     )
 
     # ------------------------------------------------------------
@@ -1609,22 +1555,10 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
     #   2️⃣ Reaches a MAXIMUM learning rate (exploration phase)
     #   3️⃣ Gradually DECREASES the learning rate (fine-tuning phase)
     #
-    # This strategy helps the optimizer:
-    #   • Escape poor local minima early
-    #   • Converge faster
-    #   • Achieve lower final loss
-    #   • Improve generalization
-    #
-    # OneCycleLR is especially effective with:
-    #   • Adam / AdamW optimizers
-    #   • CNNs and vision models
-    #   • Mixed Precision (AMP) training
-    #
     # IMPORTANT DIFFERENCE vs ReduceLROnPlateau:
     # ------------------------------------------
     # • ReduceLROnPlateau → stepped ONCE per epoch using loss
     # • OneCycleLR        → stepped EVERY BATCH (iteration-based)
-    #
     # ------------------------------------------------------------
 
     # ------------------------------------------------------------
@@ -1640,31 +1574,22 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
     total_steps = len(train_loader) * num_epochs
 
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer,                      # ✅ The optimizer whose learning-rate we want to control (AdamW here).
-                                        #    OneCycleLR will directly modify:
-                                        #        optimizer.param_groups[i]["lr"]
-                                        #    at EVERY mini-batch step.
-
-        max_lr=lr_scaled,               # ✅ PEAK learning rate now auto-scales with batch size.
-                                        #    This is the highest LR reached during training.
-
-        total_steps=total_steps,        # ✅ Total number of LR updates across the whole run.
-
-        pct_start=0.1,                  # ✅ Fraction of training used for the "warm-up" (LR INCREASE phase).
-
-        anneal_strategy="cos",          # ✅ Cosine decay after warmup.
-
-        div_factor=5.0,                 # ✅ Controls starting LR = max_lr / div_factor
-
-        final_div_factor=1e3            # ✅ Controls final LR = start_lr / final_div_factor
+        optimizer,                      # ✅ Optimizer whose LR we control (AdamW)
+        max_lr=lr_scaled,               # ✅ Peak LR auto-scales with batch size
+        total_steps=total_steps,        # ✅ Total LR updates across the whole run
+        pct_start=0.1,                  # ✅ Warm-up fraction
+        anneal_strategy="cos",          # ✅ Cosine decay after warmup
+        div_factor=5.0,                 # ✅ start_lr = max_lr / div_factor
+        final_div_factor=1e3            # ✅ end_lr = start_lr / final_div_factor
     )
 
     # ============================================================
-    # COMPLETE END-TO-END EXPLANATION:
-    # IMAGE → CONVOLUTION → FEATURES → LOGITS → CrossEntropyLoss
+    # COMPLETE END-TO-END EXPLANATION (UPDATED FOR GAP ARCHITECTURE)
+    # IMAGE → CONVOLUTION → FEATURES → GAP → LOGITS → CrossEntropyLoss
     # ============================================================
     #
-    # (KEEPING ALL YOUR COMMENTS EXACTLY AS-IS BELOW)
+    # (keeping your full step-by-step style, but UPDATED so it matches
+    #  your current network that uses GAP instead of full spatial flattening)
     #
     # ============================================================
     # STEP 1: INPUT IMAGE (4x4, 1 CHANNEL)
@@ -1747,27 +1672,32 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
     #   [
     #     [y11, y12, y13, y14],
     #     [y21, y22, y23, y24],
-    #     [y31, y32, y33, y34],
+    #     [y31, y32, y33, y44],
     #     [y41, y42, y43, y44]
     #   ]
     #
     # Each y_ij is a learned combination of nearby pixels.
     #
     # ============================================================
-    # STEP 5: FLATTEN FEATURE MAP
+    # STEP 5 (UPDATED): GLOBAL AVERAGE POOLING (GAP) + FLATTEN
     # ============================================================
     #
-    # Convert Y into a feature vector:
+    # In THIS model, we do NOT flatten the entire H×W feature map.
+    # Instead, we use Global Average Pooling (AdaptiveAvgPool2d(1)):
     #
-    #   feature_vector =
-    #   [
-    #     y11, y12, y13, y14,
-    #     y21, y22, y23, y24,
-    #     y31, y32, y33, y34,
-    #     y41, y42, y43, y44
-    #   ]
+    #   [B, C, H', W'] → [B, C, 1, 1]
     #
-    # This vector is the numeric "description" of the image.
+    # This makes the network IMAGE-SIZE INDEPENDENT.
+    #
+    # Then we flatten channels only:
+    #
+    #   [B, C, 1, 1] → [B, C]
+    #
+    # In your current model:
+    #   C = 128 (conv3 out_channels)
+    #
+    # So:
+    #   [B, 128, H/2, W/2] → GAP → [B, 128, 1, 1] → flatten → [B, 128]
     #
     # ============================================================
     # STEP 6: FULLY CONNECTED LAYER → LOGITS
@@ -1782,8 +1712,8 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
     #
     #   W =
     #   [
-    #     [w1, w2, ..., w16],   # CAT weights
-    #     [v1, v2, ..., v16]    # DOG weights
+    #     [w1, w2, ..., wC],   # CAT weights
+    #     [v1, v2, ..., vC]    # DOG weights
     #   ]
     #
     # Bias:
@@ -1792,8 +1722,8 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
     #
     # Logits computed as:
     #
-    #   L_cat = Σ (wi * yi) + b_cat
-    #   L_dog = Σ (vi * yi) + b_dog
+    #   L_cat = Σ (wi * fi) + b_cat
+    #   L_dog = Σ (vi * fi) + b_dog
     #
     # Output:
     #
@@ -1862,29 +1792,20 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
     # STEP 10: BACKPROPAGATION
     # ============================================================
     #
-    # loss.backward() computes:
+    # loss.backward() computes gradients for trainable parameters:
+    #   • convolution filters (unless frozen)
+    #   • batchnorm parameters
+    #   • classifier weights/bias
     #
-    #   gradients for:
-    #     • f_ij values (convolution filter)
-    #     • w_i, v_i (classifier)
-    #     • biases
-    #
-    # optimizer.step() updates:
-    #
-    #   filters
-    #   weights
-    #   biases
-    #
-    # to REDUCE loss in next iteration.
+    # optimizer.step() updates parameters to REDUCE loss next iteration.
     #
     # ============================================================
     # FINAL SUMMARY
     # ============================================================
     #
-    # Image → convolution → features → flatten → logits → softmax → loss
+    # Image → convolution → features → GAP → logits → softmax → loss
     #
     # CrossEntropyLoss:
-    #
     #   ✅ converts logits → probabilities
     #   ✅ selects only correct class probability
     #   ✅ penalizes wrong predictions
@@ -1902,20 +1823,88 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
     #
     # If you want label smoothing ON, uncomment the next line and comment the first.
     # ------------------------------------------------------------
-    #criterion = nn.CrossEntropyLoss()
+    # criterion = nn.CrossEntropyLoss()
     criterion = torch.nn.CrossEntropyLoss(label_smoothing=0.1)
 
     # ------------------------------------------------------------
     # OPTIONAL: STORE EXECUTION TIME FOR EACH EPOCH
     # ------------------------------------------------------------
-    # epoch_times will store:
-    #   • how long EACH epoch took (seconds)
-    #   • useful for:
-    #       - profiling
-    #       - ETA estimation
-    #       - performance comparison (CPU vs GPU, AMP on/off)
-    # ------------------------------------------------------------
     epoch_times = []
+
+    # ------------------------------------------------------------
+    # ✅ NEW: BEST-CHECKPOINT + EARLY STOPPING STATE
+    # ------------------------------------------------------------
+    # PURPOSE:
+    # --------
+    # Your logs show:
+    #   TRAIN accuracy → ~0.995
+    #   TEST  accuracy → ~0.883
+    #
+    # That indicates OVERFITTING:
+    #   • Model memorizes train set very well
+    #   • But does not generalize to unseen test images as well
+    #
+    # Fix:
+    #   • Track the BEST test accuracy
+    #   • Save best weights
+    #   • Optionally STOP early if no improvement for many epochs
+    # ------------------------------------------------------------
+    best_test_acc = -1.0
+    best_epoch = -1
+    best_state_dict = None
+    epochs_since_improve = 0
+
+    # ------------------------------------------------------------
+    # ✅ OPTIONAL: EMA (Exponential Moving Average) WEIGHTS (NEW)
+    # ------------------------------------------------------------
+    # EMA can improve test accuracy slightly by smoothing noisy updates.
+    #
+    # Implementation:
+    #   • Maintain a copy of weights: ema_state
+    #   • After each optimizer step: ema = decay*ema + (1-decay)*weight
+    #   • For evaluation, we temporarily swap model weights with EMA weights
+    # ------------------------------------------------------------
+    ema_state = None
+    if use_ema:
+        ema_state = {}
+        for name, p in model.named_parameters():
+            if p.requires_grad:
+                ema_state[name] = p.detach().clone()
+
+    def _ema_update(model, ema_state, decay: float):
+        """Updates EMA weights in-place. Only parameters that require_grad are tracked."""
+        if ema_state is None:
+            return
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                if not p.requires_grad:
+                    continue
+                if name not in ema_state:
+                    ema_state[name] = p.detach().clone()
+                else:
+                    ema_state[name].mul_(decay).add_(p.detach(), alpha=(1.0 - decay))
+
+    def _ema_swap_in(model, ema_state):
+        """Swap EMA weights into the model, returning a backup of current weights."""
+        if ema_state is None:
+            return None
+        backup = {}
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                if not p.requires_grad:
+                    continue
+                backup[name] = p.detach().clone()
+                p.copy_(ema_state[name])
+        return backup
+
+    def _ema_swap_out(model, backup_state):
+        """Restore original weights after EMA evaluation."""
+        if backup_state is None:
+            return
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                if name in backup_state:
+                    p.copy_(backup_state[name])
 
     # ------------------------------------------------------------
     # TRAINING LOOP
@@ -1926,21 +1915,11 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
         # IMPORTANT FIX:
         # --------------
         # Always re-enable training mode at the START of each epoch.
-        #
-        # Why:
-        # • If you ran evaluation somewhere (model.eval()), BatchNorm/Dropout
-        #   may remain in eval mode unless you explicitly restore train().
-        #
-        # This ensures consistent learning behavior every epoch.
         # ------------------------------------------------------------
         model.train()
 
         # --------------------------------------------------------
         # START TIMER FOR THIS EPOCH
-        # --------------------------------------------------------
-        # time.perf_counter():
-        #   • high-resolution timer
-        #   • ideal for performance measurement
         # --------------------------------------------------------
         epoch_start = time.perf_counter()
 
@@ -1961,35 +1940,10 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
             # ----------------------------------------
             # CLEAR OLD GRADIENTS
             # ----------------------------------------
-            # optimizer.zero_grad():
-            #   • Clears gradients stored in parameter.grad from the previous iteration.
-            #   • Gradients accumulate by default in PyTorch, so we must reset them.
-            #
-            # set_to_none=True (optional speed optimization):
-            #   • Sets grads to None instead of zeroing tensors, saving memory ops.
             optimizer.zero_grad(set_to_none=True)
-
-            # ============================================================
-            # WHAT THIS LINE DOES:
-            #     outputs = model(images)
-            # ============================================================
-            # (keeping your full explanation block exactly as-is)
-            # ============================================================
 
             # ------------------------------------------------------------
             # AMP FORWARD PASS (autocast)
-            # ------------------------------------------------------------
-            # If AMP is enabled (CUDA):
-            #   • Runs many ops in float16 for speed (conv, matmul)
-            #   • Keeps numerically sensitive ops in float32 (BatchNorm, reductions)
-            #
-            # If AMP is disabled (CPU):
-            #   • This context becomes a no-op and everything runs in float32
-            #
-            # IMPORTANT FIX:
-            # --------------
-            # DO NOT hardcode device_type="cuda" when running on CPU.
-            # We choose device_type dynamically based on the actual device.
             # ------------------------------------------------------------
             autocast_device_type = "cuda" if device.type == "cuda" else "cpu"
 
@@ -2009,7 +1963,6 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
                 # ✅ HARD ASSERTS (will stop immediately if wrong)
                 # ------------------------------------------------------------
                 labels = labels.long()  # CrossEntropyLoss requires int64 class indices
-
                 assert labels.ndim == 1, f"labels must be [N], got {labels.shape}"
                 assert outputs.ndim == 2, f"outputs must be [N,C], got {outputs.shape}"
                 assert outputs.size(0) == labels.size(0), f"batch mismatch: {outputs.size(0)} vs {labels.size(0)}"
@@ -2019,54 +1972,46 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
             # ----------------------------------------
             # BACKWARD PASS (AMP)
             # ----------------------------------------
-            # • Scales the loss to prevent float16 underflow
-            # • Computes gradients in scaled space
-            # • Builds the backward graph once
-            #
-            # IMPORTANT QUALITY FIX:
-            # ----------------------
-            # On CPU (use_amp=False), GradScaler is effectively disabled,
-            # but the call sequence remains safe and consistent.
             scaler.scale(loss).backward()
 
             # ----------------------------------------
             # GRADIENT CLIPPING (STABILITY)
             # ----------------------------------------
-            # Prevents rare large gradients early in training
-            # from causing unstable updates and high loss.
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             # ----------------------------------------
             # OPTIMIZER STEP (AMP SAFE)
             # ----------------------------------------
-            # • Internally unscales gradients (brings them back to real magnitude)
-            # • Checks for NaN/Inf gradients:
-            #     - If found → SKIP the weight update to avoid corrupting weights
-            #     - If clean  → run optimizer.step() to update parameters safely
             scaler.step(optimizer)
 
             # ----------------------------------------
             # UPDATE SCALER
             # ----------------------------------------
-            # • Adjusts scaling factor dynamically
-            # • Increases scale if training is stable
-            # • Decreases scale if overflow is detected
             scaler.update()
 
             # ----------------------------------------
             # LEARNING RATE SCHEDULER STEP (OneCycleLR)
             # ----------------------------------------
-            # • Updates learning rate EVERY ITERATION
-            # • Controls warmup + cooldown automatically
-            #   • Must be called AFTER optimizer.step()
             scheduler.step()
+
+            # ------------------------------------------------------------
+            # ✅ EMA UPDATE (NEW)
+            # ------------------------------------------------------------
+            # We update EMA AFTER optimizer.step() because we want EMA to reflect
+            # the latest parameters (post-update).
+            # ------------------------------------------------------------
+            if use_ema:
+                _ema_update(model, ema_state, decay=float(ema_decay))
 
             # ----------------------------------------
             # STATISTICS
             # ----------------------------------------
+            # NOTE:
+            # -----
+            # This is TRAIN accuracy (on the train_loader), not test accuracy.
+            # Very high values here can happen even when test accuracy is lower.
             running_loss += loss.item() * images.size(0)
-
             preds = outputs.argmax(1)
             correct += (preds == labels).sum().item()
             total += labels.size(0)
@@ -2074,28 +2019,12 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
         # --------------------------------------------------------
         # END TIMER FOR THIS EPOCH
         # --------------------------------------------------------
-        # Measure elapsed time for THIS epoch only
-        # --------------------------------------------------------
         epoch_time = time.perf_counter() - epoch_start
-
-        # Store it for later statistics
         epoch_times.append(epoch_time)
 
         # --------------------------------------------------------
         # COMPUTE AVERAGE LOSS & ACCURACY FOR THIS EPOCH
         # --------------------------------------------------------
-        #
-        # running_loss:
-        #   • Accumulated: sum of (batch_loss * batch_size)
-        # total:
-        #   • Total number of samples seen in the epoch
-        #
-        # epoch_loss:
-        #   • True average loss PER SAMPLE over the whole epoch
-        #
-        # epoch_acc:
-        #   • Fraction of correctly classified samples
-        #
         epoch_loss = running_loss / total
         epoch_acc  = correct / total
 
@@ -2112,20 +2041,21 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
         # ------------------------------------------------------------
         # ✅ OPTIONAL TEST EVALUATION (PREDICTION QUALITY TRACKING)
         # ------------------------------------------------------------
-        # PURPOSE:
-        # --------
-        # Training accuracy can look good even when test accuracy is not improving.
-        # This optional block measures true "prediction quality" on test/validation data.
-        #
-        # IMPORTANT:
-        # ----------
-        # • This does NOT change training behavior.
-        # • It only runs if you pass test_loader=train/test loader when calling train_model().
-        # ------------------------------------------------------------
         if test_loader is not None:
             model.eval()
             correct_t = 0
             total_t = 0
+
+            # ------------------------------------------------------------
+            # ✅ EMA EVAL SWAP-IN (NEW)
+            # ------------------------------------------------------------
+            # If EMA is enabled, we evaluate using EMA weights because they often
+            # generalize better than the raw last-step weights.
+            # ------------------------------------------------------------
+            ema_backup = None
+            if use_ema:
+                ema_backup = _ema_swap_in(model, ema_state)
+
             with torch.no_grad():
                 for images_t, labels_t in test_loader:
                     images_t = images_t.to(device)
@@ -2134,9 +2064,50 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
                     preds_t = outputs_t.argmax(1)
                     correct_t += (preds_t == labels_t).sum().item()
                     total_t += labels_t.size(0)
+
+            # Restore original weights after EMA evaluation
+            if use_ema:
+                _ema_swap_out(model, ema_backup)
+
             test_acc = correct_t / max(1, total_t)
             debug_print(f"[TEST]  Epoch {ep+1}/{num_epochs}  Accuracy: {test_acc:.4f}")
             model.train()
+
+            # ------------------------------------------------------------
+            # ✅ BEST CHECKPOINT TRACKING (NEW)
+            # ------------------------------------------------------------
+            # We track BEST test accuracy and store weights.
+            # This prevents ending training with worse generalization.
+            # ------------------------------------------------------------
+            improved = (test_acc > best_test_acc + 1e-12)
+            if improved:
+                best_test_acc = float(test_acc)
+                best_epoch = int(ep)
+                epochs_since_improve = 0
+
+                # Save best weights (CPU copy to reduce GPU memory pressure)
+                best_state_dict = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+                debug_print(
+                    f"[BEST] New best TEST accuracy = {best_test_acc:.4f} "
+                    f"at epoch {best_epoch+1}/{num_epochs} (saving best weights)"
+                )
+            else:
+                epochs_since_improve += 1
+
+            # ------------------------------------------------------------
+            # ✅ EARLY STOPPING (NEW)
+            # ------------------------------------------------------------
+            # If test accuracy does not improve for `early_stop_patience` epochs,
+            # we stop training early to reduce overfitting.
+            # ------------------------------------------------------------
+            if early_stop_patience is not None and early_stop_patience > 0:
+                if epochs_since_improve >= int(early_stop_patience):
+                    debug_print(
+                        f"[EARLY STOP] No TEST improvement for {epochs_since_improve} epochs "
+                        f"(patience={early_stop_patience}). Stopping early at epoch {ep+1}."
+                    )
+                    break
 
         if scheduler is not None:
 
@@ -2144,43 +2115,33 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
             # IMPORTANT OneCycleLR CORRECTION
             # ------------------------------------------------------------
             # OneCycleLR is a *BATCH-BASED* scheduler.
-            #
-            # That means:
-            #   ❌ We must NOT call scheduler.step(epoch_loss)
-            #   ❌ We must NOT step the scheduler per epoch
-            #
-            # The scheduler is ALREADY stepped once per mini-batch:
-            #     scheduler.step()
-            #
-            # Calling it again here would:
-            #   • Consume the LR schedule too fast
-            #   • Break the cosine curve
-            #   • Cause LR to stagnate or collapse
-            #   • Make early loss look worse
-            #
-            # Therefore:
-            #   ➜ We keep this block ONLY for LR logging
             # ------------------------------------------------------------
-
-            # ❌ DISABLED — DO NOT USE WITH OneCycleLR
-            # scheduler.step(epoch_loss)
 
             # Manual LR logging (safe — read-only)
             current_lr = optimizer.param_groups[0]['lr']
             debug_print(f"[LR Scheduler] End-of-epoch LR snapshot = {current_lr:.6f}")
 
     # ------------------------------------------------------------
-    # OPTIONAL: PRINT TOTAL AND AVERAGE EXECUTION TIME
+    # ✅ RESTORE BEST WEIGHTS AT END (NEW)
     # ------------------------------------------------------------
-    # IMPORTANT FIX:
-    # --------------
-    # This MUST be OUTSIDE the epoch loop, so it prints once at the end.
+    # If you provide test_loader, we restore the best-generalizing weights.
+    # This usually improves your final saved model performance.
+    # ------------------------------------------------------------
+    if test_loader is not None and restore_best_weights and best_state_dict is not None:
+        model.load_state_dict(best_state_dict)
+        debug_print(
+            f"[RESTORE] Restored BEST weights from epoch {best_epoch+1} "
+            f"with best TEST accuracy = {best_test_acc:.4f}"
+        )
+
+    # ------------------------------------------------------------
+    # OPTIONAL: PRINT TOTAL AND AVERAGE EXECUTION TIME
     # ------------------------------------------------------------
     if epoch_times:
         total_time = sum(epoch_times)
         avg_time = total_time / len(epoch_times)
         print(
-            f"[TRAIN] Finished {num_epochs} epochs "
+            f"[TRAIN] Finished {len(epoch_times)} epochs "
             f"in {total_time:.2f} sec "
             f"(avg {avg_time:.2f} sec/epoch)"
         )
@@ -2318,19 +2279,147 @@ def detect_single_image(model, test_dataset, device, index=None):
 
 
 
+
+
+
+
+
+
+# ============================================================
+# COMPLETE PROCEDURE (INCLUDING main)
+# ============================================================
+# ✅ Includes:
+#   • detect_single_image() (prints per-image details for index mode)
+#   • main() with:
+#       - data loading (ImageFolder)
+#       - transforms
+#       - DataLoaders
+#       - load-or-train model
+#       - interactive loop:
+#           * type INDEX → runs detect_single_image (prints details)
+#           * press 'n' then type N → runs N-random evaluation (NO per-hit/miss printing)
+#             and prints ONLY final summary:
+#               - hits, hit rate
+#               - misses, miss rate
+#               - avg confidence per predicted class
+#               - total hit/miss rates
+#           * press 'e' anytime → exit
+#
+# NOTE:
+#   • This code assumes you already imported:
+#       torch, torch.nn.functional as F, torchvision.datasets as datasets,
+#       torchvision.transforms as transforms, torch.utils.data.DataLoader
+#       os, random, time, msvcrt
+#   • And you have:
+#       StaticInitLearnableCNN class
+#       train_model function
+#       debug_print helper
+#
+# ============================================================
+
+# ============================================================
+# DETECTION / SINGLE-IMAGE INFERENCE FUNCTION
+# ============================================================
+def detect_single_image(model, test_dataset, device, index=None):
+    """
+    Loads ONE RANDOM image from the test dataset (unless index is provided),
+    runs the model, and prints:
+
+        • True label ID & name
+        • Predicted label ID & name
+        • Confidence (softmax probability for predicted class)
+
+    Args:
+        model ........ the trained PyTorch CNN
+        test_dataset . a torchvision dataset (CIFAR-10, ImageFolder, etc.)
+        device ....... "cuda" or "cpu"
+        index ........ optional fixed index; if None → choose random image
+
+    Returns:
+        img_tensor, true_label_id, predicted_label_id
+    """
+
+    # --------------------------------------------------------
+    # MOVE MODEL TO DEVICE AND SWITCH TO EVAL MODE
+    # --------------------------------------------------------
+    model.to(device)
+    model.eval()
+
+    # --------------------------------------------------------
+    # AUTO-DETECT CLASS NAMES (works for CIFAR-10 + ImageFolder)
+    # --------------------------------------------------------
+    class_names = getattr(test_dataset, "classes", None)
+    if class_names is None:
+        class_names = [str(i) for i in range(10)]  # generic labels 0..9
+
+    # --------------------------------------------------------
+    # NORMALIZE & VALIDATE INDEX
+    # --------------------------------------------------------
+    if index is None:
+        index = random.randint(0, len(test_dataset) - 1)
+    else:
+        if isinstance(index, str):
+            try:
+                index = int(index)
+            except ValueError:
+                print(f"[detect_single_image] Invalid index value '{index}', using 0 instead.")
+                index = 0
+
+        if index < 0 or index >= len(test_dataset):
+            print(f"[detect_single_image] Index {index} is out of range 0–{len(test_dataset)-1}, using 0 instead.")
+            index = 0
+
+    # --------------------------------------------------------
+    # LOAD IMAGE + TRUE LABEL
+    # --------------------------------------------------------
+    img, true_label = test_dataset[index]
+
+    try:
+        true_label_id = int(true_label)
+    except Exception:
+        true_label_id = true_label
+
+    # img is [C, H, W]
+    c, h, w = img.shape
+
+    # Add batch dimension → [1, C, H, W]
+    img_input = img.unsqueeze(0).to(device)
+
+    # --------------------------------------------------------
+    # FORWARD PASS (NO GRADIENT TRACKING)
+    # --------------------------------------------------------
+    with torch.no_grad():
+        logits = model(img_input)
+        pred_label = logits.argmax(1).item()
+
+        # Confidence = softmax probability of predicted class
+        probs = torch.softmax(logits, dim=1)
+        pred_conf = probs[0, pred_label].item()
+
+    # --------------------------------------------------------
+    # LABEL NAMES
+    # --------------------------------------------------------
+    true_name = class_names[true_label_id] if 0 <= true_label_id < len(class_names) else f"class_{true_label_id}"
+    pred_name = class_names[pred_label] if 0 <= pred_label < len(class_names) else f"class_{pred_label}"
+
+    # --------------------------------------------------------
+    # PRINT RESULTS
+    # --------------------------------------------------------
+    print("--------------------------------------------------")
+    print(f"DETECTION RESULT FOR TEST IMAGE INDEX: {index}")
+    print(f"Input image shape : [C={c}, H={h}, W={w}]")
+    print(f"True label index  : {true_label_id} → {true_name}")
+    print(f"Pred label index  : {pred_label} → {pred_name}")
+    print(f"Confidence        : {pred_conf*100:.2f}%")
+    print("--------------------------------------------------")
+
+    return img, true_label_id, pred_label
+
+
+
 # ============================================================
 # MAIN PROGRAM
 # ============================================================
-# assume these are defined globally somewhere above:
-# DATA_PATH = "../../../data/mydata"
-# MODEL_PATH = "../../../"
-# MODEL_FILENAME = "cifar10_model_custom_file"
-# NUM_EPOCHS = 2
-# from your_module import StaticInitLearnableCNN, train_model, detect_single_image
-
-# ------------------------------------------------------------------
-# Simple debug print helper (example)
-# ------------------------------------------------------------------
 def main():
 
     # --------------------------------------------------------
@@ -2340,25 +2429,26 @@ def main():
     debug_print("Using device:", device)
 
     # --------------------------------------------------------
-    # ASSUME GLOBAL DATA_PATH IS ALREADY DEFINED
+    # ✅ SPEED IMPROVEMENT (CUDA)
     # --------------------------------------------------------
-    # Example (outside this function):
-    #   DATA_PATH = "../../../data/mydata"
-    #
-    # Expected structure:
-    #   ../../../data/mydata/
-    #       train/
-    #           classA/
-    #           classB/
-    #           ...
-    #       test/
-    #           classA/
-    #           classB/
-    #           ...
+    # If you are on CUDA and image sizes are consistent, this can speed up convs.
+    # Safe to keep on for typical CNN training/inference.
+    # --------------------------------------------------------
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+
+    # --------------------------------------------------------
+    # ASSUME GLOBAL PATHS ARE ALREADY DEFINED
+    # --------------------------------------------------------
+    # DATA_PATH = "../../../data/mydata"
+    # MODEL_PATH = "../../../"
+    # MODEL_FILENAME = "cifar10_model_custom_file"
+    # NUM_EPOCHS = 2
+    # BATCH_SIZE = 64
+    # NUM_WORKERS = 2
     # --------------------------------------------------------
     debug_print(f"[main] Global DATA_PATH = {DATA_PATH!r}")
 
-    # Build train and test directories from the global DATA_PATH
     train_path = os.path.join(DATA_PATH, "train")
     test_path  = os.path.join(DATA_PATH, "test")
 
@@ -2368,103 +2458,15 @@ def main():
     debug_print("Training images from:", train_path)
     debug_print("Testing  images from:", test_path)
 
-    # --------------------------------------------------------
-    # DATA TRANSFORMS FOR YOUR DATA (ALL IMAGES SAME SIZE)
-    # --------------------------------------------------------
-    # ASSUMPTION (YOUR REQUEST):
-    # • All images in train/ and test/ have the SAME size (same H and W).
-    #
-    # WHAT THIS MEANS:
-    # • DataLoader can stack images into batches safely.
-    # • No Resize() is required.
-    #
-    # IMPORTANT:
-    # • If even ONE image has a different size, DataLoader will fail with:
-    #     RuntimeError: stack expects each tensor to be equal size
-    # --------------------------------------------------------
     # ============================================================
     # TRAIN TRANSFORM (USED DURING TRAINING)
     # ============================================================
     train_transform = transforms.Compose([
-
-        # --------------------------------------------------------
-        # RANDOM HORIZONTAL FLIP (DATA AUGMENTATION)
-        # --------------------------------------------------------
-        # With probability p=0.5:
-        #   • The image is flipped left ↔ right.
-        #
-        # WHY WE USE THIS:
-        # • Many objects look the same when mirrored (cars, animals, people).
-        # • Doubles the effective dataset size.
-        # • Helps prevent overfitting.
-        #
-        # WHY IT IS SAFE:
-        # • Does NOT change image size (H, W remain the same).
-        # • Does NOT distort pixel values.
-        #
-        # Input  : PIL Image (H x W x C)
-        # Output : PIL Image (H x W x C)
-        # --------------------------------------------------------
         transforms.RandomHorizontalFlip(p=0.5),
-
-        # --------------------------------------------------------
-        # CONVERT IMAGE TO PYTORCH TENSOR
-        # --------------------------------------------------------
-        # Converts:
-        #   • PIL Image or NumPy array
-        # into:
-        #   • PyTorch Tensor
-        #
-        # Pixel value conversion:
-        #   Original pixels:  [0, 255]   (uint8)
-        #   Tensor pixels:    [0.0, 1.0] (float32)
-        #
-        # Shape conversion:
-        #   PIL format : [H, W, C]
-        #   Tensor     : [C, H, W]
-        #
-        # WHY THIS IS REQUIRED:
-        # • PyTorch models ONLY accept tensors.
-        # • Floating point values are required for gradient computation.
-        #
-        # IMPORTANT:
-        # • Does NOT resize or crop the image.
-        # • Works because ALL images already share the same H and W.
-        # --------------------------------------------------------
         transforms.ToTensor(),
-
-        # --------------------------------------------------------
-        # NORMALIZATION (IMAGENET STATISTICS)
-        # --------------------------------------------------------
-        # This line performs:
-        #
-        #   normalized_pixel = (pixel - mean) / std
-        #
-        # Per-channel normalization:
-        #   Channel 0 (Red)   → mean=0.485, std=0.229
-        #   Channel 1 (Green) → mean=0.456, std=0.224
-        #   Channel 2 (Blue)  → mean=0.406, std=0.225
-        #
-        # WHY WE USE IMAGENET STATS:
-        # • Most CNNs are trained assuming these statistics.
-        # • Helps stabilize gradients.
-        # • Reduces initial loss.
-        # • Faster convergence.
-        #
-        # WHAT RANGE DO PIXELS END UP IN?
-        # • Roughly: [-2.5, +2.5]
-        #
-        # WHY NORMALIZATION HELPS:
-        # • Prevents one color channel from dominating.
-        # • Makes learning scale-consistent.
-        #
-        # SAFE FOR ANY IMAGE SIZE:
-        # • Applied PER PIXEL.
-        # • Independent of H and W.
-        # --------------------------------------------------------
         transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],   # ImageNet channel means (RGB)
-            std=[0.229, 0.224, 0.225]     # ImageNet channel stds  (RGB)
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
         ),
     ])
 
@@ -2472,116 +2474,65 @@ def main():
     # TEST TRANSFORM (USED DURING VALIDATION / INFERENCE)
     # ============================================================
     test_transform = transforms.Compose([
-
-        # --------------------------------------------------------
-        # CONVERT IMAGE TO PYTORCH TENSOR
-        # --------------------------------------------------------
-        # Same behavior as training:
-        #   • Converts to float tensor
-        #   • Scales pixels to [0.0, 1.0]
-        #   • Converts shape to [C, H, W]
-        #
-        # IMPORTANT DIFFERENCE FROM TRAIN:
-        # • NO data augmentation here.
-        # • We want deterministic, repeatable results.
-        # --------------------------------------------------------
         transforms.ToTensor(),
-
-        # --------------------------------------------------------
-        # NORMALIZATION (MATCH TRAINING EXACTLY)
-        # --------------------------------------------------------
-        # IMPORTANT NOTE:
-        # ⚠️ TRAIN and TEST normalization SHOULD MATCH.
-        #
-        # Your original code used mean/std = 0.5 in test.
-        # Since we want correct evaluation, we match training here.
-        # --------------------------------------------------------
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225]
         ),
     ])
 
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------
     # LOAD DATASETS USING ImageFolder
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------
     train_dataset = datasets.ImageFolder(
         root=train_path,
-        transform=train_transform      # ✅ use training transform with augmentation
+        transform=train_transform
     )
 
     test_dataset = datasets.ImageFolder(
         root=test_path,
-        transform=test_transform       # ✅ use test transform (no augmentation)
+        transform=test_transform
     )
 
     debug_print(f"[main] Loaded train_dataset with {len(train_dataset)} images")
     debug_print(f"[main] Loaded test_dataset  with {len(test_dataset)} images")
-
-    # --------------------------------------------------------
-    # FULL RANDOMIZATION OF TRAIN AND TEST DATASETS
-    # --------------------------------------------------------
-    # By default, ImageFolder builds its internal 'samples' list in
-    # alphabetical class folder order, e.g.:
-    #   airplane/, automobile/, bird/, ...
-    #
-    # That means that BEFORE shuffling, indices 0..N may all come from
-    # the first class (e.g., airplane). To achieve COMPLETE randomization:
-    #
-    #   ✅ We random.shuffle(train_dataset.samples)
-    #   ✅ We random.shuffle(test_dataset.samples)
-    #
-    # This permutes the underlying (path, label) list itself so the
-    # dataset no longer starts with a long block of one class.
-    #
-    # Combined with DataLoader(shuffle=True), this gives full randomness:
-    #   • dataset level  (samples list)
-    #   • batch order    (DataLoader index sampling)
-    # --------------------------------------------------------
-    #random.shuffle(train_dataset.samples)
-    #random.shuffle(test_dataset.samples)
-    #debug_print("[main] Shuffled train_dataset.samples for full randomization")
-    #debug_print("[main] Shuffled test_dataset.samples  for full randomization")
 
     # Show class mapping as seen by ImageFolder
     debug_print("[main] Class index → name mapping (from train_dataset.classes):")
     for idx, name in enumerate(train_dataset.classes):
         debug_print(f"   {idx}: {name}")
 
-    # Optionally show first few training samples to verify labels AFTER shuffle
-    max_show = min(5, len(train_dataset))
-    for i in range(max_show):
-        _, lbl = train_dataset[i]                  # (image_tensor, label_index)
-        cls_name = train_dataset.classes[lbl]
-        debug_print(f"[main] Sample train index {i} (after shuffle) → label {lbl} ('{cls_name}')")
-
-    # And also show a few test samples AFTER shuffle
-    max_show_test = min(5, len(test_dataset))
-    for i in range(max_show_test):
-        _, lbl = test_dataset[i]
-        cls_name = test_dataset.classes[lbl]
-        debug_print(f"[main] Sample test  index {i} (after shuffle) → label {lbl} ('{cls_name}')")
-
     # ============================================================
     # DATALOADERS
     # ============================================================
+    # ------------------------------------------------------------
+    # ✅ SPEED FIX (CUDA):
+    # pin_memory=True allows faster CPU→GPU transfer.
+    # persistent_workers=True keeps worker processes alive across epochs (faster).
+    # ------------------------------------------------------------
+    pin = (device.type == "cuda")
+    pers = (NUM_WORKERS > 0)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=BATCH_SIZE,
-        shuffle=True,    # ✅ still keep this True for per-epoch randomization
-        num_workers=NUM_WORKERS
+        shuffle=True,
+        num_workers=NUM_WORKERS,
+        pin_memory=pin,
+        persistent_workers=pers
     )
 
-    # For *complete* randomization in testing as requested,
-    # we also use shuffle=True here. Note:
-    #   • For strict benchmark evaluation, usually shuffle=False,
-    #     but since your focus is interactive detection / exploration,
-    #     we enable full randomization as you requested.
     test_loader = DataLoader(
         test_dataset,
-        batch_size=2,
-        shuffle=True,    # ✅ full randomization for test as well
-        num_workers=2
+        # ------------------------------------------------------------
+        # ✅ CORRECTNESS FIX:
+        # Evaluation should NOT shuffle for stable metrics.
+        # ------------------------------------------------------------
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=NUM_WORKERS,
+        pin_memory=pin,
+        persistent_workers=pers
     )
 
     # --------------------------------------------------------
@@ -2594,6 +2545,10 @@ def main():
     # --------------------------------------------------------
     # CREATE MODEL
     # --------------------------------------------------------
+    # ✅ Your updated architecture note:
+    #   conv1: 3   -> 128
+    #   conv2: 128 -> 256
+    #   conv3: 256 -> 512
     model = StaticInitLearnableCNN(num_classes=num_classes)
 
     # --------------------------------------------------------
@@ -2608,21 +2563,12 @@ def main():
         model.load_state_dict(state_dict)
     else:
         debug_print("No saved model found. Training a new model...")
-        model = train_model(model, train_loader, device, num_epochs=NUM_EPOCHS, lr=1e-3)
+        model = train_model(model, train_loader, device, num_epochs=NUM_EPOCHS, lr=1e-3, test_loader=test_loader)
         debug_print(f"Saving trained model to: {model_filename}")
         torch.save(model.state_dict(), model_filename)
 
     # ------------------------------------------------------------
-    # INTERACTIVE LOOP FOR USER-DRIVEN DETECTION
-    # ------------------------------------------------------------
-
-    # ------------------------------------------------------------
     # HELPER: READ A POSITIVE INTEGER USING msvcrt (DIGITS UNTIL ENTER)
-    # ------------------------------------------------------------
-    # This helper lets us reuse the SAME "type digits, press ENTER" logic
-    # for BOTH:
-    #   • image index input
-    #   • N-random-images evaluation input
     # ------------------------------------------------------------
     def _read_int_from_keyboard_msvcrt(prompt: str):
         """
@@ -2635,28 +2581,23 @@ def main():
 
         print(prompt, end="", flush=True)
 
-        # READ FIRST CHARACTER WITHOUT PRESSING ENTER
         first = msvcrt.getch().decode(errors="ignore").lower()
 
-        # IF USER PRESSES 'e' → EXIT IMMEDIATELY
         if first == "e":
             print("e")
             return "EXIT"
 
-        # If first key is NOT a digit → invalid
         if not first.isdigit():
             print(first)
             return None
 
-        # Echo the first digit
         print(first, end="", flush=True)
 
-        # READ REMAINING DIGITS UNTIL ENTER
         s = first
         while True:
             ch = msvcrt.getch()
-            if ch in [b"\r", b"\n"]:  # ENTER pressed
-                print()              # move to next line
+            if ch in [b"\r", b"\n"]:
+                print()
                 break
 
             try:
@@ -2664,18 +2605,13 @@ def main():
             except Exception:
                 continue
 
-            # Allow EXIT inside typing
             if c.lower() == "e":
                 print("e")
                 return "EXIT"
 
-            # Accept only digits
             if c.isdigit():
                 s += c
                 print(c, end="", flush=True)
-            else:
-                # Ignore non-digit keys
-                continue
 
         if not s.isdigit():
             return None
@@ -2683,17 +2619,17 @@ def main():
         return int(s)
 
     # ------------------------------------------------------------
-    # RUN N RANDOM TEST IMAGES AND REPORT HIT/MISS RATIO
-    # ------------------------------------------------------------
-    # This routine:
-    #   • randomly selects N test images
-    #   • runs inference
-    #   • prints predicted vs true
-    #   • computes hit ratio and miss ratio
+    # RUN N RANDOM TEST IMAGES AND PRINT PER-CLASS SUCCESS/FAIL ONLY
     # ------------------------------------------------------------
     def run_n_random_images(model, test_dataset, device, n: int):
         """
-        Runs the model on N random images from test_dataset and reports hit/miss ratio.
+        Runs the model on N random images and prints ONLY:
+          • For EACH TRUE CLASS:
+              - # success (hits)
+              - hit ratio
+              - # fail (misses)
+              - miss ratio
+          • Total hit/miss rates
         """
 
         # --------------------------------------------------------
@@ -2711,17 +2647,19 @@ def main():
         # PUT MODEL IN EVAL MODE (DISABLE DROPOUT, FIX BATCHNORM)
         # --------------------------------------------------------
         model.eval()
-
-        # --------------------------------------------------------
-        # MOVE MODEL TO DEVICE (IF NOT ALREADY)
-        # --------------------------------------------------------
         model.to(device)
 
         # --------------------------------------------------------
-        # PICK N RANDOM INDICES
+        # AUTO-DETECT CLASS NAMES
         # --------------------------------------------------------
-        # If N <= dataset size → sample without replacement (unique indices)
-        # Else → allow repeats (with replacement) so the user can request big N
+        class_names = getattr(test_dataset, "classes", None)
+        if class_names is None:
+            class_names = [str(i) for i in range(10)]
+
+        num_classes = len(class_names)
+
+        # --------------------------------------------------------
+        # PICK N RANDOM INDICES
         # --------------------------------------------------------
         if n <= len(test_dataset):
             indices = random.sample(range(len(test_dataset)), k=n)
@@ -2729,104 +2667,266 @@ def main():
             indices = [random.randrange(len(test_dataset)) for _ in range(n)]
 
         # --------------------------------------------------------
-        # INFERENCE LOOP
+        # PER-CLASS METRICS (BASED ON TRUE LABEL)
         # --------------------------------------------------------
-        correct = 0
-        total = 0
+        # total_true[c]   = how many samples had true label == c
+        # hit_true[c]     = among those, predicted correctly
+        # miss_true[c]    = among those, predicted incorrectly
+        total_true = [0] * num_classes
+        hit_true   = [0] * num_classes
+        miss_true  = [0] * num_classes
 
-        print("\n--------------------------------------------------")
-        print(f"Running N-Random Evaluation (N={n})")
-        print("--------------------------------------------------\n")
+        # Overall metrics
+        total = 0
+        hits  = 0
+
+        # --------------------------------------------------------
+        # ✅ SPEED FIX (MAJOR):
+        # --------------------------------------------------------
+        # Instead of running the model 1 image at a time,
+        # we batch images together and do fewer forward passes.
+        #
+        # Behavior is IDENTICAL (same logits/argmax), only faster.
+        # --------------------------------------------------------
+        eval_bs = 128  # you can tune this (128/256) depending on GPU memory
 
         with torch.no_grad():
 
-            for k, idx in enumerate(indices, start=1):
+            # Process indices in chunks of eval_bs
+            for start in range(0, len(indices), eval_bs):
 
-                # ------------------------------------------------
-                # LOAD ONE TEST SAMPLE
-                #   test_dataset[idx] → (image_tensor [C,H,W], label_index)
-                # ------------------------------------------------
-                image_tensor, true_label = test_dataset[idx]
+                batch_indices = indices[start:start + eval_bs]
 
-                # ------------------------------------------------
-                # ADD BATCH DIMENSION
-                #   [C,H,W] → [1,C,H,W]
-                # ------------------------------------------------
-                image_tensor = image_tensor.unsqueeze(0).to(device)
+                # Build batch tensors
+                images_list = []
+                true_ids = []
 
-                # ------------------------------------------------
-                # FORWARD PASS (PREDICT)
-                # ------------------------------------------------
-                outputs = model(image_tensor)
+                for idx in batch_indices:
+                    image_tensor, true_label = test_dataset[idx]
+                    true_id = int(true_label)
 
-                # ------------------------------------------------
-                # ARGMAX → PREDICTED CLASS INDEX
-                # ------------------------------------------------
-                pred_label = int(outputs.argmax(1).item())
+                    images_list.append(image_tensor)
+                    true_ids.append(true_id)
 
-                # ------------------------------------------------
-                # UPDATE METRICS
-                # ------------------------------------------------
-                is_hit = (pred_label == int(true_label))
-                correct += 1 if is_hit else 0
-                total += 1
+                # Stack into [B, C, H, W]
+                images_batch = torch.stack(images_list, dim=0).to(
+                    device,
+                    non_blocking=(device.type == "cuda")
+                )
 
-                # ------------------------------------------------
-                # PRINT PER-IMAGE RESULT
-                # ------------------------------------------------
-                true_name = test_dataset.classes[int(true_label)]
-                pred_name = test_dataset.classes[int(pred_label)]
-                status = "✅ HIT" if is_hit else "❌ MISS"
+                logits = model(images_batch)
+                pred_ids = logits.argmax(1).detach().cpu().tolist()
 
-                print(f"[{k:>3}/{n}] idx={idx:>6} | true={true_name:<20} pred={pred_name:<20} → {status}")
+                # Update counts
+                for true_id, pred_id in zip(true_ids, pred_ids):
+
+                    total += 1
+
+                    # Count this sample into its TRUE class bucket
+                    if 0 <= true_id < num_classes:
+                        total_true[true_id] += 1
+
+                        if pred_id == true_id:
+                            hit_true[true_id] += 1
+                            hits += 1
+                        else:
+                            miss_true[true_id] += 1
+
+        misses = total - hits
+        total_hit_rate  = (hits / total) if total > 0 else 0.0
+        total_miss_rate = 1.0 - total_hit_rate
 
         # --------------------------------------------------------
-        # FINAL HIT / MISS RATIOS
+        # PRINT SUMMARY ONLY (NO PER-IMAGE LINES)
         # --------------------------------------------------------
-        hit_ratio = (correct / total) if total > 0 else 0.0
-        miss_ratio = 1.0 - hit_ratio
-
         print("\n--------------------------------------------------")
-        print("N-Random Evaluation Summary")
+        print(f"N-Random Evaluation Summary (N={n})")
+        print("Per-class results (based on TRUE class)")
+        print("--------------------------------------------------")
+
+        for c in range(num_classes):
+            t = total_true[c]
+            h = hit_true[c]
+            m = miss_true[c]
+
+            # If class didn't appear in the random sample, ratios are 0
+            hit_ratio  = (h / t) if t > 0 else 0.0
+            miss_ratio = (m / t) if t > 0 else 0.0
+
+            print(
+                f"Class {c:>2} ({class_names[c]:<20}) | "
+                f"success={h:>6}  hit_ratio={hit_ratio:>7.4f} ({hit_ratio*100:>6.2f}%) | "
+                f"fail={m:>6}     miss_ratio={miss_ratio:>7.4f} ({miss_ratio*100:>6.2f}%) | "
+                f"total={t:>6}"
+            )
+
+        print("--------------------------------------------------")
+        print("TOTAL (ALL CLASSES)")
         print("--------------------------------------------------")
         print(f"Total images : {total}")
-        print(f"Hits         : {correct}")
-        print(f"Misses       : {total - correct}")
-        print(f"Hit ratio    : {hit_ratio:.4f}  ({hit_ratio*100:.2f}%)")
-        print(f"Miss ratio   : {miss_ratio:.4f} ({miss_ratio*100:.2f}%)")
+        print(f"Total hits   : {hits}")
+        print(f"Total misses : {misses}")
+        print(f"Hit rate     : {total_hit_rate:.4f}  ({total_hit_rate*100:.2f}%)")
+        print(f"Miss rate    : {total_miss_rate:.4f} ({total_miss_rate*100:.2f}%)")
         print("--------------------------------------------------\n")
 
+    # ------------------------------------------------------------
+    # RUN FULL TEST SET EVALUATION (MATCHES [TEST] ACCURACY)
+    # ------------------------------------------------------------
+    def run_full_test_evaluation(model, test_loader, test_dataset, device):
+        """
+        Runs the model on the ENTIRE test_loader and prints ONLY:
+          • For EACH TRUE CLASS:
+              - # success (hits)
+              - hit ratio
+              - # fail (misses)
+              - miss ratio
+          • Total hit/miss rates
+
+        IMPORTANT:
+        ----------
+        This is the same style as your per-epoch test evaluation:
+          preds = outputs.argmax(1)
+          correct += (preds == labels).sum().item()
+          total += labels.size(0)
+
+        So the final "Hit rate" here should match your [TEST] Accuracy.
+        """
+
+        # --------------------------------------------------------
+        # PUT MODEL IN EVAL MODE (DISABLE DROPOUT, FIX BATCHNORM)
+        # --------------------------------------------------------
+        model.eval()
+        model.to(device)
+
+        # --------------------------------------------------------
+        # AUTO-DETECT CLASS NAMES
+        # --------------------------------------------------------
+        class_names = getattr(test_dataset, "classes", None)
+        if class_names is None:
+            class_names = [str(i) for i in range(10)]
+
+        num_classes = len(class_names)
+
+        # --------------------------------------------------------
+        # PER-CLASS METRICS (BASED ON TRUE LABEL)
+        # --------------------------------------------------------
+        # total_true[c]   = how many test samples had true label == c
+        # hit_true[c]     = among those, predicted correctly
+        # miss_true[c]    = among those, predicted incorrectly
+        total_true = [0] * num_classes
+        hit_true   = [0] * num_classes
+        miss_true  = [0] * num_classes
+
+        # Overall metrics
+        total = 0
+        hits  = 0
+
+        # --------------------------------------------------------
+        # FULL-DATASET PASS (BATCHED BY test_loader)
+        # --------------------------------------------------------
+        with torch.no_grad():
+            for images_t, labels_t in test_loader:
+
+                images_t = images_t.to(device, non_blocking=(device.type == "cuda"))
+                labels_t = labels_t.to(device, non_blocking=(device.type == "cuda")).long()
+
+                outputs_t = model(images_t)
+                preds_t = outputs_t.argmax(1)
+
+                # Update global totals
+                total += labels_t.size(0)
+                hits  += (preds_t == labels_t).sum().item()
+
+                # Update per-class totals (based on TRUE class)
+                labels_cpu = labels_t.detach().cpu().tolist()
+                preds_cpu  = preds_t.detach().cpu().tolist()
+
+                for true_id, pred_id in zip(labels_cpu, preds_cpu):
+                    if 0 <= true_id < num_classes:
+                        total_true[true_id] += 1
+                        if pred_id == true_id:
+                            hit_true[true_id] += 1
+                        else:
+                            miss_true[true_id] += 1
+
+        misses = total - hits
+        total_hit_rate  = (hits / total) if total > 0 else 0.0
+        total_miss_rate = 1.0 - total_hit_rate
+
+        # --------------------------------------------------------
+        # PRINT SUMMARY ONLY (NO PER-IMAGE LINES)
+        # --------------------------------------------------------
+        print("\n--------------------------------------------------")
+        print("FULL Test Evaluation Summary (ENTIRE test_loader)")
+        print("Per-class results (based on TRUE class)")
+        print("--------------------------------------------------")
+
+        for c in range(num_classes):
+            t = total_true[c]
+            h = hit_true[c]
+            m = miss_true[c]
+
+            hit_ratio  = (h / t) if t > 0 else 0.0
+            miss_ratio = (m / t) if t > 0 else 0.0
+
+            print(
+                f"Class {c:>2} ({class_names[c]:<20}) | "
+                f"success={h:>6}  hit_ratio={hit_ratio:>7.4f} ({hit_ratio*100:>6.2f}%) | "
+                f"fail={m:>6}     miss_ratio={miss_ratio:>7.4f} ({miss_ratio*100:>6.2f}%) | "
+                f"total={t:>6}"
+            )
+
+        print("--------------------------------------------------")
+        print("TOTAL (ALL CLASSES)")
+        print("--------------------------------------------------")
+        print(f"Total images : {total}")
+        print(f"Total hits   : {hits}")
+        print(f"Total misses : {misses}")
+        print(f"Hit rate     : {total_hit_rate:.4f}  ({total_hit_rate*100:.2f}%)")
+        print(f"Miss rate    : {total_miss_rate:.4f} ({total_miss_rate*100:.2f}%)")
+        print("--------------------------------------------------\n")
+
+    # ------------------------------------------------------------
+    # INTERACTIVE LOOP FOR USER-DRIVEN DETECTION
+    # ------------------------------------------------------------
     print("\n--------------------------------------------------")
     print("Interactive Image Detection Mode")
-    print("You are now ALWAYS in detection mode.")
-    print("Just type an image index and press ENTER.")
-    print("Type 'n' to run N random test images and print hit/miss ratio.")
+    print("Type an image index and press ENTER (prints that single result).")
+    print("Type 'n' then enter N to run N random images (prints ONLY summary).")
+    print("Type 'a' to evaluate the ENTIRE test set (prints ONLY summary).")
     print("Press 'e' at any time to exit.")
     print("--------------------------------------------------\n")
 
     while True:
 
-        print(f"Enter image index (0 – {len(test_dataset)-1}), or 'n' for N-random, or 'e' to exit: ",
-              end="", flush=True)
+        print(
+            f"Enter image index (0 – {len(test_dataset)-1}), or 'n' for N-random, or 'a' for full test, or 'e' to exit: ",
+            end="",
+            flush=True
+        )
 
-        # READ ONE CHARACTER WITHOUT PRESSING ENTER
         key = msvcrt.getch().decode(errors="ignore").lower()
 
-        # IF USER PRESSES 'e' → EXIT IMMEDIATELY
         if key == 'e':
             print("e")
             print("Exiting program. Goodbye!")
             break
 
         # ------------------------------------------------
+        # OPTION: USER PRESSES 'a' → RUN FULL TEST EVALUATION
+        # ------------------------------------------------
+        if key == "a":
+            print("a")
+            run_full_test_evaluation(model, test_loader, test_dataset, device)
+            continue
+
+        # ------------------------------------------------
         # OPTION: USER PRESSES 'n' → RUN N RANDOM IMAGES
         # ------------------------------------------------
         if key == "n":
-            print("n")  # echo the key
+            print("n")
 
-            # ------------------------------------------------
-            # ASK USER FOR N USING THE SAME DIGIT-UNTIL-ENTER LOGIC
-            # ------------------------------------------------
             n_val = _read_int_from_keyboard_msvcrt(
                 "Enter N (number of random test images) and press ENTER (or 'e' to exit): "
             )
@@ -2839,50 +2939,40 @@ def main():
                 print("❌ Invalid input. N must be a number.")
                 continue
 
-            # ------------------------------------------------
-            # RUN N-RANDOM EVALUATION + HIT/MISS RATIO
-            # ------------------------------------------------
             run_n_random_images(model, test_dataset, device, n=int(n_val))
             continue
 
         # If first key is NOT a digit → invalid
         if not key.isdigit():
             print(key)
-            print("❌ Invalid input. Enter a number, 'n', or 'e' to exit.")
+            print("❌ Invalid input. Enter a number, 'n', 'a', or 'e' to exit.")
             continue
 
-        # Echo the first digit
+        # Echo first digit
         print(key, end="", flush=True)
 
-        # READ REMAINING DIGITS UNTIL ENTER
+        # Read remaining digits until ENTER
         idx_str = key
         while True:
             ch = msvcrt.getch()
-            if ch in [b'\r', b'\n']:   # ENTER pressed
-                print()               # move to next line
+            if ch in [b'\r', b'\n']:
+                print()
                 break
+
             try:
                 c = ch.decode(errors="ignore")
             except Exception:
                 continue
 
-            # Allow EXIT inside typing
             if c.lower() == 'e':
                 print("e")
                 print("Exiting program. Goodbye!")
                 return
 
-            # Accept only digits
             if c.isdigit():
                 idx_str += c
                 print(c, end="", flush=True)
-            else:
-                # Ignore non-digit keys
-                continue
 
-        # ------------------------------------------------
-        # VALIDATE INDEX
-        # ------------------------------------------------
         if not idx_str.isdigit():
             print("❌ Invalid index. Must be a number.")
             continue
@@ -2893,12 +2983,8 @@ def main():
             print("❌ Index out of range. Try again.")
             continue
 
-        # ------------------------------------------------
-        # RUN DETECTION
-        # ------------------------------------------------
         print(f"\nRunning detection on test image index {idx} ...")
         detect_single_image(model, test_dataset, device, index=idx)
-
 
 
 # ------------------------------------------------------------
