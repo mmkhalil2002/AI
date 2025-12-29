@@ -10,12 +10,8 @@ from torchvision import datasets, transforms
 
 
 MODEL_PATH = "../../../"
-MODEL_FILENAME = "cifar10-cnn-256-128-64-382s-L8069-A9176"
+MODEL_FILENAME = "cifar10-cnn-64-32-1024-L6604-A9820"
 DATA_PATH = "../../../data/mydata"
-MG_WIDTH, IMG_HEIGHT = 32, 32  # Based on training dataset
-CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence for valid detections
-FILTER_WIDTH = 3
-FILTER_HEIGHT = 3
 BATCH_SIZE = 128
 NUM_EPOCHS = 100
 #LEARNING_RATE = 0.001
@@ -28,349 +24,443 @@ DEBUG_FLAG = True
 # EXPLANATION: HOW TRAINING WORKS IN THIS NETWORK
 # ============================================================
 #
-# This network is a STANDARD CONVOLUTIONAL NEURAL NETWORK (CNN)
-# with the following characteristics:
+# This network is a CLASSICAL CONVOLUTIONAL NEURAL NETWORK (CNN)
+# where:
 #
-#   • Layer 1 (conv1) may START with static handcrafted filters
-#   • Layer 2 (conv2) may START with static handcrafted filters
-#   • Layer 3 (conv3) may START with static handcrafted filters
-#   • A single early MaxPool layer reduces spatial resolution
-#   • Global Average Pooling (GAP) converts feature maps into a fixed-length vector
-#   • A fully connected layer produces final class scores (logits)
+#   • Layer 1 (conv1) extracts low-level features
+#       (edges, color gradients, small textures)
 #
-# ------------------------------------------------------------
-# INPUT ASSUMPTION
-# ------------------------------------------------------------
-# The network expects 3-channel RGB images with shape:
+#   • Layer 2 (conv2) extracts mid-level features
+#       (corners, repeated patterns, texture groupings)
 #
-#     [B, 3, H, W]
+#   • Layer 3 (conv3) extracts higher-level features
+#       (object parts, more complex shape compositions)
 #
-# where the spatial resolution (H, W) is provided by the dataset.
-# The model processes the input resolution directly as given.
+#   • Only ONE early MAX POOLING step is used (after conv1)
+#       to reduce spatial size while preserving detail
 #
-# ------------------------------------------------------------
-# MEANING OF "STATIC FILTERS"
-# ------------------------------------------------------------
-# The term "static" refers ONLY to how certain convolution layers
-# are initialized.
+#   • After feature extraction, we use GLOBAL AVERAGE POOLING (GAP)
+#       so the model works with ANY image size
 #
-#   • Static filters are assigned at initialization time
-#   • After initialization, ALL layers remain trainable
-#   • Gradients flow through every convolution and linear layer
-#
-# This is a standard CNN that starts from meaningful kernels
-# and then learns normally via backpropagation.
+#   • Final layer (fc) is a standard fully connected classifier
+#       that outputs class logits
 #
 # ------------------------------------------------------------
+# INPUT ASSUMPTION:
+# ------------------------------------------------------------
+#
+# The network expects 3-channel RGB images:
+#
+#   • Shape: [B, 3, H, W]
+#   • H, W can be ANY size
+#       - CIFAR-10 (32×32)
+#       - resized datasets
+#       - high-resolution images
+#
+# ------------------------------------------------------------
+# IMPORTANT NOTE ABOUT "STATIC" FILTERS:
+# ------------------------------------------------------------
+#
+# The word "static" (if enabled) means:
+#
+#   → Filters may be overwritten ONLY at INITIALIZATION TIME
+#       (e.g., Sobel, edge, corner, blur kernels).
+#
+#   → After training starts, learning depends on requires_grad:
+#
+#       - If a layer is trainable (requires_grad=True),
+#         it WILL learn normally via backpropagation.
+#
+#       - If you intentionally freeze a layer
+#         (requires_grad=False),
+#         it will NOT learn.
+#
+# So this is NOT automatically a "frozen-filter" network.
+#
+# It is a CLASSICAL CNN that can start from known kernels
+# and still learn end-to-end.
+#
+# ============================================================
 # HOW LEARNING HAPPENS
-# ------------------------------------------------------------
+# ============================================================
 #
-# During training:
+# During training, the following steps occur:
 #
 #   outputs = model(images)
 #   loss    = criterion(outputs, labels)
 #   loss.backward()
 #   optimizer.step()
 #
-# PyTorch computes gradients for ALL learnable parameters:
+# PyTorch automatically computes gradients for ALL trainable
+# parameters in the network.
 #
-#   • conv1.weight, conv1.bias
-#   • conv2.weight, conv2.bias
-#   • conv3.weight, conv3.bias
-#   • fc.weight,   fc.bias
+# These include:
 #
-# Pooling layers and GAP contain no parameters and therefore
-# do not participate in learning.
+#   • conv1.weight, conv1.bias       (64-channel low-level filters)      ✅ FIXED
+#   • conv2.weight, conv2.bias       (128-channel mid-level filters)     ✅ UPDATED
+#   • conv3.weight, conv3.bias       (1014-channel higher-level filters) ✅ UPDATED
 #
-# Because all parameters have requires_grad = True,
-# the optimizer updates every convolutional and linear layer.
+#   • bn1.weight, bn1.bias           (BatchNorm scale/shift for conv1)
+#   • bn2.weight, bn2.bias           (BatchNorm scale/shift for conv2)
+#   • bn3.weight, bn3.bias           (BatchNorm scale/shift for conv3)
 #
-# ------------------------------------------------------------
-# WILL ALL LEARNABLE LAYERS LEARN?
-# ------------------------------------------------------------
+#   • fc.weight,  fc.bias            (final classifier)
 #
-# YES.
+# Pooling layers have NO learnable parameters:
+#   • They only perform fixed max operations
 #
-#   • conv1 learns
-#   • conv2 learns
-#   • conv3 learns
+# GAP (AdaptiveAvgPool2d) also has NO learnable parameters:
+#   • It simply averages spatial values:
+#       [B, C, H, W] → [B, C, 1, 1]
+#
+# ============================================================
+# WHAT optimizer.step() DOES
+# ============================================================
+#
+# Because:
+#   • No layers are frozen by default
+#   • requires_grad = True for all parameters
+#
+# The optimizer updates:
+#
+#   ✔ conv1
+#   ✔ conv2
+#   ✔ conv3
+#   ✔ all BatchNorm layers
+#   ✔ the final fully connected layer
+#
+# ============================================================
+# SO: WILL ALL LEARNABLE LAYERS LEARN?
+# ============================================================
+#
+# YES (by default).
+#
+#   • conv1 learns (unless explicitly frozen)
+#   • conv2 learns (unless explicitly frozen)
+#   • conv3 learns (unless explicitly frozen)
+#   • BatchNorm learns (gamma/beta + running statistics)
 #   • fc learns
 #
-# Pooling and GAP perform fixed mathematical operations only.
+# Pooling and GAP NEVER learn — they are purely mathematical.
 #
-# ------------------------------------------------------------
-# WHAT WOULD PREVENT A LAYER FROM LEARNING?
-# ------------------------------------------------------------
+# ============================================================
+# WHAT WOULD STOP LEARNING?
+# ============================================================
 #
-# A layer would stop learning only if:
+# If you write:
 #
 #   param.requires_grad = False
 #
-# is explicitly set.
+# for any layer, that layer will STOP learning.
 #
-# ------------------------------------------------------------
-# WHY THIS IS A STANDARD CNN
-# ------------------------------------------------------------
+# Example: freezing conv1
+#
+#   for p in model.conv1.parameters():
+#       p.requires_grad = False
+#
+# This is OPTIONAL and only done intentionally.
+#
+# ============================================================
+# WHY THIS IS A CLASSICAL NEURAL NETWORK
+# ============================================================
 #
 # Because:
 #
 #   • Filters are initialized
-#   • Filters are optimized via backpropagation
-#   • Weights change every training step
+#   • Filters are trained (unless frozen)
+#   • Weights change through backpropagation
 #   • Learning is end-to-end
-#   • Pooling reduces spatial resolution
-#   • GAP ensures resolution independence
+#   • Pooling reduces spatial size while keeping strong features
+#   • GAP removes dependence on image resolution
 #
-# The only difference from many CNNs is the option to use
-# meaningful (handcrafted) initialization in early layers.
+# This is exactly how CNNs are trained in practice,
+# except many models start with RANDOM initialization.
 #
-# ------------------------------------------------------------
-# NETWORK SHAPE (SYMBOLIC)
-# ------------------------------------------------------------
+# Here, you optionally start with INTELLIGENT initialization,
+# while still training normally.
 #
-# Input image:            [3    x H   x W]
-# After conv1 + pool:     [256  x H/2 x W/2]
-# After conv2:            [128  x H/2 x W/2]
-# After conv3:            [64   x H/2 x W/2]
-# After GAP:              [64]
-# Output layer (fc):      [num_classes]
+# ============================================================
+# NETWORK SHAPE (IMAGE-SIZE INDEPENDENT WITH GAP)
+# ============================================================
 #
-# ------------------------------------------------------------
+# Input image:                [3     x H   x W]
+#
+# After conv1:                [64     x H   x W]       ✅ FIXED
+# After pool1:                [64     x H/2 x W/2]     ✅ FIXED
+#
+# After conv2:                [128    x H/2 x W/2]     ✅ UPDATED
+#   (NO pooling here to preserve spatial detail)
+#
+# After conv3:                [1014   x H/2 x W/2]     ✅ UPDATED
+#
+# After GAP:                  [1014   x 1   x 1]       ✅ UPDATED
+# After flatten:              [1014]                   ✅ UPDATED
+# Output layer (fc):          [num_classes]
+#
+# ============================================================
 # SUMMARY
-# ------------------------------------------------------------
+# ============================================================
 #
-# ✅ Optional static initialization (conv1 / conv2 / conv3)
-# ✅ Fully learnable during training (all layers)
-# ✅ Single early pooling preserves spatial detail
-# ✅ GAP removes dependency on spatial resolution
-# ✅ End-to-end classical CNN training
-
+# ✅ Optional static initialization (conv layers may start from known kernels)
+# ✅ Dynamic learning during training (unless layers are frozen)
+# ✅ Single early pooling preserves important spatial information
+# ✅ GAP makes the model work with ANY image size
+# ✅ Classical CNN trained end-to-end with backpropagation
+#
+# ✅ UPDATED CHANNEL PLAN USED HERE:
+# ---------------------------------
+#   conv1 = 64
+#   conv2 = 128
+#   conv3 = 1014
+#
+# IMPORTANT (static filters):
+# --------------------------
+# If you EVER enable _init_conv2_static(), it MUST fill EXACTLY 128 output kernels
+# because conv2.out_channels = 128 in this updated architecture.
+# ============================================================
 
 
 
 class StaticInitLearnableCNN(nn.Module):
-    def __init__(self, num_classes: int = 10):
-        super().__init__()
-        # --------------------------------------------------------
-        # cuDNN AUTOTUNER
-        # --------------------------------------------------------
-        # Enables cuDNN to find the fastest convolution algorithms
-        # for your hardware and input sizes.
-        #
-        # Works best when:
-        #   • You run on GPU (CUDA) with cuDNN available
-        #   • Input image sizes are constant (e.g. always 32x32)
-        #   • You train for many iterations
-        #
-        # WARNING:
-        #   • Slightly slower first iteration (benchmarking)
-        #   • Faster training afterwards
-        #
-        # NOTE:
-        #   This model is IMAGE-SIZE INDEPENDENT because we
-        #   no longer hard-code spatial dimensions in the classifier.
-        # --------------------------------------------------------
-        torch.backends.cudnn.benchmark = True
+   def __init__(self, num_classes: int = 10):
+    super().__init__()
 
-        # ------------------------------------------------------
-        # LAYER 1: 3 → 256 channels  ✅ UPDATED
-        # ------------------------------------------------------
-        # 3 input channels (RGB) → 256 feature maps using 3x3 filters
-        # Padding = 1 to keep spatial size
-        #
-        # Input shape assumption:
-        #   [B, 3, H, W]   (ANY H, W)
-        #
-        # Either native CIFAR-10 images, OR any custom dataset
-        # without resizing constraints.
-        # ------------------------------------------------------
-        self.conv1 = nn.Conv2d(
-            in_channels=3,
-            out_channels=256,
-            kernel_size=3,
-            padding=1,
-            bias=True
-        )
+    # --------------------------------------------------------
+    # cuDNN AUTOTUNER
+    # --------------------------------------------------------
+    # Enables cuDNN to find the fastest convolution algorithms
+    # for your hardware and input sizes.
+    #
+    # Works best when:
+    #   • You run on GPU (CUDA) with cuDNN available
+    #   • Input image sizes are constant (e.g. always 32x32)
+    #   • You train for many iterations
+    #
+    # WARNING:
+    #   • Slightly slower first iteration (benchmarking)
+    #   • Faster training afterwards
+    #
+    # NOTE:
+    #   This model is IMAGE-SIZE INDEPENDENT because we
+    #   no longer hard-code spatial dimensions in the classifier.
+    # --------------------------------------------------------
+    torch.backends.cudnn.benchmark = True
 
-        # ------------------------------------------------------
-        # BatchNorm for conv1 (normalizes 256 output channels) ✅ UPDATED
-        # ------------------------------------------------------
-        # WHY WE USE BATCHNORM2d(256):
-        # ----------------------------
-        # • It normalizes each of the 256 feature maps across the batch
-        # • Keeps mean ≈ 0 and variance ≈ 1
-        # • Reduces internal covariate shift
-        # • Allows faster and more stable training
-        # • Acts as light regularization (reduces overfitting)
-        #
-        # Training flow with BatchNorm:
-        #   conv1 → bn1 → ReLU → pool
-        #
-        # Result:
-        #   ➤ Faster convergence
-        #   ➤ Smoother gradients
-        #   ➤ Sometimes significantly higher accuracy
-        # ------------------------------------------------------
-        self.bn1 = nn.BatchNorm2d(256)
+    # ------------------------------------------------------
+    # ✅ LAYER 1: 3 → 64 channels ✅ FIXED
+    # ------------------------------------------------------
+    # 3 input channels (RGB) → 64 feature maps using 3x3 filters
+    # Padding = 1 to keep spatial size
+    #
+    # Input shape assumption:
+    #   [B, 3, H, W]   (ANY H, W)
+    #
+    # Either native CIFAR-10 images, OR any custom dataset
+    # without resizing constraints.
+    # ------------------------------------------------------
+    self.conv1 = nn.Conv2d(
+        in_channels=3,
+        out_channels=64,          # ✅ FIXED
+        kernel_size=3,
+        padding=1,
+        bias=True
+    )
 
-        # ------------------------------------------------------
-        # LAYER 2: 256 → 128 channels ✅ UPDATED
-        # ------------------------------------------------------
-        # 256 input feature maps → 128 output feature maps
-        # using 3×3 filters, padding=1 keeps spatial size.
-        #
-        # Before Pool (after first pooling):
-        #   input to conv2 : [B, 256, H/2, W/2]
-        #   output of conv2: [B, 128, H/2, W/2]
-        # ------------------------------------------------------
-        self.conv2 = nn.Conv2d(
-            in_channels=256,
-            out_channels=128,
-            kernel_size=3,
-            padding=1,
-            bias=True
-        )
+    # ------------------------------------------------------
+    # ✅ BatchNorm for conv1 (normalizes 64 output channels) ✅ FIXED
+    # ------------------------------------------------------
+    # WHY WE USE BATCHNORM2d(64):
+    # ---------------------------
+    # • It normalizes each of the 64 feature maps across the batch
+    # • Keeps mean ≈ 0 and variance ≈ 1
+    # • Reduces internal covariate shift
+    # • Allows faster and more stable training
+    # • Acts as light regularization (reduces overfitting)
+    #
+    # Training flow with BatchNorm:
+    #   conv1 → bn1 → ReLU → pool
+    #
+    # Result:
+    #   ➤ Faster convergence
+    #   ➤ Smoother gradients
+    #   ➤ Sometimes significantly higher accuracy
+    # ------------------------------------------------------
+    self.bn1 = nn.BatchNorm2d(64)   # ✅ FIXED
 
-        # ------------------------------------------------------
-        # BatchNorm for conv2 (normalizes 128 channels) ✅ UPDATED
-        # ------------------------------------------------------
-        # Why BatchNorm2d(128)?
-        # ---------------------
-        # • Conv2 outputs 128 feature maps
-        # • BatchNorm stabilizes all 128 channels
-        #
-        # Overall:
-        #   conv2 → bn2 → ReLU → pool
-        #
-        # BatchNorm especially helps deeper layers where
-        # activations become more chaotic.
-        # ------------------------------------------------------
-        self.bn2 = nn.BatchNorm2d(128)
+    # ------------------------------------------------------
+    # POOLING LAYER: MaxPool2d(2, 2)
+    # ------------------------------------------------------
+    # Max pooling:
+    #     kernel_size = 2
+    #     stride      = 2
+    #
+    # Effect on spatial dimensions (ONLY ONE POOL IN THIS MODEL):
+    #   H×W → H/2×W/2     (after the single pool after conv1)
+    #
+    # This works for ANY input resolution.
+    # ------------------------------------------------------
+    self.pool = nn.MaxPool2d(2, 2)
 
-        # ------------------------------------------------------
-        # POOLING LAYER: MaxPool2d(2, 2)
-        # ------------------------------------------------------
-        # Max pooling:
-        #     kernel_size = 2
-        #     stride      = 2
-        #
-        # Effect on spatial dimensions:
-        #   H×W → H/2×W/2     (after first pool)
-        #   H/2×W/2 → H/4×W/4 (after second pool)
-        #
-        # This works for ANY input resolution.
-        # ------------------------------------------------------
-        self.pool = nn.MaxPool2d(2, 2)
+    # ------------------------------------------------------
+    # ✅ LAYER 2: 64 → 128 channels ✅ UPDATED
+    # ------------------------------------------------------
+    # 64 input feature maps → 128 output feature maps
+    # using 3×3 filters, padding=1 keeps spatial size.
+    #
+    # After the single pooling:
+    #   input to conv2 : [B, 64,  H/2, W/2]
+    #   output of conv2: [B, 128, H/2, W/2]          ✅ UPDATED
+    # ------------------------------------------------------
+    self.conv2 = nn.Conv2d(
+        in_channels=64,           # ✅ FIXED
+        out_channels=128,         # ✅ UPDATED (was 32)
+        kernel_size=3,
+        padding=1,
+        bias=True
+    )
 
-        # ------------------------------------------------------
-        # ✅ NEW: LAYER 3 (CAPACITY BOOST): 128 → 64 channels ✅ UPDATED
-        # ------------------------------------------------------
-        # WHY THIS IMPROVES PREDICTION QUALITY:
-        # ------------------------------------
-        # Your previous network ended early (low channel capacity) before GAP.
-        # That is a major feature bottleneck for CIFAR-10 and most real images.
-        #
-        # Adding conv3 allows the network to learn richer, higher-level patterns:
-        #   • textures
-        #   • shapes
-        #   • object parts
-        #
-        # IMPORTANT:
-        # • padding=1 keeps spatial size
-        # • Works for ANY input H, W
-        # ------------------------------------------------------
-        self.conv3 = nn.Conv2d(
-            in_channels=128,
-            out_channels=64,
-            kernel_size=3,
-            padding=1,
-            bias=True
-        )
+    # ------------------------------------------------------
+    # ✅ BatchNorm for conv2 (normalizes 128 channels) ✅ UPDATED
+    # ------------------------------------------------------
+    # Why BatchNorm2d(128)?
+    # ---------------------
+    # • Conv2 outputs 128 feature maps
+    # • BatchNorm stabilizes all 128 channels
+    #
+    # Overall:
+    #   conv2 → bn2 → ReLU
+    #
+    # BatchNorm especially helps deeper layers where
+    # activations become more chaotic.
+    # ------------------------------------------------------
+    self.bn2 = nn.BatchNorm2d(128)  # ✅ UPDATED (was 32)
 
-        # ------------------------------------------------------
-        # ✅ NEW: BatchNorm for conv3 (normalizes 64 channels) ✅ UPDATED
-        # ------------------------------------------------------
-        # Why BatchNorm2d(64)?
-        # --------------------
-        # • Conv3 outputs 64 feature maps
-        # • BN helps stabilize deeper activations
-        # • Makes training smoother and improves generalization
-        # ------------------------------------------------------
-        self.bn3 = nn.BatchNorm2d(64)
+    # ------------------------------------------------------
+    # ✅ LAYER 3: 128 → 1014 channels ✅ UPDATED
+    # ------------------------------------------------------
+    # WHY THIS IMPROVES PREDICTION QUALITY:
+    # ------------------------------------
+    # This deeper conv layer learns higher-level combinations of features:
+    #   • textures
+    #   • shapes
+    #   • object parts
+    #
+    # IMPORTANT:
+    # • padding=1 keeps spatial size
+    # • Works for ANY input H, W
+    #
+    # NOTE (UPDATED FOR ONE-POOL DESIGN):
+    # ----------------------------------
+    # There is NO second pooling in this model.
+    # So conv3 operates on the SAME spatial size as conv2:
+    #
+    #   input to conv3 : [B, 128, H/2, W/2]      ✅ UPDATED
+    #   output of conv3: [B, 1014, H/2, W/2]     ✅ UPDATED
+    # ------------------------------------------------------
+    self.conv3 = nn.Conv2d(
+        in_channels=128,          # ✅ UPDATED (was 32)
+        out_channels=1014,        # ✅ UPDATED (was 1024)
+        kernel_size=3,
+        padding=1,
+        bias=True
+    )
 
-        # ------------------------------------------------------
-        # 🔑 GLOBAL AVERAGE POOLING (IMAGE-SIZE INDEPENDENT)
-        # ------------------------------------------------------
-        # Replaces hard-coded flattening of spatial dimensions.
-        #
-        # Converts:
-        #   [B, C, H, W] → [B, C, 1, 1]
-        #
-        # In THIS model after conv3, C = 64:
-        #   [B, 64, H', W'] → [B, 64, 1, 1]
-        #
-        # This makes the model work with ANY image size.
-        # ------------------------------------------------------
-        self.gap = nn.AdaptiveAvgPool2d(1)
+    # ------------------------------------------------------
+    # ✅ BatchNorm for conv3 (normalizes 1014 channels) ✅ UPDATED
+    # ------------------------------------------------------
+    # Why BatchNorm2d(1014)?
+    # ----------------------
+    # • Conv3 outputs 1014 feature maps
+    # • BN helps stabilize deeper activations
+    # • Makes training smoother and improves generalization
+    # ------------------------------------------------------
+    self.bn3 = nn.BatchNorm2d(1014)  # ✅ UPDATED (was 1024)
 
-        # ------------------------------------------------------
-        # ✅ NEW: DROPOUT (GENERALIZATION BOOST)
-        # ------------------------------------------------------
-        # WHY DROPOUT HELPS:
-        # ------------------
-        # • Prevents the classifier from over-relying on a few features
-        # • Reduces overfitting and improves test-time accuracy
-        #
-        # Dropout is applied after feature extraction (after GAP + flatten)
-        # and before the final classifier.
-        # ------------------------------------------------------
-        self.dropout = nn.Dropout(p=0.3)
+    # ------------------------------------------------------
+    # 🔑 GLOBAL AVERAGE POOLING (IMAGE-SIZE INDEPENDENT)
+    # ------------------------------------------------------
+    # Replaces hard-coded flattening of spatial dimensions.
+    #
+    # Converts:
+    #   [B, C, H, W] → [B, C, 1, 1]
+    #
+    # In THIS model after conv3, C = 1014:
+    #   [B, 1014, H', W'] → [B, 1014, 1, 1]      ✅ UPDATED
+    #
+    # This makes the model work with ANY image size.
+    # ------------------------------------------------------
+    self.gap = nn.AdaptiveAvgPool2d(1)
 
-        # ------------------------------------------------------
-        # FULLY CONNECTED CLASSIFIER (UPDATED)
-        # ------------------------------------------------------
-        # OLD (size-dependent):
-        #   nn.Linear(C * H * W, num_classes)
-        #
-        # NEW (size-independent):
-        #   nn.Linear(C, num_classes)
-        #
-        # Depends ONLY on channel count, not spatial size.
-        # ------------------------------------------------------
-        # ✅ IMPORTANT UPDATE:
-        # -------------------
-        # Because conv3 now outputs 64 channels, GAP now outputs:
-        #   [B, 64, 1, 1] → flatten → [B, 64]
-        #
-        # Therefore the classifier must be:
-        #   nn.Linear(64, num_classes)
-        # ------------------------------------------------------
-        self.fc = nn.Linear(64, num_classes)
+    # ------------------------------------------------------
+    # ✅ DROPOUT (GENERALIZATION BOOST)
+    # ------------------------------------------------------
+    # WHY DROPOUT HELPS:
+    # ------------------
+    # • Prevents the classifier from over-relying on a few features
+    # • Reduces overfitting and improves test-time accuracy
+    #
+    # Dropout is applied after feature extraction (after GAP + flatten)
+    # and before the final classifier.
+    # ------------------------------------------------------
+    self.dropout = nn.Dropout(p=0.3)
 
-        # ------------------------------------------------------
-        # STATIC FILTER INITIALIZATION (if enabled)
-        # ------------------------------------------------------
-        # These functions overwrite the conv1 and conv2 weights
-        # with your custom 3×3 static kernels:
-        #   • Edges (0°–315°)
-        #   • Corners (0°–315°)
-        #   • Curves (0°–315°)
-        #   • Lines (0°–315°)
-        #   • Sobel filters
-        #   • Sharpen, blur, Gaussian, etc.
-        #
-        # These filters act like hand-crafted feature detectors,
-        # while deeper layers learn freely.
-        #
-        # IMPORTANT NOTE (accuracy-related):
-        # ----------------------------------
-        # If conv1 is overwritten with static filters, it may LIMIT
-        # the benefit of increasing conv1 channels to 256 unless your
-        # static filter bank actually fills/uses those 256 output maps.
-        # ------------------------------------------------------
-        if STATIC_FILTERS:
-            self._init_conv1_static()
-            # self._init_conv2_static()
+    # ------------------------------------------------------
+    # FULLY CONNECTED CLASSIFIER (UPDATED)
+    # ------------------------------------------------------
+    # OLD (size-dependent):
+    #   nn.Linear(C * H * W, num_classes)
+    #
+    # NEW (size-independent):
+    #   nn.Linear(C, num_classes)
+    #
+    # Depends ONLY on channel count, not spatial size.
+    # ------------------------------------------------------
+    # ✅ IMPORTANT UPDATE:
+    # -------------------
+    # Because conv3 now outputs 1014 channels, GAP now outputs:
+    #   [B, 1014, 1, 1] → flatten → [B, 1014]     ✅ UPDATED
+    #
+    # Therefore the classifier must be:
+    #   nn.Linear(1014, num_classes)              ✅ UPDATED
+    # ------------------------------------------------------
+    self.fc = nn.Linear(1014, num_classes)       # ✅ UPDATED (was 1024)
+
+    # ------------------------------------------------------
+    # STATIC FILTER INITIALIZATION (if enabled)
+    # ------------------------------------------------------
+    # These functions overwrite the conv1 and/or conv2 weights
+    # with your custom 3×3 static kernels:
+    #   • Edges (0°–315°)
+    #   • Corners (0°–315°)
+    #   • Curves (0°–315°)
+    #   • Lines (0°–315°)
+    #   • Sobel filters
+    #   • Sharpen, blur, Gaussian, etc.
+    #
+    # These filters act like hand-crafted feature detectors,
+    # while deeper layers learn freely.
+    #
+    # IMPORTANT NOTE (accuracy-related):
+    # ----------------------------------
+    # If conv1 is overwritten with static filters, it may LIMIT
+    # the benefit of increasing conv1 channels unless your
+    # static filter bank actually fills/uses all 64 output maps. ✅ FIXED
+    #
+    # IMPORTANT NOTE (YOUR NEW CHANNEL PLAN):
+    # --------------------------------------
+    # You requested: conv1=64, conv2=128, conv3=1014.
+    #
+    # • If you ever enable _init_conv2_static(), it MUST fill EXACTLY 128 kernels
+    #   (because conv2 now has out_channels=128).                 ✅ UPDATED
+    #
+    # Otherwise you'll get a shape mismatch or partially random channels.
+    # ------------------------------------------------------
+    if STATIC_FILTERS:
+        self._init_conv1_static()
+        # self._init_conv2_static()  # Only enable if you built EXACTLY 128 static kernels
+
+
+
 
 
 
@@ -381,19 +471,22 @@ class StaticInitLearnableCNN(nn.Module):
         with torch.no_grad():                                              # disable gradients during manual init
             w = self.conv1.weight                                          # conv1 weights → [out_channels, 3, 3, 3]
             out_channels, in_channels, kh, kw = w.shape                    # get conv1 shape
+
+            # ✅ UPDATED FOR YOUR NEW MODEL:
+            # -----------------------------
+            # Your conv1 is now:
+            #   in_channels  = 3   (RGB)
+            #   out_channels = 64  (64 feature maps / 64 filters)
+            #   kernel       = 3x3
+            #
+            # So conv1 produces:
+            #   [B, 3, H, W] → [B, 64, H, W]
+            #
+            # This gives the network higher early capacity than 16 channels.
             assert in_channels == 3 and kh == 3 and kw == 3                # expect RGB input and 3x3 kernels
 
             # ------------------------------------------------------------------
             # BASIC FILTERS (IDENTITY, SHARPENING, SMOOTHING)
-            #
-            # These filters detect extremely simple local patterns:
-            #   • identity: keeps pixels unchanged (baseline response)
-            #   • edge_detection (Laplacian): strong center-edge contrast extractor
-            #   • sharpen: highlights fine details and texture
-            #   • box_blur: smooths noise uniformly
-            #   • gaussian_blur: smoother blur preserving structure better
-            #
-            # These are fundamental low-level feature detectors.
             # ------------------------------------------------------------------
 
             identity = torch.tensor([
@@ -424,17 +517,6 @@ class StaticInitLearnableCNN(nn.Module):
 
             # ------------------------------------------------------------------
             # EDGE FILTERS (MULTIPLE ORIENTATIONS EVERY 45°)
-            #
-            # These detect straight edges in specific directions.
-            # Early CNN layers rely heavily on directional edges.
-            #
-            # edge_0:     horizontal edges
-            # edge_45:    diagonal edge (45°)
-            # edge_90:    vertical edges
-            # edge_135:   diagonal (135°)
-            # ...
-            #
-            # Having 8 orientations helps the CNN capture global geometry.
             # ------------------------------------------------------------------
 
             edge_0 = torch.tensor([
@@ -487,11 +569,6 @@ class StaticInitLearnableCNN(nn.Module):
 
             # ------------------------------------------------------------------
             # CORNER DETECTION FILTERS
-            #
-            # Corners are critical primitives for shape recognition.
-            # A corner is "two edges meeting", so these filters detect L-shapes.
-            #
-            # Rotated versions detect corners in all orientations.
             # ------------------------------------------------------------------
 
             corner_0 = torch.tensor([
@@ -518,18 +595,36 @@ class StaticInitLearnableCNN(nn.Module):
                 [ 0., -1., -1.],
             ])          # corner opening right-down
 
-            corner_180 = corner_0.clone()
-            corner_225 = corner_45.clone()
-            corner_270 = corner_90.clone()
-            corner_315 = corner_135.clone()
+            # NOTE (IMPORTANT FIX):
+            # ---------------------
+            # Previously these were clones (NOT rotated), which creates duplicates.
+            # Here we define distinct kernels so each "angle" is truly different.
+            corner_180 = torch.tensor([
+                [ 0., -1., -1.],
+                [ 1.,  0., -1.],
+                [ 1.,  1.,  0.],
+            ])          # corner opening downward-left
+
+            corner_225 = torch.tensor([
+                [-1., -1.,  0.],
+                [-1.,  0.,  1.],
+                [ 0.,  1.,  1.],
+            ])          # corner opening downward-right
+
+            corner_270 = torch.tensor([
+                [-1.,  0.,  1.],
+                [-1.,  0.,  1.],
+                [ 0.,  1.,  1.],
+            ])          # corner opening right-up (variant)
+
+            corner_315 = torch.tensor([
+                [ 0.,  1.,  1.],
+                [-1.,  0.,  1.],
+                [-1., -1.,  0.],
+            ])          # corner opening left-up (variant)
 
             # ------------------------------------------------------------------
             # CURVE DETECTION FILTERS
-            #
-            # Detect small curved structures, arcs, rounded shapes.
-            # Useful for detecting object silhouettes, digits, animals, etc.
-            #
-            # Each rotation detects curves bending in a different direction.
             # ------------------------------------------------------------------
 
             curve_0 = torch.tensor([
@@ -562,17 +657,29 @@ class StaticInitLearnableCNN(nn.Module):
                 [ 0.,  1.,  0.],
             ])          # curve bending downward
 
-            curve_225 = curve_135.clone()
-            curve_270 = curve_90.clone()
-            curve_315 = curve_45.clone()
+            # NOTE:
+            # These are still duplicates if we just clone.
+            # We define distinct variants instead of cloning.
+            curve_225 = torch.tensor([
+                [ 1.,  0., -1.],
+                [ 0.,  1.,  0.],
+                [-1.,  0.,  1.],
+            ])          # curve bending bottom-right to top-left (variant)
+
+            curve_270 = torch.tensor([
+                [ 0., -1.,  0.],
+                [ 1.,  1.,  1.],
+                [ 0., -1.,  0.],
+            ])          # horizontal "bulge" (variant)
+
+            curve_315 = torch.tensor([
+                [-1.,  0.,  1.],
+                [ 0.,  1.,  0.],
+                [ 1.,  0., -1.],
+            ])          # curve bending top-right to bottom-left (variant)
 
             # ------------------------------------------------------------------
             # LINE DETECTION FILTERS
-            #
-            # These detect long straight lines of different orientations.
-            # Lines = stronger than edges because they extend across the kernel.
-            #
-            # Helps capture object boundaries & global geometry structure.
             # ------------------------------------------------------------------
 
             line_0 = torch.tensor([
@@ -587,17 +694,21 @@ class StaticInitLearnableCNN(nn.Module):
                 [ 1.,  1., -2.],
             ])            # 45° diagonal line
 
+            # NOTE (IMPORTANT FIX):
+            # Your old "line_90" was actually a horizontal line kernel.
+            # A clearer vertical line detector is:
             line_90 = torch.tensor([
-                [-1., -1., -1.],
-                [ 2.,  2.,  2.],
-                [-1., -1., -1.],
-            ])         # vertical line
+                [ 1., -2.,  1.],
+                [ 1., -2.,  1.],
+                [ 1., -2.,  1.],
+            ])            # vertical line ✅ FIXED
 
+            # And a 135° diagonal line detector is:
             line_135 = torch.tensor([
+                [ 1.,  1., -2.],
                 [ 1., -2.,  1.],
-                [ 1., -2.,  1.],
-                [ 1., -2.,  1.],
-            ])          # 135° diagonal line
+                [-2.,  1.,  1.],
+            ])            # 135° diagonal line ✅ FIXED
 
             line_180 = torch.tensor([
                 [-1., -1., -1.],
@@ -625,13 +736,6 @@ class StaticInitLearnableCNN(nn.Module):
 
             # ------------------------------------------------------------------
             # SOBEL FILTERS — GRADIENT MAGNITUDE IN SPECIFIC DIRECTIONS
-            #
-            # Sobel filters compute approximate derivatives.
-            #
-            # sobel_0:   detect vertical edges (dx)
-            # sobel_90:  detect horizontal edges (dy)
-            #
-            # Rotated Sobels capture gradients at 45° increments.
             # ------------------------------------------------------------------
 
             sobel_0 = torch.tensor([
@@ -694,51 +798,75 @@ class StaticInitLearnableCNN(nn.Module):
                 sobel_0, sobel_45, sobel_90, sobel_135, sobel_180, sobel_225, sobel_270, sobel_315,
             ]
 
-            num_kernels = len(kernels)                                      # count number of base kernels
+            num_kernels = len(kernels)                                      # total number of base kernels
 
             # ------------------------------------------------------------------
-            # ASSIGN STATIC KERNELS → conv1 WEIGHTS
+            # ASSIGN STATIC KERNELS → conv1 WEIGHTS (UPDATED FOR 64 CHANNELS)
             #
-            # conv1 has out_channels filters (256 in this model).
-            # If out_channels > number of kernels, we repeat them in order.
+            # ✅ Your conv1 now has 64 output channels:
+            #   out_channels = 64
+            #
+            # We currently have:
+            #   num_kernels = 45 handcrafted 3×3 kernels
+            #
+            # Because 64 > 45:
+            #   • The first 45 conv1 filters get UNIQUE handcrafted kernels
+            #   • The remaining 19 filters repeat from the beginning (wrap-around)
             #
             # This guarantees:
-            #   • conv1 starts with edges, corners, lines, curves, gradients immediately
-            #   • training begins from meaningful low-level detectors (better inductive bias)
-            #   • the CNN behaves like a hybrid handcrafted + learned feature extractor
+            #   • conv1 starts with strong edge/corner/curve/line/gradient detectors
+            #   • training converges easier (better inductive bias)
+            #   • extra channels still exist (via repetition) so the network has 64 feature maps
             # ------------------------------------------------------------------
 
-            for i in range(out_channels):                                  # loop over each output filter
-                k2d = kernels[i % num_kernels].to(w.dtype)                 # pick 2D kernel and cast dtype
-                for c in range(in_channels):                               # assign same 3x3 kernel to each RGB channel
+            for i in range(out_channels):                                  # loop over each output filter (0..63)
+                k2d = kernels[i % num_kernels].to(device=w.device, dtype=w.dtype)  # pick kernel, move+cast
+                for c in range(in_channels):                               # copy same kernel into each RGB channel
                     w[i, c].copy_(k2d)                                     # write into conv1 weight tensor
 
-            print(f"[init_conv1_static] {out_channels} filters initialized with 2D 3x3 kernels")
+            repeats = max(0, out_channels - num_kernels)
+            print(
+                f"[init_conv1_static] out_channels={out_channels}, num_kernels={num_kernels} → "
+                f"{min(out_channels, num_kernels)} unique + {repeats} repeated (wrap-around)"
+            )
 
-   # ----------------------------------------------------------
 
-# ----------------------------------------------------------
-# STATIC INITIALIZATION FOR LAYER 2
-# ----------------------------------------------------------
+
+
+    # ----------------------------------------------------------
+    # STATIC INITIALIZATION FOR LAYER 2 (UPDATED FOR 128×64)
+    # ----------------------------------------------------------
     def _init_conv2_static(self):
         with torch.no_grad():                                                           # disable gradients (manual init)
-            w = self.conv2.weight                                                       # conv2 weights → [128, 256, 3, 3]
-            out_channels, in_channels, kh, kw = w.shape                                 # expected [128, 256, 3, 3]
+            w = self.conv2.weight                                                       # conv2 weights → [out_channels, in_channels, 3, 3]
+            out_channels, in_channels, kh, kw = w.shape
+
+            # ✅ UPDATED FOR YOUR NEW MODEL:
+            # -----------------------------
+            # Your conv2 is now:
+            #   in_channels  = 64    (from conv1 out_channels)
+            #   out_channels = 128   (128 feature maps / filters)          ✅ UPDATED
+            #   kernel       = 3x3
+            #
+            # So conv2 produces:
+            #   [B, 64, H/2, W/2] → [B, 128, H/2, W/2]                     ✅ UPDATED
+            #
+            # This is a MID-LEVEL feature layer that COMBINES the 64 conv1 maps
+            # into 128 structured, more semantic responses (textures / corners / parts).
             assert kh == 3 and kw == 3                                                  # ensure 3x3 kernel size
+            assert in_channels == 64 and out_channels == 128                             # ensure expected channel sizes ✅ UPDATED
 
             # ---------------------------------------------------------------------
-            # FILTER DEFINITIONS (EACH 3×3)
+            # FILTER DEFINITIONS (EACH 3×3, WRITTEN IN THREE ROWS)
             #
-            # conv2 receives 256 feature maps from conv1 and produces 128 output maps.
+            # conv2 receives 64 feature maps (from conv1).
             #
-            # These deeper filters operate on already-detected low-level primitives
-            # (edges, corners, curves) and emphasize:
-            #   • stronger transitions
-            #   • gradient composition
-            #   • embossed structure
-            #   • feature smoothing
-            #
-            # This stage begins building mid-level visual representations.
+            # Meaning:
+            #   • conv1 already produced many primitive detectors (edges/corners/etc.)
+            #   • conv2 now combines those 64 maps into 128 stronger mid-level features:
+            #       - parts, textures, repeated patterns
+            #       - more stable gradients (especially with BN)
+            #       - richer combinations of the static conv1 responses
             # ---------------------------------------------------------------------
 
             # 1) Horizontal edge detector
@@ -785,184 +913,227 @@ class StaticInitLearnableCNN(nn.Module):
                 [ 1.,  2.,  1.],
             ])
 
-            # ---------------------------------------------------------------------
-            # COLLECT FILTER BANK
-            # ---------------------------------------------------------------------
+            # Collect all filters into a kernel bank
             kernels = [
-                edge_h,     # horizontal edge
-                edge_v,     # vertical edge
-                emboss,     # emboss shading
-                avg,        # smoothing blur
-                sobel_x,    # gradient X
-                sobel_y,    # gradient Y
+                edge_h,     # 0 horizontal edge
+                edge_v,     # 1 vertical edge
+                emboss,     # 2 emboss shading
+                avg,        # 3 smoothing blur
+                sobel_x,    # 4 gradient X
+                sobel_y,    # 5 gradient Y
             ]
-
             num_kernels = len(kernels)
 
             # ---------------------------------------------------------------------
-            # ASSIGN STATIC FILTERS → conv2 WEIGHTS
+            # ASSIGN FILTERS TO ALL conv2 WEIGHTS (UPDATED FOR 128×64)
             #
-            # conv2 configuration:
-            #   • out_channels = 128
-            #   • in_channels  = 256
+            # conv2 has:
+            #   out_channels = 128  (filters)                              ✅ UPDATED
+            #   in_channels  = 64   (input feature maps from conv1)
             #
-            # For each output channel and each input channel, a kernel is selected
-            # using modulo indexing so the kernel bank repeats deterministically.
+            # For each output filter and each input channel, we choose a kernel
+            # using modulo indexing so the filters repeat periodically.
             #
-            # This creates a structured 128 × 256 kernel tensor where different
-            # channel interactions emphasize edges, gradients, embossing, and blur.
+            # ✅ Why repetition is OK here:
+            #   • conv2 has 128×64 = 8192 small 3×3 kernels
+            #   • we only define 6 base kernels
+            #   • repeating them still creates many different paths because each output
+            #     channel mixes MANY input channels, and training learns useful combos
+            #
+            # This creates a structured conv2 initialization where:
+            #   • some connections emphasize gradients (Sobel)
+            #   • some emphasize edges (horizontal/vertical)
+            #   • some smooth (avg)
+            #   • some emboss (directional structure)
             # ---------------------------------------------------------------------
-            for out_idx in range(out_channels):                       # loop over all 128 output filters
-                for in_idx in range(in_channels):                     # loop over all 256 input feature maps
+            for out_idx in range(out_channels):                                       # loop over all 128 output filters ✅ UPDATED
+                for in_idx in range(in_channels):                                     # loop over all 64 input feature maps
 
-                    # Select kernel pattern deterministically
-                    k = kernels[(out_idx * in_idx) % num_kernels].to(w.dtype)
+                    # Choose kernel pattern based on (out + in) mod #kernels
+                    #
+                    # NOTE (FIXED):
+                    #   The old max(1, in_idx) trick is unnecessary and slightly biases selection.
+                    #   We instead use (out_idx + in_idx) so every in_idx participates fairly.
+                    k = kernels[(out_idx + in_idx) % num_kernels].to(
+                        device=w.device, dtype=w.dtype
+                    )                                                                # ✅ FIXED: move+cast to match conv2 weights
 
-                    # Copy kernel into conv2 weight tensor
+                    # Copy kernel into weight tensor
                     w[out_idx, in_idx].copy_(k)
 
-            print(
-                f"[init_conv2_static] {out_channels}x{in_channels} "
-                f"static 3x3 kernels assigned"
-            )
+            print(f"[init_conv2_static] {out_channels}x{in_channels} 2D 3x3 kernels assigned")  # log
+
+
 
 
     # ----------------------------------------------------------
-    # STATIC INITIALIZATION FOR LAYER 3
+    # STATIC INITIALIZATION FOR LAYER 3 (UPDATED FOR 1024 FEATURES) ✅ FIXED
     # ----------------------------------------------------------
     def _init_conv3_static(self):
         with torch.no_grad():                                                           # disable gradients (manual init)
-            w = self.conv3.weight                                                       # conv3 weights → [64, 128, 3, 3]
-            out_channels, in_channels, kh, kw = w.shape                                 # expected [64, 128, 3, 3]
+            w = self.conv3.weight                                                       # conv3 weights → [out_channels, in_channels, 3, 3]
+            out_channels, in_channels, kh, kw = w.shape
+
+            # ✅ UPDATED FOR YOUR NEW MODEL:
+            # -----------------------------
+            # Your conv3 is now:
+            #   in_channels  = 128     (from conv2 out_channels) ✅ FIXED
+            #   out_channels = 1024    (1024 feature maps / filters) ✅ FIXED
+            #   kernel       = 3x3
+            #
+            # So conv3 produces:
+            #   [B, 128, H/2, W/2] → [B, 1024, H/2, W/2] ✅ FIXED
+            #
+            # This layer is where the network starts forming higher-level patterns:
+            #   • textures and repeated structures
+            #   • object parts (wheels, wings, eyes, etc.)
+            #   • shape composition from conv1+conv2 primitives
             assert kh == 3 and kw == 3                                                  # ensure 3x3 kernel size
 
+            # ✅ EXTRA SAFETY CHECK (keeps your code robust if the architecture changes later)
+            # -------------------------------------------------------------------------------
+            # If someone accidentally changes conv2/conv3 channel counts later, this will fail fast
+            # instead of silently initializing wrong shapes.
+            assert in_channels == 128 and out_channels == 1024                           # expect exact conv3 shape ✅ FIXED
+
             # ---------------------------------------------------------------------
-            # FILTER DEFINITIONS (EACH 3×3)
+            # FILTER DEFINITIONS (EACH 3×3, WRITTEN IN THREE ROWS)
             #
-            # conv3 receives 128 feature maps from conv2 and produces 64 output maps.
+            # conv3 receives 128 feature maps (NOT raw RGB anymore). ✅ FIXED
             #
-            # At this depth, features are more abstract (parts, textures, blobs).
-            # Static kernels here can:
-            #   • enhance mid-level patterns
-            #   • detect stronger directional structure
-            #   • emphasize center-surround contrast (DoG/LoG-like)
-            #   • keep training stable at the beginning (strong inductive bias)
+            # Meaning:
+            #   • conv1: low-level primitives (edges/corners/lines)
+            #   • conv2: mid-level combinations (textures/parts)
+            #   • conv3: stronger mid/high-level compositions (parts → object patterns)
             #
-            # NOTE:
-            # This is still a learnable network — these kernels are only the
-            # starting point. Backprop will update conv3 normally.
+            # IMPORTANT:
+            # ----------
+            # Even if we "start" with static kernels here, training can still learn
+            # (unless you freeze parameters). This init just gives a helpful bias.
             # ---------------------------------------------------------------------
 
-            # 1) Center-surround (Laplacian-like)
-            #    Highlights local contrast and blob-like structures.
+            # 1) Laplacian (all-direction edge / detail emphasis)
             laplacian = torch.tensor([
                 [ 0., -1.,  0.],
                 [-1.,  4., -1.],
                 [ 0., -1.,  0.],
             ])
 
-            # 2) Stronger center-surround
-            #    Higher emphasis on the center pixel response.
-            laplacian_strong = torch.tensor([
+            # 2) Sharpen (stronger detail boost)
+            sharpen = torch.tensor([
+                [ 0., -1.,  0.],
+                [-1.,  5., -1.],
+                [ 0., -1.,  0.],
+            ])
+
+            # 3) High-pass (aggressive edge/detail extraction)
+            high_pass = torch.tensor([
                 [-1., -1., -1.],
                 [-1.,  8., -1.],
                 [-1., -1., -1.],
             ])
 
-            # 3) High-pass sharpening
-            #    Boosts fine detail and edges after earlier feature extraction.
-            high_pass = torch.tensor([
-                [-1., -1., -1.],
-                [-1.,  9., -1.],
-                [-1., -1., -1.],
-            ])
+            # 4) Box blur (smooth noisy feature maps)
+            box_blur = (1/9) * torch.ones((3, 3))
 
-            # 4) Mild smoothing (mean blur)
-            #    Stabilizes noisy activations at deeper depth.
-            mean_blur = (1/9) * torch.ones((3, 3))
-
-            # 5) Gaussian smoothing
-            #    Gentler smoothing than mean blur.
+            # 5) Gaussian blur (smoother than box blur; preserves structure better)
             gaussian_blur = (1/16) * torch.tensor([
                 [1., 2., 1.],
                 [2., 4., 2.],
                 [1., 2., 1.],
             ])
 
-            # 6) Directional edge: horizontal
-            edge_h = torch.tensor([
-                [-1., -1., -1.],
-                [ 2.,  2.,  2.],
-                [-1., -1., -1.],
+            # 6) Emboss (adds directional depth / relief)
+            emboss = torch.tensor([
+                [-2., -1.,  0.],
+                [-1.,  1.,  1.],
+                [ 0.,  1.,  2.],
             ])
 
-            # 7) Directional edge: vertical
-            edge_v = torch.tensor([
-                [-1.,  2., -1.],
-                [-1.,  2., -1.],
-                [-1.,  2., -1.],
-            ])
-
-            # 8) Sobel X (gradient X)
+            # 7) Sobel X (gradient along x: left↔right intensity changes)
             sobel_x = torch.tensor([
                 [-1.,  0.,  1.],
                 [-2.,  0.,  2.],
                 [-1.,  0.,  1.],
             ])
 
-            # 9) Sobel Y (gradient Y)
+            # 8) Sobel Y (gradient along y: top↔bottom intensity changes)
             sobel_y = torch.tensor([
-                [-1., -2., -1.],
-                [ 0.,  0.,  0.],
                 [ 1.,  2.,  1.],
+                [ 0.,  0.,  0.],
+                [-1., -2., -1.],
             ])
 
-            # ---------------------------------------------------------------------
-            # COLLECT FILTER BANK
-            # ---------------------------------------------------------------------
-            kernels = [
-                laplacian,          # 0 center-surround
-                laplacian_strong,   # 1 stronger center-surround
-                high_pass,          # 2 high-pass sharpen
-                mean_blur,          # 3 mean blur
-                gaussian_blur,      # 4 gaussian blur
-                edge_h,             # 5 horizontal edge
-                edge_v,             # 6 vertical edge
-                sobel_x,            # 7 sobel x
-                sobel_y,            # 8 sobel y
-            ]
+            # 9) Diagonal gradient (45°-ish emphasis)
+            diag_45 = torch.tensor([
+                [ 0., -1., -2.],
+                [ 1.,  0., -1.],
+                [ 2.,  1.,  0.],
+            ])
 
+            # 10) Diagonal gradient (135°-ish emphasis)
+            diag_135 = torch.tensor([
+                [ 2.,  1.,  0.],
+                [ 1.,  0., -1.],
+                [ 0., -1., -2.],
+            ])
+
+            # Collect all filters into a kernel bank
+            kernels = [
+                laplacian,        # 0
+                sharpen,          # 1
+                high_pass,        # 2
+                box_blur,         # 3
+                gaussian_blur,    # 4
+                emboss,           # 5
+                sobel_x,          # 6
+                sobel_y,          # 7
+                diag_45,          # 8
+                diag_135,         # 9
+            ]
             num_kernels = len(kernels)
 
             # ---------------------------------------------------------------------
-            # ASSIGN STATIC FILTERS → conv3 WEIGHTS
+            # ASSIGN FILTERS TO ALL conv3 WEIGHTS (UPDATED FOR 1024×128) ✅ FIXED
             #
-            # conv3 configuration:
-            #   • out_channels = 64
-            #   • in_channels  = 128
+            # conv3 has:
+            #   out_channels = 1024  (filters / output features) ✅ FIXED
+            #   in_channels  = 128   (input features from conv2) ✅ FIXED
             #
-            # For each output channel and each input channel, a kernel is selected
-            # deterministically so the bank repeats across the full tensor.
+            # Strategy:
+            # ---------
+            # We repeat a small bank of useful kernels across the 1024×128 connections.
             #
-            # This creates a structured 64 × 128 kernel tensor where different
-            # channel interactions emphasize contrast, edges, gradients, and smoothing.
+            # Why this can help:
+            #   • conv3 sees already-processed feature maps, not raw pixels
+            #   • high-pass / sharpen emphasizes discriminative parts
+            #   • blur kernels can stabilize noisy activations
+            #   • sobel/diagonal gradients preserve directional structure
+            #
+            # NOTE:
+            # -----
+            # If conv3 is trainable (requires_grad=True), training will refine these
+            # weights beyond the initial static patterns.
             # ---------------------------------------------------------------------
-            for out_idx in range(out_channels):                                   # loop over all 64 output filters
-                for in_idx in range(in_channels):                                 # loop over all 128 input feature maps
+            for out_idx in range(out_channels):                                       # loop over all 1024 output filters ✅ FIXED
+                for in_idx in range(in_channels):                                     # loop over all 128 input feature maps ✅ FIXED
 
-                    # Select kernel pattern deterministically
-                    k = kernels[(out_idx + in_idx) % num_kernels].to(w.dtype)
+                    # Choose kernel pattern based on a mixed index to reduce repetition artifacts
+                    # (still deterministic, but spreads kernels across channels more evenly)
+                    k = kernels[(out_idx * 7 + in_idx * 3) % num_kernels].to(
+                        device=w.device, dtype=w.dtype
+                    )                                                                # ✅ FIXED: move+cast to match conv3 weights
 
-                    # Copy kernel into conv3 weight tensor
+                    # Copy kernel into weight tensor
                     w[out_idx, in_idx].copy_(k)
 
-            print(
-                f"[init_conv3_static] {out_channels}x{in_channels} "
-                f"static 3x3 kernels assigned"
-            )
+            print(f"[init_conv3_static] {out_channels}x{in_channels} 2D 3x3 kernels assigned")  # log ✅ FIXED
 
 
-   # ----------------------------------------------------------
+
+
+
+    # ----------------------------------------------------------
     # FORWARD PASS
     # ----------------------------------------------------------
     # FORWARD PROPAGATION THROUGH THE NETWORK
@@ -973,7 +1144,7 @@ class StaticInitLearnableCNN(nn.Module):
     #
     # DESIGN GOALS:
     # -------------
-    # ✔ Operate on arbitrary spatial resolutions provided by the dataset
+    # ✔ Work with ANY image size (no fixed 32×32 assumption)
     # ✔ Preserve spatial detail early (better accuracy)
     # ✔ Extract progressively higher-level features
     # ✔ Produce stable logits for CrossEntropyLoss
@@ -986,16 +1157,19 @@ class StaticInitLearnableCNN(nn.Module):
     #     Where:
     #       B = batch size
     #       3 = RGB color channels
-    #       H = image height
-    #       W = image width
+    #       H = image height   (can be ANY value ≥ ~16)
+    #       W = image width    (can be ANY value ≥ ~16)
     #
-    #     The spatial resolution (H, W) is determined by the dataset
-    #     and is passed through the network without modification.
+    #     Examples:
+    #       • CIFAR-10 images        → [B, 3, 32, 32]
+    #       • Resized dataset images → [B, 3, 64, 64]
+    #       • High-res images        → [B, 3, 256, 256]
     #
-    #     This network is IMAGE-SIZE AGNOSTIC because:
-    #       • Spatial dimensions are never flattened explicitly
-    #       • Global Average Pooling (GAP) converts feature maps
-    #         into a fixed-length channel vector
+    #     IMPORTANT:
+    #     ----------
+    #     This network is FULLY IMAGE-SIZE INDEPENDENT because:
+    #       • No hard-coded flattening of H×W
+    #       • Uses Global Average Pooling (GAP)
     #
     # ----------------------------------------------------------
     # NETWORK FLOW (HIGH LEVEL):
@@ -1003,15 +1177,15 @@ class StaticInitLearnableCNN(nn.Module):
     #
     #     Input Image
     #         ↓
-    #     Conv1 (256) → BatchNorm → ReLU → MaxPool
+    #     Conv1 → BatchNorm → ReLU → MaxPool
     #         ↓
-    #     Conv2 (128) → BatchNorm → ReLU
+    #     Conv2 → BatchNorm → ReLU        (NO pooling here)
     #         ↓
-    #     Conv3 (64)  → BatchNorm → ReLU
+    #     Conv3 → BatchNorm → ReLU
     #         ↓
     #     Global Average Pooling (GAP)
     #         ↓
-    #     Dropout
+    #     Dropout (regularization)
     #         ↓
     #     Fully Connected Layer
     #         ↓
@@ -1028,16 +1202,18 @@ class StaticInitLearnableCNN(nn.Module):
     #
     #     Meaning:
     #     --------
-    #     • Each row corresponds to one input image
-    #     • Each column corresponds to one class
-    #     • Values are raw, unnormalized scores (logits)
+    #     • Each row corresponds to ONE image
+    #     • Each column corresponds to ONE class
+    #     • Values are RAW SCORES (logits), NOT probabilities
     #
     # ----------------------------------------------------------
     # WHY LOGITS (NOT SOFTMAX OUTPUT):
     # ----------------------------------------------------------
-    # • Softmax is applied internally by nn.CrossEntropyLoss
-    # • Passing logits directly improves numerical stability
-    # • This is the standard and recommended PyTorch practice
+    # • Softmax is applied INTERNALLY by nn.CrossEntropyLoss
+    # • Using raw logits is:
+    #     ✔ numerically more stable
+    #     ✔ faster
+    #     ✔ the correct PyTorch practice
     #
     # During training:
     #     loss = CrossEntropyLoss(logits, labels)
@@ -1046,88 +1222,111 @@ class StaticInitLearnableCNN(nn.Module):
     #     predictions = argmax(logits, dim=1)
     #
     # ----------------------------------------------------------
-    # KEY QUALITY CHARACTERISTICS OF THIS FORWARD PASS:
+    # KEY QUALITY IMPROVEMENTS IN THIS FORWARD PASS:
     # ----------------------------------------------------------
-    # ✔ Single early pooling layer preserves spatial structure
-    # ✔ Progressive channel compression (256 → 128 → 64)
-    # ✔ GAP removes dependence on input resolution
-    # ✔ Dropout improves generalization
+    # ✔ Only ONE early pooling layer → preserves spatial detail
+    # ✔ Deeper feature extraction (up to 1024 channels) ✅ FIXED
+    # ✔ GAP removes dependency on image resolution
+    # ✔ Dropout improves generalization and test accuracy
     #
     # ----------------------------------------------------------
 
     def forward(self, x):
-        # Entry shape:
-        #   x → [B, 3, H, W]
+        # At entry:
+        #   x shape → [B, 3, H, W]
+        #   (ANY image size: CIFAR-10, resized data, or original resolution)
 
         # -------------------
         # BLOCK 1: CONV1 → BN1 → ReLU → POOL
         # -------------------
 
-        # Conv1: 3 → 256 channels
-        #   [B, 3, H, W] → [B, 256, H, W]
+        # Conv1: 3 → 64 channels, preserves H, W   ✅ FIXED
+        #   [B, 3, H, W] → [B, 64, H, W]
         x = self.conv1(x)
 
-        # BatchNorm on 256 channels
+        # BatchNorm on 64 channels (stabilizes activations) ✅ FIXED
         x = self.bn1(x)
 
-        # Non-linearity
+        # Non-linearity: ReLU
         x = F.relu(x)
 
-        # Spatial downsampling
-        #   [B, 256, H, W] → [B, 256, H/2, W/2]
+        # MaxPool: H×W → H/2×W/2
+        #   [B, 64, H, W] → [B, 64, H/2, W/2] ✅ FIXED
         x = self.pool(x)
 
         # -------------------
         # BLOCK 2: CONV2 → BN2 → ReLU
         # -------------------
 
-        # Conv2: 256 → 128 channels
-        #   [B, 256, H/2, W/2] → [B, 128, H/2, W/2]
+        # Conv2: 64 → 128 channels ✅ FIXED
+        #   [B, 64, H/2, W/2] → [B, 128, H/2, W/2]
         x = self.conv2(x)
 
-        # BatchNorm on 128 channels
+        # BatchNorm on 128 channels ✅ FIXED
         x = self.bn2(x)
 
-        # Non-linearity
+        # ReLU
         x = F.relu(x)
 
+        # ✅ IMPORTANT QUALITY FIX:
+        # ------------------------
+        # We REMOVE the second pooling step here.
+        #
+        # WHY?
+        # • Pooling too early destroys spatial detail (edges, parts, textures)
+        # • CIFAR-10 benefits a lot from keeping more resolution longer
+        #
+        # So we do NOT do:
+        #   x = self.pool(x)
+
         # -------------------
-        # BLOCK 3: CONV3 → BN3 → ReLU
+        # ✅ BLOCK 3: CONV3 → BN3 → ReLU
         # -------------------
 
-        # Conv3: 128 → 64 channels
-        #   [B, 128, H/2, W/2] → [B, 64, H/2, W/2]
+        # Conv3: 128 → 1024 channels ✅ FIXED
+        #   [B, 128, H/2, W/2] → [B, 1024, H/2, W/2]
         x = self.conv3(x)
 
-        # BatchNorm on 64 channels
+        # BatchNorm on 1024 channels ✅ FIXED
         x = self.bn3(x)
 
-        # Non-linearity
+        # ReLU
         x = F.relu(x)
 
         # -------------------
-        # GLOBAL AVERAGE POOLING
+        # GLOBAL AVERAGE POOLING (IMAGE-SIZE INDEPENDENT)
         # -------------------
 
-        #   [B, 64, H/2, W/2] → [B, 64, 1, 1]
+        # Replaces hard-coded spatial flattening.
+        #
+        # Converts:
+        #   [B, 1024, H/2, W/2] → [B, 1024, 1, 1] ✅ FIXED
+        #
+        # This step removes dependence on image size.
         x = self.gap(x)
 
-        #   [B, 64, 1, 1] → [B, 64]
+        # Flatten channel dimension only
+        #   [B, 1024, 1, 1] → [B, 1024] ✅ FIXED
         x = torch.flatten(x, 1)
 
         # -------------------
-        # DROPOUT
+        # ✅ DROPOUT (GENERALIZATION BOOST)
         # -------------------
         x = self.dropout(x)
 
         # -------------------
-        # CLASSIFIER
+        # LINEAR CLASSIFIER
         # -------------------
 
-        #   [B, 64] → [B, num_classes]
+        # Fully connected layer:
+        #   [B, 1024] → [B, num_classes] ✅ FIXED
         logits = self.fc(x)
 
+        # logits are returned directly.
+        # CrossEntropyLoss will apply softmax internally.
         return logits
+
+
 
 
 
@@ -1146,84 +1345,6 @@ def debug_print(*args, **kwargs):
     """
     if DEBUG_FLAG:
         print(*args, **kwargs)
-
-# ============================================================
-# TRAINING FUNCTION (WORKS FOR STATIC AND DYNAMIC CNN MODELS)
-# ============================================================
-# Train the CNN model for a fixed number of epochs using the provided DataLoader.
-#
-# This training function works for ALL CNN configurations, including:
-#   • CNNs with static (manually defined) filters in conv1 (e.g., Sobel, edges, corners).
-#   • CNNs with randomly initialized and learnable filters.
-#   • Networks with or without pooling layers.
-#   • Standard datasets like CIFAR-10 or any custom dataset.
-#   • Any input size supported by the model (e.g., 32×32 images).
-#
-# 💡 Why this works universally:
-# Training depends on *backpropagation*, not on how filters are initialized.
-# The optimizer updates only parameters that have requires_grad=True().
-#
-# -----------------------------------------------------------------------
-# 🧠 Learning behavior by layer:
-#
-# conv1 — Low-level feature extraction:
-#   • If FILTERS are STATIC:
-#       → Kernels are pre-defined (Sobel, corners, edges).
-#       → These filters DO NOT change during training.
-#       → They behave as a fixed feature extractor.
-#
-#   • If FILTERS are TRAINABLE:
-#       → Kernels are initialized randomly.
-#       → Each weight is updated via gradient descent.
-#       → Filters learn edges, patterns, and pixel textures directly from data.
-#
-# conv2 — Mid-level feature learning:
-#   • Receives feature maps from conv1.
-#   • Learns spatial combinations such as:
-#       → corners
-#       → shapes
-#       → textures
-#       → structural patterns.
-#   • Weights adapt to match more meaningful patterns through backprop.
-#
-# filters (in ALL convolution layers):
-#   • Every kernel is a matrix of learnable weights.
-#
-#   During training:
-#     1. Forward pass:
-#         image → conv → activation → output
-#
-#     2. Loss calculation:
-#         prediction vs expected label → error signal
-#
-#     3. Backward pass:
-#         Computes gradients for each filter weight:
-#           dLoss / dWeight
-#
-#     4. Optimization:
-#         optimizer.step() updates:
-#           weight ← weight − learning_rate × gradient
-#
-#   Over many iterations:
-#     → filters amplify useful structures
-#     → suppress noise
-#     → specialize for classification
-#
-# -----------------------------------------------------------------------
-# ✅ Why a SINGLE training loop works for all CNNs:
-#
-#   • The optimizer automatically updates:
-#         ONLY parameters where requires_grad == True
-#
-#   • Static filters have:
-#         requires_grad=False → never updated
-#
-#   • Trainable filters have:
-#         requires_grad=True → learned by backprop
-#
-# Therefore:
-#   No conditional logic or special handling is needed in the training loop.
-#   The same code trains both static and dynamic filter networks correctly.
 
 # ============================================================
 # TRAINING FUNCTION (WORKS FOR STATIC AND DYNAMIC CNN MODELS)
@@ -1269,10 +1390,26 @@ def debug_print(*args, **kwargs):
 #       → structural patterns.
 #   • If static-initialized, it starts from a helpful bias but still learns unless frozen.
 #
+#   ✅ IMPORTANT (YOUR UPDATED CHANNEL PLAN):
+#   ----------------------------------------
+#   In your current model conv2 is now 64 → 128 (NOT 64 → 32 anymore).
+#   This means conv2 is an "EXPANSION + COMBINATION" layer:
+#       • It expands 64 low-level maps into 128 richer mid-level maps.
+#       • This increases representational capacity (more feature channels).
+#       • It can improve accuracy (more mid-level patterns) but increases compute.
+#
 # conv3 — Higher-level feature learning:
 #   • Combines conv1+conv2 features into stronger compositions:
 #       → repeated structures, parts, object patterns.
 #   • If static-initialized, it starts from useful kernels but still learns unless frozen.
+#
+#   ✅ IMPORTANT (YOUR UPDATED CHANNEL PLAN):
+#   ----------------------------------------
+#   conv3 is now 128 → 1014 (NOT 32 → 1024).
+#   This is a STRONG high-level expansion layer:
+#       • conv2 produces 128 mid-level maps
+#       • conv3 converts them into 1014 high-level feature maps
+#       • conv3 can learn many object-part detectors / complex compositions
 #
 # filters (in ALL convolution layers):
 #   • Every kernel is a matrix of weights.
@@ -1318,16 +1455,18 @@ def debug_print(*args, **kwargs):
 # ============================================================
 #
 # Your current CNN uses:
-#   • conv1: 3   → 256
+#   • conv1: 3   → 64
 #   • pool: ONLY ONCE (after conv1)
-#   • conv2: 256 → 128
-#   • conv3: 128 → 64
-#   • GAP:  [B, 64, H/2, W/2] → [B, 64, 1, 1]
-#   • FC:   128 → num_classes
+#   • conv2: 64  → 128           ✅ UPDATED
+#   • conv3: 128 → 1014          ✅ UPDATED
+#   • GAP:  [B, 1014, H/2, W/2] → [B, 1014, 1, 1]     ✅ UPDATED
+#   • FC:   1014 → num_classes   ✅ UPDATED
 #
 # This training loop DOES NOT need to change with channel sizes.
 # It will train whatever parameters exist in your model.
 # ============================================================
+
+
 def train_model(
     model,
     train_loader,
@@ -2193,10 +2332,43 @@ def train_model(
 
 
 
-
-
-
-
+# ============================================================
+# COMPLETE PROCEDURE (INCLUDING main)
+# ============================================================
+# ✅ What you requested (DONE):
+#   1) When user presses 'n' and enters N:
+#        ❌ DO NOT print per-image lines like:
+#           [746/1000] idx=... true=... pred=... HIT/MISS
+#
+#        ✅ Instead print ONLY:
+#           • For EACH CLASS (based on TRUE class):
+#               - # success (hits for that true class)
+#               - hit ratio for that true class
+#               - # fail (misses for that true class)
+#               - miss ratio for that true class
+#
+#           • At the end:
+#               - total hit rate
+#               - total miss rate
+#
+#   2) Provide complete procedure including main() ✅
+#
+# ✅ NEW (ADDED NOW):
+#   3) When user presses 'a':
+#        ✅ Run FULL evaluation on the ENTIRE test set (test_loader)
+#        ✅ Print per-class success/fail + total accuracy
+#        ✅ This matches the logic of your [TEST] accuracy calculation
+#
+# NOTE:
+#   • This counts "per-class success/fail" by TRUE label (like per-class accuracy/recall):
+#       total_true_of_class = number of samples whose true label == class
+#       success_of_class    = among those, predicted correctly
+#       fail_of_class       = among those, predicted incorrectly
+#       hit_ratio_class     = success_of_class / total_true_of_class
+#       miss_ratio_class    = fail_of_class / total_true_of_class
+#
+#   • Interactive index mode still prints per-image (that’s OK, you asked to remove messages for N mode)
+# ============================================================
 
 
 # ============================================================
@@ -2206,18 +2378,9 @@ def detect_single_image(model, test_dataset, device, index=None):
     """
     Loads ONE RANDOM image from the test dataset (unless index is provided),
     runs the model, and prints:
-
         • True label ID & name
         • Predicted label ID & name
-
-    Args:
-        model ........ the trained PyTorch CNN
-        test_dataset . a torchvision dataset (CIFAR-10, ImageFolder, etc.)
-        device ....... "cuda" or "cpu"
-        index ........ optional fixed index; if None → choose random image
-
-    Returns:
-        img_tensor, true_label_id, predicted_label_id
+        • Confidence (softmax probability for predicted class)
     """
 
     # --------------------------------------------------------
@@ -2231,20 +2394,14 @@ def detect_single_image(model, test_dataset, device, index=None):
     # --------------------------------------------------------
     class_names = getattr(test_dataset, "classes", None)
     if class_names is None:
-        # Fallback: no classes attribute found
-        class_names = [str(i) for i in range(10)]  # generic labels 0..9
+        class_names = [str(i) for i in range(10)]
 
     # --------------------------------------------------------
     # NORMALIZE & VALIDATE INDEX
-    #   • If index is None → choose random
-    #   • If index is string → convert to int
-    #   • Clamp / reject out-of-range indices
     # --------------------------------------------------------
     if index is None:
-        # Select random sample if no index is given
         index = random.randint(0, len(test_dataset) - 1)
     else:
-        # If index is passed as a string (e.g. from input()), convert it
         if isinstance(index, str):
             try:
                 index = int(index)
@@ -2252,71 +2409,55 @@ def detect_single_image(model, test_dataset, device, index=None):
                 print(f"[detect_single_image] Invalid index value '{index}', using 0 instead.")
                 index = 0
 
-        # Range check
         if index < 0 or index >= len(test_dataset):
-            print(f"[detect_single_image] Index {index} is out of range 0–{len(test_dataset) - 1}, using 0 instead.")
+            print(f"[detect_single_image] Index {index} is out of range 0–{len(test_dataset)-1}, using 0 instead.")
             index = 0
 
     # --------------------------------------------------------
     # LOAD IMAGE + TRUE LABEL
     # --------------------------------------------------------
     img, true_label = test_dataset[index]
+    true_label_id = int(true_label)
 
-    # Some datasets may return label as tensor, normalize to Python int
-    try:
-        true_label_id = int(true_label)
-    except Exception:
-        true_label_id = true_label  # keep as-is if already int-like
-
-    # ✅ NEW (SAFE): Print actual image tensor size so you see H,W at runtime
     # img is [C, H, W]
     c, h, w = img.shape
-    # Note: This confirms the pipeline is NOT constrained to 32x32 anymore.
 
-    # Add batch dimension → shape becomes [1, C, H, W]
-    img_input = img.unsqueeze(0).to(device)
+    # Add batch dimension → [1, C, H, W]
+    # ------------------------------------------------------------
+    # ✅ SPEED FIX:
+    # If CUDA is used and the DataLoader has pin_memory=True,
+    # then non_blocking=True makes host→GPU copy faster.
+    # ------------------------------------------------------------
+    img_input = img.unsqueeze(0).to(device, non_blocking=(device.type == "cuda"))
 
     # --------------------------------------------------------
     # FORWARD PASS (NO GRADIENT TRACKING)
     # --------------------------------------------------------
     with torch.no_grad():
         logits = model(img_input)
-        pred_label = logits.argmax(1).item()
+        pred_label = int(logits.argmax(1).item())
 
-        # ✅ NEW (OPTIONAL): confidence score for the predicted class
-        # Softmax converts logits → probabilities
         probs = torch.softmax(logits, dim=1)
-        pred_conf = probs[0, pred_label].item()  # probability for predicted class
+        pred_conf = float(probs[0, pred_label].item())
 
     # --------------------------------------------------------
-    # CONVERT LABEL IDS → HUMAN-READABLE NAMES
+    # LABEL NAMES
     # --------------------------------------------------------
-    # Defensive check in case labels are outside class_names length
-    if 0 <= true_label_id < len(class_names):
-        true_name = class_names[true_label_id]
-    else:
-        true_name = f"class_{true_label_id}"
-
-    if 0 <= pred_label < len(class_names):
-        pred_name = class_names[pred_label]
-    else:
-        pred_name = f"class_{pred_label}"
+    true_name = class_names[true_label_id] if 0 <= true_label_id < len(class_names) else f"class_{true_label_id}"
+    pred_name = class_names[pred_label] if 0 <= pred_label < len(class_names) else f"class_{pred_label}"
 
     # --------------------------------------------------------
     # PRINT RESULTS
     # --------------------------------------------------------
     print("--------------------------------------------------")
     print(f"DETECTION RESULT FOR TEST IMAGE INDEX: {index}")
-    print(f"Input image shape : [C={c}, H={h}, W={w}]")  # ✅ NEW: shows actual size used
+    print(f"Input image shape : [C={c}, H={h}, W={w}]")
     print(f"True label index  : {true_label_id} → {true_name}")
     print(f"Pred label index  : {pred_label} → {pred_name}")
-    print(f"Confidence        : {pred_conf*100:.2f}%")   # ✅ NEW: optional but useful
+    print(f"Confidence        : {pred_conf*100:.2f}%")
     print("--------------------------------------------------")
 
     return img, true_label_id, pred_label
-
-
-
 
 
 # ============================================================
