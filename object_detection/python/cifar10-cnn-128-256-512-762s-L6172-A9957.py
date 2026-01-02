@@ -20,6 +20,29 @@ NUM_EPOCHS = 100
 NUM_WORKERS = 0
 STATIC_FILTERS = False
 DEBUG_FLAG = True
+
+# ============================================================
+# GLOBAL CHANNEL CONFIG (SINGLE SOURCE OF TRUTH)
+# ============================================================
+# These constants define the architecture in ONE place.
+# Then we reuse them in:
+#   • __init__ (Conv2d / BatchNorm2d / Linear)
+#   • _init_conv*_static() (assertions + logs)
+#
+# ✅ Benefits:
+#   • no magic numbers scattered in the code
+#   • if you change channels later, you change them here once
+#   • your static init checks automatically stay correct
+# ============================================================
+
+CONV1_IN_CHANNEL  = 3
+CONV1_OUT_CHANNEL = 128
+
+CONV2_IN_CHANNEL  = CONV1_OUT_CHANNEL
+CONV2_OUT_CHANNEL = 256
+
+CONV3_IN_CHANNEL  = CONV2_OUT_CHANNEL
+CONV3_OUT_CHANNEL = 512
 # ============================================================
 # EXPLANATION: HOW TRAINING WORKS IN THIS NETWORK
 # ============================================================
@@ -210,7 +233,6 @@ DEBUG_FLAG = True
 
 
 
-class StaticInitLearnableCNN(nn.Module):
     def __init__(self, num_classes: int = 10):
         super().__init__()
 
@@ -248,8 +270,8 @@ class StaticInitLearnableCNN(nn.Module):
         # without resizing constraints.
         # ------------------------------------------------------
         self.conv1 = nn.Conv2d(
-            in_channels=3,
-            out_channels=128,
+            in_channels=CONV1_IN_CHANNEL,
+            out_channels=CONV1_OUT_CHANNEL,
             kernel_size=3,
             padding=1,
             bias=True
@@ -274,7 +296,7 @@ class StaticInitLearnableCNN(nn.Module):
         #   ➤ Smoother gradients
         #   ➤ Sometimes significantly higher accuracy
         # ------------------------------------------------------
-        self.bn1 = nn.BatchNorm2d(128)
+        self.bn1 = nn.BatchNorm2d(CONV1_OUT_CHANNEL)
 
         # ------------------------------------------------------
         # POOLING LAYER: MaxPool2d(2, 2)
@@ -301,8 +323,8 @@ class StaticInitLearnableCNN(nn.Module):
         #   output of conv2: [B, 256, H/2, W/2]
         # ------------------------------------------------------
         self.conv2 = nn.Conv2d(
-            in_channels=128,
-            out_channels=256,
+            in_channels=CONV2_IN_CHANNEL,
+            out_channels=CONV2_OUT_CHANNEL,
             kernel_size=3,
             padding=1,
             bias=True
@@ -322,7 +344,7 @@ class StaticInitLearnableCNN(nn.Module):
         # BatchNorm especially helps deeper layers where
         # activations become more chaotic.
         # ------------------------------------------------------
-        self.bn2 = nn.BatchNorm2d(256)
+        self.bn2 = nn.BatchNorm2d(CONV2_OUT_CHANNEL)
 
         # ------------------------------------------------------
         # ✅ LAYER 3: 256 → 512 channels ✅ UPDATED
@@ -347,8 +369,8 @@ class StaticInitLearnableCNN(nn.Module):
         #   output of conv3: [B, 512, H/2, W/2]
         # ------------------------------------------------------
         self.conv3 = nn.Conv2d(
-            in_channels=256,
-            out_channels=512,
+            in_channels=CONV3_IN_CHANNEL,
+            out_channels=CONV3_OUT_CHANNEL,
             kernel_size=3,
             padding=1,
             bias=True
@@ -363,7 +385,7 @@ class StaticInitLearnableCNN(nn.Module):
         # • BN helps stabilize deeper activations
         # • Makes training smoother and improves generalization
         # ------------------------------------------------------
-        self.bn3 = nn.BatchNorm2d(512)
+        self.bn3 = nn.BatchNorm2d(CONV3_OUT_CHANNEL)
 
         # ------------------------------------------------------
         # 🔑 GLOBAL AVERAGE POOLING (IMAGE-SIZE INDEPENDENT)
@@ -412,7 +434,7 @@ class StaticInitLearnableCNN(nn.Module):
         # Therefore the classifier must be:
         #   nn.Linear(512, num_classes)
         # ------------------------------------------------------
-        self.fc = nn.Linear(512, num_classes)
+        self.fc = nn.Linear(CONV3_OUT_CHANNEL, num_classes)
 
         # ------------------------------------------------------
         # STATIC FILTER INITIALIZATION (if enabled)
@@ -437,8 +459,8 @@ class StaticInitLearnableCNN(nn.Module):
         # ------------------------------------------------------
         if STATIC_FILTERS:
             self._init_conv1_static()
-            # self._init_conv2_static()
-
+            self._init_conv2_static()
+            self._init_conv3_static()
 
 
 
@@ -461,7 +483,15 @@ class StaticInitLearnableCNN(nn.Module):
             #   [B, 3, H, W] → [B, 128, H, W] ✅ UPDATED
             #
             # This gives the network MUCH higher early capacity than 16 channels.
-            assert in_channels == 3 and kh == 3 and kw == 3                # expect RGB input and 3x3 kernels
+            #
+            # ✅ FIX:
+            # ------
+            # Instead of hard-coding 3 and 128, we validate against the GLOBAL constants:
+            #   CONV1_IN_CHANNEL, CONV1_OUT_CHANNEL
+            #
+            # This ensures you can change architecture in ONE place safely.
+            assert in_channels == CONV1_IN_CHANNEL and kh == 3 and kw == 3  # expect RGB input and 3x3 kernels
+            assert out_channels == CONV1_OUT_CHANNEL                        # expect correct conv1 output channels ✅ FIXED
 
             # ------------------------------------------------------------------
             # BASIC FILTERS (IDENTITY, SHARPENING, SMOOTHING)
@@ -744,26 +774,26 @@ class StaticInitLearnableCNN(nn.Module):
             num_kernels = len(kernels)                                      # total number of base kernels
 
             # ------------------------------------------------------------------
-            # ASSIGN STATIC KERNELS → conv1 WEIGHTS (UPDATED FOR 128 CHANNELS)
+            # ASSIGN STATIC KERNELS → conv1 WEIGHTS (UPDATED FOR 512 CHANNELS)
             #
-            # ✅ Your conv1 now has 128 output channels:
-            #   out_channels = 128 ✅ UPDATED
+            # ✅ Your conv1 now has 512 output channels:
+            #   out_channels = 512 ✅ UPDATED
             #
             # We currently have:
             #   num_kernels = 45 handcrafted 3×3 kernels
             #
-            # Because 128 > 45:
+            # Because 512 > 45:
             #   • The first 45 conv1 filters get UNIQUE handcrafted kernels
-            #   • The remaining 83 filters repeat from the beginning (wrap-around) ✅ UPDATED
+            #   • The remaining 467 filters repeat from the beginning (wrap-around) ✅ UPDATED
             #
             # This guarantees:
             #   • conv1 starts with strong edge/corner/curve/line/gradient detectors
             #   • training converges easier (better inductive bias)
-            #   • extra channels still exist (via repetition) so the network has 128 feature maps ✅ UPDATED
+            #   • extra channels still exist (via repetition) so the network has 512 feature maps ✅ UPDATED
             # ------------------------------------------------------------------
 
-            for i in range(out_channels):                                  # loop over each output filter (0..127) ✅ UPDATED
-                k2d = kernels[i % num_kernels].to(w.dtype)                 # pick kernel (wrap-around) and cast dtype
+            for i in range(out_channels):                                  # loop over each output filter (0..511) ✅ UPDATED
+                k2d = kernels[i % num_kernels].to(device=w.device, dtype=w.dtype)  # pick kernel (wrap-around) + move/cast ✅ FIXED
                 for c in range(in_channels):                               # copy same kernel into each RGB channel
                     w[i, c].copy_(k2d)                                     # write into conv1 weight tensor
 
@@ -775,151 +805,19 @@ class StaticInitLearnableCNN(nn.Module):
 
 
 
+
+
+  
     # ----------------------------------------------------------
-    # STATIC INITIALIZATION FOR LAYER 2 (UPDATED FOR 128×256) ✅ UPDATED
-    # ----------------------------------------------------------
-    def _init_conv2_static(self):
-        with torch.no_grad():                                                           # disable gradients (manual init)
-            w = self.conv2.weight                                                       # conv2 weights → [out_channels, in_channels, 3, 3]
-            out_channels, in_channels, kh, kw = w.shape
-
-            # ✅ UPDATED FOR YOUR NEW MODEL:
-            # -----------------------------
-            # Your conv2 is now:
-            #   in_channels  = 128   (from conv1 out_channels) ✅ UPDATED
-            #   out_channels = 256   (256 feature maps / filters) ✅ UPDATED
-            #   kernel       = 3x3
-            #
-            # So conv2 produces:
-            #   [B, 128, H/2, W/2] → [B, 256, H/2, W/2] ✅ UPDATED
-            #
-            # This is a structured mid-level feature builder after a high-capacity conv1.
-            assert kh == 3 and kw == 3                                                  # ensure 3x3 kernel size
-
-            # ---------------------------------------------------------------------
-            # FILTER DEFINITIONS (EACH 3×3, WRITTEN IN THREE ROWS)
-            #
-            # conv2 receives 128 feature maps (NOT 512 anymore). ✅ UPDATED
-            #
-            # Meaning:
-            #   • conv1 already produced many primitive detectors (edges/corners/etc.)
-            #   • conv2 now combines those 128 maps into 256 stronger mid-level features:
-            #       - parts, textures, repeated patterns
-            #       - more stable gradients (especially with BN)
-            #       - richer combinations of the static conv1 responses
-            #
-            # NOTE:
-            #   Here out_channels is larger than in_channels (256 > 128),
-            #   which is also valid — it is a deliberate "feature expansion" step:
-            #     • increases representational capacity
-            #     • allows multiple mid-level combinations per conv1 map
-            #     • often improves accuracy when paired with BN + ReLU
-            # ---------------------------------------------------------------------
-
-            # 1) Horizontal edge detector
-            #    Strong response to horizontal lines and transitions.
-            edge_h = torch.tensor([
-                [-1., -1., -1.],
-                [ 2.,  2.,  2.],
-                [-1., -1., -1.],
-            ])
-
-            # 2) Vertical edge detector
-            #    Strong response to vertical edges or vertical texture discontinuities.
-            edge_v = torch.tensor([
-                [-1.,  2., -1.],
-                [-1.,  2., -1.],
-                [-1.,  2., -1.],
-            ])
-
-            # 3) Emboss filter
-            #    Creates a shaded 3D-like emboss effect; highlights directional depth.
-            emboss = torch.tensor([
-                [-2., -1.,  0.],
-                [-1.,  1.,  1.],
-                [ 0.,  1.,  2.],
-            ])
-
-            # 4) Average blur (3×3 mean filter)
-            #    Smooths noise and merges nearby features.
-            avg = (1/9) * torch.ones((3, 3))
-
-            # 5) Sobel X (horizontal gradient)
-            #    Detects left–right intensity changes (vertical edges).
-            sobel_x = torch.tensor([
-                [-1.,  0.,  1.],
-                [-2.,  0.,  2.],
-                [-1.,  0.,  1.],
-            ])
-
-            # 6) Sobel Y (vertical gradient)
-            #    Detects top–bottom intensity transitions (horizontal edges).
-            sobel_y = torch.tensor([
-                [-1., -2., -1.],
-                [ 0.,  0.,  0.],
-                [ 1.,  2.,  1.],
-            ])
-
-            # Collect all filters into a kernel bank
-            kernels = [
-                edge_h,     # 0 horizontal edge
-                edge_v,     # 1 vertical edge
-                emboss,     # 2 emboss shading
-                avg,        # 3 smoothing blur
-                sobel_x,    # 4 gradient X
-                sobel_y,    # 5 gradient Y
-            ]
-            num_kernels = len(kernels)
-
-            # ---------------------------------------------------------------------
-            # ASSIGN FILTERS TO ALL conv2 WEIGHTS (UPDATED FOR 256×128) ✅ UPDATED
-            #
-            # conv2 has:
-            #   out_channels = 256  (filters) ✅ UPDATED
-            #   in_channels  = 128  (input feature maps from conv1) ✅ UPDATED
-            #
-            # For each output filter and each input channel, we choose a kernel
-            # using modulo indexing so the filters repeat periodically.
-            #
-            # ✅ Why repetition is OK here:
-            #   • conv2 has 256×128 = 32768 small 3×3 kernels ✅ UPDATED
-            #   • we only define 6 base kernels
-            #   • repeating them still creates many different paths because each output
-            #     channel mixes MANY input channels, and training learns useful combos
-            #
-            # This creates a structured conv2 initialization where:
-            #   • some connections emphasize gradients (Sobel)
-            #   • some emphasize edges (horizontal/vertical)
-            #   • some smooth (avg)
-            #   • some emboss (directional structure)
-            # ---------------------------------------------------------------------
-            for out_idx in range(out_channels):                                       # loop over all 256 output filters ✅ UPDATED
-                for in_idx in range(in_channels):                                     # loop over all 128 input feature maps ✅ UPDATED
-
-                    # Choose kernel pattern based on (out × in) mod #kernels
-                    # NOTE:
-                    #   We use max(1, in_idx) to avoid always selecting kernel[0] when in_idx=0.
-                    k = kernels[(out_idx * max(1, in_idx)) % num_kernels].to(w.dtype)
-
-                    # Copy kernel into weight tensor
-                    w[out_idx, in_idx].copy_(k)
-
-            print(f"[init_conv2_static] {out_channels}x{in_channels} 2D 3x3 kernels assigned")  # log ✅ UPDATED
-
-
-
-
-
-    # ----------------------------------------------------------
-    # STATIC INITIALIZATION FOR LAYER 3 (UPDATED FOR 512 FEATURES) ✅ UPDATED
+    # STATIC INITIALIZATION FOR LAYER 3 (UPDATED FOR 128 FEATURES) ✅ UPDATED
     # ----------------------------------------------------------
     def _init_conv3_static(self):
         with torch.no_grad():                                                           # disable gradients (manual init)
             w = self.conv3.weight                                                       # conv3 weights → [out_channels, in_channels, 3, 3]
             out_channels, in_channels, kh, kw = w.shape
 
-            # ✅ UPDATED FOR YOUR NEW MODEL:
-            # -----------------------------
+            # ✅ UPDATED FOR YOUR MODEL CONFIGURATION:
+            # --------------------------------------
             # Your conv3 is now:
             #   in_channels  = 256    (from conv2 out_channels) ✅ UPDATED
             #   out_channels = 512    (512 feature maps / filters) ✅ UPDATED
@@ -934,11 +832,14 @@ class StaticInitLearnableCNN(nn.Module):
             #   • shape composition from conv1+conv2 primitives
             assert kh == 3 and kw == 3                                                  # ensure 3x3 kernel size
 
-            # ✅ EXTRA SAFETY CHECK (keeps your code robust if the architecture changes later)
-            # -------------------------------------------------------------------------------
-            # If someone accidentally changes conv2/conv3 channel counts later, this will fail fast
-            # instead of silently initializing wrong shapes.
-            assert in_channels == 256 and out_channels == 512                            # expect exact conv3 shape ✅ UPDATED
+            # ✅ EXTRA SAFETY CHECK (ARCHITECTURE-SAFE)
+            # ----------------------------------------
+            # Validate against your GLOBAL conv3 constants (no hard-coded numbers).
+            #
+            # These should be defined once near the top of your file:
+            #   CONV3_IN_CHANNEL  = 256
+            #   CONV3_OUT_CHANNEL = 128
+            assert in_channels == CONV3_IN_CHANNEL and out_channels == CONV3_OUT_CHANNEL  # expect exact conv3 shape ✅ UPDATED
 
             # ---------------------------------------------------------------------
             # FILTER DEFINITIONS (EACH 3×3, WRITTEN IN THREE ROWS)
@@ -1038,15 +939,15 @@ class StaticInitLearnableCNN(nn.Module):
             num_kernels = len(kernels)
 
             # ---------------------------------------------------------------------
-            # ASSIGN FILTERS TO ALL conv3 WEIGHTS (UPDATED FOR 512×256) ✅ UPDATED
+            # ASSIGN FILTERS TO ALL conv3 WEIGHTS (UPDATED FOR 128×256) ✅ UPDATED
             #
             # conv3 has:
-            #   out_channels = 512  (filters / output features) ✅ UPDATED
+            #   out_channels = 128  (filters / output features) ✅ UPDATED
             #   in_channels  = 256  (input features from conv2) ✅ UPDATED
             #
             # Strategy:
             # ---------
-            # We repeat a small bank of useful kernels across the 512×256 connections.
+            # We repeat a small bank of useful kernels across the 128×256 connections.
             #
             # Why this can help:
             #   • conv3 sees already-processed feature maps, not raw pixels
@@ -1059,18 +960,19 @@ class StaticInitLearnableCNN(nn.Module):
             # If conv3 is trainable (requires_grad=True), training will refine these
             # weights beyond the initial static patterns.
             # ---------------------------------------------------------------------
-            for out_idx in range(out_channels):                                       # loop over all 512 output filters ✅ UPDATED
+            for out_idx in range(out_channels):                                       # loop over all 128 output filters ✅ UPDATED
                 for in_idx in range(in_channels):                                     # loop over all 256 input feature maps ✅ UPDATED
 
                     # Choose kernel pattern based on a mixed index to reduce repetition artifacts
                     # (still deterministic, but spreads kernels across channels more evenly)
-                    k = kernels[(out_idx * 7 + in_idx * 3) % num_kernels].to(w.dtype)
+                    k = kernels[(out_idx * 7 + in_idx * 3) % num_kernels].to(
+                        device=w.device, dtype=w.dtype
+                    )                                                                # ensure device + dtype match conv3 weights
 
                     # Copy kernel into weight tensor
                     w[out_idx, in_idx].copy_(k)
 
             print(f"[init_conv3_static] {out_channels}x{in_channels} 2D 3x3 kernels assigned")  # log ✅ UPDATED
-
 
 
 

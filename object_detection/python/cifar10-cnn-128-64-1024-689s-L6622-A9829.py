@@ -20,6 +20,46 @@ NUM_EPOCHS = 100
 NUM_WORKERS = 0
 STATIC_FILTERS = False
 DEBUG_FLAG = True
+
+# ============================================================
+# GLOBAL ARCHITECTURE CONSTANTS (UPDATED)
+# ============================================================
+# You requested:
+#   conv1: 3   → 128
+#   conv2: 128 → 64
+#   conv3: 64  → 1024
+#
+# These constants are used by:
+#   • __init__() layer construction (optional, but recommended)
+#   • _init_conv1_static() / _init_conv2_static() / _init_conv3_static()
+#     to validate shapes safely (no hard-coded numbers).
+# ============================================================
+
+
+# ------------------------------------------------------------
+# CONV1 SHAPE CONSTANTS
+# ------------------------------------------------------------
+# conv1 expects RGB input and outputs 128 feature maps.
+# ------------------------------------------------------------
+CONV1_IN_CHANNELS  = 3
+CONV1_OUT_CHANNELS = 128
+
+# ------------------------------------------------------------
+# CONV2 SHAPE CONSTANTS
+# ------------------------------------------------------------
+# conv2 consumes conv1 outputs and compresses/reshapes them to 64 maps.
+# ------------------------------------------------------------
+CONV2_IN_CHANNELS  = CONV1_OUT_CHANNELS   # 128
+CONV2_OUT_CHANNELS = 64
+
+# ------------------------------------------------------------
+# CONV3 SHAPE CONSTANTS
+# ------------------------------------------------------------
+# conv3 consumes conv2 outputs and expands to 1024 high-level maps.
+# ------------------------------------------------------------
+CONV3_IN_CHANNELS  = CONV2_OUT_CHANNELS   # 64
+CONV3_OUT_CHANNELS = 1024
+
 # ============================================================
 # EXPLANATION: HOW TRAINING WORKS IN THIS NETWORK
 # ============================================================
@@ -235,9 +275,9 @@ class StaticInitLearnableCNN(nn.Module):
         torch.backends.cudnn.benchmark = True
 
         # ------------------------------------------------------
-        # ✅ LAYER 1: 3 → 64 channels ✅ FIXED
+        # ✅ LAYER 1: 3 → 128 channels ✅ UPDATED
         # ------------------------------------------------------
-        # 3 input channels (RGB) → 64 feature maps using 3x3 filters
+        # 3 input channels (RGB) → 128 feature maps using 3x3 filters
         # Padding = 1 to keep spatial size
         #
         # Input shape assumption:
@@ -247,19 +287,19 @@ class StaticInitLearnableCNN(nn.Module):
         # without resizing constraints.
         # ------------------------------------------------------
         self.conv1 = nn.Conv2d(
-            in_channels=3,
-            out_channels=64,          # ✅ FIXED
+            in_channels=CONV1_IN_CHANNELS,      # ✅ UPDATED: uses global constant (RGB = 3)
+            out_channels=CONV1_OUT_CHANNELS,    # ✅ UPDATED: now 128
             kernel_size=3,
             padding=1,
             bias=True
         )
 
         # ------------------------------------------------------
-        # ✅ BatchNorm for conv1 (normalizes 64 output channels) ✅ FIXED
+        # ✅ BatchNorm for conv1 (normalizes 128 output channels) ✅ UPDATED
         # ------------------------------------------------------
-        # WHY WE USE BATCHNORM2d(64):
+        # WHY WE USE BATCHNORM2d(128):
         # ---------------------------
-        # • It normalizes each of the 64 feature maps across the batch
+        # • It normalizes each of the 128 feature maps across the batch
         # • Keeps mean ≈ 0 and variance ≈ 1
         # • Reduces internal covariate shift
         # • Allows faster and more stable training
@@ -273,7 +313,7 @@ class StaticInitLearnableCNN(nn.Module):
         #   ➤ Smoother gradients
         #   ➤ Sometimes significantly higher accuracy
         # ------------------------------------------------------
-        self.bn1 = nn.BatchNorm2d(64)   # ✅ FIXED
+        self.bn1 = nn.BatchNorm2d(CONV1_OUT_CHANNELS)   # ✅ UPDATED: now 128
 
         # ------------------------------------------------------
         # POOLING LAYER: MaxPool2d(2, 2)
@@ -290,30 +330,30 @@ class StaticInitLearnableCNN(nn.Module):
         self.pool = nn.MaxPool2d(2, 2)
 
         # ------------------------------------------------------
-        # ✅ LAYER 2: 64 → 128 channels ✅ FIXED
+        # ✅ LAYER 2: 128 → 64 channels ✅ UPDATED
         # ------------------------------------------------------
-        # 64 input feature maps → 128 output feature maps
+        # 128 input feature maps → 64 output feature maps
         # using 3×3 filters, padding=1 keeps spatial size.
         #
         # After the single pooling:
-        #   input to conv2 : [B, 64, H/2, W/2]
-        #   output of conv2: [B, 128, H/2, W/2]
+        #   input to conv2 : [B, 128, H/2, W/2]          ✅ UPDATED
+        #   output of conv2: [B,  64, H/2, W/2]          ✅ UPDATED
         # ------------------------------------------------------
         self.conv2 = nn.Conv2d(
-            in_channels=64,           # ✅ FIXED
-            out_channels=128,         # ✅ FIXED
+            in_channels=CONV2_IN_CHANNELS,      # ✅ UPDATED: now 128 (comes from conv1)
+            out_channels=CONV2_OUT_CHANNELS,    # ✅ UPDATED: now 64
             kernel_size=3,
             padding=1,
             bias=True
         )
 
         # ------------------------------------------------------
-        # ✅ BatchNorm for conv2 (normalizes 128 channels) ✅ FIXED
+        # ✅ BatchNorm for conv2 (normalizes 64 channels) ✅ UPDATED
         # ------------------------------------------------------
-        # Why BatchNorm2d(128)?
-        # ---------------------
-        # • Conv2 outputs 128 feature maps
-        # • BatchNorm stabilizes all 128 channels
+        # Why BatchNorm2d(64)?
+        # --------------------
+        # • Conv2 outputs 64 feature maps
+        # • BatchNorm stabilizes all 64 channels
         #
         # Overall:
         #   conv2 → bn2 → ReLU
@@ -321,10 +361,10 @@ class StaticInitLearnableCNN(nn.Module):
         # BatchNorm especially helps deeper layers where
         # activations become more chaotic.
         # ------------------------------------------------------
-        self.bn2 = nn.BatchNorm2d(128)  # ✅ FIXED
+        self.bn2 = nn.BatchNorm2d(CONV2_OUT_CHANNELS)  # ✅ UPDATED: now 64
 
         # ------------------------------------------------------
-        # ✅ LAYER 3: 128 → 1024 channels ✅ FIXED
+        # ✅ LAYER 3: 64 → 1024 channels ✅ UPDATED
         # ------------------------------------------------------
         # WHY THIS IMPROVES PREDICTION QUALITY:
         # ------------------------------------
@@ -342,12 +382,12 @@ class StaticInitLearnableCNN(nn.Module):
         # There is NO second pooling in this model.
         # So conv3 operates on the SAME spatial size as conv2:
         #
-        #   input to conv3 : [B, 128, H/2, W/2]      ✅ FIXED
+        #   input to conv3 : [B,  64, H/2, W/2]      ✅ UPDATED
         #   output of conv3: [B, 1024, H/2, W/2]     ✅ FIXED
         # ------------------------------------------------------
         self.conv3 = nn.Conv2d(
-            in_channels=128,          # ✅ FIXED
-            out_channels=1024,        # ✅ FIXED
+            in_channels=CONV3_IN_CHANNELS,      # ✅ UPDATED: now 64 (comes from conv2)
+            out_channels=CONV3_OUT_CHANNELS,    # ✅ FIXED: 1024
             kernel_size=3,
             padding=1,
             bias=True
@@ -362,7 +402,7 @@ class StaticInitLearnableCNN(nn.Module):
         # • BN helps stabilize deeper activations
         # • Makes training smoother and improves generalization
         # ------------------------------------------------------
-        self.bn3 = nn.BatchNorm2d(1024)  # ✅ FIXED
+        self.bn3 = nn.BatchNorm2d(CONV3_OUT_CHANNELS)  # ✅ FIXED: 1024
 
         # ------------------------------------------------------
         # 🔑 GLOBAL AVERAGE POOLING (IMAGE-SIZE INDEPENDENT)
@@ -411,7 +451,7 @@ class StaticInitLearnableCNN(nn.Module):
         # Therefore the classifier must be:
         #   nn.Linear(1024, num_classes)              ✅ FIXED
         # ------------------------------------------------------
-        self.fc = nn.Linear(1024, num_classes)       # ✅ FIXED
+        self.fc = nn.Linear(CONV3_OUT_CHANNELS, num_classes)  # ✅ FIXED: 1024 → num_classes
 
         # ------------------------------------------------------
         # STATIC FILTER INITIALIZATION (if enabled)
@@ -432,11 +472,12 @@ class StaticInitLearnableCNN(nn.Module):
         # ----------------------------------
         # If conv1 is overwritten with static filters, it may LIMIT
         # the benefit of increasing conv1 channels unless your
-        # static filter bank actually fills/uses all 64 output maps. ✅ FIXED
+        # static filter bank actually fills/uses all 128 output maps. ✅ UPDATED
         # ------------------------------------------------------
         if STATIC_FILTERS:
             self._init_conv1_static()
-            # self._init_conv2_static()
+            self._init_conv2_static()
+            self._init_conv3_static()  # Only enable if you want conv3 to start from static kernels too
 
 
 
@@ -448,7 +489,7 @@ class StaticInitLearnableCNN(nn.Module):
     # ----------------------------------------------------------
     def _init_conv1_static(self):
         with torch.no_grad():                                              # disable gradients during manual init
-            w = self.conv1.weight                                          # conv1 weights → [out_channels, 3, 3, 3]
+            w = self.conv1.weight                                          # conv1 weights → [out_channels, in_channels, 3, 3]
             out_channels, in_channels, kh, kw = w.shape                    # get conv1 shape
 
             # ✅ UPDATED FOR YOUR NEW MODEL:
@@ -462,7 +503,16 @@ class StaticInitLearnableCNN(nn.Module):
             #   [B, 3, H, W] → [B, 128, H, W]                           ✅ FIXED
             #
             # This gives the network higher early capacity than 64 channels.
-            assert in_channels == 3 and kh == 3 and kw == 3                # expect RGB input and 3x3 kernels
+            assert kh == 3 and kw == 3                                     # ensure 3x3 kernel size
+
+            # ✅ EXTRA SAFETY CHECK (ARCHITECTURE-SAFE)
+            # ----------------------------------------
+            # Validate against your GLOBAL conv1 constants (no hard-coded numbers).
+            #
+            # These should be defined once near the top of your file:
+            #   CONV1_IN_CHANNELS  = 3
+            #   CONV1_OUT_CHANNELS = 128
+            assert in_channels == CONV1_IN_CHANNELS and out_channels == CONV1_OUT_CHANNELS  # expect exact conv1 shape ✅ FIXED
 
             # ------------------------------------------------------------------
             # BASIC FILTERS (IDENTITY, SHARPENING, SMOOTHING)
@@ -813,7 +863,7 @@ class StaticInitLearnableCNN(nn.Module):
 
 
 
-    # ----------------------------------------------------------
+   # ----------------------------------------------------------
     # STATIC INITIALIZATION FOR LAYER 2 (UPDATED FOR 64×128)
     # ----------------------------------------------------------
     def _init_conv2_static(self):
@@ -833,7 +883,15 @@ class StaticInitLearnableCNN(nn.Module):
             #
             # This is a CAPACITY CHANGE vs the old 128×64 description.
             assert kh == 3 and kw == 3                                                  # ensure 3x3 kernel size
-            assert in_channels == 128 and out_channels == 64                             # ensure expected channel sizes ✅ FIXED
+
+            # ✅ EXTRA SAFETY CHECK (ARCHITECTURE-SAFE)
+            # ----------------------------------------
+            # Validate against your GLOBAL conv2 constants (no hard-coded numbers).
+            #
+            # These should be defined once near the top of your file:
+            #   CONV2_IN_CHANNELS  = 128
+            #   CONV2_OUT_CHANNELS = 64
+            assert in_channels == CONV2_IN_CHANNELS and out_channels == CONV2_OUT_CHANNELS  # ensure expected channel sizes ✅ FIXED
 
             # ---------------------------------------------------------------------
             # FILTER DEFINITIONS (EACH 3×3, WRITTEN IN THREE ROWS)
@@ -951,7 +1009,7 @@ class StaticInitLearnableCNN(nn.Module):
 
 
 
-    # ----------------------------------------------------------
+   # ----------------------------------------------------------
     # STATIC INITIALIZATION FOR LAYER 3 (UPDATED FOR 1024 FEATURES) ✅ FIXED
     # ----------------------------------------------------------
     def _init_conv3_static(self):
@@ -979,7 +1037,15 @@ class StaticInitLearnableCNN(nn.Module):
             # -------------------------------------------------------------------------------
             # If someone accidentally changes conv2/conv3 channel counts later, this will fail fast
             # instead of silently initializing wrong shapes.
-            assert in_channels == 64 and out_channels == 1024                            # expect exact conv3 shape ✅ FIXED
+            #
+            # ✅ ARCHITECTURE-SAFE FIX:
+            # ------------------------
+            # Validate against your GLOBAL conv3 constants (no hard-coded numbers).
+            #
+            # These should be defined once near the top of your file:
+            #   CONV3_IN_CHANNELS  = 64
+            #   CONV3_OUT_CHANNELS = 1024
+            assert in_channels == CONV3_IN_CHANNELS and out_channels == CONV3_OUT_CHANNELS  # expect exact conv3 shape ✅ FIXED
 
             # ---------------------------------------------------------------------
             # FILTER DEFINITIONS (EACH 3×3, WRITTEN IN THREE ROWS)
