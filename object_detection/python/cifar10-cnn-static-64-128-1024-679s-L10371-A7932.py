@@ -10,7 +10,7 @@ from torchvision import datasets, transforms
 
 
 MODEL_PATH = "../../../"
-MODEL_FILENAME = "cifar10-cnn-64-128-1024-L6604-A9820"
+MODEL_FILENAME = "cifar10-cnn-static-64-128-1024-679s-L10371-A7932"
 DATA_PATH = "../../../data/mydata"
 BATCH_SIZE = 128
 NUM_EPOCHS = 100
@@ -18,7 +18,7 @@ NUM_EPOCHS = 100
 
 
 NUM_WORKERS = 0
-STATIC_FILTERS = False
+STATIC_FILTERS = True
 DEBUG_FLAG = True
 # ============================================================
 # EXPLANATION: HOW TRAINING WORKS IN THIS NETWORK
@@ -457,7 +457,9 @@ class StaticInitLearnableCNN(nn.Module):
         # ------------------------------------------------------
         if STATIC_FILTERS:
             self._init_conv1_static()
-            # self._init_conv2_static()  # Only enable if you built EXACTLY 128 static kernels
+            self._init_conv2_static()  # Only enable if you built EXACTLY 128 static kernels
+            self._init_conv3_static()
+
 
 
 
@@ -961,6 +963,7 @@ class StaticInitLearnableCNN(nn.Module):
                     w[out_idx, in_idx].copy_(k)
 
             print(f"[init_conv2_static] {out_channels}x{in_channels} 2D 3x3 kernels assigned")  # log
+
 
 
 
