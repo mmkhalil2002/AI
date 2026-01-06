@@ -2174,7 +2174,7 @@ def train_model(
                 # ------------------------------------------------------------
                 labels = labels.long()  # CrossEntropyLoss requires int64 class indices
                 assert labels.ndim == 1, f"labels must be [N], got {labels.shape}"
-                assert logits.ndim == 2, f"outputs must be [N,C], got {logits.shape}"
+                assert logits.ndim == 2, f"logits must be [N,C], got {logits.shape}"
                 assert logits.size(0) == labels.size(0), f"batch mismatch: {logits.size(0)} vs {labels.size(0)}"
 
                 loss = criterion(logits, labels)

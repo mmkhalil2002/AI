@@ -62,8 +62,8 @@ DEBUG_FLAG = True
 #
 # When this code runs:
 #
-#   outputs = model(images)
-#   loss    = criterion(outputs, labels)
+#   logits = model(images)
+#   loss    = criterion(logits, labels)
 #   loss.backward()
 #   optimizer.step()
 #
@@ -1930,7 +1930,7 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
 
             # ============================================================
             # WHAT THIS LINE DOES:
-            #     outputs = model(images)
+            #     logits = model(images)
             # ============================================================
             # (keeping your full explanation block exactly as-is)
             # ============================================================
@@ -1954,7 +1954,7 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
 
             with torch.amp.autocast(device_type=autocast_device_type, enabled=use_amp):
 
-                outputs = model(images)
+                logits = model(images)
 
                 # ------------------------------------------------------------
                 # 🔎 DEBUG SHAPES (run once on first batch only)
@@ -1962,7 +1962,7 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
                 if ep == 0 and total == 0:
                     print("images:", images.shape, images.dtype, images.device)
                     print("labels:", labels.shape, labels.dtype, labels.min().item(), labels.max().item())
-                    print("outputs:", outputs.shape, outputs.dtype, outputs.device)
+                    print("logits:", logits.shape, logits.dtype, logits.device)
 
                 # ------------------------------------------------------------
                 # ✅ HARD ASSERTS (will stop immediately if wrong)
@@ -1970,10 +1970,10 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
                 labels = labels.long()  # CrossEntropyLoss requires int64 class indices
 
                 assert labels.ndim == 1, f"labels must be [N], got {labels.shape}"
-                assert outputs.ndim == 2, f"outputs must be [N,C], got {outputs.shape}"
-                assert outputs.size(0) == labels.size(0), f"batch mismatch: {outputs.size(0)} vs {labels.size(0)}"
+                assert logits.ndim == 2, f"logits must be [N,C], got {logits.shape}"
+                assert logits.size(0) == labels.size(0), f"batch mismatch: {logits.size(0)} vs {labels.size(0)}"
 
-                loss = criterion(outputs, labels)
+                loss = criterion(logits, labels)
 
             # ----------------------------------------
             # BACKWARD PASS (AMP)
@@ -2026,7 +2026,7 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
             # ----------------------------------------
             running_loss += loss.item() * images.size(0)
 
-            preds = outputs.argmax(1)
+            preds = logits.argmax(1)
             correct += (preds == labels).sum().item()
             total += labels.size(0)
 
@@ -2089,8 +2089,8 @@ def train_model(model, train_loader, device, num_epochs=2, lr=3e-3, test_loader=
                 for images_t, labels_t in test_loader:
                     images_t = images_t.to(device)
                     labels_t = labels_t.to(device)
-                    outputs_t = model(images_t)
-                    preds_t = outputs_t.argmax(1)
+                    logits_t = model(images_t)
+                    preds_t = logits_t.argmax(1)
                     correct_t += (preds_t == labels_t).sum().item()
                     total_t += labels_t.size(0)
             test_acc = correct_t / max(1, total_t)
@@ -2716,12 +2716,12 @@ def main():
                 # ------------------------------------------------
                 # FORWARD PASS (PREDICT)
                 # ------------------------------------------------
-                outputs = model(image_tensor)
+                logits = model(image_tensor)
 
                 # ------------------------------------------------
                 # ARGMAX → PREDICTED CLASS INDEX
                 # ------------------------------------------------
-                pred_label = int(outputs.argmax(1).item())
+                pred_label = int(logits.argmax(1).item())
 
                 # ------------------------------------------------
                 # UPDATE METRICS
