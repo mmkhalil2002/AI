@@ -1,3 +1,49 @@
+# ============================================================
+# AUTO-INSTALL DEPENDENCIES (RUNS ONCE AT SCRIPT START)
+# ============================================================
+
+import sys
+import subprocess
+import importlib
+
+
+def _pip_install(pkgs):
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "--upgrade", *pkgs]
+    )
+
+
+def _ensure_import(import_name, pip_name=None):
+    try:
+        importlib.import_module(import_name)
+    except Exception:
+        _pip_install([pip_name or import_name])
+        importlib.import_module(import_name)
+
+
+def ensure_deps_for_this_script():
+    # ---- Core ML stack ----
+    try:
+        importlib.import_module("torch")
+        importlib.import_module("torchvision")
+    except Exception:
+        print("[AUTO-INSTALL] Installing PyTorch stack...")
+        _pip_install(["torch", "torchvision", "torchaudio"])
+
+    # ---- Utilities ----
+    _ensure_import("numpy")
+    _ensure_import("PIL", "pillow")
+    _ensure_import("tqdm")
+
+
+# 🔥 RUN AUTO-INSTALL NOW
+ensure_deps_for_this_script()
+
+
+# ============================================================
+# NORMAL IMPORTS (SAFE AFTER AUTO-INSTALL)
+# ============================================================
+
 import os
 import time
 import torch
@@ -9,56 +55,49 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
 MODEL_PATH = "../../../"
 MODEL_FILENAME = "cifar10-cnn-128-64-1024-L6604-A9820"
 DATA_PATH = "../../../data/mydata"
+
 BATCH_SIZE = 128
 NUM_EPOCHS = 100
-#LEARNING_RATE = 0.001
-
-
 NUM_WORKERS = 0
+
 STATIC_FILTERS = False
 DEBUG_FLAG = True
+
 
 # ============================================================
 # GLOBAL ARCHITECTURE CONSTANTS (UPDATED)
 # ============================================================
-# You requested:
+# Requested architecture:
 #   conv1: 3   → 128
 #   conv2: 128 → 64
 #   conv3: 64  → 1024
-#
-# These constants are used by:
-#   • __init__() layer construction (optional, but recommended)
-#   • _init_conv1_static() / _init_conv2_static() / _init_conv3_static()
-#     to validate shapes safely (no hard-coded numbers).
 # ============================================================
 
-
-# ------------------------------------------------------------
-# CONV1 SHAPE CONSTANTS
-# ------------------------------------------------------------
-# conv1 expects RGB input and outputs 128 feature maps.
-# ------------------------------------------------------------
+# -------------------------
+# CONV1
+# -------------------------
 CONV1_IN_CHANNELS  = 3
 CONV1_OUT_CHANNELS = 128
 
-# ------------------------------------------------------------
-# CONV2 SHAPE CONSTANTS
-# ------------------------------------------------------------
-# conv2 consumes conv1 outputs and compresses/reshapes them to 64 maps.
-# ------------------------------------------------------------
+# -------------------------
+# CONV2
+# -------------------------
 CONV2_IN_CHANNELS  = CONV1_OUT_CHANNELS   # 128
 CONV2_OUT_CHANNELS = 64
 
-# ------------------------------------------------------------
-# CONV3 SHAPE CONSTANTS
-# ------------------------------------------------------------
-# conv3 consumes conv2 outputs and expands to 1024 high-level maps.
-# ------------------------------------------------------------
+# -------------------------
+# CONV3
+# -------------------------
 CONV3_IN_CHANNELS  = CONV2_OUT_CHANNELS   # 64
 CONV3_OUT_CHANNELS = 1024
+
 
 # ============================================================
 # EXPLANATION: HOW TRAINING WORKS IN THIS NETWORK

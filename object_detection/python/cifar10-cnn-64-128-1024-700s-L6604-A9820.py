@@ -1,3 +1,81 @@
+# ============================================================
+# AUTO-INSTALL + IMPORTS (YOUR CNN SCRIPT HEADER)
+# ============================================================
+# Put this at the TOP of your CNN script.
+# It will auto-install required packages into the SAME Python
+# you used to run the script (sys.executable).
+#
+# ✅ Works on Windows PowerShell / CMD
+# ✅ Keeps your existing imports and constants style
+#
+# NOTE ABOUT PYTORCH ON WINDOWS:
+# - If "pip install torch torchvision" fails (wheel issue),
+#   this script prints a clear message and stops.
+# ============================================================
+
+import sys
+import subprocess
+import importlib
+
+def _pip_install(packages):
+    cmd = [sys.executable, "-m", "pip", "install", "--upgrade"] + list(packages)
+    print("\n[AUTO-INSTALL] Running:", " ".join(cmd))
+    subprocess.check_call(cmd)
+
+def _ensure_import(import_name, pip_name=None):
+    """
+    import_name: module name used by Python import
+    pip_name:    package name for pip (if different)
+    """
+    try:
+        importlib.import_module(import_name)
+        return True
+    except Exception:
+        pip_name = pip_name or import_name
+        print(f"[AUTO-INSTALL] Missing '{import_name}'. Installing '{pip_name}' ...")
+        _pip_install([pip_name])
+        importlib.import_module(import_name)
+        return True
+
+def ensure_deps_for_this_script():
+    # ------------------------------------------------------------
+    # REQUIRED (because your code imports these directly/indirectly)
+    # ------------------------------------------------------------
+    # torchvision.datasets + torchvision.transforms
+    # torch + torch.utils.data.DataLoader
+    # ------------------------------------------------------------
+
+    # (torch/torchvision are the main ones)
+    try:
+        importlib.import_module("torch")
+        importlib.import_module("torchvision")
+    except Exception:
+        print("[AUTO-INSTALL] Missing 'torch' / 'torchvision'. Installing PyTorch packages ...")
+        try:
+            # This attempts the standard install (CPU or CUDA depends on your pip environment).
+            _pip_install(["torch", "torchvision", "torchaudio"])
+        except Exception:
+            print("\n❌ PyTorch installation failed.")
+            print("   On Windows, this can fail if pip cannot find a compatible wheel.")
+            print("   Install manually using the official selector:")
+            print("   https://pytorch.org/get-started/locally/")
+            print("\n   Then re-run your script using the SAME python.exe:")
+            print(f"   {sys.executable}")
+            raise
+
+    # Optional but commonly used in your pipeline (safe to have)
+    # - If you don't use them, they don't hurt.
+    _ensure_import("tqdm", "tqdm")
+    _ensure_import("PIL", "pillow")     # helpful if you later load raw images via PIL
+    _ensure_import("numpy", "numpy")    # common in dataset stats / transforms
+
+# ✅ Run auto-install BEFORE your normal imports
+ensure_deps_for_this_script()
+
+# ============================================================
+# NOW YOUR ORIGINAL IMPORTS (UNCHANGED)
+# ============================================================
+
 import os
 import time
 import torch
