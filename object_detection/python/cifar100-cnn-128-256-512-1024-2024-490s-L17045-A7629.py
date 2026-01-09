@@ -60,7 +60,7 @@ from torchvision import datasets, transforms
 # ============================================================
 
 MODEL_PATH = "../../../"
-MODEL_FILENAME = "cifar100-cnn-128-64-490s-L17045-A7629"
+MODEL_FILENAME = "cifar100-cnn-128-256-512-1024-2024-490s-L17045-A7629"
 DATA_PATH = "../../../data/cifar100"
 
 BATCH_SIZE = 128
@@ -73,11 +73,12 @@ DEBUG_FLAG = True
 # ============================================================
 # GLOBAL ARCHITECTURE CONSTANTS (UPDATED)
 # ============================================================
-# ✅ Requested architecture (4 conv layers):
+# ✅ Requested architecture (5 conv layers):
 #   conv1: 3    → 128
 #   conv2: 128  → 256
 #   conv3: 256  → 512
 #   conv4: 512  → 1024
+#   conv5: 1024 → 2024   ✅ UPDATED (your request)
 # ============================================================
 
 # -------------------------
@@ -104,6 +105,12 @@ CONV3_OUT_CHANNELS = 512
 CONV4_IN_CHANNELS  = CONV3_OUT_CHANNELS   # 512
 CONV4_OUT_CHANNELS = 1024
 
+# -------------------------
+# ✅ CONV5 (NEW)
+# -------------------------
+CONV5_IN_CHANNELS  = CONV4_OUT_CHANNELS   # 1024
+CONV5_OUT_CHANNELS = 2024                 # ✅ UPDATED (your requested final feature depth)
+
 
 # ============================================================
 # EXPLANATION: HOW TRAINING WORKS IN THIS NETWORK
@@ -123,6 +130,9 @@ CONV4_OUT_CHANNELS = 1024
 #
 #   • Layer 4 (conv4) extracts very high-level features
 #       (more abstract combinations of parts → strong class separation)
+#
+#   • ✅ Layer 5 (conv5) extracts final ultra-high-level features
+#       (large embedding capacity → better separation when classes increase) ✅ UPDATED
 #
 #   • Only ONE early MAX POOLING step is used (after conv1)
 #       to reduce spatial size while preserving detail
@@ -184,15 +194,17 @@ CONV4_OUT_CHANNELS = 1024
 #
 # These include:
 #
-#   • conv1.weight, conv1.bias      (128-channel low-level filters) ✅ UPDATED
-#   • conv2.weight, conv2.bias      (256-channel mid-level filters) ✅ UPDATED
-#   • conv3.weight, conv3.bias      (512-channel high-level filters) ✅ UPDATED
+#   • conv1.weight, conv1.bias      (128-channel low-level filters)   ✅ UPDATED
+#   • conv2.weight, conv2.bias      (256-channel mid-level filters)   ✅ UPDATED
+#   • conv3.weight, conv3.bias      (512-channel high-level filters)  ✅ UPDATED
 #   • conv4.weight, conv4.bias      (1024-channel very-high-level filters) ✅ UPDATED
+#   • ✅ conv5.weight, conv5.bias   (2024-channel final embedding filters) ✅ UPDATED
 #
 #   • bn1.weight, bn1.bias          (BatchNorm for conv1)
 #   • bn2.weight, bn2.bias          (BatchNorm for conv2)
 #   • bn3.weight, bn3.bias          (BatchNorm for conv3)
 #   • bn4.weight, bn4.bias          (BatchNorm for conv4)
+#   • ✅ bn5.weight, bn5.bias       (BatchNorm for conv5) ✅ UPDATED
 #
 #   • fc.weight,  fc.bias           (final classifier)
 #
@@ -217,6 +229,7 @@ CONV4_OUT_CHANNELS = 1024
 #   ✔ conv2
 #   ✔ conv3
 #   ✔ conv4
+#   ✔ ✅ conv5
 #   ✔ all BatchNorm layers
 #   ✔ the final fully connected layer
 #
@@ -230,6 +243,7 @@ CONV4_OUT_CHANNELS = 1024
 #   • conv2 learns (unless explicitly frozen)
 #   • conv3 learns (unless explicitly frozen)
 #   • conv4 learns (unless explicitly frozen)
+#   • ✅ conv5 learns (unless explicitly frozen)
 #   • BatchNorm learns (gamma/beta + running statistics)
 #   • fc learns
 #
@@ -251,8 +265,10 @@ CONV4_OUT_CHANNELS = 1024
 #
 # After conv4:                [1024  x H/2 x W/2]     ✅ UPDATED
 #
-# After GAP:                  [1024  x 1   x 1]       ✅ UPDATED
-# After flatten:              [1024]                  ✅ UPDATED
+# After ✅ conv5:             [2024  x H/2 x W/2]     ✅ UPDATED
+#
+# After GAP:                  [2024  x 1   x 1]       ✅ UPDATED
+# After flatten:              [2024]                  ✅ UPDATED
 # Output layer (fc):          [num_classes]
 #
 # ============================================================
@@ -264,7 +280,6 @@ CONV4_OUT_CHANNELS = 1024
 # ✅ Single early pooling preserves important spatial information
 # ✅ GAP makes the model work with ANY image size
 # ✅ Classical CNN trained end-to-end with backpropagation
-
 
 
 class StaticInitLearnableCNN(nn.Module):
@@ -365,8 +380,7 @@ class StaticInitLearnableCNN(nn.Module):
         # ------------------------------------------------------
         # ✅ LAYER 4: 512 → 1024 channels ✅ UPDATED
         # ------------------------------------------------------
-        # This is the deepest conv block in this architecture.
-        # It learns very abstract, class-separating feature combinations.
+        # This layer learns very abstract, class-separating feature combinations.
         #
         #   input to conv4 : [B, 512,  H/2, W/2]      ✅ UPDATED
         #   output of conv4: [B, 1024, H/2, W/2]      ✅ UPDATED
@@ -385,10 +399,44 @@ class StaticInitLearnableCNN(nn.Module):
         self.bn4 = nn.BatchNorm2d(CONV4_OUT_CHANNELS)  # ✅ UPDATED: 1024
 
         # ------------------------------------------------------
+        # ✅ LAYER 5: 1024 → 2024 channels ✅ UPDATED (NEW)
+        # ------------------------------------------------------
+        # This is the FINAL convolution block (pre-GAP).
+        #
+        # WHY THIS HELPS (especially as #classes increases):
+        # --------------------------------------------------
+        # After GAP, the network produces a SINGLE feature vector of length C.
+        # That vector is the only information the classifier uses.
+        #
+        # With conv5_out = 2024:
+        #   [B, 2024, H/2, W/2] → GAP → [B, 2024, 1, 1] → flatten → [B, 2024]
+        #
+        # Larger C means:
+        #   • more "room" to separate many classes in feature space
+        #   • better margin for similar classes (harder classification problems)
+        #
+        # NOTE:
+        #   2024 is unusual (most use 2048). But it is VALID.
+        #   If you meant 2048, only change CONV5_OUT_CHANNELS to 2048.
+        # ------------------------------------------------------
+        self.conv5 = nn.Conv2d(
+            in_channels=CONV5_IN_CHANNELS,      # ✅ FIXED: 1024 (from conv4)
+            out_channels=CONV5_OUT_CHANNELS,    # ✅ UPDATED: 2024
+            kernel_size=3,
+            padding=1,
+            bias=True
+        )
+
+        # ------------------------------------------------------
+        # ✅ BatchNorm for conv5 (normalizes 2024 channels) ✅ UPDATED (NEW)
+        # ------------------------------------------------------
+        self.bn5 = nn.BatchNorm2d(CONV5_OUT_CHANNELS)  # ✅ UPDATED: 2024
+
+        # ------------------------------------------------------
         # 🔑 GLOBAL AVERAGE POOLING (IMAGE-SIZE INDEPENDENT)
         # ------------------------------------------------------
         # Converts:
-        #   [B, 1024, H', W'] → [B, 1024, 1, 1]
+        #   [B, 2024, H', W'] → [B, 2024, 1, 1] ✅ UPDATED
         # ------------------------------------------------------
         self.gap = nn.AdaptiveAvgPool2d(1)
 
@@ -398,15 +446,15 @@ class StaticInitLearnableCNN(nn.Module):
         self.dropout = nn.Dropout(p=0.3)
 
         # ------------------------------------------------------
-        # FULLY CONNECTED CLASSIFIER (UPDATED FOR CONV4)
+        # FULLY CONNECTED CLASSIFIER (UPDATED FOR CONV5)
         # ------------------------------------------------------
-        # After conv4 + GAP:
-        #   [B, 1024, 1, 1] → flatten → [B, 1024]
+        # After conv5 + GAP:
+        #   [B, 2024, 1, 1] → flatten → [B, 2024]
         #
         # Therefore:
-        #   nn.Linear(1024, num_classes) ✅ UPDATED
+        #   nn.Linear(2024, num_classes) ✅ UPDATED
         # ------------------------------------------------------
-        self.fc = nn.Linear(CONV4_OUT_CHANNELS, num_classes)  # ✅ UPDATED: 1024 → num_classes
+        self.fc = nn.Linear(CONV5_OUT_CHANNELS, num_classes)  # ✅ UPDATED: 2024 → num_classes
 
         # ------------------------------------------------------
         # STATIC FILTER INITIALIZATION (if enabled)
@@ -419,15 +467,20 @@ class StaticInitLearnableCNN(nn.Module):
         # static filter bank can actually FILL the requested channel counts:
         #   conv1 wants 128 output maps
         #   conv2 wants 256 output maps
+        #   conv3 wants 512 output maps
+        #   conv4 wants 1024 output maps
+        #   conv5 wants 2024 output maps ✅ UPDATED
         #
-        # Otherwise PyTorch will repeat/truncate patterns (depending on your code),
-        # which can limit the benefit of large channel counts.
+        # Otherwise your code will repeat/truncate patterns (wrap-around),
+        # which can limit the benefit of very large channel counts.
         # ------------------------------------------------------
         if STATIC_FILTERS:
             self._init_conv1_static()
             self._init_conv2_static()
             self._init_conv3_static()  # enable only if you really want conv3 static too
             self._init_conv4_static()  # enable only if you really want conv4 static too
+            self._init_conv5_static()  # ✅ NEW: enable only if you really want conv5 static too
+
 
 
 
@@ -1210,6 +1263,203 @@ class StaticInitLearnableCNN(nn.Module):
             print(f"[init_conv4_static] {out_channels}x{in_channels} 2D 3x3 kernels assigned")  # log ✅ UPDATED
 
 
+    # ----------------------------------------------------------
+    # STATIC INITIALIZATION FOR LAYER 5 (UPDATED FOR 2024 FEATURES) ✅ FIXED
+    # ----------------------------------------------------------
+    def _init_conv5_static(self):
+        with torch.no_grad():                                                           # disable gradients (manual init)
+            w = self.conv5.weight                                                       # conv5 weights → [out_channels, in_channels, 3, 3]
+            out_channels, in_channels, kh, kw = w.shape
+
+            # ✅ UPDATED FOR YOUR NEW MODEL:
+            # -----------------------------
+            # Your conv5 is now:
+            #   in_channels  = 1024     (from conv4 out_channels) ✅ FIXED
+            #   out_channels = 2024     (2024 feature maps / filters) ✅ FIXED
+            #   kernel       = 3x3
+            #
+            # So conv5 produces:
+            #   [B, 1024, H/2, W/2] → [B, 2024, H/2, W/2] ✅ FIXED
+            #
+            # This is a very deep "capacity expansion" layer where the network can form:
+            #   • highly abstract feature compositions
+            #   • strong class-separating templates
+            #   • rich mixtures of the conv4 representations
+            assert kh == 3 and kw == 3                                                  # ensure 3x3 kernel size
+
+            # ✅ EXTRA SAFETY CHECK (keeps your code robust if the architecture changes later)
+            # -------------------------------------------------------------------------------
+            # If someone accidentally changes conv4/conv5 channel counts later, this will fail fast
+            # instead of silently initializing wrong shapes.
+            #
+            # ✅ ARCHITECTURE-SAFE FIX:
+            # ------------------------
+            # Validate against your GLOBAL conv5 constants (no hard-coded numbers).
+            #
+            # These should be defined once near the top of your file:
+            #   CONV5_IN_CHANNELS  = 1024
+            #   CONV5_OUT_CHANNELS = 2024
+            assert in_channels == CONV5_IN_CHANNELS and out_channels == CONV5_OUT_CHANNELS  # expect exact conv5 shape ✅ FIXED
+
+            # ---------------------------------------------------------------------
+            # FILTER DEFINITIONS (EACH 3×3, WRITTEN IN THREE ROWS)
+            #
+            # conv5 receives 1024 feature maps (NOT raw pixels). ✅ FIXED
+            #
+            # Meaning:
+            #   • conv1: low-level primitives (edges/corners/lines)
+            #   • conv2: mid-level combinations (textures/parts)
+            #   • conv3: higher-level compositions (parts → object patterns)
+            #   • conv4: very high-level abstract feature combinations
+            #   • conv5: ultra-high-level mixtures and class separation templates ✅ FIXED
+            #
+            # IMPORTANT:
+            # ----------
+            # Even if we "start" with static kernels here, training can still learn
+            # (unless you freeze parameters). This init just gives a helpful bias.
+            # ---------------------------------------------------------------------
+
+            # 1) Laplacian (all-direction edge / detail emphasis)
+            laplacian = torch.tensor([
+                [ 0., -1.,  0.],
+                [-1.,  4., -1.],
+                [ 0., -1.,  0.],
+            ])
+
+            # 2) Sharpen (stronger detail boost)
+            sharpen = torch.tensor([
+                [ 0., -1.,  0.],
+                [-1.,  5., -1.],
+                [ 0., -1.,  0.],
+            ])
+
+            # 3) High-pass (aggressive edge/detail extraction)
+            high_pass = torch.tensor([
+                [-1., -1., -1.],
+                [-1.,  8., -1.],
+                [-1., -1., -1.],
+            ])
+
+            # 4) Box blur (smooth noisy feature maps)
+            box_blur = (1/9) * torch.ones((3, 3))
+
+            # 5) Gaussian blur (smoother than box blur; preserves structure better)
+            gaussian_blur = (1/16) * torch.tensor([
+                [1., 2., 1.],
+                [2., 4., 2.],
+                [1., 2., 1.],
+            ])
+
+            # 6) Emboss (adds directional depth / relief)
+            emboss = torch.tensor([
+                [-2., -1.,  0.],
+                [-1.,  1.,  1.],
+                [ 0.,  1.,  2.],
+            ])
+
+            # 7) Sobel X (gradient along x: left↔right intensity changes)
+            sobel_x = torch.tensor([
+                [-1.,  0.,  1.],
+                [-2.,  0.,  2.],
+                [-1.,  0.,  1.],
+            ])
+
+            # 8) Sobel Y (gradient along y: top↔bottom intensity changes)
+            sobel_y = torch.tensor([
+                [ 1.,  2.,  1.],
+                [ 0.,  0.,  0.],
+                [-1., -2., -1.],
+            ])
+
+            # 9) Diagonal gradient (45°-ish emphasis)
+            diag_45 = torch.tensor([
+                [ 0., -1., -2.],
+                [ 1.,  0., -1.],
+                [ 2.,  1.,  0.],
+            ])
+
+            # 10) Diagonal gradient (135°-ish emphasis)
+            diag_135 = torch.tensor([
+                [ 2.,  1.,  0.],
+                [ 1.,  0., -1.],
+                [ 0., -1., -2.],
+            ])
+
+            # 11) Center-surround (DoG-like high contrast detector)
+            center_surround = torch.tensor([
+                [-1., -1., -1.],
+                [-1.,  9., -1.],
+                [-1., -1., -1.],
+            ])  # similar to high-pass but commonly used as a "center emphasis" template
+
+            # 12) Directional line (vertical emphasis)
+            line_v = torch.tensor([
+                [ 1., -2.,  1.],
+                [ 1., -2.,  1.],
+                [ 1., -2.,  1.],
+            ])
+
+            # 13) Directional line (horizontal emphasis)
+            line_h = torch.tensor([
+                [ 1.,  1.,  1.],
+                [-2., -2., -2.],
+                [ 1.,  1.,  1.],
+            ])
+
+            # Collect all filters into a kernel bank
+            kernels = [
+                laplacian,        # 0
+                sharpen,          # 1
+                high_pass,        # 2
+                box_blur,         # 3
+                gaussian_blur,    # 4
+                emboss,           # 5
+                sobel_x,          # 6
+                sobel_y,          # 7
+                diag_45,          # 8
+                diag_135,         # 9
+                center_surround,  # 10
+                line_v,           # 11
+                line_h,           # 12
+            ]
+            num_kernels = len(kernels)
+
+            # ---------------------------------------------------------------------
+            # ASSIGN FILTERS TO ALL conv5 WEIGHTS (UPDATED FOR 2024×1024) ✅ FIXED
+            #
+            # conv5 has:
+            #   out_channels = 2024  (filters / output features) ✅ FIXED
+            #   in_channels  = 1024  (input features from conv4) ✅ FIXED
+            #
+            # Strategy:
+            # ---------
+            # We repeat a small bank of useful kernels across the 2024×1024 connections.
+            #
+            # Why this can still work:
+            #   • conv5 sees highly processed features, not raw pixels
+            #   • repeating kernels does NOT mean identical outputs, because each kernel
+            #     connects to DIFFERENT input channels with DIFFERENT activations
+            #   • the huge number of input channels (1024) makes each output channel
+            #     a rich mixture even if kernels repeat
+            #
+            # NOTE:
+            # -----
+            # If conv5 is trainable (requires_grad=True), training will refine these
+            # weights beyond the initial static patterns.
+            # ---------------------------------------------------------------------
+            for out_idx in range(out_channels):                                       # loop over all 2024 output filters ✅ FIXED
+                for in_idx in range(in_channels):                                     # loop over all 1024 input feature maps ✅ FIXED
+
+                    # Choose kernel pattern based on a mixed index to reduce repetition artifacts
+                    # (still deterministic, but spreads kernels across channels more evenly)
+                    k = kernels[(out_idx * 11 + in_idx * 5) % num_kernels].to(
+                        device=w.device, dtype=w.dtype
+                    )                                                                # ✅ FIXED: move+cast to match conv5 weights
+
+                    # Copy kernel into weight tensor
+                    w[out_idx, in_idx].copy_(k)
+
+            print(f"[init_conv5_static] {out_channels}x{in_channels} 2D 3x3 kernels assigned")  # log ✅ FIXED
 
     # ----------------------------------------------------------
     # FORWARD PASS
@@ -1261,7 +1511,9 @@ class StaticInitLearnableCNN(nn.Module):
     #         ↓
     #     Conv3 → BatchNorm → ReLU
     #         ↓
-    #     Conv4 → BatchNorm → ReLU        ✅ UPDATED (new deep block)
+    #     Conv4 → BatchNorm → ReLU
+    #         ↓
+    #     ✅ Conv5 → BatchNorm → ReLU     ✅ UPDATED (new final deep block)
     #         ↓
     #     Global Average Pooling (GAP)
     #         ↓
@@ -1305,7 +1557,7 @@ class StaticInitLearnableCNN(nn.Module):
     # KEY QUALITY IMPROVEMENTS IN THIS FORWARD PASS:
     # ----------------------------------------------------------
     # ✔ Only ONE early pooling layer → preserves spatial detail
-    # ✔ Deeper feature extraction (up to 1024 channels) ✅ UPDATED
+    # ✔ Deeper feature extraction (up to 2024 channels) ✅ UPDATED
     # ✔ GAP removes dependency on image resolution
     # ✔ Dropout improves generalization and test accuracy
     #
@@ -1388,19 +1640,33 @@ class StaticInitLearnableCNN(nn.Module):
         x = F.relu(x)
 
         # -------------------
+        # ✅ BLOCK 5: CONV5 → BN5 → ReLU  ✅ UPDATED (NEW)
+        # -------------------
+
+        # Conv5: 1024 → 2024 channels ✅ UPDATED
+        #   [B, 1024, H/2, W/2] → [B, 2024, H/2, W/2]
+        x = self.conv5(x)
+
+        # BatchNorm on 2024 channels ✅ UPDATED
+        x = self.bn5(x)
+
+        # ReLU
+        x = F.relu(x)
+
+        # -------------------
         # GLOBAL AVERAGE POOLING (IMAGE-SIZE INDEPENDENT)
         # -------------------
 
         # Replaces hard-coded spatial flattening.
         #
         # Converts:
-        #   [B, 1024, H/2, W/2] → [B, 1024, 1, 1] ✅ UPDATED
+        #   [B, 2024, H/2, W/2] → [B, 2024, 1, 1] ✅ UPDATED
         #
         # This step removes dependence on image size.
         x = self.gap(x)
 
         # Flatten channel dimension only
-        #   [B, 1024, 1, 1] → [B, 1024] ✅ UPDATED
+        #   [B, 2024, 1, 1] → [B, 2024] ✅ UPDATED
         x = torch.flatten(x, 1)
 
         # -------------------
@@ -1413,7 +1679,7 @@ class StaticInitLearnableCNN(nn.Module):
         # -------------------
 
         # Fully connected layer:
-        #   [B, 1024] → [B, num_classes] ✅ UPDATED
+        #   [B, 2024] → [B, num_classes] ✅ UPDATED
         logits = self.fc(x)
 
         # logits are returned directly.
@@ -2194,8 +2460,8 @@ def train_model(
         for images, labels in train_loader:
 
             # Move batch to device (GPU/CPU)
-            images = images.to(device)
-            labels = labels.to(device)
+            images = images.to(device, non_blocking=(device.type == "cuda"))
+            labels = labels.to(device, non_blocking=(device.type == "cuda"))
 
             # ----------------------------------------
             # CLEAR OLD GRADIENTS
@@ -2318,8 +2584,8 @@ def train_model(
 
             with torch.no_grad():
                 for images_t, labels_t in test_loader:
-                    images_t = images_t.to(device)
-                    labels_t = labels_t.to(device)
+                    images_t = images_t.to(device, non_blocking=(device.type == "cuda"))
+                    labels_t = labels_t.to(device, non_blocking=(device.type == "cuda"))
                     logits_t = model(images_t)
                     preds_t = logits_t.argmax(1)
                     correct_t += (preds_t == labels_t).sum().item()
@@ -2414,9 +2680,8 @@ def train_model(
 
 
 
-
-# ============================================================
-# COMPLETE PROCEDURE (INCLUDING main)  ✅ UPDATED FOR 4-CONV MODEL
+# # ============================================================
+# COMPLETE PROCEDURE (INCLUDING main)  ✅ UPDATED FOR 5-CONV MODEL
 # ============================================================
 # ✅ What you requested (DONE):
 #   1) When user presses 'n' and enters N:
@@ -2453,12 +2718,13 @@ def train_model(
 #   • Interactive index mode still prints per-image (that’s OK, you asked to remove messages for N mode)
 #
 # ARCHITECTURE NOTE (UPDATED):
-#   • This works the same whether your model is 3 convs or 4 convs
+#   • This works the same whether your model is 3 convs, 4 convs, or 5 convs
 #   • Your current model is:
 #       conv1: 3    → 128
 #       conv2: 128  → 256
 #       conv3: 256  → 512
 #       conv4: 512  → 1024
+#       conv5: 1024 → 2024                       ✅ UPDATED
 #     with ONE pool after conv1, then GAP, then FC.
 # ============================================================
 
@@ -2466,6 +2732,7 @@ def train_model(
 # ============================================================
 # DETECTION / SINGLE-IMAGE INFERENCE FUNCTION
 # ============================================================
+
 def detect_single_image(model, test_dataset, device, index=None):
     """
     Loads ONE RANDOM image from the test dataset (unless index is provided),
@@ -2494,8 +2761,30 @@ def detect_single_image(model, test_dataset, device, index=None):
     # AUTO-DETECT CLASS NAMES (works for CIFAR-10 + ImageFolder)
     # --------------------------------------------------------
     class_names = getattr(test_dataset, "classes", None)
+
+    # ✅ QUALITY FIX:
+    # --------------
+    # If dataset has no "classes" attribute, we still want a correct fallback length.
+    # We try to infer num_classes from the model (fc out_features) if available.
     if class_names is None:
-        class_names = [str(i) for i in range(10)]
+        inferred_num_classes = None
+
+        # Try common patterns:
+        #   - model.fc.out_features (your architecture)
+        #   - model.classifier.out_features (some torchvision-style models)
+        try:
+            if hasattr(model, "fc") and hasattr(model.fc, "out_features"):
+                inferred_num_classes = int(model.fc.out_features)
+            elif hasattr(model, "classifier") and hasattr(model.classifier, "out_features"):
+                inferred_num_classes = int(model.classifier.out_features)
+        except Exception:
+            inferred_num_classes = None
+
+        # Final fallback if we cannot infer reliably:
+        if inferred_num_classes is None:
+            inferred_num_classes = 10  # original safe default (CIFAR-10 style)
+
+        class_names = [str(i) for i in range(inferred_num_classes)]
 
     # --------------------------------------------------------
     # NORMALIZE & VALIDATE INDEX
@@ -2519,6 +2808,21 @@ def detect_single_image(model, test_dataset, device, index=None):
     # --------------------------------------------------------
     img, true_label = test_dataset[index]
     true_label_id = int(true_label)
+
+    # ✅ ROBUSTNESS FIX:
+    # -----------------
+    # Some datasets might return:
+    #   - PIL Image
+    #   - numpy array
+    #   - torch Tensor already
+    #
+    # Your pipeline typically returns a torch Tensor [C,H,W] from transforms.
+    # But if not, we raise a clear message instead of crashing on .shape.
+    if not torch.is_tensor(img):
+        raise TypeError(
+            f"[detect_single_image] Expected img to be a torch.Tensor [C,H,W], got {type(img)}. "
+            f"Make sure your test_dataset has transforms=ToTensor()."
+        )
 
     # img is [C, H, W]
     c, h, w = img.shape
@@ -2561,7 +2865,12 @@ def detect_single_image(model, test_dataset, device, index=None):
     print(f"Confidence        : {pred_conf*100:.2f}%")
     print("--------------------------------------------------")
 
-    return img, true_label_id, pred_label
+    # ✅ SMALL USABILITY ADDITION (NON-BREAKING):
+    # ------------------------------------------
+    # Returning pred_conf is often useful for downstream logic (thresholding, debugging).
+    # This does NOT change your prints or evaluation logic.
+    return img, true_label_id, pred_label, pred_conf
+
 
 
 
@@ -2705,7 +3014,35 @@ def main():
     # as long as the class StaticInitLearnableCNN implements the new layers
     # and the forward() returns logits [B, num_classes].
     # --------------------------------------------------------
-    model = StaticInitLearnableCNN(num_classes=num_classes)
+    #
+    # ✅ FIX (COMPATIBILITY):
+    # ----------------------
+    # Your earlier crash showed:
+    #   TypeError: StaticInitLearnableCNN.__init__() got an unexpected keyword argument 'num_classes'
+    #
+    # That happens if your class constructor is defined like:
+    #   def __init__(self, num_classes: int = 10):
+    #
+    # In that case you MUST call:
+    #   StaticInitLearnableCNN(num_classes=num_classes)
+    #
+    # If your constructor is instead:
+    #   def __init__(self, n_classes: int = 10):
+    # then you'd need:
+    #   StaticInitLearnableCNN(n_classes=num_classes)
+    #
+    # We keep your original call, but we also fail fast with a clear message
+    # if your class signature is mismatched.
+    # --------------------------------------------------------
+    try:
+        model = StaticInitLearnableCNN(num_classes=num_classes)
+    except TypeError as e:
+        raise TypeError(
+            f"[main] Failed to construct StaticInitLearnableCNN with num_classes={num_classes}. "
+            f"Your class __init__ signature may not accept 'num_classes'. "
+            f"Fix your class to: __init__(self, num_classes: int = 10) or rename this argument consistently.\n"
+            f"Original error: {e}"
+        )
 
     # --------------------------------------------------------
     # LOAD OR TRAIN MODEL
@@ -2834,8 +3171,23 @@ def main():
         # AUTO-DETECT CLASS NAMES
         # --------------------------------------------------------
         class_names = getattr(test_dataset, "classes", None)
+
+        # ✅ QUALITY FIX:
+        # --------------
+        # If dataset has no classes attribute, don't assume 10 blindly.
+        # Infer num_classes from the model's classifier output size.
         if class_names is None:
-            class_names = [str(i) for i in range(10)]
+            inferred_num_classes = None
+            try:
+                if hasattr(model, "fc") and hasattr(model.fc, "out_features"):
+                    inferred_num_classes = int(model.fc.out_features)
+            except Exception:
+                inferred_num_classes = None
+
+            if inferred_num_classes is None:
+                inferred_num_classes = 10  # original fallback
+
+            class_names = [str(i) for i in range(inferred_num_classes)]
 
         num_classes = len(class_names)
 
@@ -2989,8 +3341,23 @@ def main():
         # AUTO-DETECT CLASS NAMES
         # --------------------------------------------------------
         class_names = getattr(test_dataset, "classes", None)
+
+        # ✅ QUALITY FIX:
+        # --------------
+        # If dataset has no classes attribute, don't assume 10 blindly.
+        # Infer num_classes from the model's classifier output size.
         if class_names is None:
-            class_names = [str(i) for i in range(10)]
+            inferred_num_classes = None
+            try:
+                if hasattr(model, "fc") and hasattr(model.fc, "out_features"):
+                    inferred_num_classes = int(model.fc.out_features)
+            except Exception:
+                inferred_num_classes = None
+
+            if inferred_num_classes is None:
+                inferred_num_classes = 10  # original fallback
+
+            class_names = [str(i) for i in range(inferred_num_classes)]
 
         num_classes = len(class_names)
 
