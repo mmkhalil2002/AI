@@ -60,8 +60,8 @@ from torchvision import datasets, transforms
 # ============================================================
 
 MODEL_PATH = "../../../"
-MODEL_FILENAME = "cifar60-cnn-128-256-512-1024-742s-L6208-A1000-T8250"
-DATA_PATH = "../../../data/cifar60"
+MODEL_FILENAME = "cifar40-cnn-128-256-512-1024-1427s-L7184-A1000-T7628"
+DATA_PATH = "../../../data/cifar40"
 
 BATCH_SIZE = 128
 NUM_EPOCHS = 100
