@@ -2611,6 +2611,7 @@ def main():
     # ============================================================
     train_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(p=0.5),
+        transforms.Resize((32, 32)),
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
@@ -2622,6 +2623,7 @@ def main():
     # TEST TRANSFORM (USED DURING VALIDATION / INFERENCE)
     # ============================================================
     test_transform = transforms.Compose([
+        transforms.Resize((32, 32)),
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406],

@@ -60,8 +60,8 @@ from torchvision import datasets, transforms
 # ============================================================
 
 MODEL_PATH = "../../../"
-MODEL_FILENAME = "cifar60-cnn-128-256-512-1024-2299s-L7818-A1000-T7255"
-DATA_PATH = "../../../data/cifar60"
+MODEL_FILENAME = "cifar-10-19-cnn-128-256-512-1024-375s-L5232-A1000-T8610"
+DATA_PATH = "../../../data/cifar_10_19"
 
 BATCH_SIZE = 128
 NUM_EPOCHS = 100
@@ -2611,7 +2611,6 @@ def main():
     # ============================================================
     train_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(p=0.5),
-        transforms.Resize((32, 32)),
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
@@ -2623,7 +2622,6 @@ def main():
     # TEST TRANSFORM (USED DURING VALIDATION / INFERENCE)
     # ============================================================
     test_transform = transforms.Compose([
-        transforms.Resize(32,32),
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406],

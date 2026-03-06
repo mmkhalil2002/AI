@@ -1,36 +1,41 @@
 #!/usr/bin/env python3
 """
-dog_pose_math_to_motor.py
+dog_pose_math_to_motor_newformat_commented.py
 =====================================================================
-YOU ASKED FOR:
-  ✅ EXACT set of pose functions (calculation-only):
-      calculate_left_knee_angle(...)
-      calculate_right_knee_angle(...)
-      calculate_hip_center(...)
-      calculate_shoulder_center(...)
-      calculate_torso_tilt_angle(...)
-      calculate_front_paw_width(...)
-      calculate_hind_paw_width(...)
-      calculate_lift_score(...)
+UPDATED FOR YOUR NEW CSV FORMAT:
+  /mnt/data/dog2d_keypoints_clean.csv
 
-  ✅ Each function has:
-      - Theoretical calculation comments
-      - Simple ASCII diagram
+YOU REQUESTED:
+  ✅ Add full mathematical foundation comments for EACH function
+  ✅ Include ASCII diagram for EACH function (where meaningful)
+  ✅ Keep calculation layer separate from motor layer
+  ✅ Keep robust handling of missing points (0,0) => NaN => skip motor
 
-  ✅ After executing each function, the return value is translated
-     into a motor action using motor-specific functions (separate layer).
+NEW FILE COLUMNS (confirmed):
+  motion_type, seq, split,
+  FL_PW_x/y, FL_KN_x/y, FL_EL_x/y,
+  FR_PW_x/y, FR_KN_x/y, FR_EL_x/y,
+  RL_PW_x/y, RL_KN_x/y, RL_EL_x/y,
+  RR_PW_x/y, RR_KN_x/y, RR_EL_x/y
 
-  ✅ Loop over CSV rows and execute motor actions for each pose entry.
+MAPPING USED IN THIS SCRIPT:
+  - Shoulder center uses (FL_EL, FR_EL)
+  - Hip center uses (RL_EL, RR_EL)
+  - Left knee angle uses (RL_EL as hip, RL_KN as knee, RL_PW as paw)
+  - Right knee angle uses (RR_EL as hip, RR_KN as knee, RR_PW as paw)
+  - Front paw width uses (FL_PW, FR_PW)
+  - Hind paw width uses (RL_PW, RR_PW)
+  - Lift score uses hip_center vs avg paws y
 
 IMPORTANT SAFETY:
-  - This script is hardware-agnostic (no PiDog library).
-  - DRY_RUN=True prints motor commands only (safe).
-  - To actually move motors, implement MotorDriver.send_servo().
-=====================================================================
+  - Many rows contain missing points as (0,0).
+  - If any needed point is missing, the function returns NaN for that feature.
+  - Motor actions that depend on NaN are skipped.
 
 RUN:
-  Windows:  py dog_pose_math_to_motor.py
-  Linux:    python3 dog_pose_math_to_motor.py
+  Windows:  py dog_pose_math_to_motor_newformat_commented.py
+  Linux:    python3 dog_pose_math_to_motor_newformat_commented.py
+=====================================================================
 """
 
 from __future__ import annotations
@@ -39,17 +44,17 @@ from pathlib import Path
 import csv
 import math
 import time
-from typing import Dict, Tuple
+from typing import Dict
 
 
 # =====================================================================
 # USER SETTINGS
 # =====================================================================
-CSV_PATH = Path("deeplabcut") / "sample_pose_dataset" / "dog_pose_2d_aligned.csv"
+CSV_PATH = Path("/mnt/data/dog2d_keypoints_clean.csv")
 
-DRY_RUN = True
-PRINT_FEATURES = True
-SECONDS_PER_ROW = 1.0
+DRY_RUN = True          # True = prints commands only (safe)
+PRINT_FEATURES = True   # True = prints computed features each row
+SECONDS_PER_ROW = 0.2   # playback speed
 
 
 # =====================================================================
@@ -57,52 +62,175 @@ SECONDS_PER_ROW = 1.0
 # =====================================================================
 @dataclass(frozen=True)
 class Point2D:
+    """
+    Mathematical object: A point in the Euclidean plane ℝ².
+
+    We represent a keypoint measured from an image frame as:
+        P = (x, y)
+
+    Note:
+      In most images:
+        x increases to the right
+        y increases downward
+      (This affects interpretation of "up/down" but not the math itself.)
+    """
     x: float
     y: float
-
-
-@dataclass(frozen=True)
-class PoseFeatureValues:
-    """All calculated values (outputs of your exact function set)."""
-    pose_label: str
-
-    left_knee_angle_deg: float
-    right_knee_angle_deg: float
-
-    hip_center: Point2D
-    shoulder_center: Point2D
-
-    torso_tilt_angle_deg: float
-
-    front_paw_width: float
-    hind_paw_width: float
-
-    lift_score: float
 
 
 # =====================================================================
 # BASIC GEOMETRY HELPERS (INTERNAL)
 # =====================================================================
+
 def _vec(a: Point2D, b: Point2D) -> Point2D:
+    """
+    VECTOR CONSTRUCTION
+    -------------------
+    Creates a vector from point 'a' to point 'b':
+
+        v = b - a
+        v = (b.x - a.x, b.y - a.y)
+
+    ASCII:
+        a ● -----> ● b
+              v
+
+    Why used?
+      - Angles are computed from vectors.
+      - Distances are computed from vectors.
+    """
     return Point2D(b.x - a.x, b.y - a.y)
 
+
 def _dot(u: Point2D, v: Point2D) -> float:
+    """
+    DOT PRODUCT
+    -----------
+    In ℝ², dot product is:
+        u·v = u.x*v.x + u.y*v.y
+
+    Geometric meaning:
+      u·v = |u| |v| cos(θ)
+
+    ASCII:
+        u ↗
+         \ θ
+          ↘ v
+
+    Uses:
+      - Computing angle between vectors using cos(θ)
+      - Similarity/projection
+    """
     return u.x * v.x + u.y * v.y
 
+
 def _norm(u: Point2D) -> float:
+    """
+    VECTOR NORM (L2 magnitude)
+    --------------------------
+    |u| = sqrt(u.x² + u.y²)
+
+    ASCII:
+        u = (ux, uy)
+        |u| is the length of the arrow
+
+    Uses:
+      - Normalize vectors
+      - Distance between points
+      - Angle calculation denominator
+    """
     return math.sqrt(u.x*u.x + u.y*u.y)
 
+
 def _dist(a: Point2D, b: Point2D) -> float:
+    """
+    EUCLIDEAN DISTANCE BETWEEN TWO POINTS
+    ------------------------------------
+    distance(a,b) = ||b - a||
+
+    Formula:
+      d = sqrt((bx-ax)² + (by-ay)²)
+
+    ASCII:
+        a ● -------- d -------- ● b
+
+    Uses:
+      - Stance width
+      - Step length proxy
+      - Scaling signals
+    """
     return _norm(_vec(a, b))
 
+
 def _midpoint(a: Point2D, b: Point2D) -> Point2D:
+    """
+    MIDPOINT OF TWO POINTS
+    ----------------------
+    midpoint(a,b) = ((ax+bx)/2 , (ay+by)/2)
+
+    ASCII:
+        a ● ---- m ---- ● b
+              ^
+              midpoint
+
+    Uses:
+      - Stable body reference points (hip_center, shoulder_center)
+    """
     return Point2D((a.x + b.x)/2.0, (a.y + b.y)/2.0)
 
+
 def _clamp(x: float, lo: float, hi: float) -> float:
+    """
+    CLAMP OPERATOR
+    --------------
+    Restrict x to interval [lo, hi].
+
+        clamp(x) =
+          lo if x < lo
+          hi if x > hi
+          x otherwise
+
+    Uses:
+      - Servo safety: never command beyond physical limits
+      - Normalization safety
+    """
     return max(lo, min(hi, x))
 
+
+def _is_valid(p: Point2D) -> bool:
+    """
+    MISSING DATA CHECK
+    ------------------
+    Your dataset uses (0,0) to represent missing keypoints.
+    We treat that as invalid.
+
+    If point is invalid, calculations return NaN so the motor layer skips it.
+    """
+    return not (abs(p.x) < 1e-12 and abs(p.y) < 1e-12)
+
+
 def _map_range(x: float, in_min: float, in_max: float, out_min: float, out_max: float) -> float:
-    """Linear map x from [in_min..in_max] to [out_min..out_max]."""
+    """
+    LINEAR RANGE MAPPING
+    --------------------
+    Map x from interval [in_min, in_max] into [out_min, out_max].
+
+    Formula:
+        t = (x - in_min) / (in_max - in_min)
+        y = out_min + t * (out_max - out_min)
+
+    ASCII:
+      in:   in_min ----- x ----- in_max
+      out:  out_min ---- y ---- out_max
+
+    Used to translate:
+      - measured angles/distances -> servo degrees
+
+    Safety:
+      - If x is NaN or in_min==in_max, returns NaN or midpoint.
+    """
+    if not math.isfinite(x):
+        return float("nan")
     if abs(in_max - in_min) < 1e-9:
         return (out_min + out_max) / 2.0
     t = (x - in_min) / (in_max - in_min)
@@ -110,69 +238,86 @@ def _map_range(x: float, in_min: float, in_max: float, out_min: float, out_max: 
 
 
 # =====================================================================
-# 1) YOUR EXACT POSE FUNCTIONS (CALCULATION-ONLY)
+# 1) POSE FUNCTIONS (CALCULATION-ONLY)
 # =====================================================================
 
 def calculate_left_knee_angle(left_hip: Point2D, left_knee: Point2D, left_hind_paw: Point2D) -> float:
     """
-    PURPOSE (DOG MEANING):
-      Measures how "bent" the LEFT hind leg is at the knee.
+    LEFT KNEE ANGLE (H-K-P)
+    ======================
+    PURPOSE:
+      Measures how bent the LEFT hind leg is at the knee.
 
-    SIMPLE DIAGRAM (hind leg):
-        left_hip (H) ●
-                      \
-                       \
-                        ● left_knee (K)   <-- angle θ at K
-                         \
-                          \
-                           ● left_hind_paw (P)
+    DIAGRAM (hind leg):
+        Hip (H) ●
+                 \
+                  \
+                   ● Knee (K)  <-- θ is measured here
+                    \
+                     \
+                      ● Paw (P)
 
-    THEORY:
-      We want the angle at the knee K formed by points (H-K-P).
-      Define:
-        u = H - K   (vector from knee to hip)
-        v = P - K   (vector from knee to paw)
+    MATHEMATICAL FOUNDATION:
+      We want the angle θ at point K for triangle (H, K, P).
 
-      Then:
-        cos(θ) = (u·v) / (|u||v|)
-        θ = arccos( cos(θ) )
+      Define vectors originating at K:
+        u = H - K   (vector from K to hip)
+        v = P - K   (vector from K to paw)
 
-    INTERPRETATION (typical):
-      - Larger θ  -> leg more extended (standing)
-      - Smaller θ -> leg more flexed (sitting / crouching / jump prep)
+      Angle between u and v:
+        cos(θ) = (u·v) / (|u| |v|)
+        θ = arccos( clamp(cos(θ), -1, 1) )
+      Then convert to degrees.
+
+    NOTES:
+      - If any point missing => NaN
+      - If vector length is near zero => NaN
     """
+    if not (_is_valid(left_hip) and _is_valid(left_knee) and _is_valid(left_hind_paw)):
+        return float("nan")
+
     u = _vec(left_knee, left_hip)       # H - K
     v = _vec(left_knee, left_hind_paw)  # P - K
+
     nu = _norm(u)
     nv = _norm(v)
     if nu < 1e-9 or nv < 1e-9:
         return float("nan")
-    c = _dot(u, v) / (nu * nv)
-    c = max(-1.0, min(1.0, c))  # numeric safety
+
+    c = _dot(u, v) / (nu * nv)          # cos(theta)
+    c = max(-1.0, min(1.0, c))          # numeric safety
     return math.degrees(math.acos(c))
 
 
 def calculate_right_knee_angle(right_hip: Point2D, right_knee: Point2D, right_hind_paw: Point2D) -> float:
     """
-    PURPOSE:
-      Same as calculate_left_knee_angle, but for RIGHT hind leg.
+    RIGHT KNEE ANGLE (H-K-P)
+    =======================
+    Same math as left knee, applied to the RIGHT hind leg.
 
     DIAGRAM:
-        right_hip ●
+        Hip (H) ●
+                 \
+                  ● Knee (K)  <-- θ
                    \
-                    ● right_knee  <-- θ
-                     \
-                      ● right_hind_paw
+                    ● Paw (P)
 
-    THEORY:
-      θ = angle( right_hip, right_knee, right_hind_paw )
+    FOUNDATION:
+      u = H - K
+      v = P - K
+      θ = arccos( (u·v) / (|u||v|) )
     """
+    if not (_is_valid(right_hip) and _is_valid(right_knee) and _is_valid(right_hind_paw)):
+        return float("nan")
+
     u = _vec(right_knee, right_hip)
     v = _vec(right_knee, right_hind_paw)
+
     nu = _norm(u)
     nv = _norm(v)
     if nu < 1e-9 or nv < 1e-9:
         return float("nan")
+
     c = _dot(u, v) / (nu * nv)
     c = max(-1.0, min(1.0, c))
     return math.degrees(math.acos(c))
@@ -180,102 +325,113 @@ def calculate_right_knee_angle(right_hip: Point2D, right_knee: Point2D, right_hi
 
 def calculate_hip_center(left_hip: Point2D, right_hip: Point2D) -> Point2D:
     """
+    HIP CENTER (MIDPOINT)
+    =====================
     PURPOSE:
-      Creates a stable "body reference point" from the two hip points.
+      Construct a stable reference for the pelvis/torso base.
 
     DIAGRAM:
-      left_hip ●         ● right_hip
-              \         /
-               \       /
-                ● hip_center
+      left_hip ● ----- ● right_hip
+                 \   /
+                  \ /
+                  ● hip_center
 
-    THEORY:
-      hip_center = midpoint(left_hip, right_hip)
-               = ((xL+xR)/2, (yL+yR)/2)
+    FOUNDATION:
+      hip_center = (left_hip + right_hip) / 2
+                 = midpoint(left_hip, right_hip)
 
-    INTERPRETATION:
-      - Useful as the robot "body center" reference.
-      - Helps reduce noise vs using one hip only.
+    NOTES:
+      If either hip missing => returns (NaN, NaN)
     """
+    if not (_is_valid(left_hip) and _is_valid(right_hip)):
+        return Point2D(float("nan"), float("nan"))
     return _midpoint(left_hip, right_hip)
 
 
 def calculate_shoulder_center(left_shoulder: Point2D, right_shoulder: Point2D) -> Point2D:
     """
+    SHOULDER CENTER (MIDPOINT)
+    ==========================
     PURPOSE:
-      Creates a stable "upper-body reference point" from both shoulders.
+      Construct stable reference point for upper torso.
 
     DIAGRAM:
-      left_shoulder ●         ● right_shoulder
-                   \         /
-                    \       /
-                     ● shoulder_center
+      left_shoulder ● ----- ● right_shoulder
+                    \     /
+                     \   /
+                      ● shoulder_center
 
-    THEORY:
+    FOUNDATION:
       shoulder_center = midpoint(left_shoulder, right_shoulder)
     """
+    if not (_is_valid(left_shoulder) and _is_valid(right_shoulder)):
+        return Point2D(float("nan"), float("nan"))
     return _midpoint(left_shoulder, right_shoulder)
 
 
 def calculate_torso_tilt_angle(shoulder_center: Point2D, hip_center: Point2D) -> float:
     """
+    TORSO TILT ANGLE
+    ================
     PURPOSE:
-      Measures torso tilt angle (proxy for body lean in 2D).
+      Estimate torso lean direction using two reference points.
 
     DIAGRAM:
-      shoulder_center ● -----------> ● hip_center
-                          tilt φ
+        shoulder_center (S) ●
+                             \
+                              \  vector T = H - S
+                               \
+                                ● hip_center (H)
 
-    THEORY:
-      torso vector T = hip_center - shoulder_center
-      φ = atan2(Ty, Tx)
+      We measure angle φ of vector T relative to +x axis.
 
-    NOTE (image coordinates):
-      - If y increases downward (usual images),
-        positive/negative meaning of 'up/down' depends on your camera.
-      - Still consistent for relative changes.
+    FOUNDATION:
+      T = hip_center - shoulder_center
+      φ = atan2(T.y, T.x)
 
     INTERPRETATION:
-      - Larger |φ| can indicate leaning / crouching / jump posture.
+      - φ changes when dog leans forward/backward in the 2D plane
+      - In image coordinates, y direction is camera-dependent
     """
+    if not (_is_valid(shoulder_center) and _is_valid(hip_center)):
+        return float("nan")
     T = _vec(shoulder_center, hip_center)
     return math.degrees(math.atan2(T.y, T.x))
 
 
 def calculate_front_paw_width(left_front_paw: Point2D, right_front_paw: Point2D) -> float:
     """
+    FRONT PAW WIDTH (STANCE WIDTH)
+    ==============================
     PURPOSE:
-      Measures how wide the FRONT stance is.
+      Measures front stance width.
 
     DIAGRAM:
-      left_front_paw ● <------ width ------> ● right_front_paw
+      LF ● <------ width ------> ● RF
 
-    THEORY:
-      width = distance(LF, RF)
-            = sqrt((xR-xL)^2 + (yR-yL)^2)
-
-    INTERPRETATION:
-      - Wide stance can be stability / standing.
-      - Narrow stance can happen in crouch / jump / tight posture.
+    FOUNDATION:
+      width = ||RF - LF|| = sqrt((dx)^2 + (dy)^2)
     """
+    if not (_is_valid(left_front_paw) and _is_valid(right_front_paw)):
+        return float("nan")
     return _dist(left_front_paw, right_front_paw)
 
 
 def calculate_hind_paw_width(left_hind_paw: Point2D, right_hind_paw: Point2D) -> float:
     """
+    HIND PAW WIDTH (STANCE WIDTH)
+    =============================
     PURPOSE:
-      Measures how wide the HIND stance is.
+      Measures hind stance width.
 
     DIAGRAM:
-      left_hind_paw ● <------ width ------> ● right_hind_paw
+      LH ● <------ width ------> ● RH
 
-    THEORY:
-      width = distance(LH, RH)
-
-    INTERPRETATION:
-      - Sitting often changes hind stance width.
-      - Jump prep can reduce width (legs tuck).
+    FOUNDATION:
+      width = ||RH - LH||
     """
+    if not (_is_valid(left_hind_paw) and _is_valid(right_hind_paw)):
+        return float("nan")
     return _dist(left_hind_paw, right_hind_paw)
 
 
@@ -287,35 +443,52 @@ def calculate_lift_score(
     right_hind_paw: Point2D
 ) -> float:
     """
+    LIFT SCORE (2D BODY HEIGHT PROXY)
+    =================================
     PURPOSE:
-      Approximate "body lift" relative to paws in 2D.
+      Approximate body "lift" relative to paws.
 
-    DIAGRAM (vertical idea):
+    DIAGRAM (concept):
           hip_center ●
-      paws ●   ●   ●   ●
+      paw ●      paw ●
+      paw ●      paw ●
 
-    THEORY:
-      avg_paws_y = mean(y of all 4 paws)
-      lift_score = hip_center_y - avg_paws_y
+    FOUNDATION:
+      avg_paws_y = mean( y of all valid paws )
+      lift_score = hip_center.y - avg_paws_y
 
-    IMAGE COORDINATE NOTE:
-      Usually y increases downward:
-        - If hip goes UP (smaller y), hip_center_y decreases
-        - So lift_score becomes more NEGATIVE (or changes significantly)
+    IMPORTANT IMAGE NOTE:
+      If y increases DOWN (most images):
+        - If body goes UP, hip_center.y decreases
+        - So lift_score becomes more NEGATIVE
 
-    INTERPRETATION:
-      - Large change in lift_score can indicate jumping / crouching transitions.
+    NOTES:
+      - Needs hip_center valid
+      - Needs at least 2 valid paws
     """
-    avg_paws_y = (left_front_paw.y + right_front_paw.y + left_hind_paw.y + right_hind_paw.y) / 4.0
+    if not _is_valid(hip_center):
+        return float("nan")
+
+    paws = [left_front_paw, right_front_paw, left_hind_paw, right_hind_paw]
+    valid_paws = [p for p in paws if _is_valid(p)]
+    if len(valid_paws) < 2:
+        return float("nan")
+
+    avg_paws_y = sum(p.y for p in valid_paws) / float(len(valid_paws))
     return hip_center.y - avg_paws_y
 
 
 # =====================================================================
-# 2) MOTOR LAYER (motor-specific functions)
+# 2) MOTOR LAYER (SERVO SPECS + FEATURE->MOTOR MAPPING)
 # =====================================================================
-
 @dataclass(frozen=True)
 class JointLimit:
+    """
+    Servo mechanical limits:
+      min_deg: minimum safe servo angle
+      max_deg: maximum safe servo angle
+      neutral_deg: comfortable default
+    """
     min_deg: float
     max_deg: float
     neutral_deg: float
@@ -323,25 +496,29 @@ class JointLimit:
 
 class MotorSpec:
     """
-    Defines motor ranges and channel mapping.
-    Change this class when your motors change.
-    Pose functions remain unchanged.
+    MOTOR SPECIFICATION (hardware configuration)
+    ============================================
+    This is the ONLY place you edit when your wiring or servo limits change.
+
+    We represent each logical joint by:
+      - A servo channel index (PCA9685 channel for example)
+      - A safe angle range (min..max) and a neutral position
+
+    NOTE:
+      The pose math layer produces angle/width scores in "human units".
+      This class defines how we convert those scores to servo degrees.
     """
     def __init__(self):
-        # Example logical joints (edit as needed)
         self.limits: Dict[str, JointLimit] = {
             "FL_HIP": JointLimit(10, 90, 50),
             "FR_HIP": JointLimit(10, 90, 50),
             "HL_HIP": JointLimit(10, 90, 50),
             "HR_HIP": JointLimit(10, 90, 50),
-
             "HL_KNEE": JointLimit(10, 90, 50),
             "HR_KNEE": JointLimit(10, 90, 50),
-
             "HEAD_TILT": JointLimit(20, 110, 70),
         }
 
-        # Example channels (edit to match your wiring)
         self.channel: Dict[str, int] = {
             "FL_HIP": 0,
             "FR_HIP": 1,
@@ -355,46 +532,96 @@ class MotorSpec:
 
 class MotorDriver:
     """
-    Hardware output. Replace send_servo() with your low-level PWM/I2C code.
+    HARDWARE DRIVER ABSTRACTION
+    ===========================
+    This layer sends commands to hardware.
+
+    In DRY_RUN mode:
+      - We only print intended commands (safe testing).
+
+    In REAL mode:
+      - Implement send_servo(channel, angle_deg) for:
+          PCA9685 I2C board
+          Pigpio
+          Serial bus servos
+          etc.
     """
     def __init__(self, spec: MotorSpec, dry_run: bool = True):
         self.spec = spec
         self.dry_run = dry_run
 
     def send_servo(self, channel: int, angle_deg: float) -> None:
-        # TODO: Implement for your servo controller (PCA9685/GPIO/serial)
+        """
+        LOW LEVEL OUTPUT (TO IMPLEMENT)
+        ------------------------------
+        This is where you'd talk to actual hardware.
+
+        Example for PCA9685:
+          set_pwm(channel, pulse_for_angle(angle_deg))
+
+        Currently prints to console for safety.
+        """
         print(f"    servo[{channel}] = {angle_deg:6.1f}°")
 
     def execute_targets(self, targets: Dict[str, float]) -> None:
+        """
+        MULTI-JOINT EXECUTION
+        ---------------------
+        Takes a dict of joint->target_deg and sends each one.
+        Applies:
+          - skip unknown joints
+          - skip NaN
+          - clamp to safe servo limits
+        """
         for joint, deg in targets.items():
             if joint not in self.spec.channel or joint not in self.spec.limits:
                 continue
+            if not math.isfinite(deg):
+                continue
+
             ch = self.spec.channel[joint]
             lim = self.spec.limits[joint]
             deg = _clamp(deg, lim.min_deg, lim.max_deg)
+
             if self.dry_run:
                 print(f"[DRY] {joint:9s} -> {deg:6.1f}° (ch {ch})")
             else:
                 self.send_servo(ch, deg)
 
 
-# ---- Motor-specific translation functions (one per feature) ----
+# ---- Feature -> motor translation functions ----
 
 def motor_action_from_left_knee_angle(spec: MotorSpec, left_knee_angle_deg: float) -> Dict[str, float]:
     """
-    FEATURE -> MOTOR:
-      left_knee_angle_deg -> HL_KNEE servo target
+    LEFT KNEE ANGLE -> HL_KNEE SERVO
+    ===============================
+    Goal:
+      Convert measured knee angle (from pose) to a servo command.
 
-    Mapping concept:
-      pose knee angle: 70(bent) -> 160(straight)
-      servo angle:     min(bent) -> max(straight)
+    DIAGRAM (concept):
+      pose_knee_angle:   70° (bent)  -------->  160° (straight)
+      servo_target_deg:  min_deg     -------->  max_deg
+
+    FOUNDATION:
+      servo = map_range(pose_angle, 70..160, servo_min..servo_max)
+
+    NOTE:
+      The pose angle range [70..160] must be tuned from your dataset.
     """
+    if not math.isfinite(left_knee_angle_deg):
+        return {}
     lim = spec.limits["HL_KNEE"]
     target = _map_range(left_knee_angle_deg, 70, 160, lim.min_deg, lim.max_deg)
     return {"HL_KNEE": _clamp(target, lim.min_deg, lim.max_deg)}
 
 
 def motor_action_from_right_knee_angle(spec: MotorSpec, right_knee_angle_deg: float) -> Dict[str, float]:
+    """
+    RIGHT KNEE ANGLE -> HR_KNEE SERVO
+    Same mapping as left knee.
+    """
+    if not math.isfinite(right_knee_angle_deg):
+        return {}
     lim = spec.limits["HR_KNEE"]
     target = _map_range(right_knee_angle_deg, 70, 160, lim.min_deg, lim.max_deg)
     return {"HR_KNEE": _clamp(target, lim.min_deg, lim.max_deg)}
@@ -402,33 +629,62 @@ def motor_action_from_right_knee_angle(spec: MotorSpec, right_knee_angle_deg: fl
 
 def motor_action_from_torso_tilt_angle(spec: MotorSpec, torso_tilt_deg: float) -> Dict[str, float]:
     """
-    FEATURE -> MOTOR:
-      torso tilt -> hip compensation (balance)
+    TORSO TILT -> HIP COMPENSATION (BALANCE)
+    =======================================
+    PURPOSE:
+      If torso leans, shift hip servos slightly to compensate.
 
-    Simple stabilizer:
-      delta = clamp(torso_tilt/30, -1..1) * 8deg
-      front hips = neutral + delta
-      hind hips  = neutral - delta
+    DIAGRAM (concept):
+          lean forward (+phi)
+             S ●
+                \
+                 \
+                  ● H
+
+      We convert tilt into a small delta for hip joints.
+
+    FOUNDATION:
+      delta = clamp(phi / 30, -1..1) * 8 degrees
+
+      Front hips  = neutral + delta
+      Hind hips   = neutral - delta
+
+    This is a simple proportional controller:
+      u = K * error
+    where:
+      error = torso_tilt
+      K = 8/30 (degrees per degree) with clamp limits.
     """
+    if not math.isfinite(torso_tilt_deg):
+        return {}
+
     delta = _clamp(torso_tilt_deg / 30.0, -1.0, 1.0) * 8.0
 
     out = {}
     for j in ["FL_HIP", "FR_HIP"]:
         lim = spec.limits[j]
         out[j] = _clamp(lim.neutral_deg + delta, lim.min_deg, lim.max_deg)
+
     for j in ["HL_HIP", "HR_HIP"]:
         lim = spec.limits[j]
         out[j] = _clamp(lim.neutral_deg - delta, lim.min_deg, lim.max_deg)
+
     return out
 
 
 def motor_action_from_front_paw_width(spec: MotorSpec, front_width: float) -> Dict[str, float]:
     """
-    OPTIONAL FEATURE -> MOTOR:
-      front_paw_width can be used to widen/narrow stance,
-      but many simple quadrupeds don't have "sideways" DOF.
+    FRONT PAW WIDTH -> (OPTIONAL) STANCE CONTROL
+    ===========================================
+    Many robots do NOT have a sideways joint (abduction/adduction).
+    If your robot has it, you can map width -> side stance motors.
 
-    For safety, we don't force anything here by default.
+    DIAGRAM:
+      wider stance => abduct joints outward
+      narrow stance => bring inward
+
+    CURRENT DEFAULT:
+      No-op for safety.
     """
     _ = spec
     _ = front_width
@@ -437,10 +693,8 @@ def motor_action_from_front_paw_width(spec: MotorSpec, front_width: float) -> Di
 
 def motor_action_from_hind_paw_width(spec: MotorSpec, hind_width: float) -> Dict[str, float]:
     """
-    OPTIONAL FEATURE -> MOTOR:
-      hind_paw_width may also control stance width if you have abduction servos.
-
-    Default: no-op.
+    HIND PAW WIDTH -> (OPTIONAL) STANCE CONTROL
+    No-op by default.
     """
     _ = spec
     _ = hind_width
@@ -449,24 +703,31 @@ def motor_action_from_hind_paw_width(spec: MotorSpec, hind_width: float) -> Dict
 
 def motor_action_from_lift_score(spec: MotorSpec, lift_score: float) -> Dict[str, float]:
     """
-    OPTIONAL FEATURE -> MOTOR:
-      lift_score can influence crouch/extend behavior.
+    LIFT SCORE -> SMALL KNEE ADJUSTMENT (CROUCH/EXTEND)
+    ==================================================
+    PURPOSE:
+      Convert lift_score into a mild knee bend/extend suggestion.
 
-    Example idea:
-      If lift_score indicates body is "higher" (more negative), slightly extend knees.
-      If body is "lower" (less negative / positive), slightly bend knees.
+    DIAGRAM:
+        hip higher => extend knees slightly
+        hip lower  => bend knees slightly
 
-    We'll do a tiny safe adjustment around knee neutral.
+    FOUNDATION:
+      t = map_range(lift_score, -60..20, -1..1)
+      adj = t * 5 degrees
+      knee_target = neutral + adj
+
+    This is a tiny proportional mapping.
+    Tune [-60..20] window using your dataset stats.
     """
+    if not math.isfinite(lift_score):
+        return {}
+
     hl = spec.limits["HL_KNEE"]
     hr = spec.limits["HR_KNEE"]
 
-    # Map lift_score into [-1..1] range using a conservative window:
-    # (You can tune these numbers based on your dataset)
     t = _map_range(lift_score, -60, 20, -1.0, 1.0)
     t = _clamp(t, -1.0, 1.0)
-
-    # small adjustment (±5 degrees)
     adj = t * 5.0
 
     return {
@@ -476,6 +737,19 @@ def motor_action_from_lift_score(spec: MotorSpec, lift_score: float) -> Dict[str
 
 
 def merge_motor_targets(*cmds: Dict[str, float]) -> Dict[str, float]:
+    """
+    MERGE MULTIPLE MOTOR COMMAND DICTS
+    ==================================
+    If multiple features command the same joint, later values override earlier ones.
+
+    Example:
+      knee angle sets HL_KNEE
+      lift_score also sets HL_KNEE
+    If lift_score comes later, it overwrites.
+
+    You can change policy to:
+      average, weighted sum, saturating sum, etc.
+    """
     out: Dict[str, float] = {}
     for c in cmds:
         out.update(c)
@@ -486,21 +760,24 @@ def merge_motor_targets(*cmds: Dict[str, float]) -> Dict[str, float]:
 # CSV IO + MAIN LOOP
 # =====================================================================
 REQUIRED_COLS = [
-    "pose",
-    "nose_x","nose_y",
-    "left_shoulder_x","left_shoulder_y",
-    "right_shoulder_x","right_shoulder_y",
-    "left_hip_x","left_hip_y",
-    "right_hip_x","right_hip_y",
-    "left_knee_x","left_knee_y",
-    "right_knee_x","right_knee_y",
-    "left_front_paw_x","left_front_paw_y",
-    "right_front_paw_x","right_front_paw_y",
-    "left_hind_paw_x","left_hind_paw_y",
-    "right_hind_paw_x","right_hind_paw_y",
+    "motion_type", "seq", "split",
+    "FL_PW_x", "FL_PW_y", "FL_KN_x", "FL_KN_y", "FL_EL_x", "FL_EL_y",
+    "FR_PW_x", "FR_PW_y", "FR_KN_x", "FR_KN_y", "FR_EL_x", "FR_EL_y",
+    "RL_PW_x", "RL_PW_y", "RL_KN_x", "RL_KN_y", "RL_EL_x", "RL_EL_y",
+    "RR_PW_x", "RR_PW_y", "RR_KN_x", "RR_KN_y", "RR_EL_x", "RR_EL_y",
 ]
 
+
 def read_rows(path: Path) -> list[dict]:
+    """
+    CSV READER (DICT)
+    =================
+    Reads full CSV into list[dict] for simple sequential playback.
+
+    Validation:
+      - Confirms expected columns exist
+      - Raises error if missing (so you catch format issues immediately)
+    """
     if not path.exists():
         raise FileNotFoundError(f"CSV not found: {path.resolve()}")
     with path.open("r", encoding="utf-8", newline="") as f:
@@ -510,7 +787,16 @@ def read_rows(path: Path) -> list[dict]:
                 raise ValueError(f"Missing column '{c}'. Found: {rdr.fieldnames}")
         return list(rdr)
 
+
 def pt(row: dict, xk: str, yk: str) -> Point2D:
+    """
+    PARSE POINT FROM ROW
+    ====================
+    Converts row values to floats and returns Point2D.
+
+    If the CSV contains blanks, this will throw ValueError — which is good
+    because blanks mean your preprocessing failed and you want to fix it.
+    """
     return Point2D(float(row[xk]), float(row[yk]))
 
 
@@ -523,52 +809,61 @@ def main() -> None:
     print(f"DRY_RUN={DRY_RUN}, SECONDS_PER_ROW={SECONDS_PER_ROW}\n")
 
     for i, row in enumerate(rows, start=1):
-        pose_label = row["pose"]
+        motion_type = row["motion_type"]
+        seq = row["seq"]
+        split = row["split"]
 
-        # --- read keypoints ---
-        nose = pt(row, "nose_x", "nose_y")
-        ls = pt(row, "left_shoulder_x", "left_shoulder_y")
-        rs = pt(row, "right_shoulder_x", "right_shoulder_y")
-        lh = pt(row, "left_hip_x", "left_hip_y")
-        rh = pt(row, "right_hip_x", "right_hip_y")
-        lk = pt(row, "left_knee_x", "left_knee_y")
-        rk = pt(row, "right_knee_x", "right_knee_y")
-        lfp = pt(row, "left_front_paw_x", "left_front_paw_y")
-        rfp = pt(row, "right_front_paw_x", "right_front_paw_y")
-        lhp = pt(row, "left_hind_paw_x", "left_hind_paw_y")
-        rhp = pt(row, "right_hind_paw_x", "right_hind_paw_y")
+        # ---- read keypoints (new format) ----
+        FL_PW = pt(row, "FL_PW_x", "FL_PW_y")
+        FL_KN = pt(row, "FL_KN_x", "FL_KN_y")
+        FL_EL = pt(row, "FL_EL_x", "FL_EL_y")
+
+        FR_PW = pt(row, "FR_PW_x", "FR_PW_y")
+        FR_KN = pt(row, "FR_KN_x", "FR_KN_y")
+        FR_EL = pt(row, "FR_EL_x", "FR_EL_y")
+
+        RL_PW = pt(row, "RL_PW_x", "RL_PW_y")
+        RL_KN = pt(row, "RL_KN_x", "RL_KN_y")
+        RL_EL = pt(row, "RL_EL_x", "RL_EL_y")
+
+        RR_PW = pt(row, "RR_PW_x", "RR_PW_y")
+        RR_KN = pt(row, "RR_KN_x", "RR_KN_y")
+        RR_EL = pt(row, "RR_EL_x", "RR_EL_y")
 
         # =========================================================
-        # (A) EXECUTE YOUR EXACT CALCULATION FUNCTIONS
+        # (A) EXECUTE CALCULATION FUNCTIONS (using new mapping)
         # =========================================================
-        left_knee_angle = calculate_left_knee_angle(lh, lk, lhp)
-        right_knee_angle = calculate_right_knee_angle(rh, rk, rhp)
+        # Rear EL points act like "hips" in our simplified model.
+        left_knee_angle = calculate_left_knee_angle(RL_EL, RL_KN, RL_PW)
+        right_knee_angle = calculate_right_knee_angle(RR_EL, RR_KN, RR_PW)
 
-        hip_center = calculate_hip_center(lh, rh)
-        shoulder_center = calculate_shoulder_center(ls, rs)
+        # Hip center uses rear "EL"
+        hip_center = calculate_hip_center(RL_EL, RR_EL)
+
+        # Shoulder center uses front "EL"
+        shoulder_center = calculate_shoulder_center(FL_EL, FR_EL)
 
         torso_tilt = calculate_torso_tilt_angle(shoulder_center, hip_center)
 
-        front_width = calculate_front_paw_width(lfp, rfp)
-        hind_width = calculate_hind_paw_width(lhp, rhp)
+        front_width = calculate_front_paw_width(FL_PW, FR_PW)
+        hind_width = calculate_hind_paw_width(RL_PW, RR_PW)
 
-        lift_score = calculate_lift_score(hip_center, lfp, rfp, lhp, rhp)
+        lift_score = calculate_lift_score(hip_center, FL_PW, FR_PW, RL_PW, RR_PW)
 
         if PRINT_FEATURES:
             print("--------------------------------------------------")
-            print(f"Row {i}/{len(rows)} pose='{pose_label}'")
-            print(f"  calculate_left_knee_angle(...)   = {left_knee_angle:7.2f} deg")
-            print(f"  calculate_right_knee_angle(...)  = {right_knee_angle:7.2f} deg")
-            print(f"  calculate_hip_center(...)        = ({hip_center.x:.2f},{hip_center.y:.2f})")
-            print(f"  calculate_shoulder_center(...)   = ({shoulder_center.x:.2f},{shoulder_center.y:.2f})")
-            print(f"  calculate_torso_tilt_angle(...)  = {torso_tilt:7.2f} deg")
-            print(f"  calculate_front_paw_width(...)   = {front_width:7.2f}")
-            print(f"  calculate_hind_paw_width(...)    = {hind_width:7.2f}")
-            print(f"  calculate_lift_score(...)        = {lift_score:7.2f}")
+            print(f"Row {i}/{len(rows)} motion_type='{motion_type}' seq='{seq}' split='{split}'")
+            print(f"  left_knee_angle_deg   = {left_knee_angle:7.2f}")
+            print(f"  right_knee_angle_deg  = {right_knee_angle:7.2f}")
+            print(f"  hip_center            = ({hip_center.x:.2f},{hip_center.y:.2f})")
+            print(f"  shoulder_center       = ({shoulder_center.x:.2f},{shoulder_center.y:.2f})")
+            print(f"  torso_tilt_deg        = {torso_tilt:7.2f}")
+            print(f"  front_paw_width       = {front_width:7.2f}")
+            print(f"  hind_paw_width        = {hind_width:7.2f}")
+            print(f"  lift_score            = {lift_score:7.2f}")
 
         # =========================================================
-        # (B) TRANSLATE EACH RETURN VALUE INTO MOTOR ACTIONS
-        #     using motor-specific functions (separate layer)
+        # (B) TRANSLATE FEATURES -> MOTOR TARGETS
         # =========================================================
         motor_targets = merge_motor_targets(
             motor_action_from_left_knee_angle(spec, left_knee_angle),
@@ -579,14 +874,10 @@ def main() -> None:
             motor_action_from_lift_score(spec, lift_score),
         )
 
-        # Optional: nose->head tilt (not in your requested function list, but useful)
-        nose_minus_hip_y = nose.y - hip_center.y
-        ht = spec.limits["HEAD_TILT"]
-        head_target = _map_range(nose_minus_hip_y, -80, 20, ht.max_deg, ht.min_deg)
-        motor_targets["HEAD_TILT"] = _clamp(head_target, ht.min_deg, ht.max_deg)
+        # NOTE: New format does not include "nose", so HEAD_TILT omitted.
 
         # =========================================================
-        # (C) EXECUTE MOTOR TARGETS (hardware layer)
+        # (C) EXECUTE MOTOR TARGETS
         # =========================================================
         print("Motor targets:")
         driver.execute_targets(motor_targets)
