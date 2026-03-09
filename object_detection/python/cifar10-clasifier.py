@@ -3,25 +3,32 @@
 # ============================================================
 # ✅ Inference-only classifier script (NO training)
 #
-# WHAT THIS SCRIPT DOES (your requested classifier):
+# WHAT THIS SCRIPT DOES:
 # ------------------------------------------------------------
 # ✅ You define 1+ trained models in a global list (MODELS)
 # ✅ Each model has:
-#     - weights file path (your long generated name)
+#     - weights file path
 #     - its OWN class list (the classes it was trained on)
-# ✅ You provide an INPUT directory that contains images (unknown labels)
+# ✅ You provide an INPUT directory that contains images
 # ✅ For each image:
 #     - run ALL models
-#     - compute confidence per model (softmax max prob)
-#     - choose the model/class with MAX confidence
+#     - compute confidence per model
+#     - choose the model/class with MAX raw confidence
 # ✅ Prints per-image result and a summary
+# ✅ Optionally displays each tested image enlarged
+# ✅ Before displaying a new image, the old displayed image
+#    window is closed first
+# ✅ Optional keyboard control:
+#     - press ENTER to move to the next tested image
 #
 # NOTES:
 # ------------------------------------------------------------
-# • No ImageFolder dataset required (no ground-truth labels)
+# • No ImageFolder dataset required
 # • No train_loader / test_loader / train_model() needed
 # • Works with ANY input directory that contains images
 # • Uses your CNN architecture: 3→128→256→512→1024 + GAP + FC
+# • Number of classes is VARIABLE per model
+#   (it is determined automatically from len(cfg["classes"]))
 # ============================================================
 
 
@@ -71,15 +78,15 @@ ensure_deps_for_this_script()
 
 import os
 import time
-import math
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import transforms
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 from tqdm import tqdm
+import tkinter as tk
 
 
 # ============================================================
@@ -88,20 +95,57 @@ from tqdm import tqdm
 
 DEBUG_FLAG = True
 
-# Directory containing unknown images (no subfolders required)
-# Example:
-#   INPUT_IMAGE_DIR = "../../../data/test_images"
-INPUT_IMAGE_DIR = "../../../data/2D-dog10-datasets/test_images"
+# ------------------------------------------------------------
+# Directory containing unknown images
+# ------------------------------------------------------------
+TEST_IMAGE_DIR = "../../../data/cifar10_clasifier_test"
 
+# ------------------------------------------------------------
 # Process only these extensions
+# ------------------------------------------------------------
 ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
-# Inference batch size (directory inference)
+# ------------------------------------------------------------
+# Inference batch size
+# ------------------------------------------------------------
 INFER_BATCH_SIZE = 64
 
-# If your GPU can handle larger, use 128/256
-# (Images are resized, so memory is manageable)
-# INFER_BATCH_SIZE = 128
+# ------------------------------------------------------------
+# OPTIONAL DISPLAY FEATURE
+# ------------------------------------------------------------
+# DISPLAY_TESTED_IMAGE:
+#   • If True  -> show each tested image enlarged
+#   • If False -> no image display, only console output
+#
+# ENLARGE_FACTOR:
+#   • Enlarges displayed image width and height by this factor
+#   • Default requested value = 6
+# ------------------------------------------------------------
+DISPLAY_TESTED_IMAGE = True
+ENLARGE_FACTOR = 6
+
+# ------------------------------------------------------------
+# OPTIONAL KEYBOARD CONTROL
+# ------------------------------------------------------------
+# If True:
+#   after each tested image is shown, the script waits until
+#   you press ENTER before continuing to the next image.
+#
+# If False:
+#   the script continues automatically.
+# ------------------------------------------------------------
+WAIT_FOR_ENTER_BETWEEN_IMAGES = True
+
+# ------------------------------------------------------------
+# Optional directory where displayed images are saved
+# ------------------------------------------------------------
+DISPLAY_OUTPUT_DIR = "displayed_results"
+
+# ------------------------------------------------------------
+# Optional Tk window title
+# ------------------------------------------------------------
+DISPLAY_WINDOW_TITLE = "Tested Image Viewer"
+
 
 # ============================================================
 # MODEL ARCH CONSTANTS (YOUR ARCH)
@@ -121,79 +165,108 @@ CONV4_OUT_CHANNELS = 1024
 
 
 # ============================================================
-# GLOBAL CLASSES (YOU SAID: classes defined globally)
+# GLOBAL CLASSES
 # ============================================================
 # IMPORTANT:
 # ----------
 # Each model must have the exact class order used in training.
 # The model predicts an index [0..C-1] which maps to this list.
 #
-# Example for DOG 2D 10 classes (replace with your real names/order):
-CIFAR_10_CLASSES_1 = [
-    "apple",
-    "aquarium_fish",
-    "baby",
-    "bear",
-    "beaver",
-    "bed"
-    "bee",
-    "beetle",
-    "bicycle",
-    "bottle"
-   ]
-
-CIFAR_10_CLASSES_2 = [
-     "bowl",
-     "boy",
-     "bridge",
-     "bus",
-     "butterfly",
-     "camel",
-     "can",
-     "castle",
-     "caterpillar",
-     "cattle"
-   ]
-
-# If you have CIFAR100 model, define list of 100 class names here:
-# CIFAR100_CLASSES = [ ... 100 names in exact order ... ]
-
-
-# ============================================================
-# MODEL REGISTRY (1 OR MORE MODELS)
-# ============================================================
-# You asked:
-# "If the trained model file is generated and called
-#  cifar100-cnn-128-256-512-1024-3805s-L8785-A9998-T6818
-#  how do we include this name?"
+# FLEXIBILITY:
+# ------------
+# The current script supports VARIABLE numbers of classes.
+# Each model can have a different number of classes.
 #
-# Answer:
-# Put it EXACTLY here in "weights". Extension is NOT implied.
-# Use the exact filename you saved.
+# Example:
+#   model A -> 10 classes
+#   model B -> 15 classes
+#   model C -> 8 classes
+#
+# The model output layer is created automatically using:
+#
+#     num_classes = len(cfg["classes"])
+#
+# So the FC layer becomes:
+#
+#     Linear(1024 -> num_classes)
+#
+# ------------------------------------------------------------
+# Example class groups:
+# ------------------------------------------------------------
+
+# FIRST 10 CIFAR-100 CLASSES: indices 00 → 09
+CIFAR_10_CLASSES_1 = [
+    "apple",          # 00
+    "aquarium_fish",  # 01
+    "baby",           # 02
+    "bear",           # 03
+    "beaver",         # 04
+    "bed",            # 05
+    "bee",            # 06
+    "beetle",         # 07
+    "bicycle",        # 08
+    "bottle",         # 09
+]
+
+# SECOND 10 CIFAR-100 CLASSES: indices 10 → 19
+CIFAR_10_CLASSES_2 = [
+    "bowl",         # 10
+    "boy",          # 11
+    "bridge",       # 12
+    "bus",          # 13
+    "butterfly",    # 14
+    "camel",        # 15
+    "can",          # 16
+    "castle",       # 17
+    "caterpillar",  # 18
+    "cattle",       # 19
+]
+
+# Optional safety checks for these example lists
+if len(CIFAR_10_CLASSES_1) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_1 must contain at least 2 classes.")
+
+if len(CIFAR_10_CLASSES_2) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_2 must contain at least 2 classes.")
+
+
+# ============================================================
+# MODEL REGISTRY
+# ============================================================
+# Put the exact saved weight filename in "weights".
+#
+# IMPORTANT:
+# ----------
+# If your real files were saved with ".pth", include ".pth".
+# If your real files were saved without ".pth", keep them without ".pth".
+#
+# FLEXIBILITY:
+# ------------
+# Each model can define its own class list size.
+# The script automatically creates the correct FC output size.
 # ============================================================
 
-MODEL_BASE_DIR = "../../../"  # folder where weight files exist
+MODEL_BASE_DIR = "../../../"
 
 MODELS: List[Dict] = [
     {
-        "name": "cifar0-9",
+        "name": "cifar00-09",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "dog2D-10-cnn-128-256-512-1024-158s-L5442-A9984-T9984.pth"  # <-- include .pth if it exists
+            "cifar-00-09-cnn-128-256-512-1024-576s-L5463-A1000-T8830"
         ),
         "classes": CIFAR_10_CLASSES_1,
-        "temperature": 1.0,  # keep 1.0 unless you know calibration
+        "temperature": 1.0,
     },
 
-    # Example second model:
-   {
+    {
         "name": "cifar10-19",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "dog2D-10-cnn-128-256-512-1024-158s-L5442-A9984-T9984.pth"  # <-- include .pth if it exists
+            "cifar-10-19-cnn-128-256-512-1024-375s-L5232-A1000-T8610"
         ),
         "classes": CIFAR_10_CLASSES_2,
-        "temperature": 1.0,  # keep 1.0 unless you know calibration
+        "temperature": 1.0,
     },
 ]
 
@@ -208,6 +281,18 @@ def debug_print(*args, **kwargs):
 
 
 # ============================================================
+# GLOBAL DISPLAY STATE
+# ============================================================
+# We keep one window reference here.
+# Before showing the next image, we destroy the old window.
+# ============================================================
+
+DISPLAY_ROOT = None
+DISPLAY_LABEL = None
+DISPLAY_PHOTO = None
+
+
+# ============================================================
 # MODEL DEFINITION (INFERENCE-READY)
 # ============================================================
 
@@ -215,21 +300,176 @@ class StaticInitLearnableCNN(nn.Module):
     def __init__(self, num_classes: int = 10):
         super().__init__()
 
+        # ============================================================
+        # INPUT IMAGE
+        # ============================================================
+        # Expected input shape:
+        #
+        #     [B, 3, 32, 32]
+        #
+        # Meaning:
+        #   B = batch size
+        #   3 = RGB channels
+        #   32x32 = resized image size
+        #
+        # Total input values per image:
+        #
+        #     3 × 32 × 32 = 3,072
+        # ============================================================
+
+
+        # ============================================================
+        # CONVOLUTION LAYER 1
+        # ============================================================
+        # Conv2d(3 -> 128, kernel=3x3, padding=1)
+        #
+        # Output shape:
+        #     128 × 32 × 32
+        #
+        # Total output neurons:
+        #     128 × 32 × 32 = 131,072
+        #
+        # Input size seen by each neuron:
+        #     3 × 3 × 3 = 27 inputs
+        #
+        # Each of the 128 filters has:
+        #     27 weights + 1 bias
+        # ============================================================
         self.conv1 = nn.Conv2d(CONV1_IN_CHANNELS, CONV1_OUT_CHANNELS, kernel_size=3, padding=1, bias=True)
-        self.bn1   = nn.BatchNorm2d(CONV1_OUT_CHANNELS)
-        self.pool  = nn.MaxPool2d(2, 2)
 
+        # BatchNorm for 128 channels
+        self.bn1 = nn.BatchNorm2d(CONV1_OUT_CHANNELS)
+
+        # MaxPool halves spatial size:
+        #     128 × 32 × 32 -> 128 × 16 × 16
+        self.pool = nn.MaxPool2d(2, 2)
+
+
+        # ============================================================
+        # CONVOLUTION LAYER 2
+        # ============================================================
+        # Conv2d(128 -> 256, kernel=3x3, padding=1)
+        #
+        # Input shape:
+        #     128 × 16 × 16
+        #
+        # Output shape:
+        #     256 × 16 × 16
+        #
+        # Total output neurons:
+        #     256 × 16 × 16 = 65,536
+        #
+        # Input size seen by each neuron:
+        #     3 × 3 × 128 = 1,152 inputs
+        #
+        # Each filter has:
+        #     1,152 weights + 1 bias
+        # ============================================================
         self.conv2 = nn.Conv2d(CONV2_IN_CHANNELS, CONV2_OUT_CHANNELS, kernel_size=3, padding=1, bias=True)
-        self.bn2   = nn.BatchNorm2d(CONV2_OUT_CHANNELS)
 
+        # BatchNorm for 256 channels
+        self.bn2 = nn.BatchNorm2d(CONV2_OUT_CHANNELS)
+
+
+        # ============================================================
+        # CONVOLUTION LAYER 3
+        # ============================================================
+        # Conv2d(256 -> 512, kernel=3x3, padding=1)
+        #
+        # Input shape:
+        #     256 × 16 × 16
+        #
+        # Output shape:
+        #     512 × 16 × 16
+        #
+        # Total output neurons:
+        #     512 × 16 × 16 = 131,072
+        #
+        # Input size seen by each neuron:
+        #     3 × 3 × 256 = 2,304 inputs
+        #
+        # Each filter has:
+        #     2,304 weights + 1 bias
+        # ============================================================
         self.conv3 = nn.Conv2d(CONV3_IN_CHANNELS, CONV3_OUT_CHANNELS, kernel_size=3, padding=1, bias=True)
-        self.bn3   = nn.BatchNorm2d(CONV3_OUT_CHANNELS)
 
+        # BatchNorm for 512 channels
+        self.bn3 = nn.BatchNorm2d(CONV3_OUT_CHANNELS)
+
+
+        # ============================================================
+        # CONVOLUTION LAYER 4
+        # ============================================================
+        # Conv2d(512 -> 1024, kernel=3x3, padding=1)
+        #
+        # Input shape:
+        #     512 × 16 × 16
+        #
+        # Output shape:
+        #     1024 × 16 × 16
+        #
+        # Total output neurons:
+        #     1024 × 16 × 16 = 262,144
+        #
+        # Input size seen by each neuron:
+        #     3 × 3 × 512 = 4,608 inputs
+        #
+        # Each filter has:
+        #     4,608 weights + 1 bias
+        # ============================================================
         self.conv4 = nn.Conv2d(CONV4_IN_CHANNELS, CONV4_OUT_CHANNELS, kernel_size=3, padding=1, bias=True)
-        self.bn4   = nn.BatchNorm2d(CONV4_OUT_CHANNELS)
 
+        # BatchNorm for 1024 channels
+        self.bn4 = nn.BatchNorm2d(CONV4_OUT_CHANNELS)
+
+
+        # ============================================================
+        # GLOBAL AVERAGE POOLING
+        # ============================================================
+        # Converts:
+        #     1024 × 16 × 16
+        # into:
+        #     1024 × 1 × 1
+        #
+        # Final neuron count after GAP:
+        #     1024 neurons
+        # ============================================================
         self.gap = nn.AdaptiveAvgPool2d(1)
+
+
+        # ============================================================
+        # DROPOUT
+        # ============================================================
+        # Randomly disables 30% of the 1024 neurons during training.
+        # Disabled automatically during inference because we use model.eval().
+        # ============================================================
         self.dropout = nn.Dropout(p=0.3)
+
+
+        # ============================================================
+        # FINAL FULLY CONNECTED CLASSIFIER
+        # ============================================================
+        # Linear(1024 -> num_classes)
+        #
+        # IMPORTANT:
+        # ----------
+        # num_classes is VARIABLE and comes from:
+        #
+        #     len(cfg["classes"])
+        #
+        # So if one model has:
+        #     10 classes -> Linear(1024 -> 10)
+        #
+        # and another model has:
+        #     15 classes -> Linear(1024 -> 15)
+        #
+        # Each output neuron corresponds to one class in that model's
+        # class list.
+        #
+        # Parameters:
+        #     1024 × num_classes weights
+        #     num_classes biases
+        # ============================================================
         self.fc = nn.Linear(CONV4_OUT_CHANNELS, num_classes)
 
     def forward(self, x):
@@ -249,9 +489,6 @@ class StaticInitLearnableCNN(nn.Module):
 
 # ============================================================
 # TRANSFORM (MUST MATCH TRAINING)
-# ============================================================
-# If you trained on 32x32, keep 32x32.
-# If you trained on 64x64, change to (64,64).
 # ============================================================
 
 INFER_TRANSFORM = transforms.Compose([
@@ -287,40 +524,188 @@ def list_images_in_dir(root_dir: str) -> List[str]:
 
 def load_image_tensor(image_path: str) -> torch.Tensor:
     img = Image.open(image_path).convert("RGB")
-    x = INFER_TRANSFORM(img)  # [C,H,W]
+    x = INFER_TRANSFORM(img)
     return x
 
 
-def softmax_confidence(logits: torch.Tensor, temperature: float = 1.0) -> Tuple[int, float]:
+def safe_load_state_dict(
+    model: nn.Module,
+    weights_path: str,
+    device: torch.device,
+    expected_num_classes: int,
+) -> None:
     """
-    Returns (pred_id, conf) for ONE sample logits [C] or [1,C].
-    conf is the max softmax probability.
+    Loads state_dict safely and checks that the number of output
+    classes in the checkpoint matches the class list length.
     """
-    if logits.ndim == 2:
-        logits = logits[0]
-    if temperature is None or temperature <= 0:
-        temperature = 1.0
-    probs = torch.softmax(logits / float(temperature), dim=0)
-    pred_id = int(torch.argmax(probs).item())
-    conf = float(probs[pred_id].item())
-    return pred_id, conf
-
-
-def safe_load_state_dict(model: nn.Module, weights_path: str, device: torch.device) -> None:
     if not os.path.exists(weights_path):
         raise FileNotFoundError(f"Model weights not found: {weights_path}")
 
     state = torch.load(weights_path, map_location=device)
 
-    # In case you saved a full checkpoint dict instead of pure state_dict:
-    # e.g. {"model": state_dict, ...}
+    # In case you saved a full checkpoint dict instead of pure state_dict
     if isinstance(state, dict) and "state_dict" in state and isinstance(state["state_dict"], dict):
         state = state["state_dict"]
     if isinstance(state, dict) and "model" in state and isinstance(state["model"], dict):
         state = state["model"]
 
+    if "fc.weight" not in state:
+        raise RuntimeError(
+            f"Checkpoint does not contain 'fc.weight': {weights_path}"
+        )
+
+    checkpoint_num_classes = int(state["fc.weight"].shape[0])
+
+    if checkpoint_num_classes != expected_num_classes:
+        raise RuntimeError(
+            f"Class count mismatch for weights file:\n"
+            f"  {weights_path}\n"
+            f"Checkpoint expects {checkpoint_num_classes} classes, "
+            f"but your global class list defines {expected_num_classes} classes."
+        )
+
     model.load_state_dict(state)
 
+
+def make_safe_filename(text: str) -> str:
+    safe = []
+    for ch in text:
+        if ch.isalnum() or ch in ("-", "_", "."):
+            safe.append(ch)
+        else:
+            safe.append("_")
+    return "".join(safe)
+
+
+def wait_for_enter_to_continue():
+    print()
+    input("Press ENTER to continue to the next tested image...")
+    print()
+
+
+def close_previous_display_window():
+    """
+    Close/remove the old display window before showing the new one.
+    """
+    global DISPLAY_ROOT, DISPLAY_LABEL, DISPLAY_PHOTO
+
+    if DISPLAY_ROOT is not None:
+        try:
+            DISPLAY_ROOT.update_idletasks()
+            DISPLAY_ROOT.destroy()
+        except Exception:
+            pass
+
+    DISPLAY_ROOT = None
+    DISPLAY_LABEL = None
+    DISPLAY_PHOTO = None
+
+
+def display_tested_image(
+    image_path: str,
+    detected_class: str,
+    confidence: float,
+    winning_model: str,
+    enlarge_factor: int = 6,
+    display_enabled: bool = True,
+    wait_for_enter: bool = True,
+) -> None:
+    """
+    Optionally displays the tested image enlarged by enlarge_factor.
+
+    Before displaying the new image, the old displayed image window
+    is closed first.
+    """
+    global DISPLAY_ROOT, DISPLAY_LABEL, DISPLAY_PHOTO
+
+    if not display_enabled:
+        return
+
+    if enlarge_factor < 1:
+        enlarge_factor = 1
+
+    try:
+        img = Image.open(image_path).convert("RGB")
+    except Exception as e:
+        print(f"[DISPLAY-SKIP] Could not open image for display: {image_path}  err={e}")
+        return
+
+    # Close the old image display before showing the new one
+    close_previous_display_window()
+
+    # Enlarge image
+    w, h = img.size
+    enlarged_w = w * enlarge_factor
+    enlarged_h = h * enlarge_factor
+    img_large = img.resize((enlarged_w, enlarged_h), Image.NEAREST)
+
+    # Draw result text
+    draw = ImageDraw.Draw(img_large)
+    font = ImageFont.load_default()
+
+    line1 = f"Detected: {detected_class}"
+    line2 = f"Confidence: {confidence * 100:.2f}%"
+    line3 = f"Model: {winning_model}"
+
+    text_lines = [line1, line2, line3]
+
+    padding = 10
+    line_height = 16
+    text_block_height = padding * 2 + line_height * len(text_lines)
+
+    draw.rectangle(
+        [(0, 0), (enlarged_w, text_block_height)],
+        fill=(0, 0, 0)
+    )
+
+    y = padding
+    for line in text_lines:
+        draw.text((padding, y), line, fill=(255, 255, 255), font=font)
+        y += line_height
+
+    os.makedirs(DISPLAY_OUTPUT_DIR, exist_ok=True)
+
+    base_name = os.path.basename(image_path)
+    name_root, _ = os.path.splitext(base_name)
+
+    out_name = (
+        f"{make_safe_filename(name_root)}"
+        f"__det_{make_safe_filename(detected_class)}"
+        f"__conf_{int(round(confidence * 10000))}"
+        f".png"
+    )
+    out_path = os.path.join(DISPLAY_OUTPUT_DIR, out_name)
+
+    try:
+        img_large.save(out_path)
+    except Exception as e:
+        print(f"[DISPLAY-SKIP] Could not save display image: {image_path}  err={e}")
+        return
+
+    # Show in Tkinter window
+    try:
+        DISPLAY_ROOT = tk.Tk()
+        DISPLAY_ROOT.title(DISPLAY_WINDOW_TITLE)
+
+        DISPLAY_PHOTO = ImageTk.PhotoImage(img_large)
+        DISPLAY_LABEL = tk.Label(DISPLAY_ROOT, image=DISPLAY_PHOTO)
+        DISPLAY_LABEL.pack()
+
+        DISPLAY_ROOT.update_idletasks()
+        DISPLAY_ROOT.update()
+    except Exception as e:
+        print(f"[DISPLAY-SKIP] Could not display image in window: {image_path}  err={e}")
+        close_previous_display_window()
+        return
+
+    if wait_for_enter:
+        wait_for_enter_to_continue()
+        close_previous_display_window()
+
+
+# ============================================================
+# MAIN MULTI-MODEL DIRECTORY CLASSIFIER
+# ============================================================
 
 def run_directory_multi_model_classifier(
     image_paths: List[str],
@@ -330,22 +715,57 @@ def run_directory_multi_model_classifier(
     """
     For each image:
       - run all models
-      - compute max softmax confidence per model
-      - pick overall best (max confidence)
+      - compute raw probabilities
+      - choose the model with MAX raw top1 confidence
+      - print:
+          • final detected class
+          • final confidence
+          • per-model detected class + confidence
+      - optionally display the tested image enlarged
+      - optionally wait for ENTER before next image
     """
 
     if len(image_paths) == 0:
         print("❌ No images found in input directory.")
         return
 
-    # Pre-load all models
     loaded_models = []
+
     for cfg in models_cfg:
         classes = cfg["classes"]
+
+        # ------------------------------------------------------------
+        # FLEXIBLE CLASS COUNT
+        # ------------------------------------------------------------
+        # The number of classes for each model is determined
+        # automatically from the length of the class list.
+        #
+        # This allows different models to have different numbers
+        # of classes.
+        #
+        # Example:
+        #     model A -> 10 classes
+        #     model B -> 15 classes
+        #     model C -> 8 classes
+        #
+        # The CNN output layer will automatically match.
+        # ------------------------------------------------------------
         num_classes = len(classes)
 
+        if num_classes < 2:
+            raise RuntimeError(
+                f"Model {cfg['name']!r} must define at least 2 classes."
+            )
+
         model = StaticInitLearnableCNN(num_classes=num_classes)
-        safe_load_state_dict(model, cfg["weights"], device=device)
+
+        safe_load_state_dict(
+            model=model,
+            weights_path=cfg["weights"],
+            device=device,
+            expected_num_classes=num_classes,
+        )
+
         model.to(device)
         model.eval()
 
@@ -354,30 +774,34 @@ def run_directory_multi_model_classifier(
         debug_print(f"[LOAD] model={cfg['name']!r}")
         debug_print(f"       weights={cfg['weights']!r}")
         debug_print(f"       num_classes={num_classes}")
+        debug_print(f"       classes={classes}")
 
-    # Inference loop (batched)
     pin = (device.type == "cuda")
 
     print("\n============================================================")
     print("MULTI-MODEL DIRECTORY CLASSIFIER (Inference Only)")
     print("============================================================")
-    print(f"Device           : {device}")
-    print(f"Input dir images  : {len(image_paths)}")
-    print(f"Batch size        : {INFER_BATCH_SIZE}")
-    print(f"Models loaded     : {len(loaded_models)}")
+    print(f"Device                 : {device}")
+    print(f"Input dir images       : {len(image_paths)}")
+    print(f"Batch size             : {INFER_BATCH_SIZE}")
+    print(f"Models loaded          : {len(loaded_models)}")
+    print(f"Display enabled        : {DISPLAY_TESTED_IMAGE}")
+    print(f"Enlarge factor         : {ENLARGE_FACTOR}")
+    print(f"Wait for ENTER         : {WAIT_FOR_ENTER_BETWEEN_IMAGES}")
+    print("Selection method       : MAX raw confidence")
     print("============================================================\n")
 
     t0 = time.perf_counter()
 
-    # Stats
+    total_images_processed = 0
     per_model_wins = {cfg["name"]: 0 for cfg, _ in loaded_models}
 
     for start in tqdm(range(0, len(image_paths), INFER_BATCH_SIZE), desc="Classifying"):
         batch_paths = image_paths[start:start + INFER_BATCH_SIZE]
 
-        # Build batch tensor
         xs = []
         ok_paths = []
+
         for p in batch_paths:
             try:
                 xs.append(load_image_tensor(p))
@@ -388,22 +812,27 @@ def run_directory_multi_model_classifier(
         if len(xs) == 0:
             continue
 
-        x = torch.stack(xs, dim=0).to(device, non_blocking=pin)  # [B,C,H,W]
+        x = torch.stack(xs, dim=0).to(device, non_blocking=pin)
 
-        # For each model, compute predictions for this batch
+        # --------------------------------------------------------
+        # For each image in the batch, keep the best overall result
+        # across all models using raw top1 confidence.
+        # --------------------------------------------------------
+        best_name = [""] * len(ok_paths)
+        best_pred = [-1] * len(ok_paths)
+        best_conf = [-1.0] * len(ok_paths)
+        best_cls = [""] * len(ok_paths)
+
+        # Store each model result for each image
+        per_image_all_results = [[] for _ in range(len(ok_paths))]
+
         with torch.no_grad():
-            # For each image in batch, keep the best overall (across models)
-            best_name = [""] * x.size(0)
-            best_pred = [-1] * x.size(0)
-            best_conf = [-1.0] * x.size(0)
-            best_cls  = [""] * x.size(0)
-
             for cfg, model in loaded_models:
-                logits = model(x)  # [B, Cmodel]
+                logits = model(x)
                 temp = float(cfg.get("temperature", 1.0) or 1.0)
 
-                probs = torch.softmax(logits / temp, dim=1)  # [B, Cmodel]
-                confs, pred_ids = torch.max(probs, dim=1)    # [B]
+                probs = torch.softmax(logits / temp, dim=1)   # [B, Cmodel]
+                confs, pred_ids = torch.max(probs, dim=1)     # [B]
 
                 pred_ids = pred_ids.detach().cpu().tolist()
                 confs = confs.detach().cpu().tolist()
@@ -413,33 +842,73 @@ def run_directory_multi_model_classifier(
 
                 for i in range(len(ok_paths)):
                     conf = float(confs[i])
-                    pid  = int(pred_ids[i])
+                    pid = int(pred_ids[i])
+                    cls_name = classes[pid] if 0 <= pid < len(classes) else f"class_{pid}"
 
+                    # Save this model's result for this image
+                    per_image_all_results[i].append(
+                        {
+                            "model_name": model_name,
+                            "detected_class": cls_name,
+                            "pred_id": pid,
+                            "confidence": conf,
+                        }
+                    )
+
+                    # ----------------------------------------------------
+                    # WINNER SELECTION:
+                    # ----------------------------------------------------
+                    # Choose the model that has the LARGEST raw top1
+                    # confidence for this image.
+                    # ----------------------------------------------------
                     if conf > best_conf[i]:
                         best_conf[i] = conf
                         best_pred[i] = pid
                         best_name[i] = model_name
-                        best_cls[i]  = classes[pid] if 0 <= pid < len(classes) else f"class_{pid}"
+                        best_cls[i] = cls_name
 
-            # Print per-image result (compact)
-            for i, p in enumerate(ok_paths):
-                per_model_wins[best_name[i]] += 1
+        for i, p in enumerate(ok_paths):
+            total_images_processed += 1
+            per_model_wins[best_name[i]] += 1
+
+            print("------------------------------------------------------------")
+            print(f"IMAGE FILE         : {os.path.basename(p)}")
+            print(f"FINAL DETECTION    : {best_cls[i]}")
+            print(f"FINAL CONFIDENCE   : {best_conf[i] * 100:.2f}%")
+            print(f"WINNING MODEL      : {best_name[i]}")
+            print("MODEL-BY-MODEL RESULTS:")
+
+            for result in per_image_all_results[i]:
                 print(
-                    f"{os.path.basename(p):<40} | "
-                    f"BEST_MODEL={best_name[i]:<15} | "
-                    f"PRED={best_cls[i]:<20} | "
-                    f"CONF={best_conf[i]*100:6.2f}%"
+                    f"  - {result['model_name']:<15} -> "
+                    f"detected={result['detected_class']:<20} "
+                    f"confidence={result['confidence'] * 100:6.2f}%"
                 )
 
+            display_tested_image(
+                image_path=p,
+                detected_class=best_cls[i],
+                confidence=best_conf[i],
+                winning_model=best_name[i],
+                enlarge_factor=ENLARGE_FACTOR,
+                display_enabled=DISPLAY_TESTED_IMAGE,
+                wait_for_enter=WAIT_FOR_ENTER_BETWEEN_IMAGES,
+            )
+
+        print("------------------------------------------------------------")
+
     dt = time.perf_counter() - t0
+
+    # Make sure any last window is closed when processing ends
+    close_previous_display_window()
 
     print("\n============================================================")
     print("SUMMARY")
     print("============================================================")
-    print(f"Total images processed : {len(image_paths)}")
+    print(f"Total images processed : {total_images_processed}")
     print(f"Total time             : {dt:.2f} sec")
-    if len(image_paths) > 0:
-        print(f"Avg time / image       : {dt/len(image_paths):.4f} sec")
+    if total_images_processed > 0:
+        print(f"Avg time / image       : {dt / total_images_processed:.4f} sec")
     print("------------------------------------------------------------")
     print("Model win counts (how many times each model had max confidence):")
     for k, v in per_model_wins.items():
@@ -452,23 +921,18 @@ def run_directory_multi_model_classifier(
 # ============================================================
 
 def main():
-    # Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     debug_print("Using device:", device)
 
-    # CUDA speed option (keep in main, not in model)
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
 
-    # Check models config
     if not MODELS:
         print("❌ MODELS list is empty. Add at least one model in global MODELS.")
         return
 
-    # List images
-    image_paths = list_images_in_dir(INPUT_IMAGE_DIR)
+    image_paths = list_images_in_dir(TEST_IMAGE_DIR)
 
-    # Run classifier
     run_directory_multi_model_classifier(
         image_paths=image_paths,
         models_cfg=MODELS,
