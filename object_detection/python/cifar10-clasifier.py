@@ -5,21 +5,22 @@
 #
 # WHAT THIS SCRIPT DOES:
 # ------------------------------------------------------------
-# ✅ You define 1+ trained models in a global list (MODELS)
+# ✅ You define 1 or more trained models in a global list (MODELS)
 # ✅ Each model has:
 #     - weights file path
 #     - its OWN class list (the classes it was trained on)
-# ✅ You provide an INPUT directory that contains images
+# ✅ You provide an INPUT directory that contains unknown images
 # ✅ For each image:
 #     - run ALL models
-#     - compute confidence per model
+#     - compute raw confidence per model
 #     - choose the model/class with MAX raw confidence
 # ✅ Prints per-image result and a summary
 # ✅ Optionally displays each tested image enlarged
 # ✅ Before displaying a new image, the old displayed image
 #    window is closed first
-# ✅ Optional keyboard control:
-#     - press ENTER to move to the next tested image
+# ✅ Keyboard control while displaying images:
+#     - ENTER -> move to next tested image
+#     - E     -> exit the program immediately
 #
 # NOTES:
 # ------------------------------------------------------------
@@ -42,10 +43,25 @@ import importlib
 
 
 def _pip_install(pkgs):
+    """
+    Install one or more Python packages into the SAME interpreter
+    running this script.
+
+    Example:
+        _pip_install(["torch", "torchvision"])
+    """
     subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", *pkgs])
 
 
 def _ensure_import(import_name, pip_name=None):
+    """
+    Try to import a module.
+    If it fails, install it first, then import again.
+
+    Parameters:
+        import_name : actual module name used in Python import
+        pip_name    : package name used by pip if different
+    """
     try:
         importlib.import_module(import_name)
     except Exception:
@@ -54,7 +70,18 @@ def _ensure_import(import_name, pip_name=None):
 
 
 def ensure_deps_for_this_script():
-    # ---- Core ML stack ----
+    """
+    Make sure the packages required by this script exist.
+
+    Core ML stack:
+        torch
+        torchvision
+
+    Utilities:
+        numpy
+        pillow
+        tqdm
+    """
     try:
         importlib.import_module("torch")
         importlib.import_module("torchvision")
@@ -62,7 +89,6 @@ def ensure_deps_for_this_script():
         print("[AUTO-INSTALL] Installing PyTorch stack...")
         _pip_install(["torch", "torchvision", "torchaudio"])
 
-    # ---- Utilities ----
     _ensure_import("numpy")
     _ensure_import("PIL", "pillow")
     _ensure_import("tqdm")
@@ -73,7 +99,7 @@ ensure_deps_for_this_script()
 
 
 # ============================================================
-# NORMAL IMPORTS (SAFE AFTER AUTO-INSTALL)
+# NORMAL IMPORTS
 # ============================================================
 
 import os
@@ -96,7 +122,7 @@ import tkinter as tk
 DEBUG_FLAG = True
 
 # ------------------------------------------------------------
-# Directory containing unknown images
+# Directory containing UNKNOWN images to classify
 # ------------------------------------------------------------
 TEST_IMAGE_DIR = "../../../data/cifar10_clasifier_test"
 
@@ -108,18 +134,30 @@ ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 # ------------------------------------------------------------
 # Inference batch size
 # ------------------------------------------------------------
+# This controls how many images are processed together per model.
+#
+# Larger values:
+#   • usually faster on GPU
+#   • require more GPU memory
+#
+# Smaller values:
+#   • slower
+#   • require less memory
+# ------------------------------------------------------------
 INFER_BATCH_SIZE = 64
 
 # ------------------------------------------------------------
 # OPTIONAL DISPLAY FEATURE
 # ------------------------------------------------------------
 # DISPLAY_TESTED_IMAGE:
-#   • If True  -> show each tested image enlarged
-#   • If False -> no image display, only console output
+#   • True  -> show each tested image enlarged
+#   • False -> no display, only console output
 #
 # ENLARGE_FACTOR:
-#   • Enlarges displayed image width and height by this factor
-#   • Default requested value = 6
+#   • image width  = original_width  × ENLARGE_FACTOR
+#   • image height = original_height × ENLARGE_FACTOR
+#
+# Default requested value = 6
 # ------------------------------------------------------------
 DISPLAY_TESTED_IMAGE = True
 ENLARGE_FACTOR = 6
@@ -128,11 +166,12 @@ ENLARGE_FACTOR = 6
 # OPTIONAL KEYBOARD CONTROL
 # ------------------------------------------------------------
 # If True:
-#   after each tested image is shown, the script waits until
-#   you press ENTER before continuing to the next image.
+#   after each displayed image:
+#       ENTER -> continue
+#       E     -> exit program
 #
 # If False:
-#   the script continues automatically.
+#   script continues automatically without waiting
 # ------------------------------------------------------------
 WAIT_FOR_ENTER_BETWEEN_IMAGES = True
 
@@ -148,7 +187,17 @@ DISPLAY_WINDOW_TITLE = "Tested Image Viewer"
 
 
 # ============================================================
-# MODEL ARCH CONSTANTS (YOUR ARCH)
+# MODEL ARCH CONSTANTS
+# ============================================================
+# Your CNN architecture:
+#
+#   conv1 :   3 -> 128
+#   conv2 : 128 -> 256
+#   conv3 : 256 -> 512
+#   conv4 : 512 -> 1024
+#
+# After conv4:
+#   GAP -> flatten -> FC
 # ============================================================
 
 CONV1_IN_CHANNELS = 3
@@ -165,12 +214,19 @@ CONV4_OUT_CHANNELS = 1024
 
 
 # ============================================================
-# GLOBAL CLASSES
+# GLOBAL CLASS GROUPS
 # ============================================================
 # IMPORTANT:
 # ----------
-# Each model must have the exact class order used in training.
-# The model predicts an index [0..C-1] which maps to this list.
+# Each model MUST use the exact class order used during training.
+#
+# The model predicts an index:
+#
+#     0, 1, 2, ... , C-1
+#
+# This index is mapped into:
+#
+#     cfg["classes"][predicted_index]
 #
 # FLEXIBILITY:
 # ------------
@@ -189,12 +245,11 @@ CONV4_OUT_CHANNELS = 1024
 # So the FC layer becomes:
 #
 #     Linear(1024 -> num_classes)
-#
-# ------------------------------------------------------------
-# Example class groups:
-# ------------------------------------------------------------
+# ============================================================
 
-# FIRST 10 CIFAR-100 CLASSES: indices 00 → 09
+# ------------------------------------------------------------
+# Example group 1: first 10 classes
+# ------------------------------------------------------------
 CIFAR_10_CLASSES_1 = [
     "apple",          # 00
     "aquarium_fish",  # 01
@@ -208,7 +263,9 @@ CIFAR_10_CLASSES_1 = [
     "bottle",         # 09
 ]
 
-# SECOND 10 CIFAR-100 CLASSES: indices 10 → 19
+# ------------------------------------------------------------
+# Example group 2: next 10 classes
+# ------------------------------------------------------------
 CIFAR_10_CLASSES_2 = [
     "bowl",         # 10
     "boy",          # 11
@@ -222,7 +279,24 @@ CIFAR_10_CLASSES_2 = [
     "cattle",       # 19
 ]
 
+
+CIFAR_10_CLASSES_3 = [
+    "chair",          # 20
+    "chimpanzee",     # 21       
+    "clock",          # 22
+    "cloud",          # 23
+    "cockroach",      # 24
+    "couch",          # 25
+    "crab",           # 26
+    "crocodile",      # 27
+    "cup",            # 28
+    "dinosaur",       # 29
+]
+
+
+# ------------------------------------------------------------
 # Optional safety checks for these example lists
+# ------------------------------------------------------------
 if len(CIFAR_10_CLASSES_1) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_1 must contain at least 2 classes.")
 
@@ -233,16 +307,17 @@ if len(CIFAR_10_CLASSES_2) < 2:
 # ============================================================
 # MODEL REGISTRY
 # ============================================================
-# Put the exact saved weight filename in "weights".
+# Put the EXACT saved weight filename in "weights".
 #
 # IMPORTANT:
 # ----------
 # If your real files were saved with ".pth", include ".pth".
-# If your real files were saved without ".pth", keep them without ".pth".
+# If your real files were saved WITHOUT ".pth", keep them without
+# ".pth".
 #
 # FLEXIBILITY:
 # ------------
-# Each model can define its own class list size.
+# Each model can define its own class-list size.
 # The script automatically creates the correct FC output size.
 # ============================================================
 
@@ -276,12 +351,17 @@ MODELS: List[Dict] = [
 # ============================================================
 
 def debug_print(*args, **kwargs):
+    """
+    Debug print wrapper.
+    If DEBUG_FLAG is True -> print
+    If DEBUG_FLAG is False -> do nothing
+    """
     if DEBUG_FLAG:
         print(*args, **kwargs)
 
 
 # ============================================================
-# GLOBAL DISPLAY STATE
+# DISPLAY WINDOW GLOBALS
 # ============================================================
 # We keep one window reference here.
 # Before showing the next image, we destroy the old window.
@@ -293,163 +373,280 @@ DISPLAY_PHOTO = None
 
 
 # ============================================================
-# MODEL DEFINITION (INFERENCE-READY)
+# CNN MODEL
 # ============================================================
 
 class StaticInitLearnableCNN(nn.Module):
-    def __init__(self, num_classes: int = 10):
+
+    def __init__(self, num_classes: int):
         super().__init__()
 
-        # ============================================================
+        # --------------------------------------------------------
+        # OVERALL CNN STRUCTURE
+        # --------------------------------------------------------
+        # Input image
+        #   ↓
+        # Conv1  : 3   → 128 channels
+        # Pool
+        # Conv2  : 128 → 256 channels
+        # Conv3  : 256 → 512 channels
+        # Conv4  : 512 → 1024 channels
+        # GAP
+        # Dropout
+        # FC
+        #
+        # This is a classical convolutional neural network.
+        #
+        # Each convolution filter can be interpreted as a neuron
+        # group that scans a local spatial region of the previous
+        # layer.
+        # --------------------------------------------------------
+
+
+        # --------------------------------------------------------
         # INPUT IMAGE
-        # ============================================================
+        # --------------------------------------------------------
         # Expected input shape:
         #
         #     [B, 3, 32, 32]
         #
-        # Meaning:
+        # where:
         #   B = batch size
         #   3 = RGB channels
-        #   32x32 = resized image size
+        #   32 = image height
+        #   32 = image width
         #
-        # Total input values per image:
+        # Total raw input values per image:
         #
         #     3 × 32 × 32 = 3,072
-        # ============================================================
+        #
+        # You can think of those as the initial input neurons.
+        # --------------------------------------------------------
 
 
-        # ============================================================
-        # CONVOLUTION LAYER 1
-        # ============================================================
-        # Conv2d(3 -> 128, kernel=3x3, padding=1)
+        # --------------------------------------------------------
+        # LAYER 1 : CONVOLUTION
+        # --------------------------------------------------------
+        # Definition:
         #
-        # Output shape:
-        #     128 × 32 × 32
+        #     Conv2d(3 → 128, kernel=3×3, padding=1)
         #
-        # Total output neurons:
-        #     128 × 32 × 32 = 131,072
+        # Number of output feature maps / neuron groups:
         #
-        # Input size seen by each neuron:
+        #     128
+        #
+        # Since padding=1 and kernel=3, the spatial size remains:
+        #
+        #     32 × 32
+        #
+        # So total output neurons in this layer:
+        #
+        #     128 × 32 × 32 = 131,072 neurons
+        #
+        # Input seen by EACH neuron:
+        #
         #     3 × 3 × 3 = 27 inputs
         #
-        # Each of the 128 filters has:
+        # because:
+        #   kernel height  = 3
+        #   kernel width   = 3
+        #   input channels = 3
+        #
+        # Parameters per filter:
+        #
         #     27 weights + 1 bias
-        # ============================================================
+        #
+        # The 128 filters learn low-level patterns such as:
+        #   • edges
+        #   • corners
+        #   • simple textures
+        # --------------------------------------------------------
         self.conv1 = nn.Conv2d(CONV1_IN_CHANNELS, CONV1_OUT_CHANNELS, kernel_size=3, padding=1, bias=True)
 
-        # BatchNorm for 128 channels
+        # --------------------------------------------------------
+        # BATCH NORMALIZATION 1
+        # --------------------------------------------------------
+        # Normalizes the 128 output channels of conv1.
+        #
+        # Learnable parameters:
+        #   • gamma for each channel
+        #   • beta  for each channel
+        #
+        # This helps stabilize activations.
+        # --------------------------------------------------------
         self.bn1 = nn.BatchNorm2d(CONV1_OUT_CHANNELS)
 
-        # MaxPool halves spatial size:
-        #     128 × 32 × 32 -> 128 × 16 × 16
+        # --------------------------------------------------------
+        # MAX POOLING
+        # --------------------------------------------------------
+        # MaxPool2d(2,2)
+        #
+        # Reduces spatial size by half:
+        #
+        #     128 × 32 × 32
+        #         ↓
+        #     128 × 16 × 16
+        #
+        # Total neurons after pooling:
+        #
+        #     128 × 16 × 16 = 32,768
+        #
+        # Pooling has NO learnable parameters.
+        # --------------------------------------------------------
         self.pool = nn.MaxPool2d(2, 2)
 
 
-        # ============================================================
-        # CONVOLUTION LAYER 2
-        # ============================================================
-        # Conv2d(128 -> 256, kernel=3x3, padding=1)
+        # --------------------------------------------------------
+        # LAYER 2 : CONVOLUTION
+        # --------------------------------------------------------
+        # Definition:
+        #
+        #     Conv2d(128 → 256, kernel=3×3, padding=1)
         #
         # Input shape:
+        #
         #     128 × 16 × 16
         #
         # Output shape:
+        #
         #     256 × 16 × 16
         #
         # Total output neurons:
-        #     256 × 16 × 16 = 65,536
         #
-        # Input size seen by each neuron:
+        #     256 × 16 × 16 = 65,536 neurons
+        #
+        # Input seen by EACH neuron:
+        #
         #     3 × 3 × 128 = 1,152 inputs
         #
-        # Each filter has:
+        # because each neuron sees a 3×3 patch across ALL 128
+        # channels from the previous layer.
+        #
+        # Parameters per filter:
+        #
         #     1,152 weights + 1 bias
-        # ============================================================
+        #
+        # This layer learns richer mid-level features.
+        # --------------------------------------------------------
         self.conv2 = nn.Conv2d(CONV2_IN_CHANNELS, CONV2_OUT_CHANNELS, kernel_size=3, padding=1, bias=True)
 
         # BatchNorm for 256 channels
         self.bn2 = nn.BatchNorm2d(CONV2_OUT_CHANNELS)
 
 
-        # ============================================================
-        # CONVOLUTION LAYER 3
-        # ============================================================
-        # Conv2d(256 -> 512, kernel=3x3, padding=1)
+        # --------------------------------------------------------
+        # LAYER 3 : CONVOLUTION
+        # --------------------------------------------------------
+        # Definition:
+        #
+        #     Conv2d(256 → 512, kernel=3×3, padding=1)
         #
         # Input shape:
+        #
         #     256 × 16 × 16
         #
         # Output shape:
+        #
         #     512 × 16 × 16
         #
         # Total output neurons:
-        #     512 × 16 × 16 = 131,072
         #
-        # Input size seen by each neuron:
+        #     512 × 16 × 16 = 131,072 neurons
+        #
+        # Input seen by EACH neuron:
+        #
         #     3 × 3 × 256 = 2,304 inputs
         #
-        # Each filter has:
+        # Parameters per filter:
+        #
         #     2,304 weights + 1 bias
-        # ============================================================
+        #
+        # This layer learns higher-level visual parts and patterns.
+        # --------------------------------------------------------
         self.conv3 = nn.Conv2d(CONV3_IN_CHANNELS, CONV3_OUT_CHANNELS, kernel_size=3, padding=1, bias=True)
 
         # BatchNorm for 512 channels
         self.bn3 = nn.BatchNorm2d(CONV3_OUT_CHANNELS)
 
 
-        # ============================================================
-        # CONVOLUTION LAYER 4
-        # ============================================================
-        # Conv2d(512 -> 1024, kernel=3x3, padding=1)
+        # --------------------------------------------------------
+        # LAYER 4 : CONVOLUTION
+        # --------------------------------------------------------
+        # Definition:
+        #
+        #     Conv2d(512 → 1024, kernel=3×3, padding=1)
         #
         # Input shape:
+        #
         #     512 × 16 × 16
         #
         # Output shape:
+        #
         #     1024 × 16 × 16
         #
         # Total output neurons:
-        #     1024 × 16 × 16 = 262,144
         #
-        # Input size seen by each neuron:
+        #     1024 × 16 × 16 = 262,144 neurons
+        #
+        # Input seen by EACH neuron:
+        #
         #     3 × 3 × 512 = 4,608 inputs
         #
-        # Each filter has:
+        # Parameters per filter:
+        #
         #     4,608 weights + 1 bias
-        # ============================================================
+        #
+        # This is the deepest convolution layer and learns more
+        # abstract combinations of visual features.
+        # --------------------------------------------------------
         self.conv4 = nn.Conv2d(CONV4_IN_CHANNELS, CONV4_OUT_CHANNELS, kernel_size=3, padding=1, bias=True)
 
         # BatchNorm for 1024 channels
         self.bn4 = nn.BatchNorm2d(CONV4_OUT_CHANNELS)
 
 
-        # ============================================================
-        # GLOBAL AVERAGE POOLING
-        # ============================================================
+        # --------------------------------------------------------
+        # GLOBAL AVERAGE POOLING (GAP)
+        # --------------------------------------------------------
         # Converts:
+        #
         #     1024 × 16 × 16
+        #
         # into:
+        #
         #     1024 × 1 × 1
         #
+        # Meaning:
+        #   each of the 1024 feature maps is reduced to ONE value
+        #   by averaging over spatial positions.
+        #
         # Final neuron count after GAP:
+        #
         #     1024 neurons
-        # ============================================================
+        #
+        # This makes the model less dependent on spatial size at the
+        # classifier stage.
+        # --------------------------------------------------------
         self.gap = nn.AdaptiveAvgPool2d(1)
 
 
-        # ============================================================
+        # --------------------------------------------------------
         # DROPOUT
-        # ============================================================
+        # --------------------------------------------------------
         # Randomly disables 30% of the 1024 neurons during training.
-        # Disabled automatically during inference because we use model.eval().
-        # ============================================================
+        #
+        # During inference, dropout is automatically disabled because
+        # we call:
+        #
+        #     model.eval()
+        # --------------------------------------------------------
         self.dropout = nn.Dropout(p=0.3)
 
 
-        # ============================================================
+        # --------------------------------------------------------
         # FINAL FULLY CONNECTED CLASSIFIER
-        # ============================================================
-        # Linear(1024 -> num_classes)
+        # --------------------------------------------------------
+        # Linear(1024 → num_classes)
         #
         # IMPORTANT:
         # ----------
@@ -458,21 +655,50 @@ class StaticInitLearnableCNN(nn.Module):
         #     len(cfg["classes"])
         #
         # So if one model has:
-        #     10 classes -> Linear(1024 -> 10)
+        #
+        #     10 classes -> Linear(1024 → 10)
         #
         # and another model has:
-        #     15 classes -> Linear(1024 -> 15)
         #
-        # Each output neuron corresponds to one class in that model's
+        #     15 classes -> Linear(1024 → 15)
+        #
+        # Each output neuron corresponds to ONE class in that model's
         # class list.
         #
-        # Parameters:
+        # Input size of EACH output neuron:
+        #
+        #     1024 inputs
+        #
+        # because each class neuron receives the 1024 values produced
+        # after GAP and flatten.
+        #
+        # Total parameters:
+        #
         #     1024 × num_classes weights
         #     num_classes biases
-        # ============================================================
+        # --------------------------------------------------------
         self.fc = nn.Linear(CONV4_OUT_CHANNELS, num_classes)
 
     def forward(self, x):
+        """
+        Forward pass of the network.
+
+        Input:
+            x : [B, 3, 32, 32]
+
+        Flow:
+            conv1 -> bn1 -> relu -> pool
+            conv2 -> bn2 -> relu
+            conv3 -> bn3 -> relu
+            conv4 -> bn4 -> relu
+            gap
+            flatten
+            dropout
+            fc
+
+        Output:
+            logits : [B, num_classes]
+        """
         x = F.relu(self.bn1(self.conv1(x)))
         x = self.pool(x)
 
@@ -488,33 +714,41 @@ class StaticInitLearnableCNN(nn.Module):
 
 
 # ============================================================
-# TRANSFORM (MUST MATCH TRAINING)
+# IMAGE TRANSFORM
+# ============================================================
+# This preprocessing must match training expectations.
+#
+# Resize((32,32)) means:
+#   every input image is resized to 32×32 before inference.
 # ============================================================
 
 INFER_TRANSFORM = transforms.Compose([
     transforms.Resize((32, 32)),
     transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225],
-    )
 ])
 
 
 # ============================================================
-# HELPERS
+# HELPER FUNCTIONS
 # ============================================================
 
 def list_images_in_dir(root_dir: str) -> List[str]:
+    """
+    Return a sorted list of valid image file paths from a directory.
+    """
     if not os.path.isdir(root_dir):
         raise FileNotFoundError(f"Input directory not found: {root_dir}")
 
     paths = []
+
     for name in os.listdir(root_dir):
         p = os.path.join(root_dir, name)
+
         if not os.path.isfile(p):
             continue
+
         ext = os.path.splitext(name)[1].lower()
+
         if ext in ALLOWED_EXTS:
             paths.append(p)
 
@@ -522,37 +756,39 @@ def list_images_in_dir(root_dir: str) -> List[str]:
     return paths
 
 
-def load_image_tensor(image_path: str) -> torch.Tensor:
+def load_image_tensor(image_path: str):
+    """
+    Load one image, convert to RGB, apply inference transform,
+    and return a tensor [C,H,W].
+    """
     img = Image.open(image_path).convert("RGB")
     x = INFER_TRANSFORM(img)
     return x
 
 
-def safe_load_state_dict(
-    model: nn.Module,
-    weights_path: str,
-    device: torch.device,
-    expected_num_classes: int,
-) -> None:
+# ============================================================
+# SAFE STATE LOAD
+# ============================================================
+
+def safe_load_state_dict(model, weights_path, device, expected_num_classes):
     """
-    Loads state_dict safely and checks that the number of output
-    classes in the checkpoint matches the class list length.
+    Load model weights safely and verify that the checkpoint FC layer
+    matches the number of classes defined in the model config.
     """
     if not os.path.exists(weights_path):
-        raise FileNotFoundError(f"Model weights not found: {weights_path}")
+        raise FileNotFoundError(weights_path)
 
     state = torch.load(weights_path, map_location=device)
 
-    # In case you saved a full checkpoint dict instead of pure state_dict
-    if isinstance(state, dict) and "state_dict" in state and isinstance(state["state_dict"], dict):
-        state = state["state_dict"]
+    # If checkpoint is wrapped inside a dict
     if isinstance(state, dict) and "model" in state and isinstance(state["model"], dict):
         state = state["model"]
+    if isinstance(state, dict) and "state_dict" in state and isinstance(state["state_dict"], dict):
+        state = state["state_dict"]
 
+    # Verify class count from fc.weight
     if "fc.weight" not in state:
-        raise RuntimeError(
-            f"Checkpoint does not contain 'fc.weight': {weights_path}"
-        )
+        raise RuntimeError(f"Checkpoint does not contain 'fc.weight': {weights_path}")
 
     checkpoint_num_classes = int(state["fc.weight"].shape[0])
 
@@ -561,27 +797,34 @@ def safe_load_state_dict(
             f"Class count mismatch for weights file:\n"
             f"  {weights_path}\n"
             f"Checkpoint expects {checkpoint_num_classes} classes, "
-            f"but your global class list defines {expected_num_classes} classes."
+            f"but your class list defines {expected_num_classes} classes."
         )
 
     model.load_state_dict(state)
 
 
-def make_safe_filename(text: str) -> str:
-    safe = []
-    for ch in text:
-        if ch.isalnum() or ch in ("-", "_", "."):
-            safe.append(ch)
-        else:
-            safe.append("_")
-    return "".join(safe)
+# ============================================================
+# KEYBOARD CONTROL
+# ============================================================
 
+def wait_for_input():
+    """
+    Keyboard control after displaying an image:
 
-def wait_for_enter_to_continue():
+        ENTER -> continue to next image
+        E     -> exit program immediately
+    """
     print()
-    input("Press ENTER to continue to the next tested image...")
-    print()
+    key = input("Press ENTER for next image or 'E' to exit: ").strip().lower()
 
+    if key == "e":
+        print("Exiting program...")
+        sys.exit(0)
+
+
+# ============================================================
+# CLOSE PREVIOUS DISPLAY WINDOW
+# ============================================================
 
 def close_previous_display_window():
     """
@@ -601,28 +844,49 @@ def close_previous_display_window():
     DISPLAY_PHOTO = None
 
 
-def display_tested_image(
-    image_path: str,
-    detected_class: str,
-    confidence: float,
-    winning_model: str,
-    enlarge_factor: int = 6,
-    display_enabled: bool = True,
-    wait_for_enter: bool = True,
-) -> None:
-    """
-    Optionally displays the tested image enlarged by enlarge_factor.
+# ============================================================
+# SAFE FILENAME HELPER
+# ============================================================
 
-    Before displaying the new image, the old displayed image window
+def make_safe_filename(text: str) -> str:
+    """
+    Convert arbitrary text into a filename-safe string.
+    """
+    safe = []
+    for ch in text:
+        if ch.isalnum() or ch in ("-", "_", "."):
+            safe.append(ch)
+        else:
+            safe.append("_")
+    return "".join(safe)
+
+
+# ============================================================
+# DISPLAY IMAGE
+# ============================================================
+
+def display_tested_image(image_path, detected_class, confidence, winning_model):
+    """
+    Display the tested image enlarged.
+
+    Before showing the new image, the old displayed image window
     is closed first.
+
+    The displayed image includes:
+        • detected class
+        • confidence
+        • winning model
+
+    If WAIT_FOR_ENTER_BETWEEN_IMAGES is True:
+        ENTER -> next image
+        E     -> exit program
     """
     global DISPLAY_ROOT, DISPLAY_LABEL, DISPLAY_PHOTO
 
-    if not display_enabled:
+    if not DISPLAY_TESTED_IMAGE:
         return
 
-    if enlarge_factor < 1:
-        enlarge_factor = 1
+    close_previous_display_window()
 
     try:
         img = Image.open(image_path).convert("RGB")
@@ -630,17 +894,16 @@ def display_tested_image(
         print(f"[DISPLAY-SKIP] Could not open image for display: {image_path}  err={e}")
         return
 
-    # Close the old image display before showing the new one
-    close_previous_display_window()
-
-    # Enlarge image
+    # --------------------------------------------------------
+    # Enlarge image by ENLARGE_FACTOR
+    # --------------------------------------------------------
     w, h = img.size
-    enlarged_w = w * enlarge_factor
-    enlarged_h = h * enlarge_factor
-    img_large = img.resize((enlarged_w, enlarged_h), Image.NEAREST)
+    img = img.resize((w * ENLARGE_FACTOR, h * ENLARGE_FACTOR), Image.NEAREST)
 
-    # Draw result text
-    draw = ImageDraw.Draw(img_large)
+    # --------------------------------------------------------
+    # Draw result text on top of the image
+    # --------------------------------------------------------
+    draw = ImageDraw.Draw(img)
     font = ImageFont.load_default()
 
     line1 = f"Detected: {detected_class}"
@@ -653,16 +916,16 @@ def display_tested_image(
     line_height = 16
     text_block_height = padding * 2 + line_height * len(text_lines)
 
-    draw.rectangle(
-        [(0, 0), (enlarged_w, text_block_height)],
-        fill=(0, 0, 0)
-    )
+    draw.rectangle((0, 0, img.size[0], text_block_height), fill=(0, 0, 0))
 
     y = padding
     for line in text_lines:
         draw.text((padding, y), line, fill=(255, 255, 255), font=font)
         y += line_height
 
+    # --------------------------------------------------------
+    # Save the displayed version to disk (optional useful log)
+    # --------------------------------------------------------
     os.makedirs(DISPLAY_OUTPUT_DIR, exist_ok=True)
 
     base_name = os.path.basename(image_path)
@@ -674,44 +937,48 @@ def display_tested_image(
         f"__conf_{int(round(confidence * 10000))}"
         f".png"
     )
+
     out_path = os.path.join(DISPLAY_OUTPUT_DIR, out_name)
 
     try:
-        img_large.save(out_path)
+        img.save(out_path)
     except Exception as e:
-        print(f"[DISPLAY-SKIP] Could not save display image: {image_path}  err={e}")
-        return
+        print(f"[DISPLAY-SKIP] Could not save displayed image: {out_path}  err={e}")
 
+    # --------------------------------------------------------
     # Show in Tkinter window
+    # --------------------------------------------------------
     try:
         DISPLAY_ROOT = tk.Tk()
         DISPLAY_ROOT.title(DISPLAY_WINDOW_TITLE)
 
-        DISPLAY_PHOTO = ImageTk.PhotoImage(img_large)
+        DISPLAY_PHOTO = ImageTk.PhotoImage(img)
+
         DISPLAY_LABEL = tk.Label(DISPLAY_ROOT, image=DISPLAY_PHOTO)
         DISPLAY_LABEL.pack()
 
         DISPLAY_ROOT.update_idletasks()
         DISPLAY_ROOT.update()
+
     except Exception as e:
         print(f"[DISPLAY-SKIP] Could not display image in window: {image_path}  err={e}")
         close_previous_display_window()
         return
 
-    if wait_for_enter:
-        wait_for_enter_to_continue()
-        close_previous_display_window()
+    # --------------------------------------------------------
+    # Optional keyboard wait
+    # --------------------------------------------------------
+    if WAIT_FOR_ENTER_BETWEEN_IMAGES:
+        wait_for_input()
+
+    close_previous_display_window()
 
 
 # ============================================================
-# MAIN MULTI-MODEL DIRECTORY CLASSIFIER
+# MAIN MULTI-MODEL CLASSIFIER
 # ============================================================
 
-def run_directory_multi_model_classifier(
-    image_paths: List[str],
-    models_cfg: List[Dict],
-    device: torch.device,
-) -> None:
+def run_directory_multi_model_classifier(image_paths, models_cfg, device):
     """
     For each image:
       - run all models
@@ -729,29 +996,16 @@ def run_directory_multi_model_classifier(
         print("❌ No images found in input directory.")
         return
 
+    # --------------------------------------------------------
+    # PRE-LOAD ALL MODELS
+    # --------------------------------------------------------
     loaded_models = []
 
     for cfg in models_cfg:
-        classes = cfg["classes"]
+        num_classes = len(cfg["classes"])
 
-        # ------------------------------------------------------------
-        # FLEXIBLE CLASS COUNT
-        # ------------------------------------------------------------
-        # The number of classes for each model is determined
-        # automatically from the length of the class list.
-        #
-        # This allows different models to have different numbers
-        # of classes.
-        #
-        # Example:
-        #     model A -> 10 classes
-        #     model B -> 15 classes
-        #     model C -> 8 classes
-        #
-        # The CNN output layer will automatically match.
-        # ------------------------------------------------------------
-        num_classes = len(classes)
-
+        # Flexible class count:
+        # each model can have its own class list size
         if num_classes < 2:
             raise RuntimeError(
                 f"Model {cfg['name']!r} must define at least 2 classes."
@@ -763,7 +1017,7 @@ def run_directory_multi_model_classifier(
             model=model,
             weights_path=cfg["weights"],
             device=device,
-            expected_num_classes=num_classes,
+            expected_num_classes=num_classes
         )
 
         model.to(device)
@@ -774,9 +1028,7 @@ def run_directory_multi_model_classifier(
         debug_print(f"[LOAD] model={cfg['name']!r}")
         debug_print(f"       weights={cfg['weights']!r}")
         debug_print(f"       num_classes={num_classes}")
-        debug_print(f"       classes={classes}")
-
-    pin = (device.type == "cuda")
+        debug_print(f"       classes={cfg['classes']}")
 
     print("\n============================================================")
     print("MULTI-MODEL DIRECTORY CLASSIFIER (Inference Only)")
@@ -795,6 +1047,11 @@ def run_directory_multi_model_classifier(
 
     total_images_processed = 0
     per_model_wins = {cfg["name"]: 0 for cfg, _ in loaded_models}
+
+    # --------------------------------------------------------
+    # PROCESS IMAGES IN BATCHES
+    # --------------------------------------------------------
+    pin = (device.type == "cuda")
 
     for start in tqdm(range(0, len(image_paths), INFER_BATCH_SIZE), desc="Classifying"):
         batch_paths = image_paths[start:start + INFER_BATCH_SIZE]
@@ -815,7 +1072,7 @@ def run_directory_multi_model_classifier(
         x = torch.stack(xs, dim=0).to(device, non_blocking=pin)
 
         # --------------------------------------------------------
-        # For each image in the batch, keep the best overall result
+        # For each image in the batch, keep the BEST overall result
         # across all models using raw top1 confidence.
         # --------------------------------------------------------
         best_name = [""] * len(ok_paths)
@@ -829,10 +1086,11 @@ def run_directory_multi_model_classifier(
         with torch.no_grad():
             for cfg, model in loaded_models:
                 logits = model(x)
-                temp = float(cfg.get("temperature", 1.0) or 1.0)
 
-                probs = torch.softmax(logits / temp, dim=1)   # [B, Cmodel]
-                confs, pred_ids = torch.max(probs, dim=1)     # [B]
+                temp = float(cfg.get("temperature", 1.0) or 1.0)
+                probs = torch.softmax(logits / temp, dim=1)
+
+                confs, pred_ids = torch.max(probs, dim=1)
 
                 pred_ids = pred_ids.detach().cpu().tolist()
                 confs = confs.detach().cpu().tolist()
@@ -843,6 +1101,7 @@ def run_directory_multi_model_classifier(
                 for i in range(len(ok_paths)):
                     conf = float(confs[i])
                     pid = int(pred_ids[i])
+
                     cls_name = classes[pid] if 0 <= pid < len(classes) else f"class_{pid}"
 
                     # Save this model's result for this image
@@ -856,10 +1115,9 @@ def run_directory_multi_model_classifier(
                     )
 
                     # ----------------------------------------------------
-                    # WINNER SELECTION:
+                    # WINNER SELECTION
                     # ----------------------------------------------------
-                    # Choose the model that has the LARGEST raw top1
-                    # confidence for this image.
+                    # Choose the model with the largest RAW top1 confidence.
                     # ----------------------------------------------------
                     if conf > best_conf[i]:
                         best_conf[i] = conf
@@ -867,6 +1125,9 @@ def run_directory_multi_model_classifier(
                         best_name[i] = model_name
                         best_cls[i] = cls_name
 
+        # --------------------------------------------------------
+        # PRINT RESULTS FOR EACH IMAGE IN THE BATCH
+        # --------------------------------------------------------
         for i, p in enumerate(ok_paths):
             total_images_processed += 1
             per_model_wins[best_name[i]] += 1
@@ -890,29 +1151,30 @@ def run_directory_multi_model_classifier(
                 detected_class=best_cls[i],
                 confidence=best_conf[i],
                 winning_model=best_name[i],
-                enlarge_factor=ENLARGE_FACTOR,
-                display_enabled=DISPLAY_TESTED_IMAGE,
-                wait_for_enter=WAIT_FOR_ENTER_BETWEEN_IMAGES,
             )
 
         print("------------------------------------------------------------")
 
-    dt = time.perf_counter() - t0
-
-    # Make sure any last window is closed when processing ends
+    # Close any remaining display window
     close_previous_display_window()
+
+    dt = time.perf_counter() - t0
 
     print("\n============================================================")
     print("SUMMARY")
     print("============================================================")
     print(f"Total images processed : {total_images_processed}")
     print(f"Total time             : {dt:.2f} sec")
+
     if total_images_processed > 0:
         print(f"Avg time / image       : {dt / total_images_processed:.4f} sec")
+
     print("------------------------------------------------------------")
     print("Model win counts (how many times each model had max confidence):")
+
     for k, v in per_model_wins.items():
         print(f"  {k:<20} : {v}")
+
     print("============================================================\n")
 
 
@@ -921,6 +1183,12 @@ def run_directory_multi_model_classifier(
 # ============================================================
 
 def main():
+    """
+    Main program:
+      1) choose device
+      2) list images from input directory
+      3) run multi-model classifier
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     debug_print("Using device:", device)
 
@@ -936,7 +1204,7 @@ def main():
     run_directory_multi_model_classifier(
         image_paths=image_paths,
         models_cfg=MODELS,
-        device=device,
+        device=device
     )
 
 
