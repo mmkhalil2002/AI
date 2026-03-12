@@ -1,0 +1,82 @@
+[
+  {
+    "question": "what is ai",
+    "answer": "Artificial Intelligence is the ability of machines to perform tasks that normally require human intelligence.",
+    "is_time_sensitive": false,
+    "category": "definition",
+    "created_at": "2026-03-11 11:00:00",
+    "expires_at": null,
+    "source": "json",
+    "model_used": null
+  },
+  {
+    "question": "what is 5g",
+    "answer": "5G is the fifth generation of mobile networks with higher speed, lower latency, and support for massive device connectivity.",
+    "is_time_sensitive": false,
+    "category": "definition",
+    "created_at": "2026-03-11 11:00:00",
+    "expires_at": null,
+    "source": "json",
+    "model_used": null
+  },
+  {
+    "question": "who is mohamed khalil",
+    "answer": "Mohamed Khalil is an engineer working on telecom, AI, and advanced technical systems.",
+    "is_time_sensitive": false,
+    "category": "definition",
+    "created_at": "2026-03-11 11:00:00",
+    "expires_at": null,
+    "source": "json",
+    "model_used": null
+  },
+  {
+    "question": "what is the population of egypt",
+    "answer": "As of 2021, the estimated population of Egypt is approximately 101 million people.",
+    "is_time_sensitive": true,
+    "category": "demographics",
+    "created_at": "2026-03-11 09:52:14",
+    "expires_at": "2026-04-10 09:52:14",
+    "source": "model",
+    "model_used": "llama3.2"
+  },
+  {
+    "question": "what is the stock market today",
+    "answer": "I'm a large language model, I don't have real-time access to current market data. However, I can suggest some ways for you to find out the current stock market information:\n\n1. Check online financial news websites such as Bloomberg, CNBC, or Yahoo Finance for real-time market updates.\n2. Visit the website of a stock exchange, such as the New York Stock Exchange (NYSE) or NASDAQ, for current market data.\n3. Use a financial app or website, such as Robinhood or Fidelity, to track your investments and get real-time market updates.\n\nPlease note that the stock market is constantly changing, and prices can fluctuate rapidly. For the most up-to-date information, I recommend checking a reliable financial source.",
+    "is_time_sensitive": true,
+    "category": "finance",
+    "created_at": "2026-03-11 09:53:03",
+    "expires_at": "2026-03-12 09:53:03",
+    "source": "model",
+    "model_used": "llama3.2"
+  },
+  {
+    "question": "what is egypt",
+    "answer": "Egypt is a country located in northeastern Africa. It is bordered by the Mediterranean Sea to the north, the Gaza Strip and Israel to the northeast, the Red Sea to the east, Sudan to the south, and Libya to the west. Egypt is known for its rich history, ancient pyramids, and diverse culture.",
+    "is_time_sensitive": false,
+    "category": "definition",
+    "created_at": "2026-03-11 12:41:19",
+    "expires_at": null,
+    "source": "model",
+    "model_used": "llama3.2"
+  },
+  {
+    "question": "update the info to be 2025",
+    "answer": "I'm happy to help, but I don't have any information to update. This conversation just started. What information would you like me to update for 2025?",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-03-11 12:43:49",
+    "expires_at": null,
+    "source": "model",
+    "model_used": "llama3.2"
+  },
+  {
+    "question": "update me with most recent number of people in egypt",
+    "answer": "According to the United Nations, the estimated population of Egypt as of mid-2022 is approximately 104,444,000 people.",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-03-11 12:45:11",
+    "expires_at": null,
+    "source": "model",
+    "model_used": "llama3.2"
+  }
+]
