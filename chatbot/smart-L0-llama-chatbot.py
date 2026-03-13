@@ -1,4 +1,287 @@
 # ==========================================================
+# COMPLETE CROSS-PLATFORM AUTO-INSTALL ROUTINE
+# ==========================================================
+# PURPOSE
+# -------
+# This section:
+#
+#   1) Checks whether pip is available
+#   2) Installs pip if needed
+#   3) Installs required third-party Python packages
+#   4) Verifies imports after installation
+#
+# It is designed to work on:
+#
+#   • Windows
+#   • Ubuntu / Linux
+#   • macOS
+#
+# IMPORTANT
+# ---------
+# Put this section at the TOP of your script BEFORE importing
+# third-party packages such as:
+#
+#   import requests
+#   import torch
+#   import torchvision
+#
+# Standard library modules do NOT need pip installation.
+# ==========================================================
+
+import sys
+import subprocess
+import importlib
+import urllib.request
+import tempfile
+import os
+
+
+def ensure_pip_available():
+    """
+    Ensure that pip is available for the CURRENT Python interpreter.
+
+    CHECK ORDER
+    -----------
+    1) Try:
+           python -m pip --version
+       If this works, pip already exists.
+
+    2) Try:
+           python -m ensurepip --upgrade
+       This works on many Python installations.
+
+    3) Fallback:
+           download get-pip.py and run it
+       This requires internet access.
+
+    RETURNS
+    -------
+    True  -> pip is available
+    False -> pip could not be installed
+    """
+
+    # ------------------------------------------------------
+    # STEP 1 — Check if pip already exists
+    # ------------------------------------------------------
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False
+        )
+
+        if result.returncode == 0:
+            print("[OK] pip is already available.")
+            return True
+
+    except Exception:
+        pass
+
+    print("[INFO] pip was not found.")
+    print("[INFO] Trying to install pip using ensurepip...")
+
+    # ------------------------------------------------------
+    # STEP 2 — Try ensurepip
+    # ------------------------------------------------------
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "ensurepip", "--upgrade"],
+            check=False
+        )
+
+        if result.returncode == 0:
+            verify = subprocess.run(
+                [sys.executable, "-m", "pip", "--version"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False
+            )
+
+            if verify.returncode == 0:
+                print("[OK] pip installed successfully using ensurepip.")
+                return True
+
+    except Exception as e:
+        print(f"[WARNING] ensurepip failed: {e}")
+
+    print("[INFO] ensurepip did not work.")
+    print("[INFO] Trying fallback installation using get-pip.py ...")
+
+    # ------------------------------------------------------
+    # STEP 3 — Fallback to get-pip.py
+    # ------------------------------------------------------
+    get_pip_url = "https://bootstrap.pypa.io/get-pip.py"
+    temp_path = None
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as tmp_file:
+            temp_path = tmp_file.name
+
+        print(f"[INFO] Downloading get-pip.py from: {get_pip_url}")
+        urllib.request.urlretrieve(get_pip_url, temp_path)
+
+        print("[INFO] Running get-pip.py ...")
+        result = subprocess.run(
+            [sys.executable, temp_path],
+            check=False
+        )
+
+        if result.returncode != 0:
+            print("[ERROR] get-pip.py failed.")
+            return False
+
+        verify = subprocess.run(
+            [sys.executable, "-m", "pip", "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False
+        )
+
+        if verify.returncode == 0:
+            print("[OK] pip installed successfully using get-pip.py.")
+            return True
+
+        print("[ERROR] pip still not available after get-pip.py.")
+        return False
+
+    except Exception as e:
+        print(f"[ERROR] Failed to install pip automatically: {e}")
+        return False
+
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+
+def ensure_python_package(import_name, pip_name=None):
+    """
+    Ensure that one Python package is installed and importable.
+
+    PARAMETERS
+    ----------
+    import_name : str
+        Module name used by Python import.
+
+        Example:
+            import_name = "requests"
+            import_name = "PIL"
+            import_name = "cv2"
+
+    pip_name : str or None
+        Package name used by pip.
+
+        Example:
+            pip_name = "requests"
+            pip_name = "pillow"
+            pip_name = "opencv-python"
+
+        If omitted, pip_name defaults to import_name.
+
+    RETURNS
+    -------
+    True  -> package is available
+    False -> installation failed
+    """
+
+    if pip_name is None:
+        pip_name = import_name
+
+    # ------------------------------------------------------
+    # STEP 1 — Try importing first
+    # ------------------------------------------------------
+    try:
+        importlib.import_module(import_name)
+        print(f"[OK] Python package already installed: {pip_name}")
+        return True
+
+    except ImportError:
+        print(f"[INFO] Missing Python package: {pip_name}")
+
+    # ------------------------------------------------------
+    # STEP 2 — Make sure pip exists
+    # ------------------------------------------------------
+    if not ensure_pip_available():
+        print("[ERROR] pip is not available, so package installation cannot continue.")
+        return False
+
+    print(f"[INFO] Installing Python package: {pip_name}")
+
+    # ------------------------------------------------------
+    # STEP 3 — Install package using current Python
+    # ------------------------------------------------------
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", pip_name],
+            check=False
+        )
+
+        if result.returncode != 0:
+            print(f"[ERROR] Failed to install Python package: {pip_name}")
+            return False
+
+    except Exception as e:
+        print(f"[ERROR] Exception while installing package '{pip_name}': {e}")
+        return False
+
+    # ------------------------------------------------------
+    # STEP 4 — Verify import after installation
+    # ------------------------------------------------------
+    try:
+        importlib.import_module(import_name)
+        print(f"[OK] Installed Python package successfully: {pip_name}")
+        return True
+
+    except ImportError:
+        print(f"[ERROR] Package installed but still cannot be imported: {pip_name}")
+        return False
+
+
+def ensure_required_python_packages():
+    """
+    Add ALL third-party packages required by your script here.
+
+    IMPORTANT
+    ---------
+    Add only packages that need pip.
+    Do NOT add standard library modules such as:
+        os, sys, json, time, shutil, subprocess, re, math, tempfile
+
+    EXAMPLES
+    --------
+    For a simple chatbot script:
+        ("requests", "requests")
+
+    For computer vision:
+        ("cv2", "opencv-python")
+        ("PIL", "pillow")
+
+    For PyTorch:
+        ("torch", "torch")
+        ("torchvision", "torchvision")
+        ("torchaudio", "torchaudio")
+    """
+
+    required_packages = [
+        ("requests", "requests"),
+    ]
+
+    for import_name, pip_name in required_packages:
+        if not ensure_python_package(import_name, pip_name):
+            print("[ERROR] Cannot continue because a required package is missing.")
+            sys.exit(1)
+
+
+# ----------------------------------------------------------
+# RUN INSTALLATION NOW
+# ----------------------------------------------------------
+# This should execute BEFORE importing third-party packages.
+# ----------------------------------------------------------
+ensure_required_python_packages()
+# ==========================================================
 # smart_json_llama_chatbot_fixed.py
 # ==========================================================
 # PURPOSE

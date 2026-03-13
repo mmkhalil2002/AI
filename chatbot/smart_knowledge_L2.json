@@ -78,5 +78,25 @@
     "expires_at": null,
     "source": "model",
     "model_used": "llama3.2"
+  },
+  {
+    "question": "provide the 5G architecture diagram",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: Here is a high-level overview of the 5G architecture diagram:\n\n**5G Architecture Components:**\n\n1. **User Equipment (UE)**: Mobile device (e.g., smartphone)\n2. **Network Slices**: Logical partitioning of network resources\n3. **Network Functions Virtualization (NFV)**: Virtualized network functions\n4. **Radio Access Network (RAN)**: Radio frequency communication\n5. **Core Network (CN)**: Backhaul and control plane\n\n**5G Architecture Layers:**\n\n1. **Radio Access Layer (RAL)**: RAN and UE interaction\n2. **Control and User Plane Separation (CUPS)**: Separation of control and user plane functions\n3. **Network Slicing Layer (NSL)**: Network slicing management\n4. **Management and Orchestration Layer (MOL)**: Network management and orchestration\n5. **Cloud Native Application Management Layer (CNAM)**: Cloud-native application management",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-03-13 10:26:42",
+    "expires_at": null,
+    "source": "model",
+    "model_used": null
+  },
+  {
+    "question": "quit",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: Is everything okay? Would you like to talk about what's on your mind? I'm here to listen.",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-03-13 10:29:01",
+    "expires_at": null,
+    "source": "model",
+    "model_used": null
   }
 ]

@@ -30,5 +30,13 @@
   {
     "question": "what is the poopulation of egypt",
     "answer": "As of 2021, the estimated population of Egypt is approximately 102 million people."
+  },
+  {
+    "question": "provide a 5G diagram",
+    "answer": "I'm a text-based assistant and cannot provide images. However, I can describe a basic 5G diagram:\n\n**5G Network Diagram:**\n\n1. **Cell Towers (Base Stations):** These are the tall structures that transmit and receive signals.\n2. **User Equipment (UE):** This is the device you use (e.g., smartphone, laptop).\n3. **Radio Access Network (RAN):** This is the part of the network that connects the cell towers to the core network.\n4. **Core Network:** This is the central part of the network that handles data processing, authentication, and routing.\n5. **5G Core (5GC):** This is the latest version of the core network, which supports 5G features like ultra-low latency and massive machine-type communications.\n\nHere's a simple text-based representation:\n```\n          +---------------+\n          |  Cell Tower  |\n          +---------------+\n                  |\n                  |\n                  v\n          +---------------+"
+  },
+  {
+    "question": "what is algeria poulation",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: As of 2021, the estimated population of Algeria is approximately 43.8 million people."
   }
 ]
