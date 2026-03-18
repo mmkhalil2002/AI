@@ -260,13 +260,14 @@ CIFAR_10_CLASSES_1 = [
     "bee",            # 06
     "beetle",         # 07
     "bicycle",        # 08
-    "bottle",         # 09
+    "uknown1",        # 09
 ]
 
 # ------------------------------------------------------------
 # Example group 2: next 10 classes
 # ------------------------------------------------------------
 CIFAR_10_CLASSES_2 = [
+     "bottle",      # 09
     "bowl",         # 10
     "boy",          # 11
     "bridge",       # 12
@@ -274,10 +275,8 @@ CIFAR_10_CLASSES_2 = [
     "butterfly",    # 14
     "camel",        # 15
     "can",          # 16
-    "castle",       # 17
-    "caterpillar",  # 18
-    "cattle",       # 19
-]
+    "uknown2",      # 17
+   ]
 
 
 CIFAR_10_CLASSES_3 = [
