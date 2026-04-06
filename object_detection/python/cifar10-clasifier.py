@@ -260,22 +260,23 @@ CIFAR_10_CLASSES_1 = [
     "bee",            # 06
     "beetle",         # 07
     "bicycle",        # 08
-    "uknown1",        # 09
+    "uknown1",        # 
 ]
 
 # ------------------------------------------------------------
 # Example group 2: next 10 classes
 # ------------------------------------------------------------
 CIFAR_10_CLASSES_2 = [
-     "bottle",      # 09
-    "bowl",         # 10
-    "boy",          # 11
-    "bridge",       # 12
-    "bus",          # 13
-    "butterfly",    # 14
-    "camel",        # 15
-    "can",          # 16
-    "uknown2",      # 17
+      "bottle",    # 09
+      "bowl",      # 10
+      "boy",       # 11
+      "bridge",    # 12
+      "bus",       # 13
+      "butterfly", # 14
+      "camel",     # 15
+      "can",       # 16
+      "castle",    # 17
+      "unknown2"   # 
    ]
 
 
@@ -302,6 +303,8 @@ if len(CIFAR_10_CLASSES_1) < 2:
 if len(CIFAR_10_CLASSES_2) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_2 must contain at least 2 classes.")
 
+if len(CIFAR_10_CLASSES_3) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_3 must contain at least 2 classes.")
 
 # ============================================================
 # MODEL REGISTRY
@@ -324,20 +327,20 @@ MODEL_BASE_DIR = "../../../"
 
 MODELS: List[Dict] = [
     {
-        "name": "cifar00-09",
+        "name": "cifar00-08",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "cifar-00-09-cnn-128-256-512-1024-576s-L5463-A1000-T8830"
+            "cifar-00-08-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
         "classes": CIFAR_10_CLASSES_1,
         "temperature": 1.0,
     },
 
     {
-        "name": "cifar10-19",
+        "name": "cifar09-17",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "cifar-10-19-cnn-128-256-512-1024-375s-L5232-A1000-T8610"
+            "cifar-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
         "classes": CIFAR_10_CLASSES_2,
         "temperature": 1.0,
