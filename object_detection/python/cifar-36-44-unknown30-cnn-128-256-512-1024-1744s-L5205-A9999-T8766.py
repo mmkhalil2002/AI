@@ -525,8 +525,8 @@ from torchvision import datasets, transforms
 # ============================================================
 
 MODEL_PATH = "../../../"
-MODEL_FILENAME = "cifar-27-36-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-DATA_PATH = "../../../data/cifar_27_36_unknown30"
+MODEL_FILENAME = "cifar-36-44-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+DATA_PATH = "../../../data/cifar_36_44_unknown30"
 
 BATCH_SIZE = 128
 NUM_EPOCHS = 100
