@@ -307,6 +307,8 @@ CIFAR_10_CLASSES_5 = [
     "unknown4"  
 ]
 
+
+
 CIFAR_10_CLASSES_6 = [
     "hamster",       # 36
     "house",         # 37              
