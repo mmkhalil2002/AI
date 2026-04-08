@@ -346,6 +346,15 @@ if len(CIFAR_10_CLASSES_3) < 2:
 if len(CIFAR_10_CLASSES_4) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_4 must contain at least 4 classes.")
 
+if len(CIFAR_10_CLASSES_5) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_5 must contain at least 5 classes.")
+
+if len(CIFAR_10_CLASSES_6) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_6 must contain at least 6 classes.")
+
+
+
+
 # ============================================================
 # MODEL REGISTRY
 # ============================================================
