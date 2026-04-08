@@ -319,16 +319,16 @@ CIFAR_10_CLASSES_5 = [
 ]
 
 CIFAR_10_CLASSES_6 = [
-   "lobster",      # 45
-   "man",          # 46
-   "maple_tree",   # 47
-   "motorcycle",   # 48
-   "mountain",     # 49
-   "mouse",        # 50
-   "mushroom",     # 51
-   "oak_tree",     # 52
-   "orange",       # 53
-   "unknown6"      #
+   "lobster",       # 45
+   "man",           # 46
+   "maple_tree",    # 47
+   "motorcycle",    # 48
+   "mountain",      # 49
+   "mouse",         # 50
+   "mushroom",      # 51
+   "oak_tree",      # 52
+   "orange",        # 53
+   "unknown6"       #
 ]  
 
 # ------------------------------------------------------------
