@@ -267,32 +267,45 @@ CIFAR_10_CLASSES_1 = [
 # Example group 2: next 10 classes
 # ------------------------------------------------------------
 CIFAR_10_CLASSES_2 = [
-      "bottle",    # 09
-      "bowl",      # 10
-      "boy",       # 11
-      "bridge",    # 12
-      "bus",       # 13
-      "butterfly", # 14
-      "camel",     # 15
-      "can",       # 16
-      "castle",    # 17
-      "unknown2"   # 
-   ]
+      "bottle",      # 09
+      "bowl",        # 10
+      "boy",         # 11
+      "bridge",      # 12
+      "bus",         # 13
+      "butterfly",   # 14
+      "camel",       # 15
+      "can",         # 16
+      "castle",      # 17
+      "unknown2"     # 
+]
 
 
+            
 CIFAR_10_CLASSES_3 = [
+    "caterpillar",    # 18
+    "cattle",         # 19
     "chair",          # 20
-    "chimpanzee",     # 21       
+    "chimpanzee",     # 21
     "clock",          # 22
     "cloud",          # 23
     "cockroach",      # 24
     "couch",          # 25
     "crab",           # 26
-    "crocodile",      # 27
-    "cup",            # 28
-    "dinosaur",       # 29
+    "unknown3"        # 
 ]
 
+CIFAR_10_CLASSES_4 = [
+    "hamster",       # 36
+    "house",         # 37              
+    "kangaroo",      # 38          
+    "keyboard",      # 39          
+    "lamp",          # 40                
+    "lawn_mower",    # 41        
+    "leopard",       # 42            
+    "lion",          # 43                
+    "lizard",        # 44            
+    "unknown4"  
+]
 
 # ------------------------------------------------------------
 # Optional safety checks for these example lists
@@ -304,7 +317,10 @@ if len(CIFAR_10_CLASSES_2) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_2 must contain at least 2 classes.")
 
 if len(CIFAR_10_CLASSES_3) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_3 must contain at least 2 classes.")
+    raise RuntimeError("CIFAR_10_CLASSES_3 must contain at least 3 classes.")
+
+if len(CIFAR_10_CLASSES_4) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_3 must contain at least 4 classes.")
 
 # ============================================================
 # MODEL REGISTRY
@@ -345,6 +361,17 @@ MODELS: List[Dict] = [
         "classes": CIFAR_10_CLASSES_2,
         "temperature": 1.0,
     },
+
+     {
+        "name": "cifar18-26",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "cifar-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": CIFAR_10_CLASSES_2,
+        "temperature": 1.0,
+    },
+    
 ]
 
 
