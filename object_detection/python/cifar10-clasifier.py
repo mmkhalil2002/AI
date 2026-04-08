@@ -278,8 +278,6 @@ CIFAR_10_CLASSES_2 = [
       "castle",      # 17
       "unknown2"     # 
 ]
-
-
             
 CIFAR_10_CLASSES_3 = [
     "caterpillar",    # 18
@@ -294,22 +292,20 @@ CIFAR_10_CLASSES_3 = [
     "unknown3"        # 
 ]
 
-CIFAR_10_CLASSES_5 = [
-    "hamster",       # 27
-    "house",         # 37              
-    "kangaroo",      # 38          
-    "keyboard",      # 39          
-    "lamp",          # 40                
-    "lawn_mower",    # 41        
-    "leopard",       # 42            
-    "lion",          # 43                
-    "lizard",        # 44            
-    "unknown4"  
+CIFAR_10_CLASSES_4 = [
+    "crocodile",     # 27
+    "cup",           # 28
+    "dinosaur",      # 29
+    "dolphin",       # 30
+    "elephant",      # 31
+    "flatfish",      # 32
+    "forest",        # 33
+    "fox",           # 34
+    "girl",          # 35
+    "unknown4"       #
 ]
 
-
-
-CIFAR_10_CLASSES_6 = [
+CIFAR_10_CLASSES_5 = [
     "hamster",       # 36
     "house",         # 37              
     "kangaroo",      # 38          
@@ -319,8 +315,21 @@ CIFAR_10_CLASSES_6 = [
     "leopard",       # 42            
     "lion",          # 43                
     "lizard",        # 44            
-    "unknown4"  
+    "unknown5"  
 ]
+
+CIFAR_10_CLASSES_6 = [
+   "lobster",      # 45
+   "man",          # 46
+   "maple_tree",   # 47
+   "motorcycle",   # 48
+   "mountain",     # 49
+   "mouse",        # 50
+   "mushroom",     # 51
+   "oak_tree",     # 52
+   "orange",       # 53
+   "unknown6"      #
+]  
 
 # ------------------------------------------------------------
 # Optional safety checks for these example lists
@@ -335,7 +344,7 @@ if len(CIFAR_10_CLASSES_3) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_3 must contain at least 3 classes.")
 
 if len(CIFAR_10_CLASSES_4) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_3 must contain at least 4 classes.")
+    raise RuntimeError("CIFAR_10_CLASSES_4 must contain at least 4 classes.")
 
 # ============================================================
 # MODEL REGISTRY
@@ -381,12 +390,44 @@ MODELS: List[Dict] = [
         "name": "cifar18-26",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "cifar-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+            "cifar-18-26-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
-        "classes": CIFAR_10_CLASSES_2,
+        "classes": CIFAR_10_CLASSES_3,
         "temperature": 1.0,
     },
     
+    {
+        "name": "cifar27-35",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "cifar-27-35-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": CIFAR_10_CLASSES_4,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "cifar36-44",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "cifar-36-44-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": CIFAR_10_CLASSES_5,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "cifar45-53",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "cifar-45-53-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": CIFAR_10_CLASSES_6,
+        "temperature": 1.0,
+    },
+
+
+
 ]
 
 
