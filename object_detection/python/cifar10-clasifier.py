@@ -294,7 +294,20 @@ CIFAR_10_CLASSES_3 = [
     "unknown3"        # 
 ]
 
-CIFAR_10_CLASSES_4 = [
+CIFAR_10_CLASSES_5 = [
+    "hamster",       # 27
+    "house",         # 37              
+    "kangaroo",      # 38          
+    "keyboard",      # 39          
+    "lamp",          # 40                
+    "lawn_mower",    # 41        
+    "leopard",       # 42            
+    "lion",          # 43                
+    "lizard",        # 44            
+    "unknown4"  
+]
+
+CIFAR_10_CLASSES_6 = [
     "hamster",       # 36
     "house",         # 37              
     "kangaroo",      # 38          
