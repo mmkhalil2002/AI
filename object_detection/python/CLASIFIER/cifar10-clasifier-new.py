@@ -269,6 +269,32 @@ CIFAR_10_CLASSES_7 = [
     "unknown7"       #
 ]
 
+CIFAR_10_CLASSES_8 = [
+   "porcupine",      # 63
+   "possum",         # 64
+   "rabbit",         # 65
+   "raccoon",        # 66
+   "ray",            # 67
+   "road",           # 68
+   "rocket",         # 69
+   "rose",           # 70
+   "sea",            # 71
+   "unknown8"        #
+]
+
+CIFAR_10_CLASSES_9  = [
+   "seal",           # 72
+   "shark",          # 73
+   "shrew",          # 74
+   "skunk",          # 75
+   "skyscraper",     # 76
+   "snail",          # 77
+   "snake",          # 78
+   "spider",         # 79
+   "squirrel",       # 80
+   "unknown10"       #
+]
+
 # ------------------------------------------------------------
 # Optional safety checks for these example lists
 # ------------------------------------------------------------
@@ -293,7 +319,11 @@ if len(CIFAR_10_CLASSES_6) < 2:
 if len(CIFAR_10_CLASSES_7) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_7 must contain at least 2 classes.")
 
+if len(CIFAR_10_CLASSES_8) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_8 must contain at least 2 classes.")
 
+if len(CIFAR_10_CLASSES_9) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_9 must contain at least 2 classes.")
 # ============================================================
 # MODEL REGISTRY
 # ============================================================
@@ -366,6 +396,26 @@ MODELS: List[Dict] = [
             "cifar-54-62-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
         "classes": CIFAR_10_CLASSES_7,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "cifar63-71",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "cifar-63-71-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": CIFAR_10_CLASSES_8,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "cifar72-80",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "cifar-72-80-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": CIFAR_10_CLASSES_9,
         "temperature": 1.0,
     },
 ]
