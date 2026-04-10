@@ -524,11 +524,9 @@ from torchvision import datasets, transforms
 # CONFIGURATION
 # ============================================================
 
-
-
 MODEL_PATH = "../../../"
-MODEL_FILENAME = "cifar-73-81-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-DATA_PATH = "../../../data/cifar_73_81_unknown30"
+MODEL_FILENAME = "cifar-54-62-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+DATA_PATH = "../../../data/cifar_54_62_unknown30"
 
 BATCH_SIZE = 128
 NUM_EPOCHS = 100
