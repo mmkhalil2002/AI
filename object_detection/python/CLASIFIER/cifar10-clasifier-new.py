@@ -294,6 +294,32 @@ CIFAR_10_CLASSES_9  = [
    "squirrel",       # 80
    "unknown10"       #
 ]
+CIFAR_10_CLASSES_10  = [
+  "streetcar",       # 81
+   "sunflower",      # 82
+   "sweet_pepper",   # 83
+   "table",          # 84
+   "tank",           # 85
+   "telephone",      # 86
+   "television",     # 87
+   "tiger",          # 88
+   "tractor",        # 89
+   "unknown10"       #
+]
+
+
+CIFAR_10_CLASSES_11  = [
+   "train",         # 90
+   "trout",         # 91
+   "tulip",         # 92
+   "turtle",        # 93
+   "wardrobe",      # 94
+   "whale",         # 95
+   "willow_tree",   # 96
+   "wolf",          # 97
+   "woman",         # 98
+   "unknown11"      #
+]
 
 # ------------------------------------------------------------
 # Optional safety checks for these example lists
@@ -324,6 +350,9 @@ if len(CIFAR_10_CLASSES_8) < 2:
 
 if len(CIFAR_10_CLASSES_9) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_9 must contain at least 2 classes.")
+
+if len(CIFAR_10_CLASSES_10) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_10 must contain at least 2 classes.")
 # ============================================================
 # MODEL REGISTRY
 # ============================================================
@@ -416,6 +445,16 @@ MODELS: List[Dict] = [
             "cifar-72-80-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
         "classes": CIFAR_10_CLASSES_9,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "cifar81-89",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "cifar-81-89-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": CIFAR_10_CLASSES_10,
         "temperature": 1.0,
     },
 ]
