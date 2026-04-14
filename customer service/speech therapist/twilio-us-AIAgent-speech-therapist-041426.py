@@ -182,12 +182,12 @@ SPEECH_INPUT_DURATION = int(os.getenv("SPEECH_INPUT_DURATION", 12))
 
 
 # ============================================================
-# GOOGLE API (CALENDAR)
+# GOOGLE API (CALENDAR) it is not used anymore
 # ============================================================
-from googleapiclient.discovery import build
-from google.oauth2 import service_account
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
+#from googleapiclient.discovery import build
+#from google.oauth2 import service_account
+#from google_auth_oauthlib.flow import InstalledAppFlow
+#from google.auth.transport.requests import Request
 
 
 # ============================================================
@@ -334,16 +334,54 @@ load_dotenv()
 #     within the voice assistant.
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# ============================================================
+# TWILIO AUTHENTICATION CONFIGURATION
+# ============================================================
+
+# HOW TO FIND TWILIO CREDENTIALS:
+#   1. Open browser and go to:
+#        https://console.twilio.com/
+#   2. Log in to your Twilio account
+#   3. On the Dashboard (home page), you will see:
+#        - Account SID
+#        - Auth Token (hidden → click "Show")
+#   4. Copy both values and place them in your .env file
+#
+# NOTE:
+#   • Dashboard URL: https://console.twilio.com/
+#   • Credentials are located in the main "Project Info" section
+# user name mmkhalil2001@yahoo.com
+# paaswd M12KhM12Oh$$
+
+
 # TWILIO_ACCOUNT_SID:
-#   • The unique identifier for your Twilio account.
-#   • Used to authenticate API calls to Twilio (voice, SMS, recordings, etc.).
+# click Twilio Home in upper left window
+#   • Found in Twilio Dashboard under "Account Info"
+#   • Acts as your account identifier (like a username)
+#   • Format: starts with "ACxxxxxxxxxxxxxxxxxxxxxxxx"
+#   • Required to initialize Twilio client
+
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 
-# TWILIO_AUTH_TOKEN:
-#   • The authentication token paired with the Account SID.
-#   • Grants permission to send or receive calls, messages, and manage Twilio resources.
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 
+# TWILIO_AUTH_TOKEN:
+# https://console.twilio.com/us1/account/keys-credentials/api-keys
+# API Key & Token
+#   • Found in Twilio Dashboard next to Account SID
+#   • Click "Show" to reveal it
+#   • Secret key (like a password) → MUST be kept private
+#   • Used to authenticate API requests to Twilio
+#   • Grants permission to:
+#        - Make phone calls
+#        - Send/receive SMS
+#        - Manage Twilio resources
+#
+# SECURITY WARNING:
+#   • NEVER hardcode this value in your script
+#   • ALWAYS store it in a .env file
+#   • NEVER upload .env to GitHub
+
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 # TWILIO_PHONE_NUMBER:
 #   • The Twilio-provisioned phone number assigned to your application (E.164 format).
 #   • Used as the caller ID for outgoing calls and as the receiver for incoming calls.
@@ -352,7 +390,7 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_NUMBER")
 # GOOGLE_CREDENTIALS:
 #   • The path to the Google service account JSON credentials file.
 #   • Required to access Google Calendar for appointment booking and lookup.
-GOOGLE_CREDENTIALS = "credentials.json"
+#GOOGLE_CREDENTIALS = "credentials.json"
 
 
 # ----------------------------------------------------------------------
@@ -617,7 +655,15 @@ if USE_GPT:
 
 else:
    
-
+    # This creates an authenticated Twilio client
+    # After this, you can:
+    #   • Make calls
+    #   • Send SMS
+    #   • Handle voice bot interactions
+    #
+    # Example usage later:
+    #   client.calls.create(...)
+    #   client.messages.create(...)
     client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     print("📞 Using Twilio client")
 
