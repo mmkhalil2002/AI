@@ -145,6 +145,7 @@ DISPLAY_WINDOW_TITLE = "Tested Image Viewer"
 # will be renamed to UNKNOWN_LABEL_BELOW_THRESHOLD.
 # This is independent from any class such as "unknown1".
 # ------------------------------------------------------------
+"""
 USE_LOW_CONFIDENCE_UNKNOWN_RULE = False
 LOW_CONFIDENCE_THRESHOLD = 0.60
 UNKNOWN_LABEL_BELOW_THRESHOLD = "unknown"
@@ -170,6 +171,114 @@ CONV3_OUT_CHANNELS = 512
 
 CONV4_IN_CHANNELS = 512
 CONV4_OUT_CHANNELS = 1024
+"""
+
+import os
+from dotenv import load_dotenv, find_dotenv
+
+# Load .env
+load_dotenv(find_dotenv())
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+def get_str(name, default=""):
+    return os.getenv(name, default)
+
+
+def get_int(name, default=0):
+    return int(os.getenv(name, default))
+
+
+def get_float(name, default=0.0):
+    return float(os.getenv(name, default))
+
+
+def get_bool(name, default="False"):
+    return os.getenv(name, default).lower() in ("true", "1", "yes", "on")
+
+
+# ============================================================
+# BASE PATH
+# ============================================================
+MODEL_BASE_DIR = get_str("MODEL_BASE_DIR", "../../../../")
+
+
+# ============================================================
+# TEST IMAGE DIRECTORY (EXPANDED)
+# ============================================================
+TEST_IMAGE_DIR = os.path.expandvars(get_str("TEST_IMAGE_DIR"))
+
+# 👉 OPTIONAL (safer cross-platform override)
+TEST_IMAGE_DIR = os.path.join(
+    MODEL_BASE_DIR,
+    "data",
+    "cifar10_clasifier_test"
+)
+
+
+# ============================================================
+# ALLOWED IMAGE TYPES (STATIC – keep in code)
+# ============================================================
+ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+# ============================================================
+# INFERENCE SETTINGS
+# ============================================================
+INFER_BATCH_SIZE = get_int("INFER_BATCH_SIZE", 64)
+
+
+# ============================================================
+# DISPLAY SETTINGS
+# ============================================================
+DISPLAY_TESTED_IMAGE = get_bool("DISPLAY_TESTED_IMAGE", "True")
+ENLARGE_FACTOR = get_int("ENLARGE_FACTOR", 6)
+WAIT_FOR_ENTER_BETWEEN_IMAGES = get_bool("WAIT_FOR_ENTER_BETWEEN_IMAGES", "True")
+DISPLAY_WINDOW_TITLE = get_str("DISPLAY_WINDOW_TITLE", "Tested Image Viewer")
+
+
+# ============================================================
+# CONFIDENCE THRESHOLD SETTINGS
+# ============================================================
+USE_LOW_CONFIDENCE_UNKNOWN_RULE = get_bool("USE_LOW_CONFIDENCE_UNKNOWN_RULE", "False")
+LOW_CONFIDENCE_THRESHOLD = get_float("LOW_CONFIDENCE_THRESHOLD", 0.60)
+UNKNOWN_LABEL_BELOW_THRESHOLD = get_str("UNKNOWN_LABEL_BELOW_THRESHOLD", "unknown")
+
+
+# ============================================================
+# TOP-K SETTINGS
+# ============================================================
+TOPK_TO_PRINT = get_int("TOPK_TO_PRINT", 3)
+
+
+# ============================================================
+# MODEL ARCHITECTURE
+# ============================================================
+CONV1_IN_CHANNELS = get_int("CONV1_IN_CHANNELS", 3)
+CONV1_OUT_CHANNELS = get_int("CONV1_OUT_CHANNELS", 128)
+
+CONV2_IN_CHANNELS = get_int("CONV2_IN_CHANNELS", 128)
+CONV2_OUT_CHANNELS = get_int("CONV2_OUT_CHANNELS", 256)
+
+CONV3_IN_CHANNELS = get_int("CONV3_IN_CHANNELS", 256)
+CONV3_OUT_CHANNELS = get_int("CONV3_OUT_CHANNELS", 512)
+
+CONV4_IN_CHANNELS = get_int("CONV4_IN_CHANNELS", 512)
+CONV4_OUT_CHANNELS = get_int("CONV4_OUT_CHANNELS", 1024)
+
+
+# ============================================================
+# DEBUG PRINT (OPTIONAL)
+# ============================================================
+print("=" * 60)
+print("[CONFIG] MODEL_BASE_DIR =", MODEL_BASE_DIR)
+print("[CONFIG] TEST_IMAGE_DIR =", TEST_IMAGE_DIR)
+print("[CONFIG] INFER_BATCH_SIZE =", INFER_BATCH_SIZE)
+print("[CONFIG] DISPLAY_TESTED_IMAGE =", DISPLAY_TESTED_IMAGE)
+print("[CONFIG] LOW_CONFIDENCE_THRESHOLD =", LOW_CONFIDENCE_THRESHOLD)
+print("=" * 60)
 
 
 # ------------------------------------------------------------

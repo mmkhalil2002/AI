@@ -523,7 +523,7 @@ from torchvision import datasets, transforms
 # ============================================================
 # CONFIGURATION
 # ============================================================
-
+"""
 MODEL_PATH = "../../../"
 MODEL_FILENAME = "cifar-36-44-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
 DATA_PATH = "../../../data/cifar_36_44_unknown30"
@@ -569,6 +569,200 @@ CONV3_OUT_CHANNELS = 512
 CONV4_IN_CHANNELS  = CONV3_OUT_CHANNELS   # 512
 CONV4_OUT_CHANNELS = 1024
 
+"""
+
+# ============================================================
+# ENV CONFIG LOADING
+# ============================================================
+import os
+from dotenv import load_dotenv, find_dotenv
+
+# Load variables from .env file
+load_dotenv(find_dotenv())
+
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+def get_env_str(name: str, default: str) -> str:
+    """
+    Read a string value from environment variables.
+
+    Parameters:
+        name    : environment variable name
+        default : fallback value if variable is missing
+
+    Returns:
+        String value from .env or fallback default.
+    """
+    return os.getenv(name, default)
+
+
+def get_env_int(name: str, default: int) -> int:
+    """
+    Read an integer value from environment variables.
+
+    Raises a clear error if conversion fails.
+    """
+    value = os.getenv(name, str(default))
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError(f"Environment variable '{name}' must be an integer, got: {value}")
+
+
+def get_env_bool(name: str, default: bool) -> bool:
+    """
+    Read a boolean value from environment variables.
+
+    Accepted true values:
+        true, 1, yes, y, on
+
+    Accepted false values:
+        false, 0, no, n, off
+    """
+    value = os.getenv(name, str(default)).strip().lower()
+
+    if value in ("true", "1", "yes", "y", "on"):
+        return True
+    if value in ("false", "0", "no", "n", "off"):
+        return False
+
+    raise ValueError(
+        f"Environment variable '{name}' must be boolean "
+        f"(true/false/1/0/yes/no/on/off), got: {value}"
+    )
+
+# ============================================================
+# GLOBAL ARCHITECTURE CONSTANTS (UPDATED)
+# ============================================================
+# ✅ Requested architecture (4 conv layers):
+#   conv1: 3    → 128
+#   conv2: 128  → 256
+#   conv3: 256  → 512
+#   conv4: 512  → 1024
+# ============================================================
+
+# ============================================================
+# MODEL CONFIGURATION
+# ============================================================
+
+# Base path where model files are stored
+MODEL_PATH = get_env_str("MODEL_PATH", "../../../")
+
+# Specific trained model filename
+MODEL_FILENAME = get_env_str(
+    "MODEL_FILENAME",
+    "cifar-36-44-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+)
+
+# ------------------------------------------------------------
+# DERIVED PATH (DATASET)
+# ------------------------------------------------------------
+# DATA_PATH is constructed from MODEL_PATH + subdirectory
+DATA_PATH = os.path.join(MODEL_PATH, "data", "cifar_36_44_unknown30")
+
+
+# ============================================================
+# TRAINING PARAMETERS
+# ============================================================
+
+# Batch size used by DataLoader
+BATCH_SIZE = get_env_int("BATCH_SIZE", 128)
+
+# Number of full passes over dataset
+NUM_EPOCHS = get_env_int("NUM_EPOCHS", 100)
+
+# Number of subprocesses for data loading
+NUM_WORKERS = get_env_int("NUM_WORKERS", 0)
+
+
+# ============================================================
+# FLAGS / DEBUG
+# ============================================================
+
+# Whether conv layers use static filters
+STATIC_FILTERS = get_env_bool("STATIC_FILTERS", False)
+
+# Whether verbose debug output is enabled
+DEBUG_FLAG = get_env_bool("DEBUG_FLAG", True)
+
+
+# ============================================================
+# GLOBAL ARCHITECTURE CONSTANTS (UPDATED)
+# ============================================================
+# Requested architecture (4 conv layers):
+#   conv1: 3    → 128
+#   conv2: 128  → 256
+#   conv3: 256  → 512
+#   conv4: 512  → 1024
+# ============================================================
+
+# -------------------------
+# CONV1
+# -------------------------
+CONV1_IN_CHANNELS = get_env_int("CONV1_IN_CHANNELS", 3)
+CONV1_OUT_CHANNELS = get_env_int("CONV1_OUT_CHANNELS", 128)
+
+# -------------------------
+# CONV2
+# -------------------------
+CONV2_IN_CHANNELS = get_env_int("CONV2_IN_CHANNELS", 128)
+CONV2_OUT_CHANNELS = get_env_int("CONV2_OUT_CHANNELS", 256)
+
+# -------------------------
+# CONV3
+# -------------------------
+CONV3_IN_CHANNELS = get_env_int("CONV3_IN_CHANNELS", 256)
+CONV3_OUT_CHANNELS = get_env_int("CONV3_OUT_CHANNELS", 512)
+
+# -------------------------
+# CONV4
+# -------------------------
+CONV4_IN_CHANNELS = get_env_int("CONV4_IN_CHANNELS", 512)
+CONV4_OUT_CHANNELS = get_env_int("CONV4_OUT_CHANNELS", 1024)
+
+
+# ============================================================
+# OPTIONAL SANITY CHECKS
+# ============================================================
+if CONV2_IN_CHANNELS != CONV1_OUT_CHANNELS:
+    raise ValueError(
+        f"Architecture mismatch: CONV2_IN_CHANNELS ({CONV2_IN_CHANNELS}) "
+        f"must equal CONV1_OUT_CHANNELS ({CONV1_OUT_CHANNELS})"
+    )
+
+if CONV3_IN_CHANNELS != CONV2_OUT_CHANNELS:
+    raise ValueError(
+        f"Architecture mismatch: CONV3_IN_CHANNELS ({CONV3_IN_CHANNELS}) "
+        f"must equal CONV2_OUT_CHANNELS ({CONV2_OUT_CHANNELS})"
+    )
+
+if CONV4_IN_CHANNELS != CONV3_OUT_CHANNELS:
+    raise ValueError(
+        f"Architecture mismatch: CONV4_IN_CHANNELS ({CONV4_IN_CHANNELS}) "
+        f"must equal CONV3_OUT_CHANNELS ({CONV3_OUT_CHANNELS})"
+    )
+
+
+# ============================================================
+# OPTIONAL DEBUG DISPLAY
+# ============================================================
+if DEBUG_FLAG:
+    print("=" * 60)
+    print("[CONFIG] MODEL_PATH         =", MODEL_PATH)
+    print("[CONFIG] MODEL_FILENAME     =", MODEL_FILENAME)
+    print("[CONFIG] DATA_PATH          =", DATA_PATH)
+    print("[CONFIG] BATCH_SIZE         =", BATCH_SIZE)
+    print("[CONFIG] NUM_EPOCHS         =", NUM_EPOCHS)
+    print("[CONFIG] NUM_WORKERS        =", NUM_WORKERS)
+    print("[CONFIG] STATIC_FILTERS     =", STATIC_FILTERS)
+    print("[CONFIG] DEBUG_FLAG         =", DEBUG_FLAG)
+    print("[CONFIG] CONV1              =", CONV1_IN_CHANNELS, "->", CONV1_OUT_CHANNELS)
+    print("[CONFIG] CONV2              =", CONV2_IN_CHANNELS, "->", CONV2_OUT_CHANNELS)
+    print("[CONFIG] CONV3              =", CONV3_IN_CHANNELS, "->", CONV3_OUT_CHANNELS)
+    print("[CONFIG] CONV4              =", CONV4_IN_CHANNELS, "->", CONV4_OUT_CHANNELS)
+    print("=" * 60)
 
 # ============================================================
 # EXPLANATION: HOW TRAINING WORKS IN THIS NETWORK
