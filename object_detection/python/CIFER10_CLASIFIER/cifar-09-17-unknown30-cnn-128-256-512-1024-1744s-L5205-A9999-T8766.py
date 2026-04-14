@@ -524,6 +524,7 @@ from torchvision import datasets, transforms
 # CONFIGURATION
 # ============================================================
 
+"""
 MODEL_PATH = "../../../"
 MODEL_FILENAME = "cifar-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
 DATA_PATH = "../../../data/cifar_09_17_unknown30"
@@ -569,7 +570,7 @@ CONV3_OUT_CHANNELS = 512
 CONV4_IN_CHANNELS  = CONV3_OUT_CHANNELS   # 512
 CONV4_OUT_CHANNELS = 1024
 
-
+"""
 
 # ============================================================
 # ENV CONFIG LOADING
@@ -651,11 +652,8 @@ def get_env_bool(name: str, default: bool) -> bool:
 MODEL_PATH = get_env_str("MODEL_PATH", "../../../")
 
 # Specific trained model filename
-MODEL_FILENAME = get_env_str(
-    "MODEL_FILENAME",
-    "cifar-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-)
 
+MODEL_FILENAME = os.path.join(MODEL_PATH, "model", "cifar-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766")
 # ------------------------------------------------------------
 # DERIVED PATH (DATASET)
 # ------------------------------------------------------------
@@ -3369,7 +3367,7 @@ def main():
     # --------------------------------------------------------
     # LOAD OR TRAIN MODEL
     # --------------------------------------------------------
-    model_filename = os.path.join(MODEL_PATH, MODEL_FILENAME)
+    model_filename = MODEL_FILENAME
     debug_print(f"[main] Model file path = {model_filename}")
 
     if os.path.exists(model_filename):
