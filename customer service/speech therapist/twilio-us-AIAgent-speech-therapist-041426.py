@@ -78,12 +78,7 @@ import sys
 import subprocess
 import importlib
 
-# ============================================================
-# AUTO-INSTALL REQUIRED PACKAGES (WITH STATUS MESSAGES)
-# ============================================================
-import sys
-import subprocess
-import importlib
+
 
 REQUIRED_PACKAGES = {
     "openai": "openai",
@@ -773,16 +768,16 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
     # ------------------------------------------------------------------
     # Remove “o’clock”, normalize “a.m.” / “p.m.” spellings,
     # drop non-alphanumeric characters (except colon), collapse spaces.
-    s = _re.sub(r"o['’]?clock", "", s)
-    s = _re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s)
-    s = _re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s)
-    s = _re.sub(r"[^\w\s:]", " ", s)
-    s = _re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"o['’]?clock", "", s)
+    s = re.sub(r"\b(a\s*\.?\s*m\.?)\b", "am", s)
+    s = re.sub(r"\b(p\s*\.?\s*m\.?)\b", "pm", s)
+    s = re.sub(r"[^\w\s:]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
 
     # Fix speech artifacts such as “2000 pm” → “2 00 pm”
-    s = _re.sub(r"\b20\s?00\s*pm\b", "2 00 pm", s)
-    s = _re.sub(r"\b2000\s*pm\b", "2 00 pm", s)
-    s = _re.sub(r"\btwenty hundred\s*pm\b", "2 00 pm", s)
+    s = re.sub(r"\b20\s?00\s*pm\b", "2 00 pm", s)
+    s = re.sub(r"\b2000\s*pm\b", "2 00 pm", s)
+    s = re.sub(r"\btwenty hundred\s*pm\b", "2 00 pm", s)
 
     _dbg(f"[smart_parse_time] 🧹 normalized='{s}'")
 
@@ -805,7 +800,7 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
             break
 
     # Extract numeric time like "9", "9:30", "9 30", optionally with am/pm
-    m_time = _re.search(r"\b(\d{1,2})(?:[: ](\d{2}))?\s*(am|pm)?\b", s)
+    m_time = re.search(r"\b(\d{1,2})(?:[: ](\d{2}))?\s*(am|pm)?\b", s)
     if m_time:
         hour = int(m_time.group(1))
         minute = int(m_time.group(2) or 0)
@@ -813,7 +808,7 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
         _dbg(f"[smart_parse_time] ⏰ time → {hour}:{minute:02d} {ampm}")
 
     # Extract day number appearing before the word "at"
-    m_day = _re.search(r"\b([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?\b(?=.*\bat\b)", s)
+    m_day = re.search(r"\b([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?\b(?=.*\bat\b)", s)
     if m_day:
         day = int(m_day.group(1))
         _dbg(f"[smart_parse_time] 📅 day → {day}")
@@ -823,10 +818,10 @@ def smart_parse_time(raw: str, tz_offset_hours: int = -5, default_duration_min: 
     # ------------------------------------------------------------------
     tz_name = globals().get("CLINIC_TZ", "America/Chicago")
     try:
-        tz_local = _pytz.timezone(tz_name)
+        tz_local = pytz.timezone(tz_name)
     except Exception:
         _dbg(f"[smart_parse_time] ⚠️ Invalid TZ '{tz_name}', fallback to FixedOffset({tz_offset_hours})")
-        tz_local = _pytz.FixedOffset(tz_offset_hours * 60)
+        tz_local = pytz.FixedOffset(tz_offset_hours * 60)
 
     now_local = datetime.now(tz_local)
 
@@ -1405,7 +1400,7 @@ def is_doctor_slot_available(doctor_name: str, start_iso: str, end_iso: str) -> 
     # ----------------------------------------------------------------------
     # 📂 Locate the doctor's appointment file
     # ----------------------------------------------------------------------
-    safe_name = _re.sub(r"\s+", "_", doctor_name.strip().lower())  # Normalize name
+    safe_name = re.sub(r"\s+", "_", doctor_name.strip().lower())  # Normalize name
     doc_path = os.path.join("appointment_data", f"{safe_name}.json")
     debug_print(f"[is_doctor_slot_available] 📁 File lookup → {doc_path}")
 
@@ -2028,7 +2023,7 @@ def get_upcoming_events(
 
     # --- 1) Normalize input to strict E.164 -----------------------------------
     def _is_e164(s: str) -> bool:
-        return bool(_re.fullmatch(r"\+\d{6,15}", (s or "").strip()))
+        return bool(re.fullmatch(r"\+\d{6,15}", (s or "").strip()))
 
     raw = (phone or "").strip()
     phone_e164 = raw if _is_e164(raw) else ""
@@ -2159,7 +2154,7 @@ def init_db() -> None:
 
     def _is_e164(s: str) -> bool:
         s = (s or "").strip()
-        return bool(_re.fullmatch(r"\+\d{6,15}", s))
+        return bool(re.fullmatch(r"\+\d{6,15}", s))
 
     def _e164_or_empty(s: str) -> str:
         s = (s or "").strip().replace(" ", "")
@@ -2269,7 +2264,7 @@ def init_db() -> None:
 # ---------- Sanitizers / formatters ----------
 def _oneline(s: str) -> str:
     """Compact whitespace/newlines to a single line."""
-    return _re.sub(r"\s+", " ", (s or "").strip())
+    return re.sub(r"\s+", " ", (s or "").strip())
 
 
 
@@ -2391,8 +2386,8 @@ def customer_search(
         dob_str = dob_str.replace("/", "-").replace(".", "-")
         try:
             # matches YYYY-MM-DD or MM-DD-YYYY
-            m1 = _re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", dob_str)
-            m2 = _re.fullmatch(r"(\d{1,2})-(\d{1,2})-(\d{4})", dob_str)
+            m1 = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", dob_str)
+            m2 = re.fullmatch(r"(\d{1,2})-(\d{1,2})-(\d{4})", dob_str)
             if m1:
                 yyyy, mm, dd = m1.groups()
             elif m2:
@@ -3363,7 +3358,7 @@ def book_appointment_for_dr_name(
     # ----------------------------------------------------------------------
     # 📞 Normalize phone number: keep only numeric digits
     # ----------------------------------------------------------------------
-    digits_only_phone = _re.sub(r"\D", "", phone or "")
+    digits_only_phone = re.sub(r"\D", "", phone or "")
     if not digits_only_phone:
         raise ValueError("Phone is required and must contain digits.")
 
@@ -3371,9 +3366,9 @@ def book_appointment_for_dr_name(
     # 🎂 Normalize DOB (convert to ISO YYYY-MM-DD if possible)
     # ----------------------------------------------------------------------
     dob_iso = (dob or "").strip()
-    if dob_iso and _re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None:
+    if dob_iso and re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob_iso) is None:
         # Convert formats like "10/28/2025" → "2025-10-28"
-        m = _re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
+        m = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", dob_iso)
         if m:
             mm, dd, yyyy = m.groups()
             dob_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
@@ -3396,7 +3391,7 @@ def book_appointment_for_dr_name(
             dt = datetime.fromisoformat(s.replace("Z", "+00:00") if s.endswith("Z") else s)
         except Exception:
             # fallback for timestamps missing timezone info
-            if _re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", s):
+            if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", s):
                 dt = datetime.fromisoformat(s)
             else:
                 raise
@@ -3416,15 +3411,15 @@ def book_appointment_for_dr_name(
     # ----------------------------------------------------------------------
     try:
         tz_name = (globals().get("CLINIC_TZ") or globals().get("LOCAL_TZ") or "America/Chicago")
-        tz_local = _pytz.timezone(tz_name)
+        tz_local = pytz.timezone(tz_name)
     except Exception:
-        tz_local = _pytz.timezone("America/Chicago")
+        tz_local = pytz.timezone("America/Chicago")
 
     dt_utc = datetime.fromisoformat(utc_start_iso.replace("Z", "+00:00")).astimezone(_pytz.UTC)
     dt_loc = dt_utc.astimezone(tz_local)
 
     # Local date (overridable by caller)
-    if local_date and _re.fullmatch(r"\d{4}-\d{2}-\d{2}", local_date):
+    if local_date and re.fullmatch(r"\d{4}-\d{2}-\d{2}", local_date):
         date_local = local_date
     else:
         date_local = dt_loc.strftime("%Y-%m-%d")
@@ -3471,7 +3466,7 @@ def book_appointment_for_dr_name(
     # ----------------------------------------------------------------------
     matches = []
     for idx, appt in enumerate(appts):
-        p = _re.sub(r"\D", "", appt.get("phone", ""))
+        p = re.sub(r"\D", "", appt.get("phone", ""))
         d = (appt.get("dob") or "").strip()
         if dob_iso:
             if p == digits_only_phone and d == dob_iso:
@@ -3495,7 +3490,7 @@ def book_appointment_for_dr_name(
             debug_print("🔁 Exact duplicate detected — skipping append")
 
             appt_norm = dict(appt)
-            appt_norm["phone"] = _re.sub(r"\D", "", appt_norm.get("phone", ""))
+            appt_norm["phone"] = re.sub(r"\D", "", appt_norm.get("phone", ""))
             appt_norm["utc_start"] = utc_start_iso
             if utc_end_iso:
                 appt_norm["utc_end"] = utc_end_iso
@@ -4420,7 +4415,7 @@ def voice():
             return "".join(out)
 
         # Combine inputs: prefer DTMF digits else convert speech
-        raw_digits = _re.sub(r"\D", "", dtmf_digits or _spoken_to_digits(speech_text))
+        raw_digits = re.sub(r"\D", "", dtmf_digits or _spoken_to_digits(speech_text))
         debug_print(f"[collect_phone] 🔍 raw_digits='{raw_digits}'")
 
         # ------------------------------------------------------------------
@@ -4621,7 +4616,7 @@ def voice():
 
         # 🧮 If DTMF provided (numeric keypad input)
         if dtmf_digits:
-            d = _re.sub(r"\D", "", dtmf_digits)
+            d = re.sub(r"\D", "", dtmf_digits)
             if len(d) >= 8:
                 try:
                     mm, dd, yyyy = int(d[0:2]), int(d[2:4]), int(d[4:8])
@@ -4639,12 +4634,12 @@ def voice():
                 # Example raw speech input:
                 #   "July 3rd, 1972."  → "July 3 1972"
                 # ----------------------------------------------------------------------
-                t = _re.sub(r"[.,;:]+$", "", speech_text)
-                t = _re.sub(r"[,\.;:]", " ", t)
-                t = _re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=_re.IGNORECASE)
-                t = _re.sub(r"\s+", " ", t).strip()
+                t = re.sub(r"[.,;:]+$", "", speech_text)
+                t = re.sub(r"[,\.;:]", " ", t)
+                t = re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=_re.IGNORECASE)
+                t = re.sub(r"\s+", " ", t).strip()
 
-                parsed = _dtparse(t, fuzzy=True)
+                parsed = dtparse(t, fuzzy=True)
                 dob_date = date(parsed.year, parsed.month, parsed.day)
                 debug_print("[collect_dob] ✅ parsed DOB from speech")
             except Exception as e:

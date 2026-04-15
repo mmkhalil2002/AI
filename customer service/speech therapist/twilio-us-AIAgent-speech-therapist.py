@@ -69,6 +69,60 @@
     # - `\s*` can also match newlines; if you want to avoid crossing lines, consider replacing `\s*` with `[ ]*`.
 
 
+# noqa: F401
+import sys
+import subprocess
+import importlib
+
+
+
+REQUIRED_PACKAGES = {
+    "openai": "openai",
+    "dateparser": "dateparser",
+    "pytz": "pytz",
+    "dateutil": "python-dateutil",
+    "dotenv": "python-dotenv",
+    "flask": "flask",
+    "twilio": "twilio",
+    "googleapiclient": "google-api-python-client",
+    "google.oauth2": "google-auth",
+    "google_auth_oauthlib": "google-auth-oauthlib",
+    "google.auth": "google-auth",
+}
+
+def install_missing_packages():
+    print("=" * 60)
+    print("[START] Checking and installing required packages...")
+    print("=" * 60)
+
+    for module_name, package_name in REQUIRED_PACKAGES.items():
+
+        try:
+            importlib.import_module(module_name)
+            print(f"[OK] {package_name} is already installed")
+            continue
+        except Exception:
+            print(f"[MISSING] {package_name} not found. Installing...")
+
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", package_name]
+            )
+            print(f"[INSTALLED] {package_name} installed successfully ✅")
+
+        except Exception as e:
+            print(f"[ERROR] Failed to install {package_name}: {e}")
+            sys.exit(1)
+
+    print("=" * 60)
+    print("[DONE] All packages are ready 🚀")
+    print("=" * 60)
+
+
+# Run installer BEFORE imports
+install_missing_packages()
+
+
 import os
 import json
 import string          # for string.punctuation
@@ -116,23 +170,27 @@ SPEECH_INPUT_DURATION = int(os.getenv("SPEECH_INPUT_DURATION", 12))
 # Third-party libraries
 # =========================
 
-from googleapiclient.discovery import build
-from google.oauth2 import service_account
-from google_auth_oauthlib.flow import InstalledAppFlow  # keep only if you actually use OAuth user flow
-from google.auth.transport.requests import Request
+#from googleapiclient.discovery import build
+#from google.oauth2 import service_account
+#from google_auth_oauthlib.flow import InstalledAppFlow  # keep only if you actually use OAuth user flow
+#from google.auth.transport.requests import Request
 
-from twilio.twiml.voice_response import VoiceResponse, Gather
-from twilio.twiml.messaging_response import MessagingResponse
-from twilio.rest import Client as TwilioClient
-from twilio.rest import Client
-from dateutil.parser import parse as _dtparse
-from string import punctuation as _PUNCT
 from datetime import datetime as _Datetime, timezone as _Tz
 from functools import wraps
+from string import punctuation as _PUNCT
 
-from openai import OpenAI, APIConnectionError, AuthenticationError, RateLimitError, OpenAIError
-
+from dateutil.parser import parse as _dtparse
 from flask import Flask, request, url_for
+from openai import (
+    APIConnectionError,
+    AuthenticationError,
+    OpenAI,
+    OpenAIError,
+    RateLimitError,
+)
+from twilio.rest import Client
+from twilio.twiml.messaging_response import MessagingResponse
+from twilio.twiml.voice_response import Gather, VoiceResponse
 
 # ---------------- Project Structure -----------------
 # speech_AI_agent/
