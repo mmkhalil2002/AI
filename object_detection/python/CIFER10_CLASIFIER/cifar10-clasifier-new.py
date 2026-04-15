@@ -106,7 +106,7 @@ import tkinter as tk
 # ============================================================
 # GLOBAL CONFIG
 # ============================================================
-
+"""
 DEBUG_FLAG = True
 
 # ------------------------------------------------------------
@@ -145,7 +145,7 @@ DISPLAY_WINDOW_TITLE = "Tested Image Viewer"
 # will be renamed to UNKNOWN_LABEL_BELOW_THRESHOLD.
 # This is independent from any class such as "unknown1".
 # ------------------------------------------------------------
-"""
+
 USE_LOW_CONFIDENCE_UNKNOWN_RULE = False
 LOW_CONFIDENCE_THRESHOLD = 0.60
 UNKNOWN_LABEL_BELOW_THRESHOLD = "unknown"
@@ -202,8 +202,9 @@ def get_bool(name, default="False"):
 # ============================================================
 # BASE PATH
 # ============================================================
-MODEL_BASE_DIR = get_str("MODEL_BASE_DIR", "../../../../")
+MODEL_PATH = get_str("MODEL_BASE", "../../../../")
 
+MODEL_BASE_DIR =  os.path.join(MODEL_PATH,"model")
 
 # ============================================================
 # TEST IMAGE DIRECTORY (EXPANDED)
@@ -212,7 +213,7 @@ TEST_IMAGE_DIR = os.path.expandvars(get_str("TEST_IMAGE_DIR"))
 
 # 👉 OPTIONAL (safer cross-platform override)
 TEST_IMAGE_DIR = os.path.join(
-    MODEL_BASE_DIR,
+    MODEL_PATH,
     "data",
     "cifar10_clasifier_test"
 )
@@ -234,6 +235,7 @@ INFER_BATCH_SIZE = get_int("INFER_BATCH_SIZE", 64)
 # DISPLAY SETTINGS
 # ============================================================
 DISPLAY_TESTED_IMAGE = get_bool("DISPLAY_TESTED_IMAGE", "True")
+DEBUG_FLAG = get_bool("DEBOG_FLAG", "False")
 ENLARGE_FACTOR = get_int("ENLARGE_FACTOR", 6)
 WAIT_FOR_ENTER_BETWEEN_IMAGES = get_bool("WAIT_FOR_ENTER_BETWEEN_IMAGES", "True")
 DISPLAY_WINDOW_TITLE = get_str("DISPLAY_WINDOW_TITLE", "Tested Image Viewer")
@@ -273,7 +275,7 @@ CONV4_OUT_CHANNELS = get_int("CONV4_OUT_CHANNELS", 1024)
 # DEBUG PRINT (OPTIONAL)
 # ============================================================
 print("=" * 60)
-print("[CONFIG] MODEL_BASE_DIR =", MODEL_BASE_DIR)
+print("[CONFIG] MODEL_PATH =", MODEL_PATH)
 print("[CONFIG] TEST_IMAGE_DIR =", TEST_IMAGE_DIR)
 print("[CONFIG] INFER_BATCH_SIZE =", INFER_BATCH_SIZE)
 print("[CONFIG] DISPLAY_TESTED_IMAGE =", DISPLAY_TESTED_IMAGE)
