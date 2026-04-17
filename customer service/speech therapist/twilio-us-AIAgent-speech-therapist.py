@@ -3902,15 +3902,6 @@ def voice():
     # ↓ Your existing “if stage == ... elif stage == ...” block starts below
 
 
-
-
-
-
-
-
-
-
-
        # 🧩 Stage: INTRO
     # ----------------------------------------------------------------------
     # Functional Description:
@@ -4218,23 +4209,113 @@ def voice():
         if choice:
             # 1️⃣ Book Appointment
             if choice == "1":
+                # Check if the user selected option "1" → Booking flow
+
                 debug_print("[intent] 📅 Booking flow selected")
+                # Log that booking flow is triggered
+
                 session_data[call_sid].update({
-                    "stage": "collect_phone",      # Next step: phone verification
-                    "origin_stage": "book",
-                    "booking": {},
-                    "retry_booking": 0,
-                    "retry_time": 0
+                    "stage": "collect_phone",      # Next state in the call flow
+                    "origin_stage": "book",        # Remember original intent
+                    "booking": {},                 # Initialize booking container
+                    "retry_booking": 0,            # Retry counter for booking
+                    "retry_time": 0                # Retry counter for time parsing
                 })
+
                 prompt = "Please say or enter your ten-digit phone number, then press pound."
+                # Prompt that will be spoken to the caller
+
                 gather = make_gather(
-                    prompt, input="speech dtmf", timeout=6,
-                    speech_timeout="auto", barge_in=True,
-                    finish_on_key="#", num_digits=10
+                    prompt,
+                    input="speech dtmf",          # Accept both voice and keypad input
+                    timeout=6,                    # Wait up to 6 seconds for keypad input
+                    speech_timeout="auto",        # Auto-detect end of speech
+                    barge_in=True,                # Allow interruption of prompt
+                    finish_on_key="#",            # '#' submits input early
+                    num_digits=10                 # Expect 10 digits (phone number)
                 )
+
                 resp.append(gather)
+                # Add <Gather> block into Twilio VoiceResponse XML
+
                 resp.redirect("/voice")
+                # After Gather completes, Twilio will call /voice again (POST request)
+
                 return str(resp)
+                # ------------------------------------------------------------------
+                # 🔥 CRITICAL STEP — SEND RESPONSE BACK TO TWILIO
+                # ------------------------------------------------------------------
+                # 1) `resp` is a Twilio VoiceResponse object (Python object)
+                #    Internally it contains a structured representation of TwiML:
+                #       <Response>
+                #           <Gather ...>...</Gather>
+                #           <Redirect>/voice</Redirect>
+                #       </Response>
+                #
+                # 2) `str(resp)` converts this Python object → XML STRING (TwiML)
+                #    Example output:
+                #
+                #       <Response>
+                #           <Gather input="speech dtmf" timeout="6" ...>
+                #               <Say>Please say or enter your ten-digit phone number...</Say>
+                #           </Gather>
+                #           <Redirect>/voice</Redirect>
+                #       </Response>
+                #
+                # 3) Flask RETURNS this string as HTTP response body
+                #    → Content-Type: application/xml (implicitly or explicitly)
+                #
+                # 4) Twilio receives this HTTP response from your webhook
+                #    → Twilio parses the XML (TwiML)
+                #
+                # 5) Twilio EXECUTES the instructions in order:
+                #
+                #    a) <Gather>
+                #       - Plays the prompt using TTS (Polly.Joanna)
+                #       - Waits for user input (speech or keypad)
+                #       - Collects digits or speech transcript
+                #
+                #    b) After input OR timeout:
+                #       - Twilio sends a NEW HTTP request to /voice
+                #       - Includes collected data:
+                #           request.values["Digits"]  (DTMF)
+                #           request.values["SpeechResult"] (speech)
+                #
+                #    c) <Redirect>
+                #       - Ensures flow continues even if no input is captured
+                #
+                # 6) Your server receives that new request
+                #    → Uses session_data[call_sid]["stage"] = "collect_phone"
+                #    → Routes logic to phone-processing stage
+                #
+                # ------------------------------------------------------------------
+                # 🧠 IMPORTANT CONCEPT
+                # ------------------------------------------------------------------
+                # This line is NOT just "returning a string"
+                # It is actually:
+                #
+                #   ✔ Sending CONTROL INSTRUCTIONS to Twilio
+                #   ✔ Driving the entire call flow state machine
+                #   ✔ Triggering the next webhook callback
+                #
+                # ------------------------------------------------------------------
+                # ⚠️ COMMON MISTAKES
+                # ------------------------------------------------------------------
+                # ❌ return resp          → will NOT work (object not serialized)
+                # ❌ return json(resp)    → Twilio expects XML, not JSON
+                # ❌ return plain text    → Twilio cannot execute it
+                #
+                # ✔ MUST return XML (TwiML) → via str(resp)
+                #
+                # ------------------------------------------------------------------
+                # 🚀 THINK OF IT LIKE THIS
+                # ------------------------------------------------------------------
+                # Your Flask app = "brain"
+                # Twilio = "voice + execution engine"
+                #
+                # return str(resp) =
+                #     "Here Twilio, execute this next step in the call"
+                # ------------------------------------------------------------------
 
             # 2️⃣ Cancel Appointment
             if choice == "2":
@@ -4257,7 +4338,7 @@ def voice():
                 )
                 resp.append(gather)
                 resp.redirect("/voice")
-                save_session(call_sid)
+                #save_session(call_sid)
                 return str(resp)
 
             # 3️⃣ New Customer Registration
@@ -4305,7 +4386,7 @@ def voice():
                 )
                 resp.append(gather)
                 resp.redirect("/voice")
-                save_session(call_sid)
+               # save_session(call_sid)
                 return str(resp)
 
             # 5️⃣ Update Credit Card
@@ -4328,7 +4409,7 @@ def voice():
                 )
                 resp.append(gather)
                 resp.redirect("/voice")
-                save_session(call_sid)
+                #save_session(call_sid)
                 return str(resp)
 
             # 6️⃣ Update PIN
@@ -4485,9 +4566,127 @@ def voice():
         # 🌎 Infer caller’s country code for phone normalization
         # ------------------------------------------------------------------
         if "phone_country" not in sd:
+            # Check if "phone_country" is NOT already stored in the session (sd)
+            # → Ensures we only detect/set it once per call
+
+            # --------------------------------------------------
+            # 🌐 HOW FromCountry IS PROVIDED
+            # --------------------------------------------------
+            # IMPORTANT:
+            #   You DO NOT set "FromCountry" yourself.
+            #   Twilio automatically injects it into every webhook request.
+            #
+            # When Twilio sends a request to your /voice endpoint, it includes:
+            #
+            #   request.values = {
+            #       "CallSid": "CA123456789...",
+            #       "From": "+14694633276",
+            #       "FromCountry": "US",
+            #       "To": "+1XXXXXXXXXX",
+            #       "ToCountry": "US",
+            #       ...
+            #   }
+            #
+            # Example HTTP request body sent by Twilio:
+            #
+            #   CallSid=CA123456789
+            #   From=%2B14694633276
+            #   FromCountry=US
+            #   To=%2B1XXXXXXXXXX
+            #   ToCountry=US
+            #
+            # Twilio determines FromCountry from the phone number prefix:
+            #   +1  → US
+            #   +20 → EG (Egypt)
+            #   +44 → GB (UK)
+            #
+            # --------------------------------------------------
+            # ⚠️ EDGE CASES
+            # --------------------------------------------------
+            # - FromCountry may be missing in:
+            #     • SIP calls
+            #     • VoIP clients
+            #     • Testing tools (Postman, curl)
+            #
+            # - That’s why we safely handle it using fallback logic
+
             from_country = (request.values.get("FromCountry") or "").upper()
+            # Extract caller country from Twilio request
+            # - ( ... or "" ) prevents None
+            # - .upper() normalizes values (e.g., "eg" → "EG")
+
             sd["phone_country"] = from_country or (COUNTRY or "US")
+            # Assign the country into session using fallback logic:
+            #
+            # Priority:
+            #   1️⃣ Twilio detected country (from_country)
+            #   2️⃣ Global COUNTRY variable
+            #   3️⃣ Default "US"
+            #
+            # --------------------------------------------------
+            # 🧾 EXAMPLE — BEFORE this block runs:
+            # --------------------------------------------------
+            # sd = {
+            #     "stage": "collect_phone",
+            #     "origin_stage": "book",
+            #     "booking": {},
+            #     "retry_booking": 0,
+            #     "retry_time": 0
+            # }
+            #
+            # --------------------------------------------------
+            # 🧾 EXAMPLES — AFTER this block runs:
+            # --------------------------------------------------
+            #
+            # ✅ Example 1: US caller
+            #   FromCountry = "US"
+            #   → sd["phone_country"] = "US"
+            #
+            # ✅ Example 2: Egypt caller
+            #   FromCountry = "eg"
+            #   → sd["phone_country"] = "EG"
+            #
+            # ⚠️ Example 3: Missing FromCountry
+            #   FromCountry = None, COUNTRY = "US"
+            #   → sd["phone_country"] = "US"
+            #
+            # ⚠️ Example 4: No FromCountry + no COUNTRY
+            #   → sd["phone_country"] = "US" (final fallback)
+            #
+            # Final sd example:
+            # sd = {
+            #     "stage": "collect_phone",
+            #     "origin_stage": "book",
+            #     "booking": {},
+            #     "retry_booking": 0,
+            #     "retry_time": 0,
+            #     "phone_country": "US"
+            # }
+            #
+            # --------------------------------------------------
+            # 🧠 IMPORTANT BEHAVIOR
+            # --------------------------------------------------
+            # This block runs ONLY once because:
+            #   if "phone_country" not in sd
+            #
+            # On later requests:
+            #   sd already contains "phone_country"
+            #   → this block is skipped
+            #
+            # --------------------------------------------------
+            # 🎯 WHY THIS IS IMPORTANT
+            # --------------------------------------------------
+            # Used later for:
+            #   ✔ Phone number normalization (E.164 format)
+            #   ✔ Country-specific validation rules
+            #   ✔ Language / voice behavior (optional)
+            #   ✔ Timezone assumptions
+
             debug_print(f"[collect_phone] 🌐 phone_country={sd['phone_country']}")
+            # Log detected country for debugging
+
+
+
 
         # ------------------------------------------------------------------
         # 🗣 Capture user input (SpeechResult or DTMF)
