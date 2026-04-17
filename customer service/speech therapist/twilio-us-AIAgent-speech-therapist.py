@@ -302,14 +302,50 @@ load_dotenv()
 #     within the voice assistant.
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# ============================================================
+# TWILIO AUTHENTICATION CONFIGURATION
+# ============================================================
+
+# HOW TO FIND TWILIO CREDENTIALS:
+#   1. Open browser and go to:
+#        https://console.twilio.com/
+#   2. Log in to your Twilio account
+#   3. On the Dashboard (home page), you will see:
+#        - Account SID
+#        - Auth Token (hidden → click "Show")
+#   4. Copy both values and place them in your .env file
+#
+# NOTE:
+#   • Dashboard URL: https://console.twilio.com/
+#   • Credentials are located in the main "Project Info" section
+# user name mmkhalil2001@yahoo.com
+# paaswd M12KhM12Oh$$
+
+
 # TWILIO_ACCOUNT_SID:
-#   • The unique identifier for your Twilio account.
-#   • Used to authenticate API calls to Twilio (voice, SMS, recordings, etc.).
+# click Twilio Home in upper left window
+#   • Found in Twilio Dashboard under "Account Info"
+#   • Acts as your account identifier (like a username)
+#   • Format: starts with "ACxxxxxxxxxxxxxxxxxxxxxxxx"
+#   • Required to initialize Twilio client
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 
 # TWILIO_AUTH_TOKEN:
-#   • The authentication token paired with the Account SID.
-#   • Grants permission to send or receive calls, messages, and manage Twilio resources.
+# https://console.twilio.com/us1/account/keys-credentials/api-keys
+# API Key & Token
+#   • Found in Twilio Dashboard next to Account SID
+#   • Click "Show" to reveal it
+#   • Secret key (like a password) → MUST be kept private
+#   • Used to authenticate API requests to Twilio
+#   • Grants permission to:
+#        - Make phone calls
+#        - Send/receive SMS
+#        - Manage Twilio resources
+#
+# SECURITY WARNING:
+#   • NEVER hardcode this value in your script
+#   • ALWAYS store it in a .env file
+#   • NEVER upload .env to GitHub
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 
 # TWILIO_PHONE_NUMBER:
