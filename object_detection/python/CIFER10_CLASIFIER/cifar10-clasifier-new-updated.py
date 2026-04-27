@@ -1012,21 +1012,76 @@ def run_directory_multi_model_classifier(image_paths, models_cfg, device):
                 temp = float(cfg.get("temperature", 1.0) or 1.0)
                 probs = torch.softmax(logits / temp, dim=1)
 
-                confs, pred_ids = torch.max(probs, dim=1)
-
-                pred_ids_cpu = pred_ids.detach().cpu().tolist()
-                confs_cpu = confs.detach().cpu().tolist()
                 probs_cpu = probs.detach().cpu()
 
                 classes = cfg["classes"]
                 model_name = cfg["name"]
 
                 for i in range(len(ok_paths)):
-                    conf = float(confs_cpu[i])
-                    pid = int(pred_ids_cpu[i])
+                    # ----------------------------------------------------
+                    # PER-MODEL CLASS SELECTION RULE
+                    # ----------------------------------------------------
+                    # Each model outputs probabilities for its own class list
+                    # (for example 9 real classes + 1 unknown class).
+                    #
+                    # We do NOT want to keep "unknown*" as the selected class
+                    # if a real class is available in the same model output.
+                    #
+                    # So for this image:
+                    #   1) rank all classes from highest confidence to lowest
+                    #   2) ignore any class whose name starts with "unknown"
+                    #   3) choose the next highest class that is not unknown
+                    #
+                    # Example:
+                    #   ranked output:
+                    #       1. unknown1   91.20%
+                    #       2. apple       5.80%
+                    #       3. bicycle     2.10%
+                    #
+                    #   selected class becomes:
+                    #       apple, not unknown1
+                    #
+                    # Fallback:
+                    #   If all ranked classes are unknown-prefixed, then we keep
+                    #   the true top-1 class as fallback.
+                    # ----------------------------------------------------
+                    probs_row = probs_cpu[i]
 
-                    cls_name = classes[pid] if 0 <= pid < len(classes) else f"class_{pid}"
-                    topk_preds = get_topk_predictions(probs_cpu[i], classes, topk=TOPK_TO_PRINT)
+                    # Build a full ranked list from highest confidence to lowest.
+                    # Each item looks like:
+                    #   (class_name, confidence, class_index)
+                    full_ranked_preds = get_topk_predictions(
+                        probs_row,
+                        classes,
+                        topk=len(classes)
+                    )
+
+                    selected_class_name = ""
+                    selected_conf = -1.0
+                    selected_pid = -1
+
+                    # Ignore any class that starts with "unknown" and take the
+                    # next highest class that does not include the unknown prefix.
+                    for class_name, class_conf, class_idx in full_ranked_preds:
+                        if not starts_with_unknown(class_name):
+                            selected_class_name = class_name
+                            selected_conf = float(class_conf)
+                            selected_pid = int(class_idx)
+                            break
+
+                    # Safety fallback: if all classes are unknown-prefixed,
+                    # keep the true top-1 result from this model.
+                    if selected_pid < 0:
+                        selected_class_name, selected_conf, selected_pid = full_ranked_preds[0]
+                        selected_conf = float(selected_conf)
+                        selected_pid = int(selected_pid)
+
+                    # Keep only the configured Top-K items for display/printing.
+                    topk_preds = full_ranked_preds[:TOPK_TO_PRINT]
+
+                    conf = selected_conf
+                    pid = selected_pid
+                    cls_name = selected_class_name
 
                     per_image_all_results[i].append(
                         {
