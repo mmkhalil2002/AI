@@ -432,6 +432,23 @@ CIFAR_10_CLASSES_11  = [
    "unknown11"      #
 ]
 
+
+RME_10_CLASSES_1  = [
+
+    "agricultural",       # 0
+    "airplane",           # 1
+    "airport",            # 2
+    "baseball_diamond",   # 3
+    "baseball_field",     # 4    
+    "baseballdiamond",    # 5
+    "basketball_court",   # 6
+    "beach",              # 7
+    "bridge"              # 8
+    "unknownRME1"         #
+
+]
+  
+
 RME_10_CLASSES_4  = [
   "golf_course",            # 27
   "golfcourse",             # 28 
@@ -492,11 +509,8 @@ if len(CIFAR_10_CLASSES_9) < 2:
 if len(CIFAR_10_CLASSES_10) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_10 must contain at least 2 classes.")
 
-if len(CIFAR_10_CLASSES_11) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_11 must contain at least 2 classes.")
-
-
-
+if len(CIFAR_10_CLASSES_1) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_1 must contain at least 2 classes.")
 if len(RME_10_CLASSES_4) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_4 must contain at least 2 classes.")
 if len(RME_10_CLASSES_5) < 2:
@@ -626,8 +640,16 @@ MODELS: List[Dict] = [
         "temperature": 1.0,
     },
 
-
-   {
+    {
+        "name": "rme00-08",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-00-08-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_1,
+        "temperature": 1.0,
+    },
+    {
         "name": "rme27-35",
         "weights": os.path.join(
             MODEL_BASE_DIR,
