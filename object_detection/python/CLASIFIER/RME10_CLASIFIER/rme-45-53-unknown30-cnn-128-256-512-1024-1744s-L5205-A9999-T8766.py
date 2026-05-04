@@ -525,8 +525,8 @@ from torchvision import datasets, transforms
 # ============================================================
 """
 MODEL_PATH = "../../../"
-MODEL_FILENAME = "cifar-90-98-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-DATA_PATH = "../../../data/cifar_90_98_unknown30"
+MODEL_FILENAME = "rme-45-53-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+DATA_PATH = "../../../data/rme_45_53_unknown30"
 
 BATCH_SIZE = 128
 NUM_EPOCHS = 100
@@ -652,12 +652,12 @@ MODEL_PATH = get_env_str("MODEL_PATH", "../../../")
 
 # Specific trained model filename
 
-MODEL_FILENAME= os.path.join(MODEL_PATH,"model", "cifar-90-98-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766")
+MODEL_FILENAME= os.path.join(MODEL_PATH,"model", "rme-45-53-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766")
 # ------------------------------------------------------------
 # DERIVED PATH (DATASET)
 # ------------------------------------------------------------
 # DATA_PATH is constructed from MODEL_PATH + subdirectory
-DATA_PATH = os.path.join(MODEL_PATH, "data", "cifar_90_98_unknown30")
+DATA_PATH = os.path.join(MODEL_PATH, "data", "RME10_45_53_unknown30")
 
 
 # ============================================================
@@ -3366,7 +3366,7 @@ def main():
     # --------------------------------------------------------
     # LOAD OR TRAIN MODEL
     # --------------------------------------------------------
-    model_filename =  MODEL_FILENAME
+    model_filename = MODEL_FILENAME
     debug_print(f"[main] Model file path = {model_filename}")
 
     if os.path.exists(model_filename):

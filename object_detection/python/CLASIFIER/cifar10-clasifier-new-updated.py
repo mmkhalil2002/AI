@@ -432,6 +432,33 @@ CIFAR_10_CLASSES_11  = [
    "unknown11"      #
 ]
 
+RME_10_CLASSES_4  = [
+  "golf_course",            # 27
+  "golfcourse",             # 28 
+   "ground_track_field",    # 29
+   "harbor",                # 30
+   "industrial_area",       # 31
+   "intersection",          # 32
+   "island",                # 33
+   "lake",                  # 34
+   "meadow",                # 35
+   "unknownRME4",           #
+]
+
+RME_10_CLASSES_5  = [
+   "medium_residential",    # 36
+   "mediumresidential",     # 37
+   "mobile_home_park",      # 38
+   "mobilehomepark",        # 39
+   "mountain",              # 40
+   "nursing_home",          # 41
+   "oil_gas_field",         # 42
+   "oil_well",              # 43
+   "overpass",              # 44
+   "unknownRME5"            #
+ ]
+
+
 # ------------------------------------------------------------
 # Optional safety checks for these example lists
 # ------------------------------------------------------------
@@ -464,6 +491,16 @@ if len(CIFAR_10_CLASSES_9) < 2:
 
 if len(CIFAR_10_CLASSES_10) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_10 must contain at least 2 classes.")
+
+if len(CIFAR_10_CLASSES_11) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_11 must contain at least 2 classes.")
+
+
+
+if len(RME_10_CLASSES_4) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_4 must contain at least 2 classes.")
+if len(RME_10_CLASSES_5) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_5 must contain at least 2 classes.")
 # ============================================================
 # MODEL REGISTRY
 # ============================================================
@@ -576,6 +613,36 @@ MODELS: List[Dict] = [
             "cifar-90-98-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
         "classes": CIFAR_10_CLASSES_11,
+        "temperature": 1.0,
+    },
+
+     {
+        "name": "cifar27-35",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "cifar-27-35-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": CIFAR_10_CLASSES_4,
+        "temperature": 1.0,
+    },
+
+
+   {
+        "name": "rme27-35",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-27-35-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_4,
+        "temperature": 1.0,
+    },
+    {
+        "name": "rme36-44",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-36-44-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_5,
         "temperature": 1.0,
     },
 ]
