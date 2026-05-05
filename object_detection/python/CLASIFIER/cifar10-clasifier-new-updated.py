@@ -448,6 +448,31 @@ RME_10_CLASSES_1  = [
 
 ]
   
+RME_10_CLASSES_2  = [
+    "buildings",             # 9
+    "cemetery",              # 10
+    "chaparral",             # 11
+    "christmas_tree_farm",   # 12
+    "church",                # 13
+    "circular_farmland",     # 14
+    "closed_road",           # 15
+    "cloud",                 # 16
+    "coastal_mansion",       # 17
+    "unknownRME2"            #
+    ]
+
+RME_10_CLASSES_3  = [
+    "commercial_area",      # 18
+    "crosswalk",            # 19
+    "dense_residential",    # 20
+    "denseresidential",     # 21
+    "desert",               # 22     
+    "ferry_terminal",       # 23
+    "football_field",       # 24
+    "forest",               # 25
+    "freeway",              # 26
+    "unknownRME3"           # 
+]
 
 RME_10_CLASSES_4  = [
   "golf_course",            # 27
@@ -474,7 +499,31 @@ RME_10_CLASSES_5  = [
    "overpass",              # 44
    "unknownRME5"            #
  ]
+RME_10_CLASSES_6  = [
+    "palace",               # 45
+    "parking_lot",          # 46
+    "parking_space",        # 47    
+    "parkinglot",           # 48
+    "railway",              # 49
+    "railway_station",      # 50
+    "rectangular_farmland", # 51
+    "river",                # 52
+    "roundabout",           # 53
+    "unknownRME6"           # 
+]
 
+ME_10_CLASSES_7  = [
+    "runway",             # 54   
+    "runway_marking",     # 55 
+    "sea_ice",            # 56
+    "ship",               # 57
+    "shipping_yard",      # 58
+    "snowberg",           # 59 
+    "solar_panel",        # 60 
+    "sparse_residential", # 61 
+    "sparseresidential",  # 62 
+    "unknownRME7"         #
+] 
 
 # ------------------------------------------------------------
 # Optional safety checks for these example lists
@@ -509,12 +558,25 @@ if len(CIFAR_10_CLASSES_9) < 2:
 if len(CIFAR_10_CLASSES_10) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_10 must contain at least 2 classes.")
 
+
+
 if len(CIFAR_10_CLASSES_1) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_1 must contain at least 2 classes.")
+
+if len(CIFAR_10_CLASSES_2) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_2 must contain at least 2 classes.")
+
+if len(CIFAR_10_CLASSES_3) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_3 must contain at least 2 classes.")
+
 if len(RME_10_CLASSES_4) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_4 must contain at least 2 classes.")
+
 if len(RME_10_CLASSES_5) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_5 must contain at least 2 classes.")
+
+if len(RME_10_CLASSES_6) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_6 must contain at least 2 classes.")
 # ============================================================
 # MODEL REGISTRY
 # ============================================================
@@ -650,6 +712,26 @@ MODELS: List[Dict] = [
         "temperature": 1.0,
     },
     {
+        "name": "rme09-17",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_2,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "rme18-26",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-17-26-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_3,
+        "temperature": 1.0,
+    },
+
+    {
         "name": "rme27-35",
         "weights": os.path.join(
             MODEL_BASE_DIR,
@@ -665,6 +747,16 @@ MODELS: List[Dict] = [
             "rme-36-44-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
         "classes": RME_10_CLASSES_5,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "rme45-53",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-45-53-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_6,
         "temperature": 1.0,
     },
 ]
