@@ -725,7 +725,7 @@ MODELS: List[Dict] = [
         "name": "rme18-26",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "rme-17-26-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+            "rme-18-26-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
         "classes": RME_10_CLASSES_3,
         "temperature": 1.0,
