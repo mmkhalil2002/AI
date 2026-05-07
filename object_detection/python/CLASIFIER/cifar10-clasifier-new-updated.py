@@ -443,9 +443,8 @@ RME_10_CLASSES_1  = [
     "baseballdiamond",    # 5
     "basketball_court",   # 6
     "beach",              # 7
-    "bridge"              # 8
+    "bridge",             # 8
     "unknownRME1"         #
-
 ]
   
 RME_10_CLASSES_2  = [
@@ -484,7 +483,7 @@ RME_10_CLASSES_4  = [
    "island",                # 33
    "lake",                  # 34
    "meadow",                # 35
-   "unknownRME4",           #
+   "unknownRME4"            #
 ]
 
 RME_10_CLASSES_5  = [
@@ -512,7 +511,7 @@ RME_10_CLASSES_6  = [
     "unknownRME6"           # 
 ]
 
-ME_10_CLASSES_7  = [
+RME_10_CLASSES_7  = [
     "runway",             # 54   
     "runway_marking",     # 55 
     "sea_ice",            # 56
@@ -524,6 +523,19 @@ ME_10_CLASSES_7  = [
     "sparseresidential",  # 62 
     "unknownRME7"         #
 ] 
+RME_10_CLASSES_8  = [
+    "stadium",               # 63
+    "storage_tank",          # 64
+    "storagetanks",          # 65
+    "swimming_pool",         # 66
+    "tennis_court",          # 67
+    "tenniscourt",           # 68
+    "terrace",               # 69
+    "thermal_power_station", # 70
+    "transformer_station",   # 71
+    "unknownRME8"
+]
+
 
 # ------------------------------------------------------------
 # Optional safety checks for these example lists
@@ -577,6 +589,12 @@ if len(RME_10_CLASSES_5) < 2:
 
 if len(RME_10_CLASSES_6) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_6 must contain at least 2 classes.")
+
+if len(RME_10_CLASSES_7) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_7 must contain at least 2 classes.")
+
+if len(RME_10_CLASSES_8) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_8 must contain at least 2 classes.")
 # ============================================================
 # MODEL REGISTRY
 # ============================================================
@@ -759,6 +777,27 @@ MODELS: List[Dict] = [
         "classes": RME_10_CLASSES_6,
         "temperature": 1.0,
     },
+
+    {
+        "name": "rme54-62",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-54-62-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_7,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "rme63-71",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-63-71-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_8,
+        "temperature": 1.0,
+    }
+
 ]
 
 
