@@ -432,6 +432,111 @@ CIFAR_10_CLASSES_11  = [
    "unknown11"      #
 ]
 
+
+RME_10_CLASSES_1  = [
+
+    "agricultural",       # 0
+    "airplane",           # 1
+    "airport",            # 2
+    "baseball_diamond",   # 3
+    "baseball_field",     # 4    
+    "baseballdiamond",    # 5
+    "basketball_court",   # 6
+    "beach",              # 7
+    "bridge",             # 8
+    "unknownRME1"         #
+]
+  
+RME_10_CLASSES_2  = [
+    "buildings",             # 9
+    "cemetery",              # 10
+    "chaparral",             # 11
+    "christmas_tree_farm",   # 12
+    "church",                # 13
+    "circular_farmland",     # 14
+    "closed_road",           # 15
+    "cloud",                 # 16
+    "coastal_mansion",       # 17
+    "unknownRME2"            #
+    ]
+
+RME_10_CLASSES_3  = [
+    "commercial_area",      # 18
+    "crosswalk",            # 19
+    "dense_residential",    # 20
+    "denseresidential",     # 21
+    "desert",               # 22     
+    "ferry_terminal",       # 23
+    "football_field",       # 24
+    "forest",               # 25
+    "freeway",              # 26
+    "unknownRME3"           # 
+]
+
+RME_10_CLASSES_4  = [
+  "golf_course",            # 27
+  "golfcourse",             # 28 
+   "ground_track_field",    # 29
+   "harbor",                # 30
+   "industrial_area",       # 31
+   "intersection",          # 32
+   "island",                # 33
+   "lake",                  # 34
+   "meadow",                # 35
+   "unknownRME4"            #
+]
+
+RME_10_CLASSES_5  = [
+   "medium_residential",    # 36
+   "mediumresidential",     # 37
+   "mobile_home_park",      # 38
+   "mobilehomepark",        # 39
+   "mountain",              # 40
+   "nursing_home",          # 41
+   "oil_gas_field",         # 42
+   "oil_well",              # 43
+   "overpass",              # 44
+   "unknownRME5"            #
+ ]
+RME_10_CLASSES_6  = [
+    "palace",               # 45
+    "parking_lot",          # 46
+    "parking_space",        # 47    
+    "parkinglot",           # 48
+    "railway",              # 49
+    "railway_station",      # 50
+    "rectangular_farmland", # 51
+    "river",                # 52
+    "roundabout",           # 53
+    "unknownRME6"           # 
+]
+
+RME_10_CLASSES_7  = [
+    "runway",             # 54   
+    "runway_marking",     # 55 
+    "sea_ice",            # 56
+    "ship",               # 57
+    "shipping_yard",      # 58
+    "snowberg",           # 59 
+    "solar_panel",        # 60 
+    "sparse_residential", # 61 
+    "sparseresidential",  # 62 
+    "unknownRME7"         #
+] 
+RME_10_CLASSES_8  = [
+    "stadium",               # 63
+    "storage_tank",          # 64
+    "storagetanks",          # 65
+    "swimming_pool",         # 66
+    "tennis_court",          # 67
+    "tenniscourt",           # 68
+    "terrace",               # 69
+    "thermal_power_station", # 70
+    "transformer_station",   # 71
+    "unknownRME8"
+]
+
+
 # ------------------------------------------------------------
 # Optional safety checks for these example lists
 # ------------------------------------------------------------
@@ -464,6 +569,32 @@ if len(CIFAR_10_CLASSES_9) < 2:
 
 if len(CIFAR_10_CLASSES_10) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_10 must contain at least 2 classes.")
+
+
+
+if len(RME_10_CLASSES_1) < 2:
+    raise RuntimeError("RME_10_CLASSES_1 must contain at least 2 classes.")
+
+if len(RME_10_CLASSES_2) < 2:
+    raise RuntimeError("RME_10_CLASSES_2 must contain at least 2 classes.")
+
+if len(RME_10_CLASSES_3) < 2:
+    raise RuntimeError("RME_10_CLASSES_3 must contain at least 2 classes.")
+
+if len(RME_10_CLASSES_4) < 2:
+    raise RuntimeError("RME_10_CLASSES_4 must contain at least 2 classes.")
+
+if len(RME_10_CLASSES_5) < 2:
+    raise RuntimeError("RME_10_CLASSES_5 must contain at least 2 classes.")
+
+if len(RME_10_CLASSES_6) < 2:
+    raise RuntimeError("RME_10_CLASSES_6 must contain at least 2 classes.")
+
+if len(RME_10_CLASSES_7) < 2:
+    raise RuntimeError("RME_10_CLASSES_7 must contain at least 2 classes.")
+
+if len(RME_10_CLASSES_8) < 2:
+    raise RuntimeError("RME_10_CLASSES_8 must contain at least 2 classes.")
 # ============================================================
 # MODEL REGISTRY
 # ============================================================
@@ -578,6 +709,95 @@ MODELS: List[Dict] = [
         "classes": CIFAR_10_CLASSES_11,
         "temperature": 1.0,
     },
+
+     {
+        "name": "cifar27-35",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "cifar-27-35-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": CIFAR_10_CLASSES_4,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "rme00-08",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-00-08-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_1,
+        "temperature": 1.0,
+    },
+    {
+        "name": "rme09-17",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_2,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "rme18-26",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-18-26-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_3,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "rme27-35",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-27-35-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_4,
+        "temperature": 1.0,
+    },
+    {
+        "name": "rme36-44",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-36-44-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_5,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "rme45-53",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-45-53-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_6,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "rme54-62",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-54-62-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_7,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "rme63-71",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-63-71-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_8,
+        "temperature": 1.0,
+    }
+
 ]
 
 
@@ -1012,21 +1232,76 @@ def run_directory_multi_model_classifier(image_paths, models_cfg, device):
                 temp = float(cfg.get("temperature", 1.0) or 1.0)
                 probs = torch.softmax(logits / temp, dim=1)
 
-                confs, pred_ids = torch.max(probs, dim=1)
-
-                pred_ids_cpu = pred_ids.detach().cpu().tolist()
-                confs_cpu = confs.detach().cpu().tolist()
                 probs_cpu = probs.detach().cpu()
 
                 classes = cfg["classes"]
                 model_name = cfg["name"]
 
                 for i in range(len(ok_paths)):
-                    conf = float(confs_cpu[i])
-                    pid = int(pred_ids_cpu[i])
+                    # ----------------------------------------------------
+                    # PER-MODEL CLASS SELECTION RULE
+                    # ----------------------------------------------------
+                    # Each model outputs probabilities for its own class list
+                    # (for example 9 real classes + 1 unknown class).
+                    #
+                    # We do NOT want to keep "unknown*" as the selected class
+                    # if a real class is available in the same model output.
+                    #
+                    # So for this image:
+                    #   1) rank all classes from highest confidence to lowest
+                    #   2) ignore any class whose name starts with "unknown"
+                    #   3) choose the next highest class that is not unknown
+                    #
+                    # Example:
+                    #   ranked output:
+                    #       1. unknown1   91.20%
+                    #       2. apple       5.80%
+                    #       3. bicycle     2.10%
+                    #
+                    #   selected class becomes:
+                    #       apple, not unknown1
+                    #
+                    # Fallback:
+                    #   If all ranked classes are unknown-prefixed, then we keep
+                    #   the true top-1 class as fallback.
+                    # ----------------------------------------------------
+                    probs_row = probs_cpu[i]
 
-                    cls_name = classes[pid] if 0 <= pid < len(classes) else f"class_{pid}"
-                    topk_preds = get_topk_predictions(probs_cpu[i], classes, topk=TOPK_TO_PRINT)
+                    # Build a full ranked list from highest confidence to lowest.
+                    # Each item looks like:
+                    #   (class_name, confidence, class_index)
+                    full_ranked_preds = get_topk_predictions(
+                        probs_row,
+                        classes,
+                        topk=len(classes)
+                    )
+
+                    selected_class_name = ""
+                    selected_conf = -1.0
+                    selected_pid = -1
+
+                    # Ignore any class that starts with "unknown" and take the
+                    # next highest class that does not include the unknown prefix.
+                    for class_name, class_conf, class_idx in full_ranked_preds:
+                        if not starts_with_unknown(class_name):
+                            selected_class_name = class_name
+                            selected_conf = float(class_conf)
+                            selected_pid = int(class_idx)
+                            break
+
+                    # Safety fallback: if all classes are unknown-prefixed,
+                    # keep the true top-1 result from this model.
+                    if selected_pid < 0:
+                        selected_class_name, selected_conf, selected_pid = full_ranked_preds[0]
+                        selected_conf = float(selected_conf)
+                        selected_pid = int(selected_pid)
+
+                    # Keep only the configured Top-K items for display/printing.
+                    topk_preds = full_ranked_preds[:TOPK_TO_PRINT]
+
+                    conf = selected_conf
+                    pid = selected_pid
+                    cls_name = selected_class_name
 
                     per_image_all_results[i].append(
                         {

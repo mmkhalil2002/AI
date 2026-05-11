@@ -525,8 +525,8 @@ from torchvision import datasets, transforms
 # ============================================================
 """
 MODEL_PATH = "../../../"
-MODEL_FILENAME = "cifar-63-71-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-DATA_PATH = "../../../data/cifar_63_71_unknown30"
+MODEL_FILENAME = "rme-54-62-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+DATA_PATH = "../../../data/rme_54_62_unknown30"
 
 BATCH_SIZE = 128
 NUM_EPOCHS = 100
@@ -570,6 +570,7 @@ CONV4_IN_CHANNELS  = CONV3_OUT_CHANNELS   # 512
 CONV4_OUT_CHANNELS = 1024
 
 """
+
 # ============================================================
 # ENV CONFIG LOADING
 # ============================================================
@@ -651,13 +652,12 @@ MODEL_PATH = get_env_str("MODEL_PATH", "../../../")
 
 # Specific trained model filename
 
-
-MODEL_FILENAME= os.path.join(MODEL_PATH,"model", "cifar-63-71-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766")
+MODEL_FILENAME= os.path.join(MODEL_PATH,"model", "rme-54-62-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766")
 # ------------------------------------------------------------
 # DERIVED PATH (DATASET)
 # ------------------------------------------------------------
 # DATA_PATH is constructed from MODEL_PATH + subdirectory
-DATA_PATH = os.path.join(MODEL_PATH, "data", "cifar_64_71_unknown30")
+DATA_PATH = os.path.join(MODEL_PATH, "data", "RME10_54_62_unknown30")
 
 
 # ============================================================

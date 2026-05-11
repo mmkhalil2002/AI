@@ -286,298 +286,225 @@ print("=" * 60)
 # ------------------------------------------------------------
 # Example group 1: first 10 classes
 # ------------------------------------------------------------
-CIFAR_10_CLASSES_1 = [
-    "apple",          # 00
-    "aquarium_fish",  # 01
-    "baby",           # 02
-    "bear",           # 03
-    "beaver",         # 04
-    "bed",            # 05
-    "bee",            # 06
-    "beetle",         # 07
-    "bicycle",        # 08
-    "unknown1",       #
-]
-
-# ------------------------------------------------------------
-# Example group 2: next 10 classes
-# ------------------------------------------------------------
-CIFAR_10_CLASSES_2 = [
-    "bottle",      # 09
-    "bowl",        # 10
-    "boy",         # 11
-    "bridge",      # 12
-    "bus",         # 13
-    "butterfly",   # 14
-    "camel",       # 15
-    "can",         # 16
-    "castle",      # 17
-    "unknown2"     #
-]
-
-CIFAR_10_CLASSES_3 = [
-    "caterpillar",    # 18
-    "cattle",         # 19
-    "chair",          # 20
-    "chimpanzee",     # 21
-    "clock",          # 22
-    "cloud",          # 23
-    "cockroach",      # 24
-    "couch",          # 25
-    "crab",           # 26
-    "unknown3"        #
-]
-
-CIFAR_10_CLASSES_4 = [
-    "crocodile",     # 27
-    "cup",           # 28
-    "dinosaur",      # 29
-    "dolphin",       # 30
-    "elephant",      # 31
-    "flatfish",      # 32
-    "forest",        # 33
-    "fox",           # 34
-    "girl",          # 35
-    "unknown4"       #
-]
-
-CIFAR_10_CLASSES_5 = [
-    "hamster",       # 36
-    "house",         # 37
-    "kangaroo",      # 38
-    "keyboard",      # 39
-    "lamp",          # 40
-    "lawn_mower",    # 41
-    "leopard",       # 42
-    "lion",          # 43
-    "lizard",        # 44
-    "unknown5"
-]
-
-CIFAR_10_CLASSES_6 = [
-    "lobster",       # 45
-    "man",           # 46
-    "maple_tree",    # 47
-    "motorcycle",    # 48
-    "mountain",      # 49
-    "mouse",         # 50
-    "mushroom",      # 51
-    "oak_tree",      # 52
-    "orange",        # 53
-    "unknown6"       #
-]
-
-CIFAR_10_CLASSES_7 = [
-    "orchid",        # 54
-    "otter",         # 55
-    "palm_tree",     # 56
-    "pear",          # 57
-    "pickup_truck",  # 58
-    "pine_tree",     # 59
-    "plain",         # 60
-    "plate",         # 61
-    "poppy",         # 62
-    "unknown7"       #
-]
-
-CIFAR_10_CLASSES_8 = [
-   "porcupine",      # 63
-   "possum",         # 64
-   "rabbit",         # 65
-   "raccoon",        # 66
-   "ray",            # 67
-   "road",           # 68
-   "rocket",         # 69
-   "rose",           # 70
-   "sea",            # 71
-   "unknown8"        #
-]
-
-CIFAR_10_CLASSES_9  = [
-   "seal",           # 72
-   "shark",          # 73
-   "shrew",          # 74
-   "skunk",          # 75
-   "skyscraper",     # 76
-   "snail",          # 77
-   "snake",          # 78
-   "spider",         # 79
-   "squirrel",       # 80
-   "unknown9"       #
-]
-CIFAR_10_CLASSES_10  = [
-  "streetcar",       # 81
-   "sunflower",      # 82
-   "sweet_pepper",   # 83
-   "table",          # 84
-   "tank",           # 85
-   "telephone",      # 86
-   "television",     # 87
-   "tiger",          # 88
-   "tractor",        # 89
-   "unknown10"       #
-]
 
 
-CIFAR_10_CLASSES_11  = [
-   "train",         # 90
-   "trout",         # 91
-   "tulip",         # 92
-   "turtle",        # 93
-   "wardrobe",      # 94
-   "whale",         # 95
-   "willow_tree",   # 96
-   "wolf",          # 97
-   "woman",         # 98
-   "unknown11"      #
+RME_10_CLASSES_1  = [
+
+    "agricultural",       # 0
+    "airplane",           # 1
+    "airport",            # 2
+    "baseball_diamond",   # 3
+    "baseball_field",     # 4    
+    "baseballdiamond",    # 5
+    "basketball_court",   # 6
+    "beach",              # 7
+    "bridge",             # 8
+    "unknownRME1"         #
 ]
+  
+RME_10_CLASSES_2  = [
+    "buildings",             # 9
+    "cemetery",              # 10
+    "chaparral",             # 11
+    "christmas_tree_farm",   # 12
+    "church",                # 13
+    "circular_farmland",     # 14
+    "closed_road",           # 15
+    "cloud",                 # 16
+    "coastal_mansion",       # 17
+    "unknownRME2"            #
+    ]
+
+RME_10_CLASSES_3  = [
+    "commercial_area",      # 18
+    "crosswalk",            # 19
+    "dense_residential",    # 20
+    "denseresidential",     # 21
+    "desert",               # 22     
+    "ferry_terminal",       # 23
+    "football_field",       # 24
+    "forest",               # 25
+    "freeway",              # 26
+    "unknownRME3"           # 
+]
+
+RME_10_CLASSES_4  = [
+  "golf_course",            # 27
+  "golfcourse",             # 28 
+   "ground_track_field",    # 29
+   "harbor",                # 30
+   "industrial_area",       # 31
+   "intersection",          # 32
+   "island",                # 33
+   "lake",                  # 34
+   "meadow",                # 35
+   "unknownRME4"            #
+]
+
+RME_10_CLASSES_5  = [
+   "medium_residential",    # 36
+   "mediumresidential",     # 37
+   "mobile_home_park",      # 38
+   "mobilehomepark",        # 39
+   "mountain",              # 40
+   "nursing_home",          # 41
+   "oil_gas_field",         # 42
+   "oil_well",              # 43
+   "overpass",              # 44
+   "unknownRME5"            #
+ ]
+RME_10_CLASSES_6  = [
+    "palace",               # 45
+    "parking_lot",          # 46
+    "parking_space",        # 47    
+    "parkinglot",           # 48
+    "railway",              # 49
+    "railway_station",      # 50
+    "rectangular_farmland", # 51
+    "river",                # 52
+    "roundabout",           # 53
+    "unknownRME6"           # 
+]
+
+RME_10_CLASSES_7  = [
+    "runway",             # 54   
+    "runway_marking",     # 55 
+    "sea_ice",            # 56
+    "ship",               # 57
+    "shipping_yard",      # 58
+    "snowberg",           # 59 
+    "solar_panel",        # 60 
+    "sparse_residential", # 61 
+    "sparseresidential",  # 62 
+    "unknownRME7"         #
+] 
+RME_10_CLASSES_8  = [
+    "stadium",               # 63
+    "storage_tank",          # 64
+    "storagetanks",          # 65
+    "swimming_pool",         # 66
+    "tennis_court",          # 67
+    "tenniscourt",           # 68
+    "terrace",               # 69
+    "thermal_power_station", # 70
+    "transformer_station",   # 71
+    "unknownRME8"
+]
+
 
 # ------------------------------------------------------------
 # Optional safety checks for these example lists
 # ------------------------------------------------------------
-if len(CIFAR_10_CLASSES_1) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_1 must contain at least 2 classes.")
 
-if len(CIFAR_10_CLASSES_2) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_2 must contain at least 2 classes.")
 
-if len(CIFAR_10_CLASSES_3) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_3 must contain at least 2 classes.")
 
-if len(CIFAR_10_CLASSES_4) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_4 must contain at least 2 classes.")
+if len(RME_10_CLASSES_1) < 2:
+    raise RuntimeError("RME_10_CLASSES_1 must contain at least 2 classes.")
 
-if len(CIFAR_10_CLASSES_5) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_5 must contain at least 2 classes.")
+if len(RME_10_CLASSES_2) < 2:
+    raise RuntimeError("RME_10_CLASSES_2 must contain at least 2 classes.")
 
-if len(CIFAR_10_CLASSES_6) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_6 must contain at least 2 classes.")
+if len(RME_10_CLASSES_3) < 2:
+    raise RuntimeError("RME_10_CLASSES_3 must contain at least 2 classes.")
 
-if len(CIFAR_10_CLASSES_7) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_7 must contain at least 2 classes.")
+if len(RME_10_CLASSES_4) < 2:
+    raise RuntimeError("RME_10_CLASSES_4 must contain at least 2 classes.")
 
-if len(CIFAR_10_CLASSES_8) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_8 must contain at least 2 classes.")
+if len(RME_10_CLASSES_5) < 2:
+    raise RuntimeError("RME_10_CLASSES_5 must contain at least 2 classes.")
 
-if len(CIFAR_10_CLASSES_9) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_9 must contain at least 2 classes.")
+if len(RME_10_CLASSES_6) < 2:
+    raise RuntimeError("RME_10_CLASSES_6 must contain at least 2 classes.")
 
-if len(CIFAR_10_CLASSES_10) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_10 must contain at least 2 classes.")
+if len(RME_10_CLASSES_7) < 2:
+    raise RuntimeError("RME_10_CLASSES_7 must contain at least 2 classes.")
+
+if len(RME_10_CLASSES_8) < 2:
+    raise RuntimeError("RME_10_CLASSES_8 must contain at least 2 classes.")
 # ============================================================
 # MODEL REGISTRY
 # ============================================================
 
 MODELS: List[Dict] = [
+    
     {
-        "name": "cifar00-08",
+        "name": "rme00-08",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "cifar-00-08-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+            "rme-00-08-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
-        "classes": CIFAR_10_CLASSES_1,
+        "classes": RME_10_CLASSES_1,
+        "temperature": 1.0,
+    },
+    {
+        "name": "rme09-17",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_2,
         "temperature": 1.0,
     },
 
     {
-        "name": "cifar09-17",
+        "name": "rme18-26",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "cifar-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+            "rme-18-26-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
-        "classes": CIFAR_10_CLASSES_2,
+        "classes": RME_10_CLASSES_3,
         "temperature": 1.0,
     },
 
     {
-        "name": "cifar18-26",
+        "name": "rme27-35",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "cifar-18-26-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+            "rme-27-35-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
-        "classes": CIFAR_10_CLASSES_3,
+        "classes": RME_10_CLASSES_4,
+        "temperature": 1.0,
+    },
+    {
+        "name": "rme36-44",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "rme-36-44-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": RME_10_CLASSES_5,
         "temperature": 1.0,
     },
 
     {
-        "name": "cifar27-35",
+        "name": "rme45-53",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "cifar-27-35-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+            "rme-45-53-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
-        "classes": CIFAR_10_CLASSES_4,
+        "classes": RME_10_CLASSES_6,
         "temperature": 1.0,
     },
 
     {
-        "name": "cifar36-44",
+        "name": "rme54-62",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "cifar-36-44-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+            "rme-54-62-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
-        "classes": CIFAR_10_CLASSES_5,
+        "classes": RME_10_CLASSES_7,
         "temperature": 1.0,
     },
 
     {
-        "name": "cifar45-53",
+        "name": "rme63-71",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "cifar-45-53-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+            "rme-63-71-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
-        "classes": CIFAR_10_CLASSES_6,
+        "classes": RME_10_CLASSES_8,
         "temperature": 1.0,
-    },
+    }
 
-    {
-        "name": "cifar54-62",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-54-62-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_7,
-        "temperature": 1.0,
-    },
-
-    {
-        "name": "cifar63-71",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-63-71-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_8,
-        "temperature": 1.0,
-    },
-
-    {
-        "name": "cifar72-80",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-72-80-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_9,
-        "temperature": 1.0,
-    },
-
-    {
-        "name": "cifar81-89",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-81-89-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_10,
-        "temperature": 1.0,
-    },
-
-     {
-        "name": "cifar90-98",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-90-98-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_11,
-        "temperature": 1.0,
-    },
 ]
 
 

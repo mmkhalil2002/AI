@@ -25,8 +25,9 @@
 # You can define one or more trained models in MODELS.
 # For each image:
 #   - every trained model runs inference
-#   - we compare the top confidence from each model
-#   - the highest-confidence model wins
+#   - we compare predictions across all models
+#   - FINAL DETECTION is chosen as the highest-confidence class
+#     whose name does NOT start with "unknown"
 #
 # DEBUG FEATURES
 # ------------------------------------------------------------
@@ -105,11 +106,12 @@ import tkinter as tk
 # ============================================================
 # GLOBAL CONFIG
 # ============================================================
-
+"""
 DEBUG_FLAG = True
 
 # ------------------------------------------------------------
 # Directory containing unknown images to classify
+# ------------------------------------------------------------
 MODEL_BASE_DIR = "../../../../"
 
 TEST_IMAGE_DIR = os.path.join(
@@ -134,7 +136,6 @@ INFER_BATCH_SIZE = 64
 DISPLAY_TESTED_IMAGE = True
 ENLARGE_FACTOR = 6
 WAIT_FOR_ENTER_BETWEEN_IMAGES = True
-DISPLAY_OUTPUT_DIR = "displayed_results"
 DISPLAY_WINDOW_TITLE = "Tested Image Viewer"
 
 # ------------------------------------------------------------
@@ -144,6 +145,7 @@ DISPLAY_WINDOW_TITLE = "Tested Image Viewer"
 # will be renamed to UNKNOWN_LABEL_BELOW_THRESHOLD.
 # This is independent from any class such as "unknown1".
 # ------------------------------------------------------------
+
 USE_LOW_CONFIDENCE_UNKNOWN_RULE = False
 LOW_CONFIDENCE_THRESHOLD = 0.60
 UNKNOWN_LABEL_BELOW_THRESHOLD = "unknown"
@@ -169,6 +171,116 @@ CONV3_OUT_CHANNELS = 512
 
 CONV4_IN_CHANNELS = 512
 CONV4_OUT_CHANNELS = 1024
+"""
+
+import os
+from dotenv import load_dotenv, find_dotenv
+
+# Load .env
+load_dotenv(find_dotenv())
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+def get_str(name, default=""):
+    return os.getenv(name, default)
+
+
+def get_int(name, default=0):
+    return int(os.getenv(name, default))
+
+
+def get_float(name, default=0.0):
+    return float(os.getenv(name, default))
+
+
+def get_bool(name, default="False"):
+    return os.getenv(name, default).lower() in ("true", "1", "yes", "on")
+
+
+# ============================================================
+# BASE PATH
+# ============================================================
+MODEL_PATH = get_str("MODEL_BASE", "../../../../")
+
+MODEL_BASE_DIR =  os.path.join(MODEL_PATH,"model")
+
+# ============================================================
+# TEST IMAGE DIRECTORY (EXPANDED)
+# ============================================================
+TEST_IMAGE_DIR = os.path.expandvars(get_str("TEST_IMAGE_DIR"))
+
+# 👉 OPTIONAL (safer cross-platform override)
+TEST_IMAGE_DIR = os.path.join(
+    MODEL_PATH,
+    "data",
+    "cifar10_clasifier_test"
+)
+
+
+# ============================================================
+# ALLOWED IMAGE TYPES (STATIC – keep in code)
+# ============================================================
+ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+# ============================================================
+# INFERENCE SETTINGS
+# ============================================================
+INFER_BATCH_SIZE = get_int("INFER_BATCH_SIZE", 64)
+
+
+# ============================================================
+# DISPLAY SETTINGS
+# ============================================================
+DISPLAY_TESTED_IMAGE = get_bool("DISPLAY_TESTED_IMAGE", "True")
+DEBUG_FLAG = get_bool("DEBOG_FLAG", "False")
+ENLARGE_FACTOR = get_int("ENLARGE_FACTOR", 6)
+WAIT_FOR_ENTER_BETWEEN_IMAGES = get_bool("WAIT_FOR_ENTER_BETWEEN_IMAGES", "True")
+DISPLAY_WINDOW_TITLE = get_str("DISPLAY_WINDOW_TITLE", "Tested Image Viewer")
+
+
+# ============================================================
+# CONFIDENCE THRESHOLD SETTINGS
+# ============================================================
+USE_LOW_CONFIDENCE_UNKNOWN_RULE = get_bool("USE_LOW_CONFIDENCE_UNKNOWN_RULE", "False")
+LOW_CONFIDENCE_THRESHOLD = get_float("LOW_CONFIDENCE_THRESHOLD", 0.60)
+UNKNOWN_LABEL_BELOW_THRESHOLD = get_str("UNKNOWN_LABEL_BELOW_THRESHOLD", "unknown")
+
+
+# ============================================================
+# TOP-K SETTINGS
+# ============================================================
+TOPK_TO_PRINT = get_int("TOPK_TO_PRINT", 3)
+
+
+# ============================================================
+# MODEL ARCHITECTURE
+# ============================================================
+CONV1_IN_CHANNELS = get_int("CONV1_IN_CHANNELS", 3)
+CONV1_OUT_CHANNELS = get_int("CONV1_OUT_CHANNELS", 128)
+
+CONV2_IN_CHANNELS = get_int("CONV2_IN_CHANNELS", 128)
+CONV2_OUT_CHANNELS = get_int("CONV2_OUT_CHANNELS", 256)
+
+CONV3_IN_CHANNELS = get_int("CONV3_IN_CHANNELS", 256)
+CONV3_OUT_CHANNELS = get_int("CONV3_OUT_CHANNELS", 512)
+
+CONV4_IN_CHANNELS = get_int("CONV4_IN_CHANNELS", 512)
+CONV4_OUT_CHANNELS = get_int("CONV4_OUT_CHANNELS", 1024)
+
+
+# ============================================================
+# DEBUG PRINT (OPTIONAL)
+# ============================================================
+print("=" * 60)
+print("[CONFIG] MODEL_PATH =", MODEL_PATH)
+print("[CONFIG] TEST_IMAGE_DIR =", TEST_IMAGE_DIR)
+print("[CONFIG] INFER_BATCH_SIZE =", INFER_BATCH_SIZE)
+print("[CONFIG] DISPLAY_TESTED_IMAGE =", DISPLAY_TESTED_IMAGE)
+print("[CONFIG] LOW_CONFIDENCE_THRESHOLD =", LOW_CONFIDENCE_THRESHOLD)
+print("=" * 60)
 
 
 # ------------------------------------------------------------
@@ -184,25 +296,25 @@ CIFAR_10_CLASSES_1 = [
     "bee",            # 06
     "beetle",         # 07
     "bicycle",        # 08
-    "unknown1",       # 
+    "unknown1",       #
 ]
 
 # ------------------------------------------------------------
 # Example group 2: next 10 classes
 # ------------------------------------------------------------
 CIFAR_10_CLASSES_2 = [
-      "bottle",      # 09
-      "bowl",        # 10
-      "boy",         # 11
-      "bridge",      # 12
-      "bus",         # 13
-      "butterfly",   # 14
-      "camel",       # 15
-      "can",         # 16
-      "castle",      # 17
-      "unknown2"     # 
+    "bottle",      # 09
+    "bowl",        # 10
+    "boy",         # 11
+    "bridge",      # 12
+    "bus",         # 13
+    "butterfly",   # 14
+    "camel",       # 15
+    "can",         # 16
+    "castle",      # 17
+    "unknown2"     #
 ]
-            
+
 CIFAR_10_CLASSES_3 = [
     "caterpillar",    # 18
     "cattle",         # 19
@@ -213,7 +325,7 @@ CIFAR_10_CLASSES_3 = [
     "cockroach",      # 24
     "couch",          # 25
     "crab",           # 26
-    "unknown3"        # 
+    "unknown3"        #
 ]
 
 CIFAR_10_CLASSES_4 = [
@@ -231,42 +343,99 @@ CIFAR_10_CLASSES_4 = [
 
 CIFAR_10_CLASSES_5 = [
     "hamster",       # 36
-    "house",         # 37              
-    "kangaroo",      # 38          
-    "keyboard",      # 39          
-    "lamp",          # 40                
-    "lawn_mower",    # 41        
-    "leopard",       # 42            
-    "lion",          # 43                
-    "lizard",        # 44            
-    "unknown5"  
+    "house",         # 37
+    "kangaroo",      # 38
+    "keyboard",      # 39
+    "lamp",          # 40
+    "lawn_mower",    # 41
+    "leopard",       # 42
+    "lion",          # 43
+    "lizard",        # 44
+    "unknown5"
 ]
 
 CIFAR_10_CLASSES_6 = [
-   "lobster",       # 45
-   "man",           # 46
-   "maple_tree",    # 47
-   "motorcycle",    # 48
-   "mountain",      # 49
-   "mouse",         # 50
-   "mushroom",      # 51
-   "oak_tree",      # 52
-   "orange",        # 53
-   "unknown6"       #
-]  
+    "lobster",       # 45
+    "man",           # 46
+    "maple_tree",    # 47
+    "motorcycle",    # 48
+    "mountain",      # 49
+    "mouse",         # 50
+    "mushroom",      # 51
+    "oak_tree",      # 52
+    "orange",        # 53
+    "unknown6"       #
+]
 
 CIFAR_10_CLASSES_7 = [
-  "orchid",        # 54
-  "otter",         # 55
-  "palm_tree",     # 56
-   "pear",         # 57
-   "pickup_truck", # 58
-   "pine_tree",    # 59
-   "plain",        # 60
-   "plate",        # 61
-   "poppy",        # 62
-   "unknown7"       # 
+    "orchid",        # 54
+    "otter",         # 55
+    "palm_tree",     # 56
+    "pear",          # 57
+    "pickup_truck",  # 58
+    "pine_tree",     # 59
+    "plain",         # 60
+    "plate",         # 61
+    "poppy",         # 62
+    "unknown7"       #
 ]
+
+CIFAR_10_CLASSES_8 = [
+   "porcupine",      # 63
+   "possum",         # 64
+   "rabbit",         # 65
+   "raccoon",        # 66
+   "ray",            # 67
+   "road",           # 68
+   "rocket",         # 69
+   "rose",           # 70
+   "sea",            # 71
+   "unknown8"        #
+]
+
+CIFAR_10_CLASSES_9  = [
+   "seal",           # 72
+   "shark",          # 73
+   "shrew",          # 74
+   "skunk",          # 75
+   "skyscraper",     # 76
+   "snail",          # 77
+   "snake",          # 78
+   "spider",         # 79
+   "squirrel",       # 80
+   "unknown9"       #
+]
+CIFAR_10_CLASSES_10  = [
+  "streetcar",       # 81
+   "sunflower",      # 82
+   "sweet_pepper",   # 83
+   "table",          # 84
+   "tank",           # 85
+   "telephone",      # 86
+   "television",     # 87
+   "tiger",          # 88
+   "tractor",        # 89
+   "unknown10"       #
+]
+
+
+CIFAR_10_CLASSES_11  = [
+   "train",         # 90
+   "trout",         # 91
+   "tulip",         # 92
+   "turtle",        # 93
+   "wardrobe",      # 94
+   "whale",         # 95
+   "willow_tree",   # 96
+   "wolf",          # 97
+   "woman",         # 98
+   "unknown11"      #
+]
+
+
+
+
+
 # ------------------------------------------------------------
 # Optional safety checks for these example lists
 # ------------------------------------------------------------
@@ -277,26 +446,35 @@ if len(CIFAR_10_CLASSES_2) < 2:
     raise RuntimeError("CIFAR_10_CLASSES_2 must contain at least 2 classes.")
 
 if len(CIFAR_10_CLASSES_3) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_3 must contain at least 3 classes.")
+    raise RuntimeError("CIFAR_10_CLASSES_3 must contain at least 2 classes.")
 
 if len(CIFAR_10_CLASSES_4) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_4 must contain at least 4 classes.")
+    raise RuntimeError("CIFAR_10_CLASSES_4 must contain at least 2 classes.")
 
 if len(CIFAR_10_CLASSES_5) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_5 must contain at least 5 classes.")
+    raise RuntimeError("CIFAR_10_CLASSES_5 must contain at least 2 classes.")
 
 if len(CIFAR_10_CLASSES_6) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_6 must contain at least 6 classes.")
+    raise RuntimeError("CIFAR_10_CLASSES_6 must contain at least 2 classes.")
 
 if len(CIFAR_10_CLASSES_7) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_7 must contain at least 7 classes.")
+    raise RuntimeError("CIFAR_10_CLASSES_7 must contain at least 2 classes.")
 
+if len(CIFAR_10_CLASSES_8) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_8 must contain at least 2 classes.")
+
+if len(CIFAR_10_CLASSES_9) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_9 must contain at least 2 classes.")
+
+if len(CIFAR_10_CLASSES_10) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_10 must contain at least 2 classes.")
+
+if len(CIFAR_10_CLASSES_11) < 2:
+    raise RuntimeError("CIFAR_10_CLASSES_11 must contain at least 2 classes.")
 
 # ============================================================
 # MODEL REGISTRY
 # ============================================================
-
-MODEL_BASE_DIR = "../../../../"
 
 MODELS: List[Dict] = [
     {
@@ -319,7 +497,7 @@ MODELS: List[Dict] = [
         "temperature": 1.0,
     },
 
-     {
+    {
         "name": "cifar18-26",
         "weights": os.path.join(
             MODEL_BASE_DIR,
@@ -328,7 +506,7 @@ MODELS: List[Dict] = [
         "classes": CIFAR_10_CLASSES_3,
         "temperature": 1.0,
     },
-    
+
     {
         "name": "cifar27-35",
         "weights": os.path.join(
@@ -369,9 +547,48 @@ MODELS: List[Dict] = [
         "temperature": 1.0,
     },
 
+    {
+        "name": "cifar63-71",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "cifar-63-71-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": CIFAR_10_CLASSES_8,
+        "temperature": 1.0,
+    },
 
+    {
+        "name": "cifar72-80",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "cifar-72-80-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": CIFAR_10_CLASSES_9,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "cifar81-89",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "cifar-81-89-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": CIFAR_10_CLASSES_10,
+        "temperature": 1.0,
+    },
+
+     {
+        "name": "cifar90-98",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "cifar-90-98-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": CIFAR_10_CLASSES_11,
+        "temperature": 1.0,
+    },
+
+     
 ]
-
 
 
 # ============================================================
@@ -570,6 +787,13 @@ def get_topk_predictions(probs_row: torch.Tensor, classes: List[str], topk: int 
     return out
 
 
+def starts_with_unknown(class_name: str) -> bool:
+    """
+    Return True if the class name starts with 'unknown' (case-insensitive).
+    """
+    return class_name.strip().lower().startswith("unknown")
+
+
 # ============================================================
 # KEYBOARD CONTROL
 # ============================================================
@@ -603,16 +827,6 @@ def close_previous_display_window():
     DISPLAY_ROOT = None
     DISPLAY_LABEL = None
     DISPLAY_PHOTO = None
-
-
-def make_safe_filename(text: str) -> str:
-    safe = []
-    for ch in text:
-        if ch.isalnum() or ch in ("-", "_", "."):
-            safe.append(ch)
-        else:
-            safe.append("_")
-    return "".join(safe)
 
 
 def display_tested_image(image_path, detected_class, confidence, winning_model):
@@ -655,24 +869,6 @@ def display_tested_image(image_path, detected_class, confidence, winning_model):
         draw.text((padding, y), line, fill=(255, 255, 255), font=font)
         y += line_height
 
-    os.makedirs(DISPLAY_OUTPUT_DIR, exist_ok=True)
-
-    base_name = os.path.basename(image_path)
-    name_root, _ = os.path.splitext(base_name)
-
-    out_name = (
-        f"{make_safe_filename(name_root)}"
-        f"__det_{make_safe_filename(detected_class)}"
-        f"__conf_{int(round(confidence * 10000))}"
-        f".png"
-    )
-    out_path = os.path.join(DISPLAY_OUTPUT_DIR, out_name)
-
-    try:
-        img.save(out_path)
-    except Exception as e:
-        print(f"[DISPLAY-SKIP] Could not save displayed image: {out_path}  err={e}")
-
     try:
         DISPLAY_ROOT = tk.Tk()
         DISPLAY_ROOT.title(DISPLAY_WINDOW_TITLE)
@@ -704,7 +900,11 @@ def run_directory_multi_model_classifier(image_paths, models_cfg, device):
     For each image:
       - run all trained models
       - compute probabilities
-      - select the model with max top-1 confidence
+      - collect predictions from all models
+      - FINAL DETECTION is chosen as the highest-confidence class
+        whose name does NOT start with 'unknown'
+      - if all model winners are unknown-prefixed, fall back to the
+        overall highest-confidence result
       - print per-model and final results
     """
 
@@ -762,7 +962,8 @@ def run_directory_multi_model_classifier(image_paths, models_cfg, device):
     print(f"Display enabled        : {DISPLAY_TESTED_IMAGE}")
     print(f"Enlarge factor         : {ENLARGE_FACTOR}")
     print(f"Wait for ENTER         : {WAIT_FOR_ENTER_BETWEEN_IMAGES}")
-    print(f"Selection method       : MAX raw top-1 confidence")
+    print("Selection method       : highest-confidence NON-unknown class")
+    print("Fallback method        : highest-confidence overall result")
     print("============================================================\n")
 
     t0 = time.perf_counter()
@@ -789,10 +990,28 @@ def run_directory_multi_model_classifier(image_paths, models_cfg, device):
 
         x = torch.stack(xs, dim=0).to(device, non_blocking=pin)
 
-        best_name = [""] * len(ok_paths)
-        best_pred = [-1] * len(ok_paths)
-        best_conf = [-1.0] * len(ok_paths)
-        best_cls = [""] * len(ok_paths)
+        # --------------------------------------------------------
+        # We keep two best trackers:
+        #
+        # 1) best_non_unknown_* :
+        #       best result whose class does NOT start with "unknown"
+        #
+        # 2) best_overall_* :
+        #       best result regardless of class name
+        #
+        # Final selection rule:
+        #   use best_non_unknown_* if available
+        #   otherwise fall back to best_overall_*
+        # --------------------------------------------------------
+        best_non_unknown_name = [""] * len(ok_paths)
+        best_non_unknown_pred = [-1] * len(ok_paths)
+        best_non_unknown_conf = [-1.0] * len(ok_paths)
+        best_non_unknown_cls = [""] * len(ok_paths)
+
+        best_overall_name = [""] * len(ok_paths)
+        best_overall_pred = [-1] * len(ok_paths)
+        best_overall_conf = [-1.0] * len(ok_paths)
+        best_overall_cls = [""] * len(ok_paths)
 
         per_image_all_results = [[] for _ in range(len(ok_paths))]
 
@@ -803,21 +1022,76 @@ def run_directory_multi_model_classifier(image_paths, models_cfg, device):
                 temp = float(cfg.get("temperature", 1.0) or 1.0)
                 probs = torch.softmax(logits / temp, dim=1)
 
-                confs, pred_ids = torch.max(probs, dim=1)
-
-                pred_ids_cpu = pred_ids.detach().cpu().tolist()
-                confs_cpu = confs.detach().cpu().tolist()
                 probs_cpu = probs.detach().cpu()
 
                 classes = cfg["classes"]
                 model_name = cfg["name"]
 
                 for i in range(len(ok_paths)):
-                    conf = float(confs_cpu[i])
-                    pid = int(pred_ids_cpu[i])
+                    # ----------------------------------------------------
+                    # PER-MODEL CLASS SELECTION RULE
+                    # ----------------------------------------------------
+                    # Each model outputs probabilities for its own class list
+                    # (for example 9 real classes + 1 unknown class).
+                    #
+                    # We do NOT want to keep "unknown*" as the selected class
+                    # if a real class is available in the same model output.
+                    #
+                    # So for this image:
+                    #   1) rank all classes from highest confidence to lowest
+                    #   2) ignore any class whose name starts with "unknown"
+                    #   3) choose the next highest class that is not unknown
+                    #
+                    # Example:
+                    #   ranked output:
+                    #       1. unknown1   91.20%
+                    #       2. apple       5.80%
+                    #       3. bicycle     2.10%
+                    #
+                    #   selected class becomes:
+                    #       apple, not unknown1
+                    #
+                    # Fallback:
+                    #   If all ranked classes are unknown-prefixed, then we keep
+                    #   the true top-1 class as fallback.
+                    # ----------------------------------------------------
+                    probs_row = probs_cpu[i]
 
-                    cls_name = classes[pid] if 0 <= pid < len(classes) else f"class_{pid}"
-                    topk_preds = get_topk_predictions(probs_cpu[i], classes, topk=TOPK_TO_PRINT)
+                    # Build a full ranked list from highest confidence to lowest.
+                    # Each item looks like:
+                    #   (class_name, confidence, class_index)
+                    full_ranked_preds = get_topk_predictions(
+                        probs_row,
+                        classes,
+                        topk=len(classes)
+                    )
+
+                    selected_class_name = ""
+                    selected_conf = -1.0
+                    selected_pid = -1
+
+                    # Ignore any class that starts with "unknown" and take the
+                    # next highest class that does not include the unknown prefix.
+                    for class_name, class_conf, class_idx in full_ranked_preds:
+                        if not starts_with_unknown(class_name):
+                            selected_class_name = class_name
+                            selected_conf = float(class_conf)
+                            selected_pid = int(class_idx)
+                            break
+
+                    # Safety fallback: if all classes are unknown-prefixed,
+                    # keep the true top-1 result from this model.
+                    if selected_pid < 0:
+                        selected_class_name, selected_conf, selected_pid = full_ranked_preds[0]
+                        selected_conf = float(selected_conf)
+                        selected_pid = int(selected_pid)
+
+                    # Keep only the configured Top-K items for display/printing.
+                    topk_preds = full_ranked_preds[:TOPK_TO_PRINT]
+
+                    conf = selected_conf
+                    pid = selected_pid
+                    cls_name = selected_class_name
 
                     per_image_all_results[i].append(
                         {
@@ -826,32 +1100,58 @@ def run_directory_multi_model_classifier(image_paths, models_cfg, device):
                             "pred_id": pid,
                             "confidence": conf,
                             "topk": topk_preds,
+                            "is_unknown": starts_with_unknown(cls_name),
                         }
                     )
 
-                    if conf > best_conf[i]:
-                        best_conf[i] = conf
-                        best_pred[i] = pid
-                        best_name[i] = model_name
-                        best_cls[i] = cls_name
+                    # ----------------------------------------------------
+                    # OVERALL WINNER SELECTION
+                    # ----------------------------------------------------
+                    if conf > best_overall_conf[i]:
+                        best_overall_conf[i] = conf
+                        best_overall_pred[i] = pid
+                        best_overall_name[i] = model_name
+                        best_overall_cls[i] = cls_name
+
+                    # ----------------------------------------------------
+                    # NON-UNKNOWN WINNER SELECTION
+                    # ----------------------------------------------------
+                    if (not starts_with_unknown(cls_name)) and (conf > best_non_unknown_conf[i]):
+                        best_non_unknown_conf[i] = conf
+                        best_non_unknown_pred[i] = pid
+                        best_non_unknown_name[i] = model_name
+                        best_non_unknown_cls[i] = cls_name
 
         # --------------------------------------------------------
         # PRINT RESULTS PER IMAGE
         # --------------------------------------------------------
         for i, p in enumerate(ok_paths):
             total_images_processed += 1
-            per_model_wins[best_name[i]] += 1
 
-            final_label = best_cls[i]
+            # ----------------------------------------------------
+            # Final label selection:
+            #   use best non-unknown result if available
+            #   otherwise use overall result
+            # ----------------------------------------------------
+            if best_non_unknown_conf[i] >= 0.0:
+                final_label = best_non_unknown_cls[i]
+                final_conf = best_non_unknown_conf[i]
+                final_model = best_non_unknown_name[i]
+            else:
+                final_label = best_overall_cls[i]
+                final_conf = best_overall_conf[i]
+                final_model = best_overall_name[i]
 
-            if USE_LOW_CONFIDENCE_UNKNOWN_RULE and best_conf[i] < LOW_CONFIDENCE_THRESHOLD:
+            if USE_LOW_CONFIDENCE_UNKNOWN_RULE and final_conf < LOW_CONFIDENCE_THRESHOLD:
                 final_label = UNKNOWN_LABEL_BELOW_THRESHOLD
+
+            per_model_wins[final_model] += 1
 
             print("------------------------------------------------------------")
             print(f"IMAGE FILE         : {os.path.basename(p)}")
             print(f"FINAL DETECTION    : {final_label}")
-            print(f"FINAL CONFIDENCE   : {best_conf[i] * 100:.2f}%")
-            print(f"WINNING MODEL      : {best_name[i]}")
+            print(f"FINAL CONFIDENCE   : {final_conf * 100:.2f}%")
+            print(f"WINNING MODEL      : {final_model}")
             print("MODEL-BY-MODEL RESULTS:")
 
             for result in per_image_all_results[i]:
@@ -871,8 +1171,8 @@ def run_directory_multi_model_classifier(image_paths, models_cfg, device):
             display_tested_image(
                 image_path=p,
                 detected_class=final_label,
-                confidence=best_conf[i],
-                winning_model=best_name[i],
+                confidence=final_conf,
+                winning_model=final_model,
             )
 
         print("------------------------------------------------------------")
