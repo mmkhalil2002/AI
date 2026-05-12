@@ -526,8 +526,8 @@ from torchvision import datasets, transforms
 
 """
 MODEL_PATH = "../../../"
-#MODEL_FILENAME = "rme-36-44-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-#DATA_PATH = "../../../data/RME10_36_44_unknown30"
+#MODEL_FILENAME = "med-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+#DATA_PATH = "../../../data/RME10_09_17_unknown30"
 
 BATCH_SIZE = 128
 NUM_EPOCHS = 100
@@ -653,12 +653,12 @@ MODEL_PATH = get_env_str("MODEL_PATH", "../../../")
 
 # Specific trained model filename
 
-MODEL_FILENAME = os.path.join(MODEL_PATH, "model", "rme-36-44-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766")
+MODEL_FILENAME = os.path.join(MODEL_PATH, "model", "med-18-26-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766")
 # ------------------------------------------------------------
 # DERIVED PATH (DATASET)
 # ------------------------------------------------------------
 # DATA_PATH is constructed from MODEL_PATH + subdirectory
-DATA_PATH = os.path.join(MODEL_PATH, "data", "RME10_36_44_unknown30")
+DATA_PATH = os.path.join(MODEL_PATH, "data", "MED10-18-26-unknown30")
 
 
 # ============================================================
