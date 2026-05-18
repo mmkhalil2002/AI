@@ -54,7 +54,7 @@
 #      1
 #      2
 #      3
-#      0
+#      q
 #
 #
 # ============================================================
@@ -96,100 +96,6 @@
 #           ├── serialMaster/
 #           └── pyUI/
 #
-print("======================================")
-print(" Bittle X ESP32 Firmware Tool")
-print("======================================")
-print("1 - Install all necessary packages, firmware, and libraries")
-print("2 - Compile firmware only and generate .bin/.elf/.map files")
-print("4 - Merge original bittle_env OpenCatEsp32.ino + current myOpenCatEsp32.ino into mergeOpenCatEsp32.ino")
-print("5 - Copy mergeOpenCatEsp32.ino into bittle_env OpenCatEsp32.ino")
-print("6 - Flash/upload compiled .bin files to ESP32 over USB")
-print("0 - Exit")
-
-choice = input("Select option: ").strip()
-# ESP32 PLATFORM SUPPORT
-# ============================================================
-#
-# This script currently compiles firmware for:
-#
-#   Classic ESP32 architecture
-#
-# using:
-#
-#   esp32:esp32
-#
-# and:
-#
-#   --chip esp32
-#
-# during USB flashing.
-#
-# ============================================================
-# COMPATIBLE BOARDS
-# ============================================================
-#
-# The generated firmware is typically compatible with:
-#
-#   - ESP32-WROOM-32
-#   - ESP32 DevKit V1
-#   - ESP32-WROVER
-#   - NodeMCU-32S
-#   - Petoi Bittle X ESP32 board
-#   - Most generic ESP32 boards
-#
-# ============================================================
-# NOT CURRENTLY TARGETED
-# ============================================================
-#
-# The current compile/upload configuration does NOT specifically
-# target:
-#
-#   - ESP32-S2
-#   - ESP32-S3
-#   - ESP32-C3
-#   - ESP8266
-#
-# because those boards may use:
-#
-#   - Different CPU architectures
-#   - Different flash layouts
-#   - Different partition tables
-#   - Different bootloader formats
-#
-# ============================================================
-# GENERATED COMPILED FILES
-# ============================================================
-#
-# The compile process generates firmware files such as:
-#
-#   OpenCatEsp32.ino.bin
-#   OpenCatEsp32.ino.elf
-#   OpenCatEsp32.ino.map
-#   OpenCatEsp32.ino.bootloader.bin
-#   OpenCatEsp32.ino.partitions.bin
-#
-# These files are copied into:
-#
-#   bittle_env\OpenCatEsp32
-#
-# after compilation.
-#
-# ============================================================
-# DIRECT USB FLASHING
-# ============================================================
-#
-# Option 6 uses:
-#
-#   esptool.py
-#
-# to directly flash the ESP32 over USB using:
-#
-#   0x1000   -> bootloader
-#   0x8000   -> partition table
-#   0x10000  -> application firmware
-#
-# ============================================================
-
 import os
 import sys
 import shutil
@@ -376,6 +282,114 @@ def print_path_debug_info():
     print("Backup target    :", os.path.join(PROJECT_DIR, "OpenCatEsp32.ino.org"))
     print("============================================================\n")
 
+
+# ============================================================
+# BOARD PROFILE HELPERS
+# ============================================================
+
+def get_active_board_profile_name():
+    """
+    Returns the selected board profile name.
+
+    If an invalid value is provided through BITTLE_ESP32_MODEL or
+    option 7, the script falls back to the original classic ESP32
+    behavior.
+    """
+
+    global ACTIVE_BOARD_PROFILE
+
+    if ACTIVE_BOARD_PROFILE not in BOARD_PROFILES:
+        print("\nWARNING:")
+        print("Unknown board profile:", ACTIVE_BOARD_PROFILE)
+        print("Falling back to:", DEFAULT_BOARD_PROFILE)
+        ACTIVE_BOARD_PROFILE = DEFAULT_BOARD_PROFILE
+
+    return ACTIVE_BOARD_PROFILE
+
+
+def get_active_board_profile():
+    """Returns the active board profile dictionary."""
+
+    return BOARD_PROFILES[get_active_board_profile_name()]
+
+
+def get_active_fqbn_candidates():
+    """Returns all Arduino CLI FQBN candidates for the active board."""
+
+    return get_active_board_profile()["fqbn_candidates"]
+
+
+def get_active_chip_name():
+    """Returns the esptool.py chip name for the selected board."""
+
+    return get_active_board_profile()["chip"]
+
+
+def get_active_flash_size():
+    """Returns the esptool.py flash size for the selected board."""
+
+    return get_active_board_profile()["flash_size"]
+
+
+def print_active_board_profile():
+    """Prints the selected firmware target and supported FQBN candidates."""
+
+    profile_name = get_active_board_profile_name()
+    profile = get_active_board_profile()
+
+    print("\n============================================================")
+    print(" ACTIVE ESP32 TARGET")
+    print("============================================================")
+    print("Profile    :", profile_name)
+    print("Label      :", profile["label"])
+    print("Chip       :", profile["chip"])
+    print("Flash size :", profile["flash_size"])
+    print("FQBN candidates:")
+
+    for fqbn in profile["fqbn_candidates"]:
+        print("  -", fqbn)
+
+    print("============================================================")
+
+
+def select_board_profile():
+    """
+    Lets the user select the ESP32 target profile.
+
+    This is useful when moving from the original classic ESP32 board
+    to ESP32-S2 or ESP32-S3 boards with 16 MB flash.
+    """
+
+    global ACTIVE_BOARD_PROFILE
+
+    names = list(BOARD_PROFILES.keys())
+
+    print("\n============================================================")
+    print(" SELECT ESP32 TARGET MODEL")
+    print("============================================================")
+
+    for index, name in enumerate(names, start=1):
+        profile = BOARD_PROFILES[name]
+        current = "  <== current" if name == get_active_board_profile_name() else ""
+        print(f"{index} - {name} : {profile['label']}{current}")
+
+    print("0 - Cancel")
+
+    choice = get_menu_choice()
+
+    if choice == "0":
+        print("\nBoard selection cancelled.")
+        return
+
+    try:
+        selected_index = int(choice) - 1
+        ACTIVE_BOARD_PROFILE = names[selected_index]
+    except Exception:
+        print("\nInvalid board selection.")
+        return
+
+    print_active_board_profile()
+
 MU_VISION_LOCAL_DIR = os.path.join(
     LOCAL_LIBRARIES_DIR,
     "MuVisionSensor3"
@@ -403,33 +417,268 @@ WEBSOCKETS_LOCAL_HEADER_2 = os.path.join(
 )
 
 
-# ============================================================
-# ESP32 CONFIGURATION
-# ============================================================
 
+# ============================================================
+# SELECT ESP32 TARGET MODEL AT SCRIPT START
+# ============================================================
+#
+# PURPOSE:
 # ------------------------------------------------------------
+# Select the ESP32 board family before installation, compile,
+# merge, or flashing.
+#
 # IMPORTANT:
 # ------------------------------------------------------------
-# The OpenCat ESP32 firmware with BLE, WiFi, WebSockets, and
-# related modules can exceed the default ESP32 app partition.
+# The old separate classic ESP32 options were merged into ONE
+# Classic ESP32 option because the procedure is the same for
+# the common classic ESP32 modules.
 #
-# Default ESP32 app partition is around 1.3 MB.
-# The error you saw was:
-#
-#   Sketch uses 1762373 bytes (134%) of program storage space.
-#   Error during build: text section exceeds available space in board
-#
-# Therefore we use the Huge APP partition scheme.
-# This gives approximately 3 MB for the application.
-#
-# Arduino CLI supports board menu options through the FQBN.
-# For ESP32 this option is:
-#
-#   PartitionScheme=huge_app
-#
+# CLASSIC ESP32 COMMERCIAL / COMMON BOARD NAMES:
 # ------------------------------------------------------------
-ESP32_FQBN = "esp32:esp32:esp32:PartitionScheme=huge_app"
-ESP32_CORE = "esp32:esp32@2.0.12"
+# Select option 1 for boards/modules commonly sold as:
+#
+#   - ESP32-WROOM-32
+#   - ESP32-WROOM-32D
+#   - ESP32-WROOM-32U
+#   - ESP32-WROVER
+#   - ESP32-WROVER-B
+#   - ESP32-WROVER-E
+#   - ESP32 DevKit V1
+#   - DOIT ESP32 DEVKIT V1
+#   - NodeMCU-32S
+#   - ESP32 Pico Kit
+#   - Petoi Bittle X classic ESP32 board
+#   - Generic ESP32 development board
+#
+# CLASSIC ESP32 PROCEDURE:
+# ------------------------------------------------------------
+# The same compile, merge, and USB flashing procedure is used
+# for classic ESP32 boards, whether the board has 4MB, 8MB, or
+# 16MB flash.
+#
+# During direct USB flashing, this script uses:
+#
+#   --flash_size detect
+#
+# so esptool detects the actual flash size automatically.
+#
+# ADVANCED ESP32-S COMMERCIAL / COMMON BOARD NAMES:
+# ------------------------------------------------------------
+# Select option 2 for ESP32-S2 boards/modules commonly sold as:
+#
+#   - ESP32-S2 Saola
+#   - ESP32-S2 DevKit
+#   - ESP32-S2-WROVER
+#   - ESP32-S2-WROOM
+#
+# Select option 3 for ESP32-S3 boards/modules commonly sold as:
+#
+#   - ESP32-S3 DevKitC
+#   - ESP32-S3-WROOM
+#   - ESP32-S3-WROOM-1
+#   - ESP32-S3-WROOM-2
+#   - ESP32-S3-WROVER
+#   - Generic ESP32-S3 development board
+#   - Future Petoi ESP32-S models, if they use ESP32-S3
+#
+# ADVANCED ESP32-S PROCEDURE:
+# ------------------------------------------------------------
+# ESP32-S2 and ESP32-S3 do NOT use the exact same internal
+# target as classic ESP32.
+#
+# They need different:
+#
+#   - Arduino FQBN
+#   - esptool chip type
+#   - board target
+#   - bootloader/build configuration
+#
+# The menu keeps ESP32-S2 and ESP32-S3 as separate options
+# because they are different chip families.
+#
+# ============================================================
+
+print("\n============================================================")
+print(" SELECT TARGET ESP32 MODEL / COMMERCIAL BOARD NAME")
+print("============================================================")
+print("1 - Classic ESP32 boards/modules")
+print("    Examples: ESP32-WROOM-32, ESP32-WROVER, ESP32 DevKit V1,")
+print("              DOIT ESP32 DEVKIT V1, NodeMCU-32S, Bittle X classic")
+print("")
+print("2 - ESP32-S2 boards/modules")
+print("    Examples: ESP32-S2 Saola, ESP32-S2 DevKit, ESP32-S2-WROVER")
+print("")
+print("3 - ESP32-S3 boards/modules")
+print("    Examples: ESP32-S3 DevKitC, ESP32-S3-WROOM, ESP32-S3-WROVER")
+print("============================================================")
+
+
+# ------------------------------------------------------------
+# Single-key target selection (no Enter required)
+# ------------------------------------------------------------
+
+def get_single_key():
+    """
+    Reads one key without requiring Enter.
+    """
+
+    if os.name == "nt":
+        import msvcrt
+
+        key = msvcrt.getch()
+
+        try:
+            value = key.decode("utf-8")
+        except UnicodeDecodeError:
+            value = ""
+
+        print(value)
+
+        return value.strip()
+
+    return input().strip()
+
+
+print("Select target model: ", end="", flush=True)
+MODEL_SELECTION = get_single_key()
+
+
+ESP32_CHIP = "esp32"
+
+if MODEL_SELECTION == "1":
+    ESP32_FQBN = "esp32:esp32:esp32:PartitionScheme=huge_app"
+    ESP32_CORE = "esp32:esp32@2.0.12"
+    ESP32_FLASH_SIZE = "4MB"
+
+elif MODEL_SELECTION == "2":
+    ESP32_FQBN = "esp32:esp32:esp32:PartitionScheme=huge_app"
+    ESP32_CORE = "esp32:esp32@2.0.12"
+    ESP32_FLASH_SIZE = "16MB"
+
+elif MODEL_SELECTION == "3":
+    ESP32_FQBN = "esp32:esp32:esp32s2:PartitionScheme=huge_app"
+    ESP32_CORE = "esp32:esp32@2.0.12"
+    ESP32_FLASH_SIZE = "16MB"
+    ESP32_CHIP = "esp32s2"
+
+elif MODEL_SELECTION == "4":
+    ESP32_FQBN = "esp32:esp32:esp32s3:PartitionScheme=huge_app"
+    ESP32_CORE = "esp32:esp32@2.0.12"
+    ESP32_FLASH_SIZE = "16MB"
+    ESP32_CHIP = "esp32s3"
+
+else:
+    print("\nInvalid selection. Defaulting to Classic ESP32 (4MB).")
+
+    ESP32_FQBN = "esp32:esp32:esp32:PartitionScheme=huge_app"
+    ESP32_CORE = "esp32:esp32@2.0.12"
+    ESP32_FLASH_SIZE = "4MB"
+
+print("\nSelected configuration:")
+print("FQBN       :", ESP32_FQBN)
+print("Flash Size :", ESP32_FLASH_SIZE)
+print("Chip Type  :", ESP32_CHIP)
+print("============================================================\n")
+
+
+# ------------------------------------------------------------
+# Board profiles.
+#
+# Each profile defines:
+#
+#   label:
+#       Human-readable name printed by the menu.
+#
+#   chip:
+#       esptool.py chip name used by direct flashing.
+#
+#   flash_size:
+#       Flash size passed to esptool.py.
+#       For large S models, this is usually 16MB.
+#
+#   fqbn_candidates:
+#       Arduino CLI board configuration candidates.
+#       The compile function tries each one until the build succeeds.
+#
+# WHY MULTIPLE CANDIDATES:
+# ------------------------------------------------------------
+# Arduino ESP32 board menu option names can differ by board/core.
+# Trying candidates keeps the script useful across classic ESP32,
+# ESP32-S2, and ESP32-S3 boards without deleting old behavior.
+# ------------------------------------------------------------
+BOARD_PROFILES = {
+    "classic_esp32_4m": {
+        "label": "Classic ESP32 / 4 MB flash / Huge APP",
+        "chip": ESP32_CHIP,
+        "flash_size": "detect",
+        "fqbn_candidates": [
+            "esp32:esp32:esp32:PartitionScheme=huge_app",
+        ],
+    },
+
+    "classic_esp32_16m": {
+        "label": "Classic ESP32 / 16 MB flash",
+        "chip": "esp32",
+        "flash_size": "16MB",
+        "fqbn_candidates": [
+            "esp32:esp32:esp32:FlashSize=16M,PartitionScheme=app3M_fat9M_16MB",
+            "esp32:esp32:esp32:FlashSize=16M,PartitionScheme=huge_app",
+            "esp32:esp32:esp32:PartitionScheme=app3M_fat9M_16MB",
+            "esp32:esp32:esp32:PartitionScheme=huge_app",
+        ],
+    },
+
+    "esp32s2_16m": {
+        "label": "ESP32-S2 / 16 MB flash",
+        "chip": "esp32s2",
+        "flash_size": "16MB",
+        "fqbn_candidates": [
+            "esp32:esp32:esp32s2:FlashSize=16M,PartitionScheme=app3M_fat9M_16MB",
+            "esp32:esp32:esp32s2:FlashSize=16M,PartitionScheme=huge_app",
+            "esp32:esp32:esp32s2:PartitionScheme=app3M_fat9M_16MB",
+            "esp32:esp32:esp32s2:PartitionScheme=huge_app",
+        ],
+    },
+
+    "esp32s3_16m": {
+        "label": "ESP32-S3 / 16 MB flash",
+        "chip": "esp32s3",
+        "flash_size": "16MB",
+        "fqbn_candidates": [
+            "esp32:esp32:esp32s3:FlashSize=16M,PartitionScheme=app3M_fat9M_16MB",
+            "esp32:esp32:esp32s3:FlashSize=16M,PartitionScheme=huge_app",
+            "esp32:esp32:esp32s3:PartitionScheme=app3M_fat9M_16MB",
+            "esp32:esp32:esp32s3:PartitionScheme=huge_app",
+        ],
+    },
+}
+
+# ------------------------------------------------------------
+# Default board profile.
+#
+# You can change this permanently here, or set the environment
+# variable BITTLE_ESP32_MODEL before running the script.
+#
+# Examples from Windows PowerShell:
+#
+#   $env:BITTLE_ESP32_MODEL="esp32s3_16m"
+#   python .\config.py
+#
+# Available values:
+#
+#   classic_esp32_4m
+#   classic_esp32_16m
+#   esp32s2_16m
+#   esp32s3_16m
+# ------------------------------------------------------------
+DEFAULT_BOARD_PROFILE = "classic_esp32_4m"
+ACTIVE_BOARD_PROFILE = os.environ.get(
+    "BITTLE_ESP32_MODEL",
+    DEFAULT_BOARD_PROFILE
+).strip()
+
+# Backward-compatible variable name used by old comments/prints.
+ESP32_FQBN = BOARD_PROFILES[DEFAULT_BOARD_PROFILE]["fqbn_candidates"][0]
 
 CLI_URL = (
     "https://downloads.arduino.cc/arduino-cli/"
@@ -516,6 +765,39 @@ def run_cmd(cmd):
         raise RuntimeError(
             f"Command failed with exit code {process.returncode}"
         )
+
+
+def run_cmd_return_code(cmd):
+    """
+    Runs a command and returns the exit code instead of raising.
+
+    This is used by the S-model compile logic because Arduino ESP32
+    board menu names can vary. The script tries several FQBN candidates
+    and accepts the first one that compiles successfully.
+    """
+
+    print("\nRUNNING:")
+    print(" ".join(cmd))
+
+    print("\nOUTPUT:")
+    print("--------------------------------------------------")
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1
+    )
+
+    for line in process.stdout:
+        print(line, end="")
+
+    process.wait()
+
+    print("--------------------------------------------------")
+
+    return process.returncode
 
 
 # ============================================================
@@ -1058,26 +1340,45 @@ def compile_firmware():
     verify_websockets_library()
     verify_huge_app_partition_file()
 
-    print("\nUsing ESP32 board configuration:")
-    print(ESP32_FQBN)
-    print("\nThis uses the Huge APP partition scheme to avoid sketch-too-big errors.")
+    print_active_board_profile()
+    print("\nThis uses a large-app partition candidate to avoid sketch-too-big errors.")
 
-    run_cmd([
-        CLI_EXE,
-        "compile",
-        "--verbose",
-        "--fqbn",
-        ESP32_FQBN,
-        PROJECT_DIR,
-        "--output-dir",
-        PROJECT_DIR,
-        "--libraries",
-        LOCAL_LIBRARIES_DIR,
-        "--config-file",
-        CLI_CONFIG
-    ])
+    last_failed_fqbn = None
 
-    print("\nCOMPILE COMPLETE.")
+    for fqbn in get_active_fqbn_candidates():
+        print("\nTrying Arduino board configuration:")
+        print(fqbn)
+
+        rc = run_cmd_return_code([
+            CLI_EXE,
+            "compile",
+            "--verbose",
+            "--fqbn",
+            fqbn,
+            PROJECT_DIR,
+            "--output-dir",
+            PROJECT_DIR,
+            "--libraries",
+            LOCAL_LIBRARIES_DIR,
+            "--config-file",
+            CLI_CONFIG
+        ])
+
+        if rc == 0:
+            print("\nCOMPILE COMPLETE.")
+            print("Successful FQBN:", fqbn)
+            return
+
+        last_failed_fqbn = fqbn
+        print("\nThis FQBN failed. Trying next candidate if available...")
+
+    raise RuntimeError(
+        "All FQBN candidates failed for the selected board profile.\n"
+        f"Selected profile: {get_active_board_profile_name()}\n"
+        f"Last failed FQBN: {last_failed_fqbn}\n\n"
+        "Run Arduino CLI board details for your board and update "
+        "BOARD_PROFILES with the exact FlashSize and PartitionScheme names."
+    )
 
 
 # ============================================================
@@ -1162,8 +1463,11 @@ def install_firmware():
 
     port = detect_com_port()
 
+    print_active_board_profile()
+    upload_fqbn = get_active_fqbn_candidates()[0]
+
     print("\nUsing ESP32 board configuration for upload:")
-    print(ESP32_FQBN)
+    print(upload_fqbn)
 
     run_cmd([
         CLI_EXE,
@@ -1171,7 +1475,7 @@ def install_firmware():
         "-p",
         port,
         "--fqbn",
-        ESP32_FQBN,
+        upload_fqbn,
         PROJECT_DIR,
         "--libraries",
         LOCAL_LIBRARIES_DIR,
@@ -1454,7 +1758,7 @@ def normalize_custom_firmware_text(text):
 
 
 # ============================================================
-# OPTION 4
+# OPTION 3
 # MERGE ORIGINAL OpenCatEsp32.ino WITH CUSTOM myOpenCatEsp32.ino
 # ============================================================
 
@@ -1864,7 +2168,7 @@ def remove_named_void_function(text, function_name):
 
 
 # ============================================================
-# OPTION 5
+# OPTION 4
 # COPY MERGED FILE INTO bittle_env OpenCatEsp32.ino
 # ============================================================
 
@@ -2012,10 +2316,10 @@ def install_merged_firmware_into_bittle_env():
 
 
 # ============================================================
-# OPTION 6
+# OPTION 5
 # DIRECTLY UPLOAD COMPILED EXECUTABLE/BINARY TO ESP32 OVER USB
 #
-# OPTION 6 ONLY FLASHES:
+# OPTION 5 ONLY FLASHES:
 # ------------------------------------------------------------
 # This option does NOT compile. It assumes option 2 already
 # generated the .bin files, then it uploads those files to ESP32
@@ -2106,6 +2410,7 @@ def upload_compiled_binary_to_esp32():
     print("Partitions    :", os.path.abspath(partitions_bin))
     print("Application   :", os.path.abspath(app_bin))
     print("============================================================")
+    print_active_board_profile()
 
     # --------------------------------------------------------
     # Verify compiled files exist before flashing.
@@ -2143,7 +2448,7 @@ def upload_compiled_binary_to_esp32():
         "-m",
         "esptool",
         "--chip",
-        "esp32",
+        get_active_chip_name(),
         "--port",
         port,
         "--baud",
@@ -2159,7 +2464,7 @@ def upload_compiled_binary_to_esp32():
         "--flash_freq",
         "40m",
         "--flash_size",
-        "detect",
+        get_active_flash_size(),
         "0x1000",
         bootloader_bin,
         "0x8000",
@@ -2192,10 +2497,10 @@ def main():
         print("======================================")
         print("1 - Install all necessary packages, firmware, and libraries")
         print("2 - Compile firmware only and generate .bin/.elf/.map files")
-        print("4 - Merge original bittle_env OpenCatEsp32.ino + current myOpenCatEsp32.ino into mergeOpenCatEsp32.ino")
-        print("5 - Copy mergeOpenCatEsp32.ino into bittle_env OpenCatEsp32.ino")
-        print("6 - Flash/upload compiled .bin files to ESP32 over USB")
-        print("0 - Exit")
+        print("3 - Merge original bittle_env OpenCatEsp32.ino + current myOpenCatEsp32.ino into mergeOpenCatEsp32.ino")
+        print("4 - Copy mergeOpenCatEsp32.ino into bittle_env OpenCatEsp32.ino")
+        print("5 - Flash/upload compiled .bin files to ESP32 over USB")
+        print("q - Exit")
 
         choice = get_menu_choice()
 
@@ -2206,16 +2511,16 @@ def main():
             elif choice == "2":
                 compile_firmware()
 
-            elif choice == "4":
+            elif choice == "3":
                 merge_firmware_files()
 
-            elif choice == "5":
+            elif choice == "4":
                 install_merged_firmware_into_bittle_env()
 
-            elif choice == "6":
+            elif choice == "5":
                 upload_compiled_binary_to_esp32()
 
-            elif choice == "0":
+            elif choice.lower() == "q":
                 print("\nExiting.")
                 break
 
