@@ -369,3 +369,111 @@ Flash ESP32
     ↓
 Control robot
 ```
+// =====================================================
+// Example ESP32 Servo GPIO Mapping
+// =====================================================
+//
+// These numbers are ESP32 GPIO pins.
+//
+// GPIO = General Purpose Input Output
+//
+// The ESP32 servo library (ESP32Servo.h)
+// generates PWM (Pulse Width Modulation)
+// signals on these GPIO pins to control servos.
+//
+// Servos typically use:
+//   Frequency: ~50 Hz
+//   Pulse width: ~500 us to ~2500 us
+//
+// These GPIO pins were selected because:
+//
+// 1. They support PWM (LEDC hardware)
+// 2. They support Digital Output mode
+// 3. They are commonly available
+// 4. They avoid ESP32 internal flash pins
+// 5. They avoid input-only pins
+//
+// Avoid for servos:
+//
+// GPIO34-39
+//   -> Input only
+//   -> Cannot generate servo output
+//
+// GPIO6-11
+//   -> Used internally by ESP32 flash
+//
+// GPIO1, GPIO3
+//   -> Serial programming pins
+//
+// GPIO0, GPIO2, GPIO15
+//   -> Boot configuration pins
+//   -> Use carefully
+//
+// Mapping:
+//
+// Front Left Hip    -> GPIO13
+// Front Left Knee   -> GPIO12
+//
+// Front Right Hip   -> GPIO14
+// Front Right Knee  -> GPIO27
+//
+// Rear Left Hip     -> GPIO26
+// Rear Left Knee    -> GPIO25
+//
+// Rear Right Hip    -> GPIO33
+// Rear Right Knee   -> GPIO32
+//
+// =====================================================
+
+int servoPins[8] =
+{
+    13, // GPIO13
+        // Digital Output: YES
+        // PWM (LEDC): YES
+        // ADC: YES
+        // Selected because PWM capable
+
+    12, // GPIO12
+        // Digital Output: YES
+        // PWM (LEDC): YES
+        // ADC: YES
+        // Selected because PWM capable
+
+    14, // GPIO14
+        // Digital Output: YES
+        // PWM (LEDC): YES
+        // ADC: YES
+        // Selected because PWM capable
+
+    27, // GPIO27
+        // Digital Output: YES
+        // PWM (LEDC): YES
+        // ADC: YES
+        // Selected because PWM capable
+
+    26, // GPIO26
+        // Digital Output: YES
+        // PWM (LEDC): YES
+        // ADC: YES
+        // DAC: YES
+        // Selected because PWM capable
+
+    25, // GPIO25
+        // Digital Output: YES
+        // PWM (LEDC): YES
+        // ADC: YES
+        // DAC: YES
+        // Selected because PWM capable
+
+    33, // GPIO33
+        // Digital Output: YES
+        // PWM (LEDC): YES
+        // ADC: YES
+        // Selected because PWM capable
+
+    32  // GPIO32
+        // Digital Output: YES
+        // PWM (LEDC): YES
+        // ADC: YES
+        // Selected because PWM capable
+};

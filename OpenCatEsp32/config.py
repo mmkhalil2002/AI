@@ -242,8 +242,131 @@ DATA_DIR = os.path.join(BITTLE_ENV_DIR, "data")
 CLI_EXE = os.path.join(BITTLE_ENV_DIR, "arduino-cli.exe")
 CLI_CONFIG = os.path.join(DATA_DIR, "cli.yaml")
 
-PROJECT_DIR = os.path.join(BITTLE_ENV_DIR, "OpenCatEsp32")
-INO_FILE = os.path.join(PROJECT_DIR, "OpenCatEsp32.ino")
+# ============================================================
+# USER-SELECTABLE MAIN SKETCH FILE
+# ============================================================
+#
+# PURPOSE:
+# ------------------------------------------------------------
+# Allows the user to choose the Arduino main sketch filename.
+#
+# DEFAULT:
+# ------------------------------------------------------------
+# If the user presses Enter, the default sketch file is:
+#
+#   OpenCatEsp32.ino
+#
+# IMPORTANT ARDUINO RULE:
+# ------------------------------------------------------------
+# Arduino normally expects the sketch folder name to match the
+# main .ino filename.
+#
+# Example:
+#
+#   OpenCatEsp32/
+#       OpenCatEsp32.ino
+#
+# If the user enters:
+#
+#   zOpenCatESP32.ino
+#
+# this script uses:
+#
+#   bittle_env/zOpenCatESP32/
+#       zOpenCatESP32.ino
+#
+# and, after downloading the original firmware, renames the original
+# OpenCatEsp32.ino file to the selected sketch filename.
+#
+# ENVIRONMENT VARIABLE OPTION:
+# ------------------------------------------------------------
+# You can skip the prompt by setting:
+#
+#   BITTLE_SKETCH_FILE=zOpenCatESP32.ino
+#
+# from PowerShell:
+#
+#   $env:BITTLE_SKETCH_FILE="zOpenCatESP32.ino"
+#   python .\config.py
+#
+# ============================================================
+
+DEFAULT_SKETCH_FILE_NAME = "OpenCatEsp32.ino"
+
+
+def normalize_sketch_file_name(file_name):
+    """
+    Normalizes and validates the main Arduino sketch filename.
+
+    Rules:
+    ------------------------------------------------------------
+    1. The filename must not contain a path.
+    2. The filename must end with .ino.
+    3. If the user enters only the base name, .ino is appended.
+    4. Empty input falls back to DEFAULT_SKETCH_FILE_NAME.
+    """
+
+    value = (file_name or "").strip().strip('\"').strip("'")
+
+    if not value:
+        value = DEFAULT_SKETCH_FILE_NAME
+
+    # Do not allow folder paths here. This variable is a filename only.
+    value = os.path.basename(value)
+
+    if not value.lower().endswith(".ino"):
+        value += ".ino"
+
+    # Basic safety check for Windows-invalid filename characters.
+    invalid_chars = '<>:"/\\|?*'
+
+    if any(ch in value for ch in invalid_chars):
+        print("\nWARNING:")
+        print("Invalid sketch filename entered:", value)
+        print("Falling back to:", DEFAULT_SKETCH_FILE_NAME)
+        value = DEFAULT_SKETCH_FILE_NAME
+
+    return value
+
+
+def select_main_sketch_file_name():
+    """
+    Prompts for the main Arduino sketch filename.
+
+    Pressing Enter keeps the default OpenCatEsp32.ino.
+    The environment variable BITTLE_SKETCH_FILE can also be used.
+    """
+
+    env_value = os.environ.get("BITTLE_SKETCH_FILE", "").strip()
+
+    if env_value:
+        selected = normalize_sketch_file_name(env_value)
+        print("\nSelected sketch file from BITTLE_SKETCH_FILE:", selected)
+        return selected
+
+    print("\n============================================================")
+    print(" SELECT MAIN ARDUINO SKETCH FILE")
+    print("============================================================")
+    print("Default:", DEFAULT_SKETCH_FILE_NAME)
+    print("Press Enter to use the default.")
+    print("Example custom name: zOpenCatESP32.ino")
+    print("============================================================")
+
+    value = input("Enter main .ino filename: ").strip()
+    selected = normalize_sketch_file_name(value)
+
+    print("\nSelected main sketch file:", selected)
+    print("============================================================\n")
+
+    return selected
+
+
+MAIN_SKETCH_FILE_NAME = select_main_sketch_file_name()
+MAIN_SKETCH_BASE_NAME = os.path.splitext(MAIN_SKETCH_FILE_NAME)[0]
+ORIGINAL_OPENCAT_SKETCH_FILE_NAME = "OpenCatEsp32.ino"
+
+PROJECT_DIR = os.path.join(BITTLE_ENV_DIR, MAIN_SKETCH_BASE_NAME)
+INO_FILE = os.path.join(PROJECT_DIR, MAIN_SKETCH_FILE_NAME)
 SRC_HEADER_FILE = os.path.join(PROJECT_DIR, "src", "OpenCat.h")
 
 LOCAL_LIBRARIES_DIR = os.path.join(BITTLE_ENV_DIR, "libraries")
@@ -276,10 +399,10 @@ def print_path_debug_info():
     print("PROJECT_DIR       :", PROJECT_DIR)
     print("INO_FILE          :", INO_FILE)
     print("LOCAL_LIBRARIES   :", LOCAL_LIBRARIES_DIR)
-    print("Original input   :", os.path.join(PROJECT_DIR, "OpenCatEsp32.ino"))
+    print("Original input   :", INO_FILE)
     print("Custom input     :", os.path.join(SCRIPT_DIR, "myOpenCatEsp32.ino"))
     print("Expected merge out:", os.path.join(SCRIPT_DIR, "mergeOpenCatEsp32.ino"))
-    print("Backup target    :", os.path.join(PROJECT_DIR, "OpenCatEsp32.ino.org"))
+    print("Backup target    :", INO_FILE + ".org")
     print("============================================================\n")
 
 
@@ -419,107 +542,36 @@ WEBSOCKETS_LOCAL_HEADER_2 = os.path.join(
 
 
 # ============================================================
-# SELECT ESP32 TARGET MODEL AT SCRIPT START
+# SINGLE-KEY TARGET SELECTION
 # ============================================================
 #
 # PURPOSE:
 # ------------------------------------------------------------
-# Select the ESP32 board family before installation, compile,
-# merge, or flashing.
+# Reads one key without requiring Enter on Windows.
 #
-# IMPORTANT:
+# WHY:
 # ------------------------------------------------------------
-# The old separate classic ESP32 options were merged into ONE
-# Classic ESP32 option because the procedure is the same for
-# the common classic ESP32 modules.
+# The rest of this script uses a no-Enter menu style.
+# This helper is used for the ESP32 target selection menu.
 #
-# CLASSIC ESP32 COMMERCIAL / COMMON BOARD NAMES:
+# NOTE:
 # ------------------------------------------------------------
-# Select option 1 for boards/modules commonly sold as:
+# Because the hardware menu has more than 9 choices, choices after
+# 9 use letters:
 #
-#   - ESP32-WROOM-32
-#   - ESP32-WROOM-32D
-#   - ESP32-WROOM-32U
-#   - ESP32-WROVER
-#   - ESP32-WROVER-B
-#   - ESP32-WROVER-E
-#   - ESP32 DevKit V1
-#   - DOIT ESP32 DEVKIT V1
-#   - NodeMCU-32S
-#   - ESP32 Pico Kit
-#   - Petoi Bittle X classic ESP32 board
-#   - Generic ESP32 development board
-#
-# CLASSIC ESP32 PROCEDURE:
-# ------------------------------------------------------------
-# The same compile, merge, and USB flashing procedure is used
-# for classic ESP32 boards, whether the board has 4MB, 8MB, or
-# 16MB flash.
-#
-# During direct USB flashing, this script uses:
-#
-#   --flash_size detect
-#
-# so esptool detects the actual flash size automatically.
-#
-# ADVANCED ESP32-S COMMERCIAL / COMMON BOARD NAMES:
-# ------------------------------------------------------------
-# Select option 2 for ESP32-S2 boards/modules commonly sold as:
-#
-#   - ESP32-S2 Saola
-#   - ESP32-S2 DevKit
-#   - ESP32-S2-WROVER
-#   - ESP32-S2-WROOM
-#
-# Select option 3 for ESP32-S3 boards/modules commonly sold as:
-#
-#   - ESP32-S3 DevKitC
-#   - ESP32-S3-WROOM
-#   - ESP32-S3-WROOM-1
-#   - ESP32-S3-WROOM-2
-#   - ESP32-S3-WROVER
-#   - Generic ESP32-S3 development board
-#   - Future Petoi ESP32-S models, if they use ESP32-S3
-#
-# ADVANCED ESP32-S PROCEDURE:
-# ------------------------------------------------------------
-# ESP32-S2 and ESP32-S3 do NOT use the exact same internal
-# target as classic ESP32.
-#
-# They need different:
-#
-#   - Arduino FQBN
-#   - esptool chip type
-#   - board target
-#   - bootloader/build configuration
-#
-# The menu keeps ESP32-S2 and ESP32-S3 as separate options
-# because they are different chip families.
+#   A, B, C, ...
 #
 # ============================================================
-
-print("\n============================================================")
-print(" SELECT TARGET ESP32 MODEL / COMMERCIAL BOARD NAME")
-print("============================================================")
-print("1 - Classic ESP32 boards/modules")
-print("    Examples: ESP32-WROOM-32, ESP32-WROVER, ESP32 DevKit V1,")
-print("              DOIT ESP32 DEVKIT V1, NodeMCU-32S, Bittle X classic")
-print("")
-print("2 - ESP32-S2 boards/modules")
-print("    Examples: ESP32-S2 Saola, ESP32-S2 DevKit, ESP32-S2-WROVER")
-print("")
-print("3 - ESP32-S3 boards/modules")
-print("    Examples: ESP32-S3 DevKitC, ESP32-S3-WROOM, ESP32-S3-WROVER")
-print("============================================================")
-
-
-# ------------------------------------------------------------
-# Single-key target selection (no Enter required)
-# ------------------------------------------------------------
 
 def get_single_key():
     """
     Reads one key without requiring Enter.
+
+    Windows:
+        Uses msvcrt.getch()
+
+    Non-Windows:
+        Falls back to normal input()
     """
 
     if os.name == "nt":
@@ -539,46 +591,78 @@ def get_single_key():
     return input().strip()
 
 
-print("Select target model: ", end="", flush=True)
-MODEL_SELECTION = get_single_key()
+# ============================================================
+# ESP32 BOARD PROFILES
+# ============================================================
+#
+# PURPOSE:
+# ------------------------------------------------------------
+# Defines all supported ESP32 target families for:
+#
+#   1. Arduino CLI compile
+#   2. Arduino CLI upload
+#   3. Direct esptool flashing
+#
+# IMPORTANT:
+# ------------------------------------------------------------
+# Adding a board profile here means the build tool can TRY to
+# compile/upload for that board family.
+#
+# It does NOT guarantee the OpenCat firmware logic, servo mapping,
+# GPIO mapping, PWM driver, camera, sensor, or robot wiring will
+# work without additional firmware changes.
+#
+# WHY:
+# ------------------------------------------------------------
+# Different ESP32 families have different:
+#
+#   - Arduino FQBN names
+#   - esptool chip names
+#   - flash layouts
+#   - peripheral availability
+#   - pin restrictions
+#   - bootloader behavior
+#
+# EXAMPLES:
+# ------------------------------------------------------------
+# Classic ESP32:
+#   chip = esp32
+#   fqbn = esp32:esp32:esp32
+#
+# ESP32-S3:
+#   chip = esp32s3
+#   fqbn = esp32:esp32:esp32s3
+#
+# ESP32-C3:
+#   chip = esp32c3
+#   fqbn = esp32:esp32:esp32c3
+#
+# ============================================================
 
+# ------------------------------------------------------------
+# ESP32 Arduino core package.
+#
+# OLD VERSION:
+#   esp32:esp32@2.0.12
+#
+# WHY THIS SCRIPT USES UNPINNED PACKAGE NAME NOW:
+# ------------------------------------------------------------
+# ESP32-C6, ESP32-H2, ESP32-C5, and ESP32-P4 support may require
+# a newer Arduino ESP32 core than 2.0.12.
+#
+# Using:
+#
+#   esp32:esp32
+#
+# lets Arduino CLI install the latest available ESP32 board package.
+#
+# If you must force the old Petoi/OpenCat-tested version, change this
+# back to:
+#
+#   ESP32_CORE = "esp32:esp32@2.0.12"
+# ------------------------------------------------------------
 
-ESP32_CHIP = "esp32"
-
-if MODEL_SELECTION == "1":
-    ESP32_FQBN = "esp32:esp32:esp32:PartitionScheme=huge_app"
-    ESP32_CORE = "esp32:esp32@2.0.12"
-    ESP32_FLASH_SIZE = "4MB"
-
-elif MODEL_SELECTION == "2":
-    ESP32_FQBN = "esp32:esp32:esp32:PartitionScheme=huge_app"
-    ESP32_CORE = "esp32:esp32@2.0.12"
-    ESP32_FLASH_SIZE = "16MB"
-
-elif MODEL_SELECTION == "3":
-    ESP32_FQBN = "esp32:esp32:esp32s2:PartitionScheme=huge_app"
-    ESP32_CORE = "esp32:esp32@2.0.12"
-    ESP32_FLASH_SIZE = "16MB"
-    ESP32_CHIP = "esp32s2"
-
-elif MODEL_SELECTION == "4":
-    ESP32_FQBN = "esp32:esp32:esp32s3:PartitionScheme=huge_app"
-    ESP32_CORE = "esp32:esp32@2.0.12"
-    ESP32_FLASH_SIZE = "16MB"
-    ESP32_CHIP = "esp32s3"
-
-else:
-    print("\nInvalid selection. Defaulting to Classic ESP32 (4MB).")
-
-    ESP32_FQBN = "esp32:esp32:esp32:PartitionScheme=huge_app"
-    ESP32_CORE = "esp32:esp32@2.0.12"
-    ESP32_FLASH_SIZE = "4MB"
-
-print("\nSelected configuration:")
-print("FQBN       :", ESP32_FQBN)
-print("Flash Size :", ESP32_FLASH_SIZE)
-print("Chip Type  :", ESP32_CHIP)
-print("============================================================\n")
+ESP32_CORE = "esp32:esp32"
 
 
 # ------------------------------------------------------------
@@ -594,7 +678,7 @@ print("============================================================\n")
 #
 #   flash_size:
 #       Flash size passed to esptool.py.
-#       For large S models, this is usually 16MB.
+#       "detect" is safest for generic boards.
 #
 #   fqbn_candidates:
 #       Arduino CLI board configuration candidates.
@@ -603,16 +687,34 @@ print("============================================================\n")
 # WHY MULTIPLE CANDIDATES:
 # ------------------------------------------------------------
 # Arduino ESP32 board menu option names can differ by board/core.
-# Trying candidates keeps the script useful across classic ESP32,
-# ESP32-S2, and ESP32-S3 boards without deleting old behavior.
+# Trying candidates keeps the script useful across multiple board
+# package versions.
 # ------------------------------------------------------------
+
 BOARD_PROFILES = {
+    # --------------------------------------------------------
+    # Classic ESP32 family
+    #
+    # Common commercial/module names:
+    #   - ESP32-WROOM-32
+    #   - ESP32-WROOM-32D
+    #   - ESP32-WROOM-32U
+    #   - ESP32-WROVER
+    #   - ESP32-WROVER-B
+    #   - ESP32-WROVER-E
+    #   - ESP32 DevKit V1
+    #   - DOIT ESP32 DEVKIT V1
+    #   - NodeMCU-32S
+    #   - ESP32 Pico Kit
+    #   - Petoi Bittle X classic ESP32 board
+    # --------------------------------------------------------
     "classic_esp32_4m": {
         "label": "Classic ESP32 / 4 MB flash / Huge APP",
-        "chip": ESP32_CHIP,
+        "chip": "esp32",
         "flash_size": "detect",
         "fqbn_candidates": [
             "esp32:esp32:esp32:PartitionScheme=huge_app",
+            "esp32:esp32:esp32",
         ],
     },
 
@@ -625,6 +727,33 @@ BOARD_PROFILES = {
             "esp32:esp32:esp32:FlashSize=16M,PartitionScheme=huge_app",
             "esp32:esp32:esp32:PartitionScheme=app3M_fat9M_16MB",
             "esp32:esp32:esp32:PartitionScheme=huge_app",
+            "esp32:esp32:esp32",
+        ],
+    },
+
+    # --------------------------------------------------------
+    # ESP32-S family
+    #
+    # ESP32-S2:
+    #   - ESP32-S2 Saola
+    #   - ESP32-S2 DevKit
+    #   - ESP32-S2-WROOM
+    #   - ESP32-S2-WROVER
+    #
+    # ESP32-S3:
+    #   - ESP32-S3 DevKitC
+    #   - ESP32-S3-WROOM
+    #   - ESP32-S3-WROOM-1
+    #   - ESP32-S3-WROOM-2
+    #   - ESP32-S3-WROVER
+    # --------------------------------------------------------
+    "esp32s2_4m": {
+        "label": "ESP32-S2 / 4 MB flash",
+        "chip": "esp32s2",
+        "flash_size": "detect",
+        "fqbn_candidates": [
+            "esp32:esp32:esp32s2:PartitionScheme=huge_app",
+            "esp32:esp32:esp32s2",
         ],
     },
 
@@ -637,6 +766,17 @@ BOARD_PROFILES = {
             "esp32:esp32:esp32s2:FlashSize=16M,PartitionScheme=huge_app",
             "esp32:esp32:esp32s2:PartitionScheme=app3M_fat9M_16MB",
             "esp32:esp32:esp32s2:PartitionScheme=huge_app",
+            "esp32:esp32:esp32s2",
+        ],
+    },
+
+    "esp32s3_4m": {
+        "label": "ESP32-S3 / 4 MB flash",
+        "chip": "esp32s3",
+        "flash_size": "detect",
+        "fqbn_candidates": [
+            "esp32:esp32:esp32s3:PartitionScheme=huge_app",
+            "esp32:esp32:esp32s3",
         ],
     },
 
@@ -649,9 +789,96 @@ BOARD_PROFILES = {
             "esp32:esp32:esp32s3:FlashSize=16M,PartitionScheme=huge_app",
             "esp32:esp32:esp32s3:PartitionScheme=app3M_fat9M_16MB",
             "esp32:esp32:esp32s3:PartitionScheme=huge_app",
+            "esp32:esp32:esp32s3",
+        ],
+    },
+
+    # --------------------------------------------------------
+    # ESP32-C family
+    #
+    # Common examples:
+    #   - ESP32-C2
+    #   - ESP32-C3
+    #   - ESP32-C5
+    #   - ESP32-C6
+    #
+    # NOTE:
+    # --------------------------------------------------------
+    # These are useful for generic ESP32 projects, but OpenCat
+    # robot firmware may need additional changes because C-series
+    # boards have different peripherals and fewer pins than classic
+    # ESP32/S3 boards.
+    # --------------------------------------------------------
+    "esp32c2_4m": {
+        "label": "ESP32-C2 / 4 MB flash",
+        "chip": "esp32c2",
+        "flash_size": "detect",
+        "fqbn_candidates": [
+            "esp32:esp32:esp32c2",
+        ],
+    },
+
+    "esp32c3_4m": {
+        "label": "ESP32-C3 / 4 MB flash",
+        "chip": "esp32c3",
+        "flash_size": "detect",
+        "fqbn_candidates": [
+            "esp32:esp32:esp32c3:PartitionScheme=huge_app",
+            "esp32:esp32:esp32c3",
+        ],
+    },
+
+    "esp32c5_4m": {
+        "label": "ESP32-C5 / 4 MB flash",
+        "chip": "esp32c5",
+        "flash_size": "detect",
+        "fqbn_candidates": [
+            "esp32:esp32:esp32c5",
+        ],
+    },
+
+    "esp32c6_4m": {
+        "label": "ESP32-C6 / 4 MB flash",
+        "chip": "esp32c6",
+        "flash_size": "detect",
+        "fqbn_candidates": [
+            "esp32:esp32:esp32c6",
+        ],
+    },
+
+    # --------------------------------------------------------
+    # ESP32-H family
+    #
+    # ESP32-H2 is commonly used for low-power/802.15.4/BLE style
+    # applications, not normally for servo-heavy robot dogs.
+    # This profile is included for completeness.
+    # --------------------------------------------------------
+    "esp32h2_4m": {
+        "label": "ESP32-H2 / 4 MB flash",
+        "chip": "esp32h2",
+        "flash_size": "detect",
+        "fqbn_candidates": [
+            "esp32:esp32:esp32h2",
+        ],
+    },
+
+    # --------------------------------------------------------
+    # ESP32-P family
+    #
+    # ESP32-P4 is not a drop-in replacement for classic ESP32 robot
+    # firmware. This profile only allows the script to try compile /
+    # flash when the installed Arduino ESP32 core exposes this FQBN.
+    # --------------------------------------------------------
+    "esp32p4": {
+        "label": "ESP32-P4",
+        "chip": "esp32p4",
+        "flash_size": "detect",
+        "fqbn_candidates": [
+            "esp32:esp32:esp32p4",
         ],
     },
 }
+
 
 # ------------------------------------------------------------
 # Default board profile.
@@ -668,17 +895,97 @@ BOARD_PROFILES = {
 #
 #   classic_esp32_4m
 #   classic_esp32_16m
+#   esp32s2_4m
 #   esp32s2_16m
+#   esp32s3_4m
 #   esp32s3_16m
+#   esp32c2_4m
+#   esp32c3_4m
+#   esp32c5_4m
+#   esp32c6_4m
+#   esp32h2_4m
+#   esp32p4
 # ------------------------------------------------------------
+
 DEFAULT_BOARD_PROFILE = "classic_esp32_4m"
+
 ACTIVE_BOARD_PROFILE = os.environ.get(
     "BITTLE_ESP32_MODEL",
     DEFAULT_BOARD_PROFILE
 ).strip()
 
+
+# ------------------------------------------------------------
 # Backward-compatible variable name used by old comments/prints.
+# Most compile/upload functions now use get_active_fqbn_candidates().
+# ------------------------------------------------------------
+
 ESP32_FQBN = BOARD_PROFILES[DEFAULT_BOARD_PROFILE]["fqbn_candidates"][0]
+
+
+# ============================================================
+# SELECT ESP32 TARGET MODEL AT SCRIPT START
+# ============================================================
+
+def select_board_profile_at_start():
+    """
+    Lets the user select the ESP32 target profile at startup.
+
+    This replaces the older hardcoded 1/2/3/4 selection logic.
+
+    Benefits:
+    ------------------------------------------------------------
+    1. The printed menu always matches BOARD_PROFILES.
+    2. Adding a new board profile automatically adds a new menu item.
+    3. No hidden option numbers are needed.
+    4. Selection still works with one key on Windows.
+    """
+
+    global ACTIVE_BOARD_PROFILE
+
+    names = list(BOARD_PROFILES.keys())
+
+    # Single-key choices:
+    #   1-9, then A-Z
+    choice_keys = list("123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+    if len(names) > len(choice_keys):
+        raise RuntimeError(
+            "Too many board profiles for the single-key selection menu."
+        )
+
+    print("\n============================================================")
+    print(" SELECT TARGET ESP32 MODEL / COMMERCIAL BOARD NAME")
+    print("============================================================")
+
+    key_to_profile = {}
+
+    for index, name in enumerate(names):
+        key = choice_keys[index]
+        profile = BOARD_PROFILES[name]
+        current = "  <== default" if name == DEFAULT_BOARD_PROFILE else ""
+
+        key_to_profile[key.lower()] = name
+
+        print(f"{key} - {name} : {profile['label']}{current}")
+
+    print("============================================================")
+    print("Select target model: ", end="", flush=True)
+
+    choice = get_single_key().lower()
+
+    if choice in key_to_profile:
+        ACTIVE_BOARD_PROFILE = key_to_profile[choice]
+    else:
+        print("\nInvalid selection. Defaulting to:", DEFAULT_BOARD_PROFILE)
+        ACTIVE_BOARD_PROFILE = DEFAULT_BOARD_PROFILE
+
+    print_active_board_profile()
+
+
+# Select the active ESP32 target immediately when script starts.
+select_board_profile_at_start()
+
 
 CLI_URL = (
     "https://downloads.arduino.cc/arduino-cli/"
@@ -858,6 +1165,63 @@ def find_file(root_dir, filename):
 
 
 # ============================================================
+# ENSURE SELECTED SKETCH FILENAME EXISTS
+# ============================================================
+
+def ensure_selected_sketch_filename_in_project():
+    """
+    Ensures the selected Arduino .ino file exists in PROJECT_DIR.
+
+    WHY:
+    ------------------------------------------------------------
+    The downloaded Petoi/OpenCat firmware normally contains:
+
+        OpenCatEsp32.ino
+
+    If the user selected another main sketch filename, Arduino expects
+    the folder and main .ino filename to match the selected name.
+    This function renames the original downloaded .ino file to the
+    selected filename when needed.
+    """
+
+    if os.path.isfile(INO_FILE):
+        return
+
+    original_ino = os.path.join(
+        PROJECT_DIR,
+        ORIGINAL_OPENCAT_SKETCH_FILE_NAME
+    )
+
+    if os.path.isfile(original_ino):
+        print("\nSelected sketch file not found:")
+        print(INO_FILE)
+        print("\nRenaming downloaded OpenCat sketch file:")
+        print("From:", original_ino)
+        print("To  :", INO_FILE)
+
+        os.rename(original_ino, INO_FILE)
+        return
+
+    # Fallback: if there is exactly one .ino file, rename it.
+    if os.path.isdir(PROJECT_DIR):
+        ino_files = [
+            name for name in os.listdir(PROJECT_DIR)
+            if name.lower().endswith(".ino")
+        ]
+
+        if len(ino_files) == 1:
+            source_ino = os.path.join(PROJECT_DIR, ino_files[0])
+
+            print("\nSelected sketch file not found:")
+            print(INO_FILE)
+            print("\nRenaming only detected .ino file:")
+            print("From:", source_ino)
+            print("To  :", INO_FILE)
+
+            os.rename(source_ino, INO_FILE)
+
+
+# ============================================================
 # VERIFY FIRMWARE PROJECT
 # ============================================================
 
@@ -868,6 +1232,8 @@ def verify_firmware_project():
             f"{PROJECT_DIR}\n\n"
             "Run option 1 to download the firmware."
         )
+
+    ensure_selected_sketch_filename_in_project()
 
     if not os.path.isfile(INO_FILE):
         raise RuntimeError(
@@ -1049,6 +1415,8 @@ def download_firmware():
         )
 
     os.rename(extracted_folder, PROJECT_DIR)
+
+    ensure_selected_sketch_filename_in_project()
 
     print("\nFirmware downloaded successfully:")
     print(PROJECT_DIR)
@@ -1817,10 +2185,7 @@ def merge_firmware_files():
     # This file comes from bittle_env.
     # --------------------------------------------------------
 
-    original_ino = os.path.join(
-        PROJECT_DIR,
-        "OpenCatEsp32.ino"
-    )
+    original_ino = INO_FILE
 
     # --------------------------------------------------------
     # Custom firmware input file
@@ -2212,19 +2577,13 @@ def install_merged_firmware_into_bittle_env():
     # Target OpenCat firmware file inside bittle_env
     # --------------------------------------------------------
 
-    target_ino = os.path.join(
-        PROJECT_DIR,
-        "OpenCatEsp32.ino"
-    )
+    target_ino = INO_FILE
 
     # --------------------------------------------------------
     # Backup file for original OpenCat firmware
     # --------------------------------------------------------
 
-    backup_ino = os.path.join(
-        PROJECT_DIR,
-        "OpenCatEsp32.ino.org"
-    )
+    backup_ino = INO_FILE + ".org"
 
     print("\n============================================================")
     print(" OPTION 5 - INSTALL MERGED FIRMWARE INTO bittle_env")
@@ -2389,17 +2748,17 @@ def upload_compiled_binary_to_esp32():
 
     bootloader_bin = os.path.join(
         PROJECT_DIR,
-        "OpenCatEsp32.ino.bootloader.bin"
+        MAIN_SKETCH_FILE_NAME + ".bootloader.bin"
     )
 
     partitions_bin = os.path.join(
         PROJECT_DIR,
-        "OpenCatEsp32.ino.partitions.bin"
+        MAIN_SKETCH_FILE_NAME + ".partitions.bin"
     )
 
     app_bin = os.path.join(
         PROJECT_DIR,
-        "OpenCatEsp32.ino.bin"
+        MAIN_SKETCH_FILE_NAME + ".bin"
     )
 
     print("\n============================================================")
@@ -2497,7 +2856,7 @@ def main():
         print("======================================")
         print("1 - Install all necessary packages, firmware, and libraries")
         print("2 - Compile firmware only and generate .bin/.elf/.map files")
-        print("3 - Merge original bittle_env OpenCatEsp32.ino + current myOpenCatEsp32.ino into mergeOpenCatEsp32.ino")
+        print(f"3 - Merge original bittle_env {MAIN_SKETCH_FILE_NAME} + current myOpenCatEsp32.ino into mergeOpenCatEsp32.ino")
         print("4 - Copy mergeOpenCatEsp32.ino into bittle_env OpenCatEsp32.ino")
         print("5 - Flash/upload compiled .bin files to ESP32 over USB")
         print("q - Exit")
