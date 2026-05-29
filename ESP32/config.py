@@ -5,6 +5,8 @@ import subprocess
 import sys
 import time
 
+
+
 # ============================================================
 # ESP32 Generic Firmware Tool + Python Serial Status Communication
 # NOTE: Python library install and standalone-example creation menu options were removed by request.
