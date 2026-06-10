@@ -288,108 +288,60 @@ print("=" * 60)
 # ------------------------------------------------------------
 
 
-RME_10_CLASSES_1  = [
-
-    "agricultural",       # 0
-    "airplane",           # 1
-    "airport",            # 2
-    "baseball_diamond",   # 3
-    "baseball_field",     # 4    
-    "baseballdiamond",    # 5
-    "basketball_court",   # 6
-    "beach",              # 7
-    "bridge",             # 8
-    "unknownRME1"         #
+MED_10_CLASSES_1  = [
+    "actinic_keratoses_and_intraepithelial_carcinoma",   # 0
+    "adipose",                                           # 1
+    "background",                                        # 2
+    "basal_cell_carcinoma",                              # 3
+    "basophil",                                          # 4
+    "benign_keratosis-like_lesions",                     # 5
+    "bladder",                                           # 6
+    "cancer-associated_stroma",                          # 7
+    "colorectal_adenocarcinoma_epithelium",              # 8
+    "unknownMED1"                                        # 
 ]
   
-RME_10_CLASSES_2  = [
-    "buildings",             # 9
-    "cemetery",              # 10
-    "chaparral",             # 11
-    "christmas_tree_farm",   # 12
-    "church",                # 13
-    "circular_farmland",     # 14
-    "closed_road",           # 15
-    "cloud",                 # 16
-    "coastal_mansion",       # 17
-    "unknownRME2"            #
+MED_10_CLASSES_2  = [
+    "debris",                                                                 # 09
+    "dermatofibroma",                                                         # 10
+    "eosinophil",                                                             # 11
+    "erythroblast",                                                           # 12
+    "femur-left",                                                             # 13
+    "femur-right",                                                            # 14
+    "heart",                                                                  # 15
+    "immature_granulocytes_myelocytes__metamyelocytes_and_promyelocytes_",    # 16
+    "kidney-left",                                                            # 17
+    "unknownMED2"                                                             # 9
     ]
 
-RME_10_CLASSES_3  = [
-    "commercial_area",      # 18
-    "crosswalk",            # 19
-    "dense_residential",    # 20
-    "denseresidential",     # 21
-    "desert",               # 22     
-    "ferry_terminal",       # 23
-    "football_field",       # 24
-    "forest",               # 25
-    "freeway",              # 26
-    "unknownRME3"           # 
-]
-
-RME_10_CLASSES_4  = [
-  "golf_course",            # 27
-  "golfcourse",             # 28 
-   "ground_track_field",    # 29
-   "harbor",                # 30
-   "industrial_area",       # 31
-   "intersection",          # 32
-   "island",                # 33
-   "lake",                  # 34
-   "meadow",                # 35
-   "unknownRME4"            #
-]
-
-RME_10_CLASSES_5  = [
-   "medium_residential",    # 36
-   "mediumresidential",     # 37
-   "mobile_home_park",      # 38
-   "mobilehomepark",        # 39
-   "mountain",              # 40
-   "nursing_home",          # 41
-   "oil_gas_field",         # 42
-   "oil_well",              # 43
-   "overpass",              # 44
-   "unknownRME5"            #
+MED_10_CLASSES_3  = [
+    "kidney-right",         # 18
+    "liver",                # 19
+    "lung-left",            # 20
+    "lung-right",           # 21
+    "lymphocyte",           # 22
+    "lymphocytes",          # 23
+    "melanocytic_nevi",     # 24
+    "melanoma",             # 25
+    "monocyte",             # 26
+    "unknownMED3"           # 
  ]
-RME_10_CLASSES_6  = [
-    "palace",               # 45
-    "parking_lot",          # 46
-    "parking_space",        # 47    
-    "parkinglot",           # 48
-    "railway",              # 49
-    "railway_station",      # 50
-    "rectangular_farmland", # 51
-    "river",                # 52
-    "roundabout",           # 53
-    "unknownRME6"           # 
-]
 
-RME_10_CLASSES_7  = [
-    "runway",             # 54   
-    "runway_marking",     # 55 
-    "sea_ice",            # 56
-    "ship",               # 57
-    "shipping_yard",      # 58
-    "snowberg",           # 59 
-    "solar_panel",        # 60 
-    "sparse_residential", # 61 
-    "sparseresidential",  # 62 
-    "unknownRME7"         #
-] 
-RME_10_CLASSES_8  = [
-    "stadium",               # 63
-    "storage_tank",          # 64
-    "storagetanks",          # 65
-    "swimming_pool",         # 66
-    "tennis_court",          # 67
-    "tenniscourt",           # 68
-    "terrace",               # 69
-    "thermal_power_station", # 70
-    "transformer_station",   # 71
-    "unknownRME8"
-]
+MED_10_CLASSES_4  = [
+
+    "mucus",                # 27
+    "neutrophil",           # 28
+    "normal",               # 29
+    "normal_colon_mucosa",  # 30
+    "pancreas",             # 31
+    "platelet",             # 32
+    "pneumonia",            # 33
+    "smooth_muscle",        # 34
+    "spleen",               # 35
+    "unknownMED4"
+  ]
+
+
 
 
 # ------------------------------------------------------------
@@ -398,29 +350,19 @@ RME_10_CLASSES_8  = [
 
 
 
-if len(RME_10_CLASSES_1) < 2:
-    raise RuntimeError("RME_10_CLASSES_1 must contain at least 2 classes.")
+if len(MED_10_CLASSES_1) < 2:
+    raise RuntimeError("MED_10_CLASSES_1 must contain at least 2 classes.")
 
-if len(RME_10_CLASSES_2) < 2:
-    raise RuntimeError("RME_10_CLASSES_2 must contain at least 2 classes.")
+if len(MED_10_CLASSES_2) < 2:
+    raise RuntimeError("MED_10_CLASSES_2 must contain at least 2 classes.")
 
-if len(RME_10_CLASSES_3) < 2:
-    raise RuntimeError("RME_10_CLASSES_3 must contain at least 2 classes.")
+if len(MED_10_CLASSES_3) < 2:
+    raise RuntimeError("MED_10_CLASSES_3 must contain at least 2 classes.")
 
-if len(RME_10_CLASSES_4) < 2:
-    raise RuntimeError("RME_10_CLASSES_4 must contain at least 2 classes.")
+if len(MED_10_CLASSES_4) < 2:
+    raise RuntimeError("MED_10_CLASSES_4 must contain at least 2 classes.")
 
-if len(RME_10_CLASSES_5) < 2:
-    raise RuntimeError("RME_10_CLASSES_5 must contain at least 2 classes.")
 
-if len(RME_10_CLASSES_6) < 2:
-    raise RuntimeError("RME_10_CLASSES_6 must contain at least 2 classes.")
-
-if len(RME_10_CLASSES_7) < 2:
-    raise RuntimeError("RME_10_CLASSES_7 must contain at least 2 classes.")
-
-if len(RME_10_CLASSES_8) < 2:
-    raise RuntimeError("RME_10_CLASSES_8 must contain at least 2 classes.")
 # ============================================================
 # MODEL REGISTRY
 # ============================================================
@@ -428,83 +370,44 @@ if len(RME_10_CLASSES_8) < 2:
 MODELS: List[Dict] = [
     
     {
-        "name": "rme00-08",
+        "name": "med00-08",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "rme-00-08-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+            "med-00-08-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
-        "classes": RME_10_CLASSES_1,
+        "classes": MED_10_CLASSES_1,
         "temperature": 1.0,
     },
     {
-        "name": "rme09-17",
+        "name": "med09-17",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "rme-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+            "med-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
-        "classes": RME_10_CLASSES_2,
-        "temperature": 1.0,
-    },
-
-    {
-        "name": "rme18-26",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "rme-18-26-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": RME_10_CLASSES_3,
+        "classes": MED_10_CLASSES_2,
         "temperature": 1.0,
     },
 
     {
-        "name": "rme27-35",
+        "name": "med18-26",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "rme-27-35-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+            "med-18-26-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
-        "classes": RME_10_CLASSES_4,
-        "temperature": 1.0,
-    },
-    {
-        "name": "rme36-44",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "rme-36-44-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": RME_10_CLASSES_5,
+        "classes": MED_10_CLASSES_3,
         "temperature": 1.0,
     },
 
     {
-        "name": "rme45-53",
+        "name": "med27-35",
         "weights": os.path.join(
             MODEL_BASE_DIR,
-            "rme-45-53-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+            "med-27-35-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
         ),
-        "classes": RME_10_CLASSES_6,
+        "classes": MED_10_CLASSES_4,
         "temperature": 1.0,
     },
-
-    {
-        "name": "rme54-62",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "rme-54-62-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": RME_10_CLASSES_7,
-        "temperature": 1.0,
-    },
-
-    {
-        "name": "rme63-71",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "rme-63-71-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": RME_10_CLASSES_8,
-        "temperature": 1.0,
-    }
-
+    
 ]
 
 

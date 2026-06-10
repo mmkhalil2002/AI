@@ -117,7 +117,7 @@ MODEL_BASE_DIR = "../../../../"
 TEST_IMAGE_DIR = os.path.join(
     MODEL_BASE_DIR,
     "data",
-    "cifar10_clasifier_test"
+    "CLASIFIER_TEST"
 )
 
 # ------------------------------------------------------------
