@@ -75,6 +75,7 @@ def ensure_deps_for_this_script():
     """
     _ensure_import("dotenv", "python-dotenv")
     _ensure_import("PIL", "pillow")
+    _ensure_import("dotenv", "python-dotenv")
 
 
 ensure_deps_for_this_script()

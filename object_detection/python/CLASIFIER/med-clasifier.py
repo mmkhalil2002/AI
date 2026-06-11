@@ -81,6 +81,7 @@ def ensure_deps_for_this_script():
     _ensure_import("numpy")
     _ensure_import("PIL", "pillow")
     _ensure_import("tqdm")
+    _ensure_import("dotenv", "python-dotenv")
 
 
 ensure_deps_for_this_script()
