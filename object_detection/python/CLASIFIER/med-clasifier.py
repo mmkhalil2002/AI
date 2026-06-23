@@ -216,7 +216,7 @@ TEST_IMAGE_DIR = os.path.expandvars(get_str("TEST_IMAGE_DIR"))
 TEST_IMAGE_DIR = os.path.join(
     MODEL_PATH,
     "data",
-    "cifar10_clasifier_test"
+    "clasifier_test"
 )
 
 

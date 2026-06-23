@@ -81,6 +81,8 @@ def ensure_deps_for_this_script():
     _ensure_import("numpy")
     _ensure_import("PIL", "pillow")
     _ensure_import("tqdm")
+    _ensure_import("dotenv", "python-dotenv")
+
 
 
 ensure_deps_for_this_script()
@@ -215,7 +217,7 @@ TEST_IMAGE_DIR = os.path.expandvars(get_str("TEST_IMAGE_DIR"))
 TEST_IMAGE_DIR = os.path.join(
     MODEL_PATH,
     "data",
-    "cifar10_clasifier_test"
+    "clasifier_test"
 )
 
 
@@ -537,6 +539,7 @@ RME_10_CLASSES_8  = [
 ]
 
 # meedical classes
+
 MED_10_CLASSES_1  = [
     "actinic_keratoses_and_intraepithelial_carcinoma",   # 0
     "adipose",                                           # 1
@@ -562,6 +565,7 @@ MED_10_CLASSES_2  = [
     "kidney-left",                                                            # 17
     "unknownMED2"                                                             # 9
     ]
+
 
 MED_10_CLASSES_3  = [
     "kidney-right",         # 18
@@ -782,16 +786,7 @@ MODELS: List[Dict] = [
         "temperature": 1.0,
     },
 
-     {
-        "name": "cifar27-35",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-27-35-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_4,
-        "temperature": 1.0,
-    },
-
+     
     {
         "name": "rme00-08",
         "weights": os.path.join(

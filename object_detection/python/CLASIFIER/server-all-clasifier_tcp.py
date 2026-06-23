@@ -618,6 +618,64 @@ RME_10_CLASSES_8  = [
 ]
 
 
+# meedical classes
+
+MED_10_CLASSES_1  = [
+    "actinic_keratoses_and_intraepithelial_carcinoma",   # 0
+    "adipose",                                           # 1
+    "background",                                        # 2
+    "basal_cell_carcinoma",                              # 3
+    "basophil",                                          # 4
+    "benign_keratosis-like_lesions",                     # 5
+    "bladder",                                           # 6
+    "cancer-associated_stroma",                          # 7
+    "colorectal_adenocarcinoma_epithelium",              # 8
+    "unknownMED1"                                        # 
+]
+  
+MED_10_CLASSES_2  = [
+    "debris",                                                                 # 09
+    "dermatofibroma",                                                         # 10
+    "eosinophil",                                                             # 11
+    "erythroblast",                                                           # 12
+    "femur-left",                                                             # 13
+    "femur-right",                                                            # 14
+    "heart",                                                                  # 15
+    "immature_granulocytes_myelocytes__metamyelocytes_and_promyelocytes_",    # 16
+    "kidney-left",                                                            # 17
+    "unknownMED2"                                                             # 9
+    ]
+
+
+MED_10_CLASSES_3  = [
+    "kidney-right",         # 18
+    "liver",                # 19
+    "lung-left",            # 20
+    "lung-right",           # 21
+    "lymphocyte",           # 22
+    "lymphocytes",          # 23
+    "melanocytic_nevi",     # 24
+    "melanoma",             # 25
+    "monocyte",             # 26
+    "unknownMED3"           # 
+ ]
+
+MED_10_CLASSES_4  = [
+
+    "mucus",                # 27
+    "neutrophil",           # 28
+    "normal",               # 29
+    "normal_colon_mucosa",  # 30
+    "pancreas",             # 31
+    "platelet",             # 32
+    "pneumonia",            # 33
+    "smooth_muscle",        # 34
+    "spleen",               # 35
+    "unknownMED4"
+  ]
+
+
+
 # ------------------------------------------------------------
 # Optional safety checks for these example lists
 # ------------------------------------------------------------
@@ -676,6 +734,23 @@ if len(RME_10_CLASSES_7) < 2:
 
 if len(RME_10_CLASSES_8) < 2:
     raise RuntimeError("RME_10_CLASSES_8 must contain at least 2 classes.")
+
+
+# medical classes
+#
+if len(MED_10_CLASSES_1) < 2:
+    raise RuntimeError("MED_10_CLASSES_1 must contain at least 2 classes.")
+
+if len(MED_10_CLASSES_2) < 2:
+    raise RuntimeError("MED_10_CLASSES_2 must contain at least 2 classes.")
+
+if len(MED_10_CLASSES_3) < 2:
+    raise RuntimeError("MED_10_CLASSES_3 must contain at least 2 classes.")
+
+if len(MED_10_CLASSES_4) < 2:
+    raise RuntimeError("MED_10_CLASSES_4 must contain at least 2 classes.")
+
+
 # ============================================================
 # MODEL REGISTRY
 # ============================================================
@@ -791,16 +866,6 @@ MODELS: List[Dict] = [
         "temperature": 1.0,
     },
 
-     {
-        "name": "cifar27-35",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-27-35-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_4,
-        "temperature": 1.0,
-    },
-
     {
         "name": "rme00-08",
         "weights": os.path.join(
@@ -877,7 +942,47 @@ MODELS: List[Dict] = [
         ),
         "classes": RME_10_CLASSES_8,
         "temperature": 1.0,
-    }
+    },
+
+    {
+        "name": "med00-08",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "med-00-08-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": MED_10_CLASSES_1,
+        "temperature": 1.0,
+    },
+    {
+        "name": "med09-17",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "med-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": MED_10_CLASSES_2,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "med18-26",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "med-18-26-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": MED_10_CLASSES_3,
+        "temperature": 1.0,
+    },
+
+    {
+        "name": "med27-35",
+        "weights": os.path.join(
+            MODEL_BASE_DIR,
+            "med-27-35-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+        ),
+        "classes": MED_10_CLASSES_4,
+        "temperature": 1.0,
+    },
+    
 
 ]
 

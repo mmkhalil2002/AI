@@ -38,6 +38,14 @@ import subprocess
 import importlib
 import tempfile
 import urllib.request
+import platform
+
+# ==========================================================
+# CROSS-PLATFORM OS DETECTION
+# ==========================================================
+IS_WINDOWS = platform.system().lower() == 'windows'
+IS_LINUX   = platform.system().lower() == 'linux'
+IS_MACOS   = platform.system().lower() == 'darwin'
 
 
 # ==========================================================
@@ -481,11 +489,36 @@ def ensure_python_packages_or_exit(package_specs, verbose=True):
 # Only include packages that normally require pip.
 # ==========================================================
 
+
 REQUIRED_PACKAGES = [
     {
         "import_name": "requests",
         "pip_name": "requests",
     },
+
+    {
+        "import_name": "dotenv",
+        "pip_name": "python-dotenv",
+    },
+
+    {
+        "import_name": "torch",
+        "pip_name": "torch",
+        "extra_pip_args": [
+            "--index-url",
+            "https://download.pytorch.org/whl/cpu"
+        ]
+    },
+
+    {
+        "import_name": "torchvision",
+        "pip_name": "torchvision",
+        "extra_pip_args": [
+            "--index-url",
+            "https://download.pytorch.org/whl/cpu"
+        ]
+    },
+
 
     # Example mappings:
     # {"import_name": "PIL", "pip_name": "pillow"},
@@ -498,6 +531,7 @@ REQUIRED_PACKAGES = [
     #     "extra_pip_args": ["--index-url", "https://download.pytorch.org/whl/cpu"]
     # },
 ]
+
 
 # ----------------------------------------------------------
 # RUN INSTALLER NOW
@@ -515,7 +549,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import random
-import msvcrt
+# ============================================================
+# WINDOWS-SPECIFIC KEYBOARD SUPPORT
+# ============================================================
+if IS_WINDOWS:
+    import msvcrt
+else:
+    msvcrt = None
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
@@ -524,13 +564,13 @@ from torchvision import datasets, transforms
 # CONFIGURATION
 # ============================================================
 
-"""
+""" THIS SECTION is not used
 MODEL_PATH = "../../../"
 MODEL_FILENAME = "cifar-81-89-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
 DATA_PATH = "../../../data/cifar_81_89_unknown30"
 
 BATCH_SIZE = 128
-NUM_EPOCHS = 100
+NUM_EPOCHS = 80
 NUM_WORKERS = 0
 
 STATIC_FILTERS = False
@@ -683,7 +723,7 @@ NUM_WORKERS = get_env_int("NUM_WORKERS", 0)
 STATIC_FILTERS = get_env_bool("STATIC_FILTERS", False)
 
 # Whether verbose debug output is enabled
-DEBUG_FLAG = get_env_bool("DEBUG_FLAG", True)
+DEBUG_FLAG = get_env_bool("DEBUG_FLAG", False)
 
 
 # ============================================================
@@ -720,6 +760,12 @@ CONV3_OUT_CHANNELS = get_env_int("CONV3_OUT_CHANNELS", 512)
 CONV4_IN_CHANNELS = get_env_int("CONV4_IN_CHANNELS", 512)
 CONV4_OUT_CHANNELS = get_env_int("CONV4_OUT_CHANNELS", 1024)
 
+# ============================================================
+# IMAGE SIZE CONFIGURATION
+# ============================================================
+
+IMAGE_WIDTH  = get_env_int("IMAGE_WIDTH", 32)
+IMAGE_HEIGHT = get_env_int("IMAGE_HEIGHT", 32)
 
 # ============================================================
 # OPTIONAL SANITY CHECKS
@@ -761,6 +807,112 @@ if DEBUG_FLAG:
     print("[CONFIG] CONV3              =", CONV3_IN_CHANNELS, "->", CONV3_OUT_CHANNELS)
     print("[CONFIG] CONV4              =", CONV4_IN_CHANNELS, "->", CONV4_OUT_CHANNELS)
     print("=" * 60)
+
+
+# ============================================================
+# CROSS-PLATFORM KEYBOARD INPUT HELPER
+# ============================================================
+# NOTE:
+#   All menu/key-reading code should call get_single_key()
+#   instead of calling msvcrt.getch() directly.
+#   This keeps the script portable across Windows, Ubuntu/Linux, and macOS.
+def get_single_key(prompt="> "):
+    '''
+    Cross-platform single-key/input helper.
+
+    Windows:
+        Uses msvcrt.getch() so the user can press one key without pressing Enter.
+
+    Linux/macOS:
+        Falls back to input() because msvcrt is a Windows-only Python module.
+
+    WHY THIS HELPER WAS ADDED
+    -------------------------
+    Some earlier code used msvcrt.getch() directly. That works on Windows,
+    but it fails on Ubuntu/Linux/macOS because msvcrt does not exist there.
+
+    All menu/key-reading code should call this helper instead of calling
+    msvcrt.getch() directly. This keeps the original Windows behavior while
+    allowing the same script to run on Ubuntu/Linux and macOS.
+    '''
+    if IS_WINDOWS and msvcrt is not None:
+        try:
+            return msvcrt.getch().decode(errors="ignore")
+        except Exception:
+            pass
+
+    return input(prompt).strip()
+
+
+
+# ============================================================
+# CROSS-PLATFORM CONSOLE CLEAR HELPER
+# ============================================================
+def clear_console():
+    '''
+    Clear the terminal/console screen in a cross-platform way.
+
+    WHY THIS HELPER EXISTS
+    ----------------------
+    Windows uses:
+        cls
+
+    Linux / Ubuntu / macOS use:
+        clear
+
+    Older Windows-only code sometimes used:
+        os.system("cls")
+
+    If that command is called directly on Ubuntu/Linux/macOS, it will usually
+    fail because "cls" is a Windows command. This helper chooses the correct command
+    automatically based on the detected operating system.
+
+    This keeps the same behavior on Windows while making the script portable
+    on Ubuntu/Linux and macOS.
+    '''
+    if IS_WINDOWS:
+        os.system("cls")
+    else:
+        os.system("clear")
+
+
+# ============================================================
+# CROSS-PLATFORM PAUSE HELPER
+# ============================================================
+def pause_console(message="Press Enter to continue..."):
+    '''
+    Pause program execution in a cross-platform way.
+
+    WHY THIS HELPER EXISTS
+    ----------------------
+    Older Windows-only code sometimes used:
+        pause_console()
+
+    Linux / Ubuntu / macOS do NOT support the Windows "pause" command.
+
+    Instead of calling the Windows-only pause command directly,
+    this helper uses Python's built-in input(), which works on:
+        - Windows
+        - Linux / Ubuntu
+        - macOS
+
+    The user presses Enter to continue.
+    '''
+    try:
+        input(message)
+    except EOFError:
+        # In some non-interactive environments, input() may not be available.
+        # In that case, do not crash the script; just continue.
+        pass
+
+
+# ============================================================
+# OS INFORMATION
+# ============================================================
+if DEBUG_FLAG:
+    print(f"[INFO] Operating System : {platform.system()}")
+    print(f"[INFO] Python Version   : {sys.version.split()[0]}")
+
 
 # ============================================================
 # EXPLANATION: HOW TRAINING WORKS IN THIS NETWORK
@@ -3267,6 +3419,7 @@ def main():
     # TRAIN TRANSFORM (USED DURING TRAINING)
     # ============================================================
     train_transform = transforms.Compose([
+        transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.ToTensor(),
         transforms.Normalize(
@@ -3279,6 +3432,7 @@ def main():
     # TEST TRANSFORM (USED DURING VALIDATION / INFERENCE)
     # ============================================================
     test_transform = transforms.Compose([
+        transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
@@ -3412,7 +3566,7 @@ def main():
 
         print(prompt, end="", flush=True)
 
-        first = msvcrt.getch().decode(errors="ignore").lower()
+        first = get_single_key().decode(errors="ignore").lower()
 
         if first == "e":
             print("e")
@@ -3426,7 +3580,7 @@ def main():
 
         s = first
         while True:
-            ch = msvcrt.getch()
+            ch = get_single_key()
             if ch in [b"\r", b"\n"]:
                 print()
                 break
@@ -3749,7 +3903,7 @@ def main():
             flush=True
         )
 
-        key = msvcrt.getch().decode(errors="ignore").lower()
+        key = get_single_key().decode(errors="ignore").lower()
 
         if key == 'e':
             print("e")
@@ -3797,7 +3951,7 @@ def main():
         # Read remaining digits until ENTER
         idx_str = key
         while True:
-            ch = msvcrt.getch()
+            ch = get_single_key()
             if ch in [b'\r', b'\n']:
                 print()
                 break
