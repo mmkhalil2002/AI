@@ -408,21 +408,180 @@ def ensure_python_packages(package_specs, verbose=True, stop_on_failure=True):
         }
     """
 
+    # ------------------------------------------------------
+    # List of packages successfully verified or installed.
+    #
+    # Example:
+    #   ["requests", "torch", "torchvision"]
+    #
+    # Used later for status reporting and return value.
+    # ------------------------------------------------------
     installed = []
+
+    # ------------------------------------------------------
+    # List of packages that failed installation or validation.
+    #
+    # Example:
+    #   ["torch"]
+    #
+    # Used later for status reporting and return value.
+    # ------------------------------------------------------
     failed = []
 
+    # ------------------------------------------------------
+    # Print header information if verbose mode is enabled.
+    #
+    # Example output:
+    #
+    # ======================================================
+    # [INFO] Ensuring required Python packages...
+    # ======================================================
+    # ------------------------------------------------------
     if verbose:
         install_print_line()
         print("[INFO] Ensuring required Python packages...")
 
+    # ------------------------------------------------------
+    # Process each package specification one at a time.
+    #
+    # package_specs is expected to be a list of dictionaries.
+    #
+    # Example:
+    #
+    # [
+    #     {
+    #         "import_name": "requests",
+    #         "pip_name": "requests"
+    #     },
+    #     {
+    #         "import_name": "torch",
+    #         "pip_name": "torch",
+    #         "extra_pip_args": [
+    #             "--index-url",
+    #             "https://download.pytorch.org/whl/cpu"
+    #         ]
+    #     }
+    # ]
+    # ------------------------------------------------------
     for spec in package_specs:
+
+        # --------------------------------------------------
+        # Required field:
+        #
+        # Python module name used in import statements.
+        #
+        # Examples:
+        #   import requests
+        #   import torch
+        #   import dotenv
+        #
+        # Values:
+        #   "requests"
+        #   "torch"
+        #   "dotenv"
+        # --------------------------------------------------
         import_name = spec["import_name"]
+
+        # --------------------------------------------------
+        # Optional pip package name.
+        #
+        # Sometimes the pip package name differs from the
+        # Python import name.
+        #
+        # Examples:
+        #
+        # Python:
+        #   import PIL
+        #
+        # Pip:
+        #   pip install pillow
+        #
+        # Therefore:
+        #   import_name = "PIL"
+        #   pip_name    = "pillow"
+        #
+        # If not present, ensure_python_package()
+        # will automatically use import_name.
+        # --------------------------------------------------
         pip_name = spec.get("pip_name")
+
+        # --------------------------------------------------
+        # Optional version constraint.
+        #
+        # Examples:
+        #   "==2.31.0"
+        #   ">=2.0"
+        #   "<3"
+        #
+        # Resulting pip install command:
+        #
+        #   pip install requests==2.31.0
+        #
+        # or
+        #
+        #   pip install torch>=2.0
+        # --------------------------------------------------
         version = spec.get("version")
+
+        # --------------------------------------------------
+        # Whether pip should upgrade the package.
+        #
+        # True:
+        #   pip install --upgrade package
+        #
+        # False:
+        #   pip install package
+        #
+        # Default:
+        #   True
+        # --------------------------------------------------
         upgrade = spec.get("upgrade", True)
+
+        # --------------------------------------------------
+        # Whether package should be installed using:
+        #
+        #   pip install --user
+        #
+        # Useful when administrator privileges
+        # are unavailable.
+        #
+        # Default:
+        #   False
+        # --------------------------------------------------
         user = spec.get("user", False)
+
+        # --------------------------------------------------
+        # Additional pip command-line arguments.
+        #
+        # Example:
+        #
+        # [
+        #     "--index-url",
+        #     "https://download.pytorch.org/whl/cpu"
+        # ]
+        #
+        # Used heavily for PyTorch CPU-only installs.
+        #
+        # Default:
+        #   empty list
+        # --------------------------------------------------
         extra_pip_args = spec.get("extra_pip_args", [])
 
+        # --------------------------------------------------
+        # Ensure the package is installed and importable.
+        #
+        # Internally this routine:
+        #
+        #   1. Tries importing the module
+        #   2. Ensures pip exists
+        #   3. Installs package if missing
+        #   4. Verifies import afterwards
+        #
+        # Returns:
+        #
+        #   True  -> package available
+        #   False -> installation failed
+        # --------------------------------------------------
         ok = ensure_python_package(
             import_name=import_name,
             pip_name=pip_name,
@@ -433,31 +592,133 @@ def ensure_python_packages(package_specs, verbose=True, stop_on_failure=True):
             verbose=verbose
         )
 
+        # --------------------------------------------------
+        # Determine friendly package name for reporting.
+        #
+        # If pip_name exists:
+        #     use pip_name
+        #
+        # Otherwise:
+        #     use import_name
+        #
+        # Examples:
+        #
+        # pip_name="python-dotenv"
+        # display_name="python-dotenv"
+        #
+        # pip_name=None
+        # import_name="requests"
+        # display_name="requests"
+        # --------------------------------------------------
         display_name = pip_name or import_name
 
+        # --------------------------------------------------
+        # Installation successful.
+        #
+        # Store package in installed list.
+        # --------------------------------------------------
         if ok:
             installed.append(display_name)
+
+        # --------------------------------------------------
+        # Installation failed.
+        #
+        # Store package in failed list.
+        # --------------------------------------------------
         else:
             failed.append(display_name)
+
+            # ----------------------------------------------
+            # If stop_on_failure is enabled:
+            #
+            # Stop immediately after first failure.
+            #
+            # Useful when later packages depend on
+            # earlier packages.
+            #
+            # Example:
+            #
+            # requests   -> success
+            # torch      -> failure
+            #
+            # break immediately
+            # ----------------------------------------------
             if stop_on_failure:
                 break
 
+    # ------------------------------------------------------
+    # Overall success flag.
+    #
+    # Success means:
+    #
+    #   failed list is empty
+    #
+    # Examples:
+    #
+    # installed=["requests","torch"]
+    # failed=[]
+    #
+    # success=True
+    #
+    # installed=["requests"]
+    # failed=["torch"]
+    #
+    # success=False
+    # ------------------------------------------------------
     success = len(failed) == 0
 
+    # ------------------------------------------------------
+    # Print final summary if verbose mode is enabled.
+    # ------------------------------------------------------
     if verbose:
+
         install_print_line()
+
+        # --------------------------------------------------
+        # Show all successfully installed/verified packages.
+        # --------------------------------------------------
         print(f"[INFO] Installed/verified packages: {installed}")
+
+        # --------------------------------------------------
+        # If any package failed:
+        #     show error list
+        #
+        # Otherwise:
+        #     show success message
+        # --------------------------------------------------
         if failed:
             print(f"[ERROR] Failed packages: {failed}")
         else:
             print("[OK] All required Python packages are available.")
 
+    # ------------------------------------------------------
+    # Return detailed status information.
+    #
+    # Example successful result:
+    #
+    # {
+    #     "success": True,
+    #     "installed": [
+    #         "requests",
+    #         "torch",
+    #         "torchvision"
+    #     ],
+    #     "failed": []
+    # }
+    #
+    # Example failed result:
+    #
+    # {
+    #     "success": False,
+    #     "installed": ["requests"],
+    #     "failed": ["torch"]
+    # }
+    # ------------------------------------------------------
     return {
         "success": success,
         "installed": installed,
         "failed": failed
     }
-
 
 # ==========================================================
 # STEP 6 — Optional helper to exit on failure
