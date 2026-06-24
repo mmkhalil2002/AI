@@ -950,17 +950,44 @@ def get_env_bool(name: str, default: bool) -> bool:
 # ============================================================
 
 # Base path where model files are stored
-MODEL_PATH = get_env_str("MODEL_PATH", "../../../")
+MODEL_PATH = get_env_str("MODEL_BASE", "../../../")
 
-# Specific trained model filename
-
-MODEL_FILENAME= os.path.join(MODEL_PATH,"model", "med-00-08-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766")
 # ------------------------------------------------------------
-# DERIVED PATH (DATASET)
+# FILE PREFIX
 # ------------------------------------------------------------
-# DATA_PATH is constructed from MODEL_PATH + subdirectory
-DATA_PATH = os.path.join(MODEL_PATH, "data", "MED10-00-08-unknown30")
+#
+# Example:
+#   FILE_PREFIX=med-00-08-unknown30
+#
+FILE_PREFIX = os.getenv(
+    "FILE_PREFIX",
+    "xxx-00-08-unknown30"
+)
+# ------------------------------------------------------------
+# SPECIFIC TRAINED MODEL FILENAME
+# ------------------------------------------------------------
+MODEL_FILENAME = os.path.join(
+    MODEL_PATH,
+    "model",
+    f"{FILE_PREFIX}-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+)
 
+# DATASET PATH
+# ------------------------------------------------------------
+#
+# Dataset directory name comes directly from FILE_PREFIX.
+#
+# Example:
+#   FILE_PREFIX=med-00-08-unknown30
+#
+# Result:
+#   <MODEL_PATH>/data/med-00-08-unknown30
+#
+DATA_PATH = os.path.join(
+    MODEL_PATH,
+    "data",
+    FILE_PREFIX
+)
 
 # ============================================================
 # TRAINING PARAMETERS
