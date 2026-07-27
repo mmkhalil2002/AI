@@ -1,0 +1,695 @@
+"""
+Python TCPDump-Like Packet Capture and Statistical Analysis Tool
+================================================================
+
+Program Description
+-------------------
+This program provides a Python implementation of a tcpdump-like network
+packet-capture tool using the Scapy library.
+
+The program captures live traffic from a selected network interface, extracts
+important information from every packet, displays packet information on the
+screen, saves the complete packets to a PCAP file, and exports packet metadata
+to a CSV file.
+
+After packet capture finishes, the program calculates and displays descriptive
+statistics for the captured packet sizes.
+
+The program can be used for:
+
+    1. General network traffic monitoring.
+    2. TCP and UDP traffic analysis.
+    3. HTTPS traffic measurement.
+    4. Packet-size statistical analysis.
+    5. Network behavior analysis.
+    6. AI-traffic and regular-traffic comparison.
+    7. Machine-learning dataset collection.
+    8. Wireshark-compatible packet collection.
+
+
+Main TCPDump Capture Function
+=============================
+
+Function Name
+-------------
+    tcpdump_capture()
+
+
+Function Purpose
+----------------
+The tcpdump_capture() function is the main packet-capture function in this
+program.
+
+It performs the following operations:
+
+    1. Selects the network interface from which packets will be captured.
+
+    2. Applies an optional Berkeley Packet Filter, commonly called a BPF
+       filter.
+
+    3. Captures packets until one of the following conditions occurs:
+
+           - The configured packet limit is reached.
+           - The configured capture duration expires.
+           - The user presses Ctrl+C.
+
+    4. Calls process_packet() for every captured packet.
+
+    5. Displays packet information on the screen in real time.
+
+    6. Stores complete packet objects so that they can be saved in a
+       PCAP file.
+
+    7. Stores packet sizes so that statistical measurements can be
+       calculated.
+
+    8. Writes packet metadata to a CSV file.
+
+    9. Calculates general traffic statistics, including:
+
+           - Total number of packets
+           - Total number of bytes
+           - Capture duration
+           - Packet rate
+           - Average throughput
+           - Protocol distribution
+           - Most active source IP addresses
+           - Most active destination IP addresses
+
+    10. Calculates packet-size statistics, including:
+
+           - Mean
+           - Population variance
+           - Population standard deviation
+           - Minimum
+           - Maximum
+           - Median
+
+    11. Prints all calculated results on the screen.
+
+    12. Returns the packet-size statistics in a Python dictionary.
+
+
+TCPDump Capture Function Definition
+-----------------------------------
+The function has the following definition:
+
+    tcpdump_capture(
+        interface=None,
+        capture_filter="",
+        packet_count=0,
+        timeout=0,
+        pcap_filename="capture.pcap",
+        csv_filename="capture.csv",
+    )
+
+
+TCPDump Capture Function Parameters
+-----------------------------------
+
+interface
+    Type:
+        str or None
+
+    Description:
+        Specifies the network interface from which packets will be captured.
+
+    Windows examples:
+
+        "Ethernet"
+        "Wi-Fi"
+
+    Linux examples:
+
+        "eth0"
+        "ens33"
+        "wlan0"
+
+    Default:
+
+        None
+
+    When the value is None, Scapy selects its default network interface.
+
+
+capture_filter
+    Type:
+        str
+
+    Description:
+        Specifies a Berkeley Packet Filter expression that controls which
+        packets are captured.
+
+    Examples:
+
+        "tcp"
+        "udp"
+        "icmp"
+        "tcp port 443"
+        "host 192.168.1.100"
+        "src host 192.168.1.100"
+        "dst host 192.168.1.100"
+        "host 192.168.1.100 and tcp port 443"
+        "tcp port 80 or tcp port 443"
+        "tcp and not port 22"
+
+    Default:
+
+        ""
+
+    An empty string captures all available traffic.
+
+
+packet_count
+    Type:
+        int
+
+    Description:
+        Specifies the maximum number of packets that will be captured.
+
+    Examples:
+
+        packet_count=100
+        packet_count=1000
+
+    Default:
+
+        0
+
+    A value of zero means that no packet-count limit is applied.
+
+
+timeout
+    Type:
+        int or float
+
+    Description:
+        Specifies the maximum packet-capture duration in seconds.
+
+    Examples:
+
+        timeout=30
+        timeout=60
+        timeout=120
+
+    Default:
+
+        0
+
+    A value of zero means that no time limit is applied.
+
+
+pcap_filename
+    Type:
+        str
+
+    Description:
+        Specifies the name of the PCAP output file.
+
+    Default:
+
+        "capture.pcap"
+
+    The PCAP file contains the complete captured packets and can be opened
+    using Wireshark, tcpdump, tshark, or Scapy.
+
+
+csv_filename
+    Type:
+        str
+
+    Description:
+        Specifies the name of the CSV output file.
+
+    Default:
+
+        "capture.csv"
+
+    The CSV file contains one row for each captured packet.
+
+
+TCPDump Capture Function Return Value
+-------------------------------------
+The tcpdump_capture() function returns a dictionary containing the packet-size
+statistics.
+
+Example:
+
+    {
+        "packet_count": 500,
+        "mean": 682.25,
+        "variance": 301584.32,
+        "standard_deviation": 549.17,
+        "minimum": 54,
+        "maximum": 1514,
+        "median": 512.0
+    }
+
+
+Packet Processing Function
+==========================
+
+Function Name
+-------------
+    process_packet()
+
+
+Function Purpose
+----------------
+The process_packet() function is automatically called for every captured
+packet.
+
+It performs the following operations:
+
+    1. Assigns a sequential packet number.
+    2. Reads the packet timestamp.
+    3. Calculates the packet size in bytes.
+    4. Identifies the packet protocol.
+    5. Extracts the source IP address.
+    6. Extracts the destination IP address.
+    7. Extracts the source port.
+    8. Extracts the destination port.
+    9. Extracts source and destination MAC addresses.
+    10. Extracts TCP flags when the packet is TCP.
+    11. Prints the packet information on the screen.
+    12. Writes the packet information to the CSV file.
+    13. Adds the packet size to the packet-size dataset.
+    14. Stores the complete packet for PCAP output.
+
+
+Packet-Size Statistical Analysis Function
+=========================================
+
+Function Name
+-------------
+    calculate_packet_size_statistics()
+
+
+Function Purpose
+----------------
+The calculate_packet_size_statistics() function analyzes the sizes of all
+packets captured during the measurement period.
+
+The function receives a list containing packet sizes in bytes.
+
+Example:
+
+    packet_sizes = [
+        64,
+        128,
+        256,
+        512,
+        1500
+    ]
+
+It calculates the following measurements:
+
+    1. Number of packets
+    2. Mean packet size
+    3. Population variance
+    4. Population standard deviation
+    5. Minimum packet size
+    6. Maximum packet size
+    7. Median packet size
+
+The function prints the results on the screen and returns them in a Python
+dictionary.
+
+
+1. Mean Packet Size
+-------------------
+The mean is the average size of all captured packets.
+
+Mathematical definition:
+
+    mean = sum of all packet sizes / number of packets
+
+Python calculation:
+
+    packet_mean = statistics.mean(packet_sizes)
+
+Interpretation:
+
+    A larger mean indicates that the captured traffic generally contains
+    larger packets.
+
+    A smaller mean indicates that the captured traffic generally contains
+    smaller packets.
+
+
+2. Packet-Size Variance
+-----------------------
+Variance measures how widely packet sizes are distributed around the mean.
+
+Population variance is calculated as:
+
+    variance =
+        sum((packet_size - mean) ** 2)
+        / number_of_packets
+
+Python calculation:
+
+    packet_variance = statistics.pvariance(packet_sizes)
+
+The program uses population variance because all packets captured during the
+measurement period are treated as the complete observed population.
+
+Interpretation:
+
+    Low variance:
+        Packet sizes are relatively similar.
+
+    High variance:
+        Packet sizes vary significantly.
+
+
+3. Packet-Size Standard Deviation
+---------------------------------
+Standard deviation is the square root of variance.
+
+Mathematical definition:
+
+    standard_deviation = square_root(variance)
+
+Python calculation:
+
+    packet_standard_deviation = statistics.pstdev(packet_sizes)
+
+Interpretation:
+
+    Low standard deviation:
+        Most packet sizes are close to the mean.
+
+    High standard deviation:
+        Packet sizes are widely distributed around the mean.
+
+
+4. Minimum Packet Size
+----------------------
+The minimum is the smallest packet observed during the capture.
+
+Python calculation:
+
+    packet_minimum = min(packet_sizes)
+
+The minimum may represent:
+
+    - TCP acknowledgment packets
+    - Control packets
+    - Small requests
+    - Keepalive packets
+    - Short protocol messages
+
+
+5. Maximum Packet Size
+----------------------
+The maximum is the largest packet observed during the capture.
+
+Python calculation:
+
+    packet_maximum = max(packet_sizes)
+
+The maximum may represent:
+
+    - Large application-data packets
+    - Download traffic
+    - Video traffic
+    - File transfers
+    - Maximum-transmission-unit-sized packets
+
+
+6. Median Packet Size
+---------------------
+The median is the middle packet size after all packet sizes are sorted.
+
+Python calculation:
+
+    packet_median = statistics.median(packet_sizes)
+
+For an odd number of packets, the median is the middle value.
+
+For an even number of packets, the median is the average of the two middle
+values.
+
+The median is less sensitive to unusually large or small packets than the
+mean.
+
+
+General Traffic Statistics Function
+===================================
+
+Function Name
+-------------
+    print_general_statistics()
+
+
+Function Purpose
+----------------
+The print_general_statistics() function calculates and prints general
+information about the entire packet capture.
+
+It calculates:
+
+    1. Capture duration
+    2. Total number of packets
+    3. Total captured bytes
+    4. Packets per second
+    5. Average throughput in bits per second
+    6. Average throughput in megabits per second
+    7. Number of packets by protocol
+    8. Percentage of packets by protocol
+    9. Top source IP addresses
+    10. Top destination IP addresses
+
+
+Throughput Calculation
+----------------------
+Average throughput is calculated as:
+
+    throughput_bps =
+        total_captured_bytes * 8
+        / capture_duration_seconds
+
+The result is measured in bits per second.
+
+Megabits per second are calculated as:
+
+    throughput_mbps = throughput_bps / 1,000,000
+
+
+CSV Output
+==========
+The CSV file contains one row for every captured packet.
+
+Default filename:
+
+    capture.csv
+
+CSV columns:
+
+    packet_number
+    readable_time
+    unix_timestamp
+    source_mac
+    destination_mac
+    source_ip
+    destination_ip
+    source_port
+    destination_port
+    protocol
+    tcp_flags
+    packet_length_bytes
+
+The CSV output can be analyzed using:
+
+    - Microsoft Excel
+    - Python pandas
+    - MATLAB
+    - R
+    - Machine-learning software
+
+
+PCAP Output
+===========
+The PCAP file contains the complete captured packets.
+
+Default filename:
+
+    capture.pcap
+
+The PCAP output can be opened using:
+
+    - Wireshark
+    - tcpdump
+    - tshark
+    - Scapy
+
+
+Installation
+============
+
+Install Scapy:
+
+    pip install scapy
+
+
+Windows Requirements
+--------------------
+1. Install Npcap.
+2. Select:
+
+       Install Npcap in WinPcap API-compatible Mode
+
+3. Run Command Prompt, PowerShell, or the Python IDE as Administrator.
+
+
+Linux Requirements
+------------------
+Install libpcap when necessary:
+
+    sudo apt update
+    sudo apt install libpcap-dev
+
+Run the program with sudo:
+
+    sudo python3 python_tcpdump.py
+
+
+Save This Program As
+====================
+    python_tcpdump.py
+
+
+Basic Usage
+===========
+
+Display available network interfaces:
+
+    python python_tcpdump.py --list-interfaces
+
+
+Capture all available traffic:
+
+    python python_tcpdump.py
+
+
+Capture for 60 seconds:
+
+    python python_tcpdump.py --timeout 60
+
+
+Capture a maximum of 1,000 packets:
+
+    python python_tcpdump.py --count 1000
+
+
+Capture only TCP traffic:
+
+    python python_tcpdump.py --filter "tcp"
+
+
+Capture only UDP traffic:
+
+    python python_tcpdump.py --filter "udp"
+
+
+Capture HTTPS traffic:
+
+    python python_tcpdump.py --filter "tcp port 443"
+
+
+Capture traffic involving one IP address:
+
+    python python_tcpdump.py --filter "host 192.168.1.100"
+
+
+Capture HTTPS traffic involving one IP address:
+
+    python python_tcpdump.py \
+        --filter "host 192.168.1.100 and tcp port 443"
+
+
+Select a Windows interface:
+
+    python python_tcpdump.py --interface "Ethernet"
+
+
+Select a Linux interface:
+
+    sudo python3 python_tcpdump.py --interface eth0
+
+
+Complete Windows Example
+------------------------
+The following command:
+
+    - Captures from the Ethernet interface.
+    - Captures only HTTPS traffic.
+    - Runs for 60 seconds.
+    - Saves packets to https_capture.pcap.
+    - Saves metadata to https_capture.csv.
+
+Command:
+
+    python python_tcpdump.py --interface "Ethernet" --filter "tcp port 443" --timeout 60 --pcap https_capture.pcap --csv https_capture.csv
+
+
+Complete Linux Example
+----------------------
+The following command:
+
+    - Captures from the eth0 interface.
+    - Captures only HTTPS traffic.
+    - Runs for 60 seconds.
+    - Saves packets to https_capture.pcap.
+    - Saves metadata to https_capture.csv.
+
+Command:
+
+    sudo python3 python_tcpdump.py --interface eth0 --filter "tcp port 443" --timeout 60 --pcap https_capture.pcap --csv https_capture.csv
+
+
+Calling tcpdump_capture() Directly
+=================================
+The function can also be called directly from another Python program.
+
+Example:
+
+    results = tcpdump_capture(
+        interface="Ethernet",
+        capture_filter="tcp port 443",
+        packet_count=0,
+        timeout=60,
+        pcap_filename="https_capture.pcap",
+        csv_filename="https_capture.csv",
+    )
+
+    print(results)
+
+
+Stopping Packet Capture
+=======================
+Press:
+
+    Ctrl+C
+
+After the capture stops, the program will:
+
+    1. Close the CSV file.
+    2. Save the PCAP file.
+    3. Print general traffic statistics.
+    4. Print packet-size statistics.
+    5. Return the statistical results.
+
+
+Important Notes
+===============
+1. Run the program as Administrator on Windows.
+2. Run the program with sudo on Linux.
+3. Npcap must be installed on Windows.
+4. libpcap may be required on Linux.
+5. HTTPS payloads are normally encrypted.
+6. Packet headers, sizes, timing, addresses, ports, and traffic patterns can
+   still be analyzed.
+7. Only capture traffic that you are authorized to inspect.
+"""

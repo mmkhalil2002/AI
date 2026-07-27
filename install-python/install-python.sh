@@ -14,6 +14,9 @@
 # NUITKA_CACHE_DIR=$(pwd)/nuitka_cache \
 # python3 -m nuitka --standalone --onefile \
 # --assume-yes-for-downloads main.py
+#
+# OR
+# python -m nuitka --standalone --onefile .\med-00-08-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766.py
 ###############################################################################
 
 echo "========================================="

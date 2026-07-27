@@ -13,6 +13,9 @@ REM
 REM set NUITKA_CACHE_DIR=%CD%\nuitka_cache && ^
 REM python -m nuitka --standalone --onefile ^
 REM --assume-yes-for-downloads main.py
+REM 
+REM OR
+REM python -m nuitka --standalone --onefile .\med-00-08-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766.py
 REM =============================================================================
 
 @echo off
