@@ -216,10 +216,25 @@ or authentication information.
 import argparse
 import csv
 import os
+from dotenv import load_dotenv
 import sys
 import time
 from datetime import datetime
 from typing import Any
+
+
+load_dotenv()
+
+# Configuration loaded from .env
+INTERFACE = os.getenv("INTERFACE", "Ethernet")
+CAPTURE_FILTER = os.getenv("CAPTURE_FILTER", "")
+PACKET_COUNT = int(os.getenv("PACKET_COUNT", "0"))
+TIMEOUT = float(os.getenv("TIMEOUT", "60"))
+PCAP_FILE = os.getenv("PCAP_FILE", "capture.pcap")
+CSV_FILE = os.getenv("CSV_FILE", "capture.csv")
+LOCAL_IPS = [x.strip() for x in os.getenv("LOCAL_IPS","").split(",") if x.strip()]
+PAYLOAD_PREVIEW_BYTES_ENV = int(os.getenv("PAYLOAD_PREVIEW_BYTES","0"))
+
 
 from scapy.all import (
     ARP,
@@ -1106,15 +1121,15 @@ def parse_arguments():
 # ============================================================================
 
 def tcpdump_capture(
-    interface=None,
-    capture_filter="",
-    packet_count=0,
-    timeout=0,
-    pcap_filename="capture.pcap",
-    csv_filename="capture.csv",
-    local_ips=None,
-    maximum_payload_bytes=0,
-):
+        interface=INTERFACE,
+        capture_filter=CAPTURE_FILTER,
+        packet_count=PACKET_COUNT,
+        timeout=TIMEOUT,
+        pcap_filename=PCAP_FILE,
+        csv_filename=CSV_FILE,
+        local_ips=LOCAL_IPS,
+        maximum_payload_bytes=PAYLOAD_PREVIEW_BYTES_ENV,
+    ):
     """
     Capture detailed packet-level information for later analysis.
 
