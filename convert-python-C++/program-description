@@ -1,0 +1,154 @@
+ Nuitka Build Package - Detailed README
+
+## Overview
+
+This package automates the conversion of a Python application into a
+standalone Windows executable using Nuitka. The build process is fully
+automated through configuration stored in a `.env` file and performs
+cleanup when the build finishes successfully.
+
+Only the final executable is retained. Temporary working directories and
+intermediate build artifacts are automatically removed.
+
+------------------------------------------------------------------------
+
+# Package Contents
+
+## 1. Python Build Script
+
+Primary automation script.
+
+Responsibilities:
+
+-   Reads build configuration from `.env`
+-   Validates the Python source file
+-   Creates temporary build folders
+-   Invokes Nuitka
+-   Monitors build progress
+-   Copies the final executable
+-   Deletes temporary files
+-   Reports build status and errors
+
+------------------------------------------------------------------------
+
+## 2. .env File
+
+Contains user configurable settings.
+
+Typical variables:
+
+-   BASE_DIRECTORY
+-   INPUT_FILE
+-   OUTPUT_FILE
+-   PYTHON_EXECUTABLE (optional)
+-   OUTPUT_DIRECTORY (optional)
+
+No command-line arguments are required.
+
+------------------------------------------------------------------------
+
+## 3. Batch Script (.bat)
+
+Windows launcher that:
+
+-   Loads the environment
+-   Starts the Python build script
+-   Displays progress
+-   Returns the build status
+
+------------------------------------------------------------------------
+
+## 4. Shell Script (.sh)
+
+Linux launcher providing equivalent functionality.
+
+------------------------------------------------------------------------
+
+# Build Process
+
+1.  Read `.env`
+2.  Validate source file
+3.  Create temporary working directories
+4.  Execute Nuitka compilation
+5.  Link executable
+6.  Verify generated executable
+7.  Copy executable to output location
+8.  Delete temporary directories
+9.  Report success or failure
+
+------------------------------------------------------------------------
+
+# Temporary Directories
+
+Temporary folders are created only for compilation.
+
+Examples:
+
+-   build/
+-   cache/
+-   work/
+-   dist/
+-   \_no/
+-   \_nw/
+
+These folders are automatically removed after a successful build.
+
+------------------------------------------------------------------------
+
+# Final Output
+
+After cleanup, only the final executable remains.
+
+Example:
+
+med-00-08-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766.exe
+
+------------------------------------------------------------------------
+
+# Error Handling
+
+The scripts verify:
+
+-   Missing source file
+-   Invalid paths
+-   Missing compiler
+-   Missing Python packages
+-   Nuitka failures
+-   Linking failures
+-   Missing executable
+-   Cleanup failures
+
+Meaningful error messages are displayed for each condition.
+
+------------------------------------------------------------------------
+
+# Requirements
+
+-   Python 3.12+
+-   Nuitka
+-   Microsoft Visual C++ Build Tools
+-   Windows 10/11 (for .bat)
+-   Linux (for .sh)
+
+------------------------------------------------------------------------
+
+# Cleanup Policy
+
+On successful completion the package removes:
+
+-   Temporary compilation directories
+-   Object files
+-   Generated C files
+-   Build cache
+-   Intermediate output
+
+The executable is preserved.
+
+------------------------------------------------------------------------
+
+# Typical Usage
+
+1.  Edit `.env`
+2.  Run the build script (.py, .bat, or .sh)
+3.  Wait for compilation
+4.  Retrieve the executable

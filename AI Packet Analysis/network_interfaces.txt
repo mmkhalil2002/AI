@@ -1,0 +1,61 @@
+================================================================================
+LOCAL NETWORK INTERFACES AND IP ADDRESSES
+================================================================================
+
+[1] Interface: Local Area Connection
+    MAC Address : 00-FF-8E-F7-85-95
+    IPv4 Addresses:
+        169.254.163.178
+    IPv6 Addresses:
+        fe80::222b:fc29:fe7e:438a
+
+[2] Interface: Local Area Connection* 1
+    MAC Address : 20-C1-9B-F4-DB-3A
+    IPv4 Addresses:
+        169.254.240.225
+    IPv6 Addresses:
+        fe80::6386:efde:7370:80f3
+
+[3] Interface: Local Area Connection* 2
+    MAC Address : 22-C1-9B-F4-DB-39
+    IPv4 Addresses:
+        169.254.85.137
+    IPv6 Addresses:
+        fe80::e1c7:1c12:1d15:9efe
+
+[4] Interface: Wi-Fi
+    MAC Address : 20-C1-9B-F4-DB-39
+    IPv4 Addresses:
+        10.0.81.101
+    IPv6 Addresses:
+        fe80::882e:db97:7108:e5ec
+
+[5] Interface: Bluetooth Network Connection
+    MAC Address : 20-C1-9B-F4-DB-3D
+    IPv4 Addresses:
+        169.254.122.200
+    IPv6 Addresses:
+        fe80::adf8:98c1:f6ef:af1a
+
+[6] Interface: Ethernet
+    MAC Address : B0-4F-13-C6-7C-2C
+    IPv4 Addresses:
+        169.254.134.243
+    IPv6 Addresses:
+        fe80::d702:43bd:70b6:74b0
+
+[7] Interface: OpenVPN Connect DCO Adapter
+    MAC Address : Not available
+    IPv4 Addresses:
+        169.254.163.77
+    IPv6 Addresses:
+        fe80::477:f048:f19d:a891
+
+[8] Interface: Loopback Pseudo-Interface 1
+    MAC Address : Not available
+    IPv4 Addresses:
+        127.0.0.1
+    IPv6 Addresses:
+        ::1
+
+================================================================================

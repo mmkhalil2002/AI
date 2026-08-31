@@ -81,6 +81,7 @@ def ensure_deps_for_this_script():
     _ensure_import("numpy")
     _ensure_import("PIL", "pillow")
     _ensure_import("tqdm")
+    _ensure_import("dotenv", "python-dotenv")
 
 
 ensure_deps_for_this_script()
@@ -92,6 +93,11 @@ ensure_deps_for_this_script()
 
 import os
 import time
+import socket
+import struct
+import json
+import threading
+import io
 from typing import List, Dict, Tuple
 
 import torch
@@ -117,7 +123,7 @@ MODEL_BASE_DIR = "../../../../"
 TEST_IMAGE_DIR = os.path.join(
     MODEL_BASE_DIR,
     "data",
-    "cifar10_clasifier_test"
+    "CLASIFIER_TEST"
 )
 
 # ------------------------------------------------------------
@@ -253,6 +259,80 @@ UNKNOWN_LABEL_BELOW_THRESHOLD = get_str("UNKNOWN_LABEL_BELOW_THRESHOLD", "unknow
 # TOP-K SETTINGS
 # ============================================================
 TOPK_TO_PRINT = get_int("TOPK_TO_PRINT", 3)
+# ============================================================
+# RME TCP SERVER SETTINGS
+# ============================================================
+# This version is TCP-server-only.
+#
+# It does NOT ask the user to choose between directory mode and TCP mode.
+# It starts the TCP server immediately when the script runs.
+#
+# PORT CONFIGURATION
+# ------------------------------------------------------------
+# The server reads RME_PORT from the .env file.
+#
+# Example .env:
+#     RME_PORT=6060
+#
+# If RME_PORT is not defined, the default assigned port is 6060.
+#
+# HOST CONFIGURATION
+# ------------------------------------------------------------
+# TCP_HOST defaults to 0.0.0.0, which means:
+#   - listen on all network interfaces
+#   - accept clients from the same machine or from another machine
+#
+# You can override it in .env:
+#     TCP_HOST=127.0.0.1
+#
+# PROTOCOL
+# ------------------------------------------------------------
+# Client -> Server:
+#   1 byte  width
+#   1 byte  height
+#   1 byte  channels
+#   N bytes raw image data
+#
+# For RGB images:
+#   N = width * height * 3
+#
+# Example for 32x32 RGB:
+#   width       = 32
+#   height      = 32
+#   channels    = 3
+#   image bytes = 32 * 32 * 3 = 3072 bytes
+#
+# Server -> Client:
+#   4 bytes unsigned big-endian JSON length
+#   JSON response bytes
+#
+# JSON response includes:
+#   ok
+#   final_detection
+#   confidence
+#   confidence_percent
+#   winning_model
+#   model_results
+#   received_width
+#   received_height
+#   received_channels
+#   received_rgb_bytes
+#
+# SHUTDOWN
+# ------------------------------------------------------------
+# Press Ctrl+C in the server terminal to stop the TCP server.
+# Socket timeouts are used so Ctrl+C can be detected cleanly.
+# ============================================================
+
+TCP_HOST = get_str("TCP_HOST", "0.0.0.0")
+RME_PORT = get_int("RME_PORT", 6060)
+TCP_ACCEPT_TIMEOUT_SEC = get_float("TCP_ACCEPT_TIMEOUT_SEC", 1.0)
+TCP_RECV_TIMEOUT_SEC = get_float("TCP_RECV_TIMEOUT_SEC", 30.0)
+TCP_MAX_IMAGE_BYTES = get_int("TCP_MAX_IMAGE_BYTES", 26214400)
+
+# Keep this alias only for compatibility with older helper names.
+TCP_PORT = RME_PORT
+
 
 
 # ============================================================
@@ -286,151 +366,6 @@ print("=" * 60)
 # ------------------------------------------------------------
 # Example group 1: first 10 classes
 # ------------------------------------------------------------
-CIFAR_10_CLASSES_1 = [
-    "apple",          # 00
-    "aquarium_fish",  # 01
-    "baby",           # 02
-    "bear",           # 03
-    "beaver",         # 04
-    "bed",            # 05
-    "bee",            # 06
-    "beetle",         # 07
-    "bicycle",        # 08
-    "unknown1",       #
-]
-
-# ------------------------------------------------------------
-# Example group 2: next 10 classes
-# ------------------------------------------------------------
-CIFAR_10_CLASSES_2 = [
-    "bottle",      # 09
-    "bowl",        # 10
-    "boy",         # 11
-    "bridge",      # 12
-    "bus",         # 13
-    "butterfly",   # 14
-    "camel",       # 15
-    "can",         # 16
-    "castle",      # 17
-    "unknown2"     #
-]
-
-CIFAR_10_CLASSES_3 = [
-    "caterpillar",    # 18
-    "cattle",         # 19
-    "chair",          # 20
-    "chimpanzee",     # 21
-    "clock",          # 22
-    "cloud",          # 23
-    "cockroach",      # 24
-    "couch",          # 25
-    "crab",           # 26
-    "unknown3"        #
-]
-
-CIFAR_10_CLASSES_4 = [
-    "crocodile",     # 27
-    "cup",           # 28
-    "dinosaur",      # 29
-    "dolphin",       # 30
-    "elephant",      # 31
-    "flatfish",      # 32
-    "forest",        # 33
-    "fox",           # 34
-    "girl",          # 35
-    "unknown4"       #
-]
-
-CIFAR_10_CLASSES_5 = [
-    "hamster",       # 36
-    "house",         # 37
-    "kangaroo",      # 38
-    "keyboard",      # 39
-    "lamp",          # 40
-    "lawn_mower",    # 41
-    "leopard",       # 42
-    "lion",          # 43
-    "lizard",        # 44
-    "unknown5"
-]
-
-CIFAR_10_CLASSES_6 = [
-    "lobster",       # 45
-    "man",           # 46
-    "maple_tree",    # 47
-    "motorcycle",    # 48
-    "mountain",      # 49
-    "mouse",         # 50
-    "mushroom",      # 51
-    "oak_tree",      # 52
-    "orange",        # 53
-    "unknown6"       #
-]
-
-CIFAR_10_CLASSES_7 = [
-    "orchid",        # 54
-    "otter",         # 55
-    "palm_tree",     # 56
-    "pear",          # 57
-    "pickup_truck",  # 58
-    "pine_tree",     # 59
-    "plain",         # 60
-    "plate",         # 61
-    "poppy",         # 62
-    "unknown7"       #
-]
-
-CIFAR_10_CLASSES_8 = [
-   "porcupine",      # 63
-   "possum",         # 64
-   "rabbit",         # 65
-   "raccoon",        # 66
-   "ray",            # 67
-   "road",           # 68
-   "rocket",         # 69
-   "rose",           # 70
-   "sea",            # 71
-   "unknown8"        #
-]
-
-CIFAR_10_CLASSES_9  = [
-   "seal",           # 72
-   "shark",          # 73
-   "shrew",          # 74
-   "skunk",          # 75
-   "skyscraper",     # 76
-   "snail",          # 77
-   "snake",          # 78
-   "spider",         # 79
-   "squirrel",       # 80
-   "unknown9"       #
-]
-CIFAR_10_CLASSES_10  = [
-  "streetcar",       # 81
-   "sunflower",      # 82
-   "sweet_pepper",   # 83
-   "table",          # 84
-   "tank",           # 85
-   "telephone",      # 86
-   "television",     # 87
-   "tiger",          # 88
-   "tractor",        # 89
-   "unknown10"       #
-]
-
-
-CIFAR_10_CLASSES_11  = [
-   "train",         # 90
-   "trout",         # 91
-   "tulip",         # 92
-   "turtle",        # 93
-   "wardrobe",      # 94
-   "whale",         # 95
-   "willow_tree",   # 96
-   "wolf",          # 97
-   "woman",         # 98
-   "unknown11"      #
-]
 
 
 RME_10_CLASSES_1  = [
@@ -540,35 +475,6 @@ RME_10_CLASSES_8  = [
 # ------------------------------------------------------------
 # Optional safety checks for these example lists
 # ------------------------------------------------------------
-if len(CIFAR_10_CLASSES_1) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_1 must contain at least 2 classes.")
-
-if len(CIFAR_10_CLASSES_2) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_2 must contain at least 2 classes.")
-
-if len(CIFAR_10_CLASSES_3) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_3 must contain at least 2 classes.")
-
-if len(CIFAR_10_CLASSES_4) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_4 must contain at least 2 classes.")
-
-if len(CIFAR_10_CLASSES_5) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_5 must contain at least 2 classes.")
-
-if len(CIFAR_10_CLASSES_6) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_6 must contain at least 2 classes.")
-
-if len(CIFAR_10_CLASSES_7) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_7 must contain at least 2 classes.")
-
-if len(CIFAR_10_CLASSES_8) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_8 must contain at least 2 classes.")
-
-if len(CIFAR_10_CLASSES_9) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_9 must contain at least 2 classes.")
-
-if len(CIFAR_10_CLASSES_10) < 2:
-    raise RuntimeError("CIFAR_10_CLASSES_10 must contain at least 2 classes.")
 
 
 
@@ -600,126 +506,7 @@ if len(RME_10_CLASSES_8) < 2:
 # ============================================================
 
 MODELS: List[Dict] = [
-    {
-        "name": "cifar00-08",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-00-08-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_1,
-        "temperature": 1.0,
-    },
-
-    {
-        "name": "cifar09-17",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-09-17-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_2,
-        "temperature": 1.0,
-    },
-
-    {
-        "name": "cifar18-26",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-18-26-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_3,
-        "temperature": 1.0,
-    },
-
-    {
-        "name": "cifar27-35",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-27-35-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_4,
-        "temperature": 1.0,
-    },
-
-    {
-        "name": "cifar36-44",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-36-44-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_5,
-        "temperature": 1.0,
-    },
-
-    {
-        "name": "cifar45-53",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-45-53-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_6,
-        "temperature": 1.0,
-    },
-
-    {
-        "name": "cifar54-62",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-54-62-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_7,
-        "temperature": 1.0,
-    },
-
-    {
-        "name": "cifar63-71",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-63-71-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_8,
-        "temperature": 1.0,
-    },
-
-    {
-        "name": "cifar72-80",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-72-80-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_9,
-        "temperature": 1.0,
-    },
-
-    {
-        "name": "cifar81-89",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-81-89-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_10,
-        "temperature": 1.0,
-    },
-
-     {
-        "name": "cifar90-98",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-90-98-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_11,
-        "temperature": 1.0,
-    },
-
-     {
-        "name": "cifar27-35",
-        "weights": os.path.join(
-            MODEL_BASE_DIR,
-            "cifar-27-35-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
-        ),
-        "classes": CIFAR_10_CLASSES_4,
-        "temperature": 1.0,
-    },
-
+    
     {
         "name": "rme00-08",
         "weights": os.path.join(
@@ -919,6 +706,36 @@ def load_image_tensor(image_path: str) -> torch.Tensor:
     and return tensor [C,H,W].
     """
     img = Image.open(image_path).convert("RGB")
+    x = INFER_TRANSFORM(img)
+    return x
+
+# ============================================================
+# RAW RGB IMAGE HELPER FOR TCP SERVER
+# ============================================================
+
+def load_image_tensor_from_raw_rgb(image_bytes: bytes, width: int, height: int, channels: int) -> torch.Tensor:
+    """
+    Convert raw RGB bytes received from TCP into a model input tensor.
+
+    The TCP client sends:
+      - width as 1 byte
+      - height as 1 byte
+      - channels as 1 byte
+      - raw RGB image bytes
+
+    The classifier model still uses the same INFER_TRANSFORM as directory
+    inference. Therefore, even if the received image is 32x32 or 64x64,
+    it is passed through the same transform pipeline used by the original
+    script.
+    """
+    if channels != 3:
+        raise ValueError(f"Invalid channel count: {channels}. This classifier expects RGB channels=3.")
+
+    expected_size = width * height * channels
+    if len(image_bytes) != expected_size:
+        raise ValueError(f"Raw RGB byte count mismatch. Expected {expected_size}, got {len(image_bytes)}.")
+
+    img = Image.frombytes("RGB", (width, height), image_bytes)
     x = INFER_TRANSFORM(img)
     return x
 
@@ -1407,6 +1224,445 @@ def run_directory_multi_model_classifier(image_paths, models_cfg, device):
     print("============================================================\n")
 
 
+
+# ============================================================
+# TRAINED MODEL LOADING HELPER FOR TCP SERVER
+# ============================================================
+
+def load_trained_models_for_tcp(models_cfg, device):
+    """
+    Load all trained model checkpoints once when the TCP server starts.
+
+    This avoids reloading the trained weights for every client image.
+
+    The logic intentionally mirrors the original directory classifier:
+      - create the same CNN architecture
+      - load the trained checkpoint
+      - verify the class count through fc.weight
+      - move model to CPU/GPU
+      - switch the model to evaluation mode
+    """
+    loaded_models = []
+
+    for cfg in models_cfg:
+        num_classes = len(cfg["classes"])
+
+        if num_classes < 2:
+            raise RuntimeError(f"Model {cfg['name']!r} must define at least 2 classes.")
+
+        print("============================================================")
+        print(f"[MODEL PREPARE] Creating architecture for model: {cfg['name']}")
+        print(f"[MODEL PREPARE] Number of classes          : {num_classes}")
+
+        model = StaticInitLearnableCNN(num_classes=num_classes)
+
+        safe_load_state_dict(
+            model=model,
+            weights_path=cfg["weights"],
+            device=device,
+            expected_num_classes=num_classes
+        )
+
+        model.to(device)
+        model.eval()
+
+        print(f"[MODEL READY] {cfg['name']} is now in evaluation mode.\n")
+
+        loaded_models.append((cfg, model))
+
+        debug_print(f"[DEBUG LOAD] model name = {cfg['name']}")
+        debug_print(f"[DEBUG LOAD] weights    = {cfg['weights']}")
+        debug_print(f"[DEBUG LOAD] classes    = {cfg['classes']}")
+        debug_print()
+
+    return loaded_models
+
+
+# ============================================================
+# SINGLE IMAGE MULTI-MODEL CLASSIFICATION HELPER
+# ============================================================
+
+def classify_one_tensor_multi_model(x_tensor: torch.Tensor, loaded_models, device) -> Dict:
+    """
+    Classify one image tensor using all loaded RME models.
+
+    This function follows the same final-selection policy as the original
+    directory routine:
+
+      1) Each model predicts over its own 10-class group.
+      2) Unknown-prefixed classes are skipped when a real class exists.
+      3) The final detection is the highest-confidence non-unknown class.
+      4) If all predictions are unknown-prefixed, fall back to the highest
+         confidence prediction overall.
+
+    Return dictionary fields:
+      - ok
+      - final_detection
+      - confidence
+      - confidence_percent
+      - winning_model
+      - model_results
+    """
+    if x_tensor.dim() == 3:
+        x = x_tensor.unsqueeze(0)
+    else:
+        x = x_tensor
+
+    x = x.to(device)
+
+    best_non_unknown_name = ""
+    best_non_unknown_pred = -1
+    best_non_unknown_conf = -1.0
+    best_non_unknown_cls = ""
+
+    best_overall_name = ""
+    best_overall_pred = -1
+    best_overall_conf = -1.0
+    best_overall_cls = ""
+
+    per_model_results = []
+
+    with torch.no_grad():
+        for cfg, model in loaded_models:
+            logits = model(x)
+
+            temp = float(cfg.get("temperature", 1.0) or 1.0)
+            probs = torch.softmax(logits / temp, dim=1)
+
+            probs_row = probs.detach().cpu()[0]
+
+            classes = cfg["classes"]
+            model_name = cfg["name"]
+
+            full_ranked_preds = get_topk_predictions(
+                probs_row,
+                classes,
+                topk=len(classes)
+            )
+
+            selected_class_name = ""
+            selected_conf = -1.0
+            selected_pid = -1
+
+            # Ignore unknown-prefixed classes when possible.
+            for class_name, class_conf, class_idx in full_ranked_preds:
+                if not starts_with_unknown(class_name):
+                    selected_class_name = class_name
+                    selected_conf = float(class_conf)
+                    selected_pid = int(class_idx)
+                    break
+
+            # Fallback if every class is unknown-prefixed.
+            if selected_pid < 0:
+                selected_class_name, selected_conf, selected_pid = full_ranked_preds[0]
+                selected_conf = float(selected_conf)
+                selected_pid = int(selected_pid)
+
+            topk_preds = full_ranked_preds[:TOPK_TO_PRINT]
+
+            conf = selected_conf
+            pid = selected_pid
+            cls_name = selected_class_name
+
+            per_model_results.append(
+                {
+                    "model_name": model_name,
+                    "detected_class": cls_name,
+                    "pred_id": pid,
+                    "confidence": float(conf),
+                    "confidence_percent": float(conf * 100.0),
+                    "topk": [
+                        {
+                            "class_name": str(class_name),
+                            "confidence": float(class_conf),
+                            "confidence_percent": float(class_conf * 100.0),
+                            "class_index": int(class_idx),
+                        }
+                        for class_name, class_conf, class_idx in topk_preds
+                    ],
+                    "is_unknown": starts_with_unknown(cls_name),
+                }
+            )
+
+            if conf > best_overall_conf:
+                best_overall_conf = conf
+                best_overall_pred = pid
+                best_overall_name = model_name
+                best_overall_cls = cls_name
+
+            if (not starts_with_unknown(cls_name)) and (conf > best_non_unknown_conf):
+                best_non_unknown_conf = conf
+                best_non_unknown_pred = pid
+                best_non_unknown_name = model_name
+                best_non_unknown_cls = cls_name
+
+    if best_non_unknown_conf >= 0.0:
+        final_label = best_non_unknown_cls
+        final_conf = best_non_unknown_conf
+        final_model = best_non_unknown_name
+        final_pred = best_non_unknown_pred
+    else:
+        final_label = best_overall_cls
+        final_conf = best_overall_conf
+        final_model = best_overall_name
+        final_pred = best_overall_pred
+
+    if USE_LOW_CONFIDENCE_UNKNOWN_RULE and final_conf < LOW_CONFIDENCE_THRESHOLD:
+        final_label = UNKNOWN_LABEL_BELOW_THRESHOLD
+
+    return {
+        "ok": True,
+        "final_detection": final_label,
+        "pred_id": int(final_pred),
+        "confidence": float(final_conf),
+        "confidence_percent": float(final_conf * 100.0),
+        "final_confidence": float(final_conf),
+        "final_confidence_percent": float(final_conf * 100.0),
+        "winning_model": final_model,
+        "model_results": per_model_results,
+    }
+
+
+# ============================================================
+# TCP LOW-LEVEL HELPERS
+# ============================================================
+
+def recv_exact(sock_obj: socket.socket, nbytes: int, stop_event=None) -> bytes:
+    """
+    Receive exactly nbytes from a TCP socket.
+
+    This helper handles partial TCP receives. TCP is a stream protocol,
+    so one recv() call is not guaranteed to return the full message.
+
+    The socket timeout allows Ctrl+C shutdown to be processed cleanly.
+    """
+    chunks = []
+    remaining = nbytes
+
+    while remaining > 0:
+        if stop_event is not None and stop_event.is_set():
+            raise KeyboardInterrupt("Server shutdown requested.")
+
+        try:
+            chunk = sock_obj.recv(min(65536, remaining))
+        except socket.timeout:
+            continue
+
+        if not chunk:
+            raise ConnectionError("Client disconnected before all bytes were received.")
+
+        chunks.append(chunk)
+        remaining -= len(chunk)
+
+    return b"".join(chunks)
+
+
+def send_json_response(sock_obj: socket.socket, payload: Dict):
+    """
+    Send a JSON response to the TCP client.
+
+    Response protocol:
+      4 bytes unsigned big-endian JSON length
+      JSON bytes
+
+    The 4-byte length supports JSON payloads up to about 4 GB, which is
+    more than enough for classification results.
+    """
+    data = json.dumps(payload, indent=2).encode("utf-8")
+    sock_obj.sendall(struct.pack("!I", len(data)))
+    sock_obj.sendall(data)
+
+
+# ============================================================
+# TCP CLIENT HANDLER
+# ============================================================
+
+def handle_tcp_client(conn: socket.socket, addr, loaded_models, device, stop_event):
+    """
+    Handle one TCP client connection.
+
+    Expected client request:
+      1 byte width
+      1 byte height
+      1 byte channels
+      raw RGB image bytes
+
+    Example for 32x32 RGB:
+      header      = bytes([32, 32, 3])
+      image bytes = 3072 bytes
+
+    The server converts the raw RGB bytes into a PIL image, applies the
+    same inference transform, runs the trained multi-model classifier, and
+    returns a JSON response with the final class and confidence.
+    """
+    conn.settimeout(float(TCP_RECV_TIMEOUT_SEC))
+
+    try:
+        # ----------------------------------------------------
+        # READ 3-BYTE RAW RGB HEADER
+        # ----------------------------------------------------
+        # header[0] = width
+        # header[1] = height
+        # header[2] = channels
+        # ----------------------------------------------------
+        rgb_header = recv_exact(conn, 3, stop_event=stop_event)
+
+        width = int(rgb_header[0])
+        height = int(rgb_header[1])
+        channels = int(rgb_header[2])
+
+        if width <= 0 or height <= 0:
+            raise ValueError(f"Invalid image dimensions received: {width}x{height}")
+
+        if channels != 3:
+            raise ValueError(
+                f"Invalid channel count received: {channels}. "
+                f"This classifier expects RGB channels=3."
+            )
+
+        expected_image_size = width * height * channels
+
+        if expected_image_size > TCP_MAX_IMAGE_BYTES:
+            raise ValueError(
+                f"Image too large: {expected_image_size} bytes for {width}x{height}x{channels}. "
+                f"Limit is {TCP_MAX_IMAGE_BYTES} bytes."
+            )
+
+        # ----------------------------------------------------
+        # READ RAW RGB PAYLOAD
+        # ----------------------------------------------------
+        image_bytes = recv_exact(conn, expected_image_size, stop_event=stop_event)
+
+        # ----------------------------------------------------
+        # CLASSIFY IMAGE
+        # ----------------------------------------------------
+        x_tensor = load_image_tensor_from_raw_rgb(
+            image_bytes=image_bytes,
+            width=width,
+            height=height,
+            channels=channels
+        )
+
+        result = classify_one_tensor_multi_model(
+            x_tensor=x_tensor,
+            loaded_models=loaded_models,
+            device=device
+        )
+
+        # Add receive metadata so the client can verify protocol correctness.
+        result["received_width"] = width
+        result["received_height"] = height
+        result["received_channels"] = channels
+        result["received_rgb_bytes"] = expected_image_size
+
+        print("------------------------------------------------------------")
+        print(f"[TCP] Client          : {addr}")
+        print(f"[TCP] Image size      : {width}x{height}x{channels}")
+        print(f"[TCP] Final detection : {result['final_detection']}")
+        print(f"[TCP] Confidence      : {result['confidence_percent']:.2f}%")
+        print(f"[TCP] Winning model   : {result['winning_model']}")
+
+        send_json_response(conn, result)
+
+    except KeyboardInterrupt:
+        raise
+
+    except Exception as e:
+        err_payload = {
+            "ok": False,
+            "error": str(e),
+        }
+        print(f"[TCP-ERROR] {e}")
+        try:
+            send_json_response(conn, err_payload)
+        except Exception:
+            pass
+
+
+# ============================================================
+# TCP SERVER ROUTINE
+# ============================================================
+
+def run_rme_tcp_classifier_server(models_cfg, device, host=TCP_HOST, port=RME_PORT):
+    """
+    Start the RME classifier TCP server.
+
+    This function:
+      1) Loads all trained RME model checkpoints once.
+      2) Opens a TCP listening socket.
+      3) Accepts client connections.
+      4) Receives raw RGB images.
+      5) Runs RME classification.
+      6) Returns JSON results with confidence values.
+      7) Stops cleanly when Ctrl+C is pressed.
+
+    The server is intentionally single-client-at-a-time by default.
+    This keeps the model usage simple and avoids multiple threads using
+    the same PyTorch model objects at the same time.
+    """
+    loaded_models = load_trained_models_for_tcp(models_cfg, device)
+
+    stop_event = threading.Event()
+
+    print("\n============================================================")
+    print("RME TCP CLASSIFIER SERVER")
+    print("============================================================")
+    print(f"Listening host  : {host}")
+    print(f"RME_PORT        : {port}")
+    print(f"Max image bytes : {TCP_MAX_IMAGE_BYTES}")
+    print("Protocol        : 1-byte width + 1-byte height + 1-byte channels + raw RGB bytes")
+    print("Response        : 4-byte JSON length + JSON bytes")
+    print("Default image   : 32x32 RGB is supported")
+    print("Shutdown        : Press Ctrl+C to stop")
+    print("============================================================\n")
+
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    try:
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind((host, int(port)))
+        server_socket.listen(5)
+        server_socket.settimeout(float(TCP_ACCEPT_TIMEOUT_SEC))
+
+        print("[TCP] Server is listening. Press Ctrl+C to stop.")
+
+        while not stop_event.is_set():
+            try:
+                conn, addr = server_socket.accept()
+            except socket.timeout:
+                continue
+
+            print(f"[TCP] Client connected: {addr}")
+
+            try:
+                with conn:
+                    handle_tcp_client(
+                        conn=conn,
+                        addr=addr,
+                        loaded_models=loaded_models,
+                        device=device,
+                        stop_event=stop_event
+                    )
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                print(f"[TCP-ERROR] Client handling failed: {e}")
+            finally:
+                print(f"[TCP] Client disconnected: {addr}")
+
+    except KeyboardInterrupt:
+        print("\n[TCP] Ctrl+C detected. Stopping RME TCP server...")
+        stop_event.set()
+
+    finally:
+        try:
+            server_socket.close()
+        except Exception:
+            pass
+
+        print("[TCP] RME TCP server stopped.")
+
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -1415,9 +1671,27 @@ def main():
     """
     Main program:
       1) choose CPU or GPU
-      2) list images
-      3) load trained model checkpoints
-      4) run inference
+      2) load trained RME model checkpoints
+      3) start the TCP server directly
+      4) receive raw RGB images from TCP clients
+      5) return JSON classification results with confidence
+
+    TCP-ONLY VERSION
+    ------------------------------------------------------------
+    This version removes all directory-input options.
+
+    It does not call:
+      run_directory_multi_model_classifier(...)
+
+    Instead, it starts:
+      run_rme_tcp_classifier_server(...)
+
+    PORT
+    ------------------------------------------------------------
+    RME_PORT is read from .env.
+    If not defined, the assigned default value is:
+
+        RME_PORT = 6060
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     debug_print("Using device:", device)
@@ -1429,12 +1703,11 @@ def main():
         print("MODELS list is empty. Add at least one trained model config.")
         return
 
-    image_paths = list_images_in_dir(TEST_IMAGE_DIR)
-
-    run_directory_multi_model_classifier(
-        image_paths=image_paths,
+    run_rme_tcp_classifier_server(
         models_cfg=MODELS,
-        device=device
+        device=device,
+        host=TCP_HOST,
+        port=RME_PORT
     )
 
 

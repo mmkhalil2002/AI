@@ -1,0 +1,586 @@
+# ==========================================================
+# OVERALL PURPOSE OF THIS SCRIPT
+# ==========================================================
+# This script creates a local self-learning chatbot.
+#
+# Main idea:
+#
+#   1) User asks a question
+#   2) Program searches local JSON knowledge file first
+#   3) If answer exists and is not expired:
+#        answer from JSON
+#   4) If no answer exists:
+#        ask local LLaMA model through Ollama
+#   5) Save the LLaMA answer into JSON
+#   6) Next time the same/similar question is asked:
+#        answer directly from JSON
+#
+# So the system learns over time.
+
+
+# ==========================================================
+# AUTO-INSTALL SECTION
+# ==========================================================
+# This part runs before the chatbot imports third-party packages.
+#
+# It checks whether pip exists.
+# If pip does not exist, it tries:
+#   1) python -m ensurepip --upgrade
+#   2) download get-pip.py
+#
+# Then it checks required packages like:
+#   requests
+#
+# If a package is missing, it installs it automatically.
+#
+# Important functions:
+#
+# install_print_line()
+#   Prints a separator line.
+#
+# run_command(cmd, quiet=False)
+#   Runs a system command using subprocess.
+#
+# ensure_pip_available()
+#   Makes sure pip is available.
+#
+# can_import_module(import_name)
+#   Tests whether Python can import a module.
+#
+# build_pip_spec(pip_name, version)
+#   Builds pip install name like:
+#       requests
+#       numpy>=1.26
+#
+# ensure_python_package()
+#   Installs one package if missing.
+#
+# ensure_python_packages()
+#   Installs/verifies multiple packages.
+#
+# ensure_python_packages_or_exit()
+#   Stops the program if required packages cannot be installed.
+
+
+# ==========================================================
+# CONFIGURATION SECTION
+# ==========================================================
+# SMART_JSON_FILE
+#   The local JSON file used as the knowledge database.
+#
+# SMALL_MODEL
+#   The fast model used first.
+#   Example: llama3.2
+#
+# LARGE_MODEL
+#   Backup model used if the small model fails.
+#   Example: llama3.1
+#
+# OLLAMA_HOST / OLLAMA_PORT
+#   Defines where Ollama is running.
+#   Default:
+#       127.0.0.1:11434
+#
+# REQUEST_TIMEOUT
+#   Maximum time to wait for model response.
+#
+# SERVER_READY_WAIT_SECONDS
+#   How long to wait for Ollama server startup.
+#
+# KEEP_ALIVE
+#   Keeps model loaded for faster future responses.
+#
+# AUTO_PULL_MODELS
+#   If True, missing models are downloaded automatically.
+#
+# USE_LARGE_MODEL_FALLBACK
+#   If True, use large model when small model fails.
+#
+# MIN_MATCH_SCORE
+#   Minimum similarity score needed to reuse JSON answer.
+#
+# DEBUG_SEARCH
+#   If True, prints matching/debug details.
+
+
+# ==========================================================
+# TIME-SENSITIVE KNOWLEDGE SECTION
+# ==========================================================
+# Some answers expire.
+#
+# Example:
+#   "what is AI"              -> stable
+#   "weather in Dallas"       -> expires quickly
+#   "stock price of Nvidia"   -> expires quickly
+#   "president of Egypt"      -> expires after some days
+#
+# TIME_SENSITIVE_KEYWORDS
+#   Maps keywords to categories.
+#
+# CATEGORY_TTL
+#   Defines expiration time in days.
+#
+# Example:
+#   weather = 0.25 days = 6 hours
+#   finance = 1 day
+#   demographics = 30 days
+#   definition = None = never expires
+
+
+# ==========================================================
+# TEXT CLEANING / MATCHING FUNCTIONS
+# ==========================================================
+# normalize_text(text)
+#   Converts text to lowercase.
+#   Removes punctuation.
+#   Removes extra spaces.
+#
+# Example:
+#   "  What is AI??? "
+# becomes:
+#   "what is ai"
+#
+#
+# reduce_question(text)
+#   Removes common words such as:
+#       how, what, is, the, can, please
+#
+# Example:
+#   "how can I terminate the program"
+# becomes:
+#   "terminate program"
+#
+#
+# token_overlap_score(user_text, candidate_text)
+#   Compares two questions using important words.
+#
+# Example:
+#   user question:
+#       "what is population of Egypt"
+#
+#   stored question:
+#       "population of Egypt"
+#
+#   common words:
+#       population, egypt
+#
+#   similarity score:
+#       common words / total unique words
+
+
+# ==========================================================
+# TIME EXPIRATION FUNCTIONS
+# ==========================================================
+# get_now()
+#   Returns current date and time.
+#
+# format_dt(dt_obj)
+#   Converts datetime object into string format:
+#       YYYY-MM-DD HH:MM:SS
+#
+# parse_dt(dt_text)
+#   Converts stored string back into datetime object.
+#
+# detect_question_category(question)
+#   Checks question keywords and returns category.
+#
+# Example:
+#   "weather in Cairo" -> weather
+#   "stock price"      -> finance
+#   "what is AI"       -> definition
+#
+# is_time_sensitive_question(question)
+#   Returns True if the answer should expire.
+#
+# get_expiration_for_question(question)
+#   Calculates expiration time based on category.
+#
+# is_entry_expired(entry)
+#   Checks if saved JSON answer is expired.
+
+
+
+
+
+# ==========================================================
+# HOW A USER QUESTION MAPS TO A QUESTION IN JSON
+# ==========================================================
+#
+# The chatbot DOES NOT require an exact string match.
+#
+# It uses a multi-stage matching algorithm:
+#
+# ----------------------------------------------------------
+# MATCH LEVEL 1 : EXACT NORMALIZED MATCH
+# ----------------------------------------------------------
+#
+# Both questions are normalized first.
+#
+# normalize_text():
+#
+#   1) lowercase
+#   2) remove punctuation
+#   3) remove extra spaces
+#
+# Example:
+#
+# User:
+#   "What Is AI???"
+#
+# JSON:
+#   "what is ai"
+#
+# After normalization:
+#
+# User:
+#   "what is ai"
+#
+# JSON:
+#   "what is ai"
+#
+# Result:
+#
+#   MATCH FOUND
+#
+# Similarity:
+#
+#   100%
+#
+#
+# ----------------------------------------------------------
+# MATCH LEVEL 2 : REDUCED QUESTION MATCH
+# ----------------------------------------------------------
+#
+# If exact normalized match fails,
+# the chatbot removes filler words.
+#
+# Examples of removed words:
+#
+#   how
+#   what
+#   where
+#   is
+#   are
+#   the
+#   can
+#   please
+#   tell
+#
+#
+# Example:
+#
+# User:
+#   "how can I terminate the program"
+#
+# JSON:
+#   "how do I terminate program"
+#
+#
+# User reduction:
+#
+#   "terminate program"
+#
+#
+# JSON reduction:
+#
+#   "terminate program"
+#
+#
+# Result:
+#
+#   MATCH FOUND
+#
+#
+# This allows different wording
+# to map to the same stored question.
+#
+#
+# ----------------------------------------------------------
+# MATCH LEVEL 3 : CONTAINS MATCH
+# ----------------------------------------------------------
+#
+# If reduced-question match fails,
+# the chatbot checks whether one reduced
+# question contains the other.
+#
+#
+# Example:
+#
+# User:
+#   "how do I terminate the python program"
+#
+# Reduced:
+#
+#   "terminate python program"
+#
+#
+# JSON:
+#   "terminate program"
+#
+#
+# Reduced:
+#
+#   "terminate program"
+#
+#
+# Since:
+#
+#   "terminate program"
+#
+# exists inside:
+#
+#   "terminate python program"
+#
+#
+# Result:
+#
+#   MATCH FOUND
+#
+#
+# Safety rule:
+#
+# The shorter question must contain
+# at least 2 meaningful words.
+#
+#
+# Example:
+#
+# User:
+#   "egypt"
+#
+# JSON:
+#   "population egypt"
+#
+#
+# This is NOT accepted.
+#
+# One word alone is too weak.
+#
+#
+# ----------------------------------------------------------
+# MATCH LEVEL 4 : TOKEN OVERLAP MATCH
+# ----------------------------------------------------------
+#
+# If all previous methods fail,
+# the chatbot compares important words.
+#
+#
+# Example:
+#
+# User:
+#
+#   "what is the population of Egypt"
+#
+#
+# Reduced:
+#
+#   "population egypt"
+#
+#
+# Tokens:
+#
+#   {"population","egypt"}
+#
+#
+# JSON:
+#
+#   "population of egypt"
+#
+#
+# Reduced:
+#
+#   "population egypt"
+#
+#
+# Tokens:
+#
+#   {"population","egypt"}
+#
+#
+# Common words:
+#
+#   {"population","egypt"}
+#
+#
+# Similarity:
+#
+#   2 / 2
+#
+#   = 1.0
+#
+#
+# Result:
+#
+#   MATCH FOUND
+#
+#
+# ----------------------------------------------------------
+# JACCARD-LIKE SIMILARITY
+# ----------------------------------------------------------
+#
+# The score is computed from overlapping
+# important words.
+#
+#
+# Example:
+#
+# User:
+#
+#   {"population","egypt","2025"}
+#
+#
+# JSON:
+#
+#   {"population","egypt"}
+#
+#
+# Common:
+#
+#   {"population","egypt"}
+#
+#
+# Score:
+#
+#   2 / 3
+#
+#   = 0.67
+#
+#
+# Since:
+#
+#   MIN_MATCH_SCORE = 0.50
+#
+#
+# Result:
+#
+#   ACCEPTED
+#
+#
+# ----------------------------------------------------------
+# IMPORTANT SAFETY RULE
+# ----------------------------------------------------------
+#
+# At least TWO important words
+# must match.
+#
+#
+# Example:
+#
+# User:
+#
+#   "population of egypt"
+#
+#
+# Tokens:
+#
+#   {"population","egypt"}
+#
+#
+# JSON:
+#
+#   "where is egypt"
+#
+#
+# Tokens:
+#
+#   {"egypt"}
+#
+#
+# Common:
+#
+#   {"egypt"}
+#
+#
+# Only ONE matching keyword.
+#
+#
+# Result:
+#
+#   REJECTED
+#
+#
+# This prevents bad matches.
+#
+#
+# ----------------------------------------------------------
+# MATCH PRIORITY ORDER
+# ----------------------------------------------------------
+#
+# The chatbot always tries:
+#
+#   1) Exact normalized match
+#
+#   2) Exact reduced-question match
+#
+#   3) Contains match
+#
+#   4) Token-overlap match
+#
+#
+# First successful match wins.
+#
+#
+# ----------------------------------------------------------
+# EXPIRED KNOWLEDGE CHECK
+# ----------------------------------------------------------
+#
+# Even if a match is found,
+# the chatbot checks:
+#
+#   is_entry_expired()
+#
+#
+# Example:
+#
+# Question:
+#
+#   "weather in Dallas"
+#
+#
+# Stored answer:
+#
+#   3 days old
+#
+#
+# Weather TTL:
+#
+#   6 hours
+#
+#
+# Result:
+#
+#   MATCH FOUND
+#   BUT EXPIRED
+#
+#
+# Chatbot ignores JSON answer
+# and asks LLaMA again.
+#
+#
+# ----------------------------------------------------------
+# FINAL DECISION
+# ----------------------------------------------------------
+#
+# JSON Match Found?
+#
+#     YES
+#       |
+#       +--> Expired?
+#               |
+#               +--> YES --> Ask LLaMA
+#               |
+#               +--> NO  --> Return JSON answer
+#
+#
+# JSON Match Not Found?
+#
+#     Ask LLaMA
+#
+#
+# LLaMA Answer Returned?
+#
+#     YES --> Save into JSON
+#
+#     NO  --> Try fallback model
+#
+# ==========================================================

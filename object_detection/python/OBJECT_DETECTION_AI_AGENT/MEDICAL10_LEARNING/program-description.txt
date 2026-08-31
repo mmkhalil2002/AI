@@ -1,0 +1,657 @@
+# ==========================================================
+# PROGRAM PURPOSE
+# ==========================================================
+# This program trains and runs a CNN image classifier.
+#
+# It expects a dataset folder like:
+#
+#   DATA_PATH/
+#       train/
+#           class_0/
+#           class_1/
+#           ...
+#       test/
+#           class_0/
+#           class_1/
+#           ...
+#
+# Main flow:
+#
+#   1) Make sure required Python packages exist
+#   2) Load configuration from .env
+#   3) Build train/test datasets
+#   4) Create CNN model
+#   5) If saved model exists:
+#        load model weights
+#      Else:
+#        train model and save weights
+#   6) Enter interactive test mode
+#   7) User can test:
+#        one image
+#        N random images
+#        full test dataset
+# ==========================================================
+
+
+
+# ==========================================================
+# AUTO-INSTALL FUNCTIONS
+# ==========================================================
+# install_print_line()
+#   Prints a separator line.
+#
+# run_command(cmd, quiet=False)
+#   Runs a Windows/Linux/macOS command.
+#   Used for pip checks and package installation.
+#
+# ensure_pip_available()
+#   Checks if pip exists.
+#   If missing, tries:
+#       python -m ensurepip --upgrade
+#       get-pip.py fallback
+#
+# can_import_module(import_name)
+#   Tests whether a Python module can be imported.
+#
+# build_pip_spec(pip_name, version)
+#   Builds pip install text.
+#   Example:
+#       torch + >=2.2 -> torch>=2.2
+#
+# ensure_python_package()
+#   Checks one package.
+#   If missing, installs it using pip.
+#
+# ensure_python_packages()
+#   Loops through all required packages.
+#   Records which succeeded and which failed.
+#
+# ensure_python_packages_or_exit()
+#   Runs package check.
+#   If required package fails, exits program.
+# ==========================================================
+
+
+# ==========================================================
+# ENVIRONMENT CONFIG FUNCTIONS
+# ==========================================================
+# get_env_str(name, default)
+#   Reads a string from .env.
+#   If not found, returns default.
+#
+# get_env_int(name, default)
+#   Reads an integer from .env.
+#   If value is not integer, raises an error.
+#
+# get_env_bool(name, default)
+#   Reads boolean values from .env.
+#
+# Accepted TRUE:
+#   true, 1, yes, y, on
+#
+# Accepted FALSE:
+#   false, 0, no, n, off
+# ==========================================================
+
+
+# ==========================================================
+# MODEL CONFIGURATION
+# ==========================================================
+# MODEL_PATH
+#   Base folder for model and data.
+#
+# MODEL_FILENAME
+#   Full path to saved trained weights.
+#
+# DATA_PATH
+#   Dataset folder:
+#       MODEL_PATH/data/MED10-00-08-unknown30
+#
+# BATCH_SIZE
+#   Number of images processed per training batch.
+#
+# NUM_EPOCHS
+#   Number of training passes over dataset.
+#
+# NUM_WORKERS
+#   Number of background loader workers.
+#
+# STATIC_FILTERS
+#   If True, convolution layers start with predefined kernels.
+#
+# DEBUG_FLAG
+#   If True, prints detailed logs.
+# ==========================================================
+
+
+# ==========================================================
+# CNN ARCHITECTURE
+# ==========================================================
+# Class:
+#   StaticInitLearnableCNN(nn.Module)
+#
+# Network shape:
+#
+#   Input RGB image:
+#       [B, 3, H, W]
+#
+#   conv1:
+#       3 -> 128 channels
+#
+#   max pool:
+#       H,W -> H/2,W/2
+#
+#   conv2:
+#       128 -> 256 channels
+#
+#   conv3:
+#       256 -> 512 channels
+#
+#   conv4:
+#       512 -> 1024 channels
+#
+#   global average pooling:
+#       [B, 1024, H/2, W/2] -> [B, 1024, 1, 1]
+#
+#   flatten:
+#       [B, 1024]
+#
+#   dropout:
+#       reduces overfitting
+#
+#   fully connected:
+#       1024 -> num_classes
+#
+# Output:
+#   logits [B, num_classes]
+# ==========================================================
+
+
+# ==========================================================
+# __init__()
+# ==========================================================
+# This creates the CNN layers.
+#
+# It defines:
+#   conv1, bn1
+#   pool
+#   conv2, bn2
+#   conv3, bn3
+#   conv4, bn4
+#   gap
+#   dropout
+#   fc
+#
+# If STATIC_FILTERS=True:
+#   it calls:
+#       _init_conv1_static()
+#       _init_conv2_static()
+#       _init_conv3_static()
+#       _init_conv4_static()
+#
+# Important:
+#   Static initialization does NOT freeze learning.
+#   The filters still learn unless requires_grad=False.
+# ==========================================================
+
+
+# ==========================================================
+# _init_conv1_static()
+# ==========================================================
+# Initializes conv1 filters using predefined 3x3 kernels.
+#
+# conv1 receives:
+#   RGB image channels
+#
+# conv1 learns:
+#   low-level features
+#   edges
+#   corners
+#   curves
+#   lines
+#   blur
+#   sharpen
+#
+# It fills:
+#   conv1.weight
+#
+# Shape:
+#   [128, 3, 3, 3]
+#
+# Meaning:
+#   128 output filters
+#   3 input RGB channels
+#   3x3 kernel size
+# ==========================================================
+
+
+# ==========================================================
+# _init_conv2_static()
+# ==========================================================
+# Initializes conv2 filters.
+#
+# conv2 receives:
+#   128 feature maps from conv1
+#
+# conv2 outputs:
+#   256 feature maps
+#
+# It uses kernels like:
+#   horizontal edge
+#   vertical edge
+#   emboss
+#   average blur
+#   Sobel X
+#   Sobel Y
+#
+# These kernels are repeated across:
+#   256 output channels
+#   128 input channels
+#
+# Purpose:
+#   start conv2 with useful mid-level pattern detectors.
+# ==========================================================
+
+
+# ==========================================================
+# _init_conv3_static()
+# ==========================================================
+# Initializes conv3 filters.
+#
+# conv3 receives:
+#   256 feature maps
+#
+# conv3 outputs:
+#   512 feature maps
+#
+# It uses filters like:
+#   Laplacian
+#   sharpen
+#   high-pass
+#   box blur
+#   Gaussian blur
+#   emboss
+#   Sobel X/Y
+#   diagonal gradients
+#
+# Purpose:
+#   detect stronger textures, shapes, and object parts.
+# ==========================================================
+
+
+# ==========================================================
+# _init_conv4_static()
+# ==========================================================
+# Initializes conv4 filters.
+#
+# conv4 receives:
+#   512 feature maps
+#
+# conv4 outputs:
+#   1024 feature maps
+#
+# This is the deepest convolution layer.
+#
+# Purpose:
+#   build very high-level class-separating features.
+#
+# It helps the model combine lower-level patterns into
+# stronger medical image classification signals.
+# ==========================================================
+
+
+# ==========================================================
+# forward(x)
+# ==========================================================
+# This defines how one batch flows through the CNN.
+#
+# Input:
+#   x = [B, 3, H, W]
+#
+# Steps:
+#
+#   x = conv1(x)
+#   x = batchnorm1(x)
+#   x = relu(x)
+#   x = maxpool(x)
+#
+#   x = conv2(x)
+#   x = batchnorm2(x)
+#   x = relu(x)
+#
+#   x = conv3(x)
+#   x = batchnorm3(x)
+#   x = relu(x)
+#
+#   x = conv4(x)
+#   x = batchnorm4(x)
+#   x = relu(x)
+#
+#   x = global average pooling
+#   x = flatten
+#   x = dropout
+#   logits = fc(x)
+#
+# Returns:
+#   logits
+#
+# Important:
+#   It does NOT return softmax probabilities.
+#   CrossEntropyLoss applies softmax internally during training.
+# ==========================================================
+
+
+# ==========================================================
+# debug_print()
+# ==========================================================
+# Wrapper around print().
+#
+# If DEBUG_FLAG=True:
+#   prints messages
+#
+# If DEBUG_FLAG=False:
+#   prints nothing
+#
+# Purpose:
+#   allow turning debug logs on/off from .env.
+# ==========================================================
+
+
+# ==========================================================
+# train_model()
+# ==========================================================
+# This trains the CNN.
+#
+# Main inputs:
+#   model
+#   train_loader
+#   device
+#   num_epochs
+#   learning rate
+#   test_loader
+#
+# Main training steps:
+#
+#   1) Move model to CPU or GPU
+#   2) Enable training mode
+#   3) Create AdamW optimizer
+#   4) Create OneCycleLR scheduler
+#   5) Use CrossEntropyLoss with label smoothing
+#   6) For each epoch:
+#        loop over training batches
+#        move images/labels to device
+#        clear old gradients
+#        run forward pass
+#        calculate loss
+#        run backward pass
+#        clip gradients
+#        optimizer.step()
+#        scheduler.step()
+#        calculate train accuracy
+#   7) If test_loader exists:
+#        evaluate test accuracy each epoch
+#        save best weights
+#        early stop if accuracy stops improving
+#   8) Restore best weights at the end
+#   9) Return trained model
+#
+# Extra features:
+#   AMP mixed precision on CUDA
+#   gradient clipping
+#   learning-rate scaling by batch size
+#   optional EMA weights
+#   early stopping
+# ==========================================================
+
+
+# ==========================================================
+# _ema_update()
+# ==========================================================
+# Internal helper inside train_model().
+#
+# EMA means:
+#   Exponential Moving Average
+#
+# Purpose:
+#   keep a smoothed copy of model weights.
+#
+# Formula:
+#   ema_weight = decay * old_ema_weight
+#              + (1 - decay) * current_weight
+#
+# Benefit:
+#   sometimes improves test accuracy.
+# ==========================================================
+
+
+# ==========================================================
+# _ema_swap_in()
+# ==========================================================
+# Internal helper inside train_model().
+#
+# Purpose:
+#   temporarily replace current model weights with EMA weights.
+#
+# Used before evaluation.
+#
+# It also saves backup of original weights
+# so they can be restored later.
+# ==========================================================
+
+
+# ==========================================================
+# _ema_swap_out()
+# ==========================================================
+# Internal helper inside train_model().
+#
+# Purpose:
+#   restore original model weights after EMA evaluation.
+# ==========================================================
+
+
+# ==========================================================
+# detect_single_image()
+# ==========================================================
+# Runs prediction on one image from the test dataset.
+#
+# Steps:
+#
+#   1) Move model to device
+#   2) Set model.eval()
+#   3) Pick image by index
+#      or random image if index is None
+#   4) Add batch dimension:
+#        [C,H,W] -> [1,C,H,W]
+#   5) Run model with torch.no_grad()
+#   6) Get predicted class:
+#        argmax(logits)
+#   7) Convert logits to probability using softmax
+#   8) Print:
+#        image index
+#        image shape
+#        true label
+#        predicted label
+#        confidence
+#   9) Return:
+#        image tensor
+#        true label id
+#        predicted label id
+# ==========================================================
+
+
+# ==========================================================
+# main()
+# ==========================================================
+# This is the main program controller.
+#
+# Steps:
+#
+#   1) Select device:
+#        CUDA GPU if available
+#        otherwise CPU
+#
+#   2) Build train/test paths:
+#        DATA_PATH/train
+#        DATA_PATH/test
+#
+#   3) Define image transforms:
+#        training:
+#            random horizontal flip
+#            tensor conversion
+#            normalization
+#
+#        testing:
+#            tensor conversion
+#            normalization
+#
+#   4) Load dataset using ImageFolder.
+#
+#   5) Create DataLoaders.
+#
+#   6) Detect number of classes automatically
+#      from train_dataset.classes.
+#
+#   7) Create CNN model:
+#        StaticInitLearnableCNN(num_classes)
+#
+#   8) If model file exists:
+#        load saved weights
+#
+#      Else:
+#        train model
+#        save model weights
+#
+#   9) Start interactive detection menu.
+# ==========================================================
+
+
+# ==========================================================
+# _read_int_from_keyboard_msvcrt()
+# ==========================================================
+# Internal helper inside main().
+#
+# Windows-only keyboard reader.
+#
+# Reads number typed by the user without needing normal input().
+#
+# Returns:
+#   integer value
+#   None if invalid
+#   "EXIT" if user presses e
+#
+# Used when user selects:
+#   n random images
+# ==========================================================
+
+
+# ==========================================================
+# run_n_random_images()
+# ==========================================================
+# Internal helper inside main().
+#
+# Purpose:
+#   test the model on N random images.
+#
+# Steps:
+#
+#   1) Validate N
+#   2) Put model in eval mode
+#   3) Randomly select N test image indices
+#   4) Process images in batches
+#   5) Run model
+#   6) Compare prediction with true label
+#   7) Count per-class:
+#        success
+#        failure
+#        hit ratio
+#        miss ratio
+#   8) Print total hit/miss rate
+#
+# Important:
+#   It does not print every image.
+#   It prints summary statistics only.
+# ==========================================================
+
+# ==========================================================
+# run_full_test_evaluation()
+# ==========================================================
+# Internal helper inside main().
+#
+# Purpose:
+#   evaluate the model on the entire test dataset.
+#
+# Steps:
+#
+#   1) Put model in eval mode
+#   2) Loop through test_loader
+#   3) Run model on every test batch
+#   4) Compare predictions with labels
+#   5) Count success/failure per true class
+#   6) Print:
+#        per-class hit ratio
+#        per-class miss ratio
+#        total images
+#        total hits
+#        total misses
+#        total hit rate
+#        total miss rate
+#
+# This should match the test accuracy printed during training.
+# ==========================================================
+
+
+# ==========================================================
+# INTERACTIVE MENU
+# ==========================================================
+# After model is ready, user can type:
+#
+#   number
+#       run detection on one test image index
+#
+#   n
+#       ask for N
+#       run N random images
+#
+#   a
+#       evaluate all test images
+#
+#   e
+#       exit program
+# ==========================================================
+
+# ==========================================================
+# FINAL SUMMARY
+# ==========================================================
+# This program is doing:
+#
+#   Medical image classification using PyTorch CNN.
+#
+# It can:
+#
+#   train a model
+#   save a model
+#   reload a model
+#   classify one image
+#   test random images
+#   evaluate the full test set
+#
+# The CNN architecture is:
+#
+#   RGB image
+#      ↓
+#   Conv1 3 -> 128
+#      ↓
+#   MaxPool
+#      ↓
+#   Conv2 128 -> 256
+#      ↓
+#   Conv3 256 -> 512
+#      ↓
+#   Conv4 512 -> 1024
+#      ↓
+#   Global Average Pooling
+#      ↓
+#   Fully Connected Classifier
+#      ↓
+#   Class prediction
+# ==========================================================

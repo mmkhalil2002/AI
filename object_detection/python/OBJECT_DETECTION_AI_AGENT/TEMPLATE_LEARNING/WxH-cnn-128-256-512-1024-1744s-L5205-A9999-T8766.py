@@ -38,6 +38,14 @@ import subprocess
 import importlib
 import tempfile
 import urllib.request
+import platform
+
+# ==========================================================
+# CROSS-PLATFORM OS DETECTION
+# ==========================================================
+IS_WINDOWS = platform.system().lower() == 'windows'
+IS_LINUX   = platform.system().lower() == 'linux'
+IS_MACOS   = platform.system().lower() == 'darwin'
 
 
 # ==========================================================
@@ -400,21 +408,180 @@ def ensure_python_packages(package_specs, verbose=True, stop_on_failure=True):
         }
     """
 
+    # ------------------------------------------------------
+    # List of packages successfully verified or installed.
+    #
+    # Example:
+    #   ["requests", "torch", "torchvision"]
+    #
+    # Used later for status reporting and return value.
+    # ------------------------------------------------------
     installed = []
+
+    # ------------------------------------------------------
+    # List of packages that failed installation or validation.
+    #
+    # Example:
+    #   ["torch"]
+    #
+    # Used later for status reporting and return value.
+    # ------------------------------------------------------
     failed = []
 
+    # ------------------------------------------------------
+    # Print header information if verbose mode is enabled.
+    #
+    # Example output:
+    #
+    # ======================================================
+    # [INFO] Ensuring required Python packages...
+    # ======================================================
+    # ------------------------------------------------------
     if verbose:
         install_print_line()
         print("[INFO] Ensuring required Python packages...")
 
+    # ------------------------------------------------------
+    # Process each package specification one at a time.
+    #
+    # package_specs is expected to be a list of dictionaries.
+    #
+    # Example:
+    #
+    # [
+    #     {
+    #         "import_name": "requests",
+    #         "pip_name": "requests"
+    #     },
+    #     {
+    #         "import_name": "torch",
+    #         "pip_name": "torch",
+    #         "extra_pip_args": [
+    #             "--index-url",
+    #             "https://download.pytorch.org/whl/cpu"
+    #         ]
+    #     }
+    # ]
+    # ------------------------------------------------------
     for spec in package_specs:
+
+        # --------------------------------------------------
+        # Required field:
+        #
+        # Python module name used in import statements.
+        #
+        # Examples:
+        #   import requests
+        #   import torch
+        #   import dotenv
+        #
+        # Values:
+        #   "requests"
+        #   "torch"
+        #   "dotenv"
+        # --------------------------------------------------
         import_name = spec["import_name"]
+
+        # --------------------------------------------------
+        # Optional pip package name.
+        #
+        # Sometimes the pip package name differs from the
+        # Python import name.
+        #
+        # Examples:
+        #
+        # Python:
+        #   import PIL
+        #
+        # Pip:
+        #   pip install pillow
+        #
+        # Therefore:
+        #   import_name = "PIL"
+        #   pip_name    = "pillow"
+        #
+        # If not present, ensure_python_package()
+        # will automatically use import_name.
+        # --------------------------------------------------
         pip_name = spec.get("pip_name")
+
+        # --------------------------------------------------
+        # Optional version constraint.
+        #
+        # Examples:
+        #   "==2.31.0"
+        #   ">=2.0"
+        #   "<3"
+        #
+        # Resulting pip install command:
+        #
+        #   pip install requests==2.31.0
+        #
+        # or
+        #
+        #   pip install torch>=2.0
+        # --------------------------------------------------
         version = spec.get("version")
+
+        # --------------------------------------------------
+        # Whether pip should upgrade the package.
+        #
+        # True:
+        #   pip install --upgrade package
+        #
+        # False:
+        #   pip install package
+        #
+        # Default:
+        #   True
+        # --------------------------------------------------
         upgrade = spec.get("upgrade", True)
+
+        # --------------------------------------------------
+        # Whether package should be installed using:
+        #
+        #   pip install --user
+        #
+        # Useful when administrator privileges
+        # are unavailable.
+        #
+        # Default:
+        #   False
+        # --------------------------------------------------
         user = spec.get("user", False)
+
+        # --------------------------------------------------
+        # Additional pip command-line arguments.
+        #
+        # Example:
+        #
+        # [
+        #     "--index-url",
+        #     "https://download.pytorch.org/whl/cpu"
+        # ]
+        #
+        # Used heavily for PyTorch CPU-only installs.
+        #
+        # Default:
+        #   empty list
+        # --------------------------------------------------
         extra_pip_args = spec.get("extra_pip_args", [])
 
+        # --------------------------------------------------
+        # Ensure the package is installed and importable.
+        #
+        # Internally this routine:
+        #
+        #   1. Tries importing the module
+        #   2. Ensures pip exists
+        #   3. Installs package if missing
+        #   4. Verifies import afterwards
+        #
+        # Returns:
+        #
+        #   True  -> package available
+        #   False -> installation failed
+        # --------------------------------------------------
         ok = ensure_python_package(
             import_name=import_name,
             pip_name=pip_name,
@@ -425,31 +592,133 @@ def ensure_python_packages(package_specs, verbose=True, stop_on_failure=True):
             verbose=verbose
         )
 
+        # --------------------------------------------------
+        # Determine friendly package name for reporting.
+        #
+        # If pip_name exists:
+        #     use pip_name
+        #
+        # Otherwise:
+        #     use import_name
+        #
+        # Examples:
+        #
+        # pip_name="python-dotenv"
+        # display_name="python-dotenv"
+        #
+        # pip_name=None
+        # import_name="requests"
+        # display_name="requests"
+        # --------------------------------------------------
         display_name = pip_name or import_name
 
+        # --------------------------------------------------
+        # Installation successful.
+        #
+        # Store package in installed list.
+        # --------------------------------------------------
         if ok:
             installed.append(display_name)
+
+        # --------------------------------------------------
+        # Installation failed.
+        #
+        # Store package in failed list.
+        # --------------------------------------------------
         else:
             failed.append(display_name)
+
+            # ----------------------------------------------
+            # If stop_on_failure is enabled:
+            #
+            # Stop immediately after first failure.
+            #
+            # Useful when later packages depend on
+            # earlier packages.
+            #
+            # Example:
+            #
+            # requests   -> success
+            # torch      -> failure
+            #
+            # break immediately
+            # ----------------------------------------------
             if stop_on_failure:
                 break
 
+    # ------------------------------------------------------
+    # Overall success flag.
+    #
+    # Success means:
+    #
+    #   failed list is empty
+    #
+    # Examples:
+    #
+    # installed=["requests","torch"]
+    # failed=[]
+    #
+    # success=True
+    #
+    # installed=["requests"]
+    # failed=["torch"]
+    #
+    # success=False
+    # ------------------------------------------------------
     success = len(failed) == 0
 
+    # ------------------------------------------------------
+    # Print final summary if verbose mode is enabled.
+    # ------------------------------------------------------
     if verbose:
+
         install_print_line()
+
+        # --------------------------------------------------
+        # Show all successfully installed/verified packages.
+        # --------------------------------------------------
         print(f"[INFO] Installed/verified packages: {installed}")
+
+        # --------------------------------------------------
+        # If any package failed:
+        #     show error list
+        #
+        # Otherwise:
+        #     show success message
+        # --------------------------------------------------
         if failed:
             print(f"[ERROR] Failed packages: {failed}")
         else:
             print("[OK] All required Python packages are available.")
 
+    # ------------------------------------------------------
+    # Return detailed status information.
+    #
+    # Example successful result:
+    #
+    # {
+    #     "success": True,
+    #     "installed": [
+    #         "requests",
+    #         "torch",
+    #         "torchvision"
+    #     ],
+    #     "failed": []
+    # }
+    #
+    # Example failed result:
+    #
+    # {
+    #     "success": False,
+    #     "installed": ["requests"],
+    #     "failed": ["torch"]
+    # }
+    # ------------------------------------------------------
     return {
         "success": success,
         "installed": installed,
         "failed": failed
     }
-
 
 # ==========================================================
 # STEP 6 — Optional helper to exit on failure
@@ -481,11 +750,36 @@ def ensure_python_packages_or_exit(package_specs, verbose=True):
 # Only include packages that normally require pip.
 # ==========================================================
 
+
 REQUIRED_PACKAGES = [
     {
         "import_name": "requests",
         "pip_name": "requests",
     },
+
+    {
+        "import_name": "dotenv",
+        "pip_name": "python-dotenv",
+    },
+
+    {
+        "import_name": "torch",
+        "pip_name": "torch",
+        "extra_pip_args": [
+            "--index-url",
+            "https://download.pytorch.org/whl/cpu"
+        ]
+    },
+
+    {
+        "import_name": "torchvision",
+        "pip_name": "torchvision",
+        "extra_pip_args": [
+            "--index-url",
+            "https://download.pytorch.org/whl/cpu"
+        ]
+    },
+
 
     # Example mappings:
     # {"import_name": "PIL", "pip_name": "pillow"},
@@ -498,6 +792,7 @@ REQUIRED_PACKAGES = [
     #     "extra_pip_args": ["--index-url", "https://download.pytorch.org/whl/cpu"]
     # },
 ]
+
 
 # ----------------------------------------------------------
 # RUN INSTALLER NOW
@@ -515,7 +810,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import random
-import msvcrt
+# ============================================================
+# WINDOWS-SPECIFIC KEYBOARD SUPPORT
+# ============================================================
+if IS_WINDOWS:
+    import msvcrt
+else:
+    msvcrt = None
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
@@ -524,13 +825,13 @@ from torchvision import datasets, transforms
 # CONFIGURATION
 # ============================================================
 
-"""
+""" THIS SECTION is not used
 MODEL_PATH = "../../../"
 MODEL_FILENAME = "cifar-81-89-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
 DATA_PATH = "../../../data/cifar_81_89_unknown30"
 
 BATCH_SIZE = 128
-NUM_EPOCHS = 100
+NUM_EPOCHS = 80
 NUM_WORKERS = 0
 
 STATIC_FILTERS = False
@@ -649,17 +950,44 @@ def get_env_bool(name: str, default: bool) -> bool:
 # ============================================================
 
 # Base path where model files are stored
-MODEL_PATH = get_env_str("MODEL_PATH", "../../../")
+MODEL_PATH = get_env_str("MODEL_BASE", "../../../")
 
-# Specific trained model filename
-
-MODEL_FILENAME= os.path.join(MODEL_PATH,"model", "med-00-08-unknown30-cnn-128-256-512-1024-1744s-L5205-A9999-T8766")
 # ------------------------------------------------------------
-# DERIVED PATH (DATASET)
+# FILE PREFIX
 # ------------------------------------------------------------
-# DATA_PATH is constructed from MODEL_PATH + subdirectory
-DATA_PATH = os.path.join(MODEL_PATH, "data", "MED10-00-08-unknown30")
+#
+# Example:
+#   FILE_PREFIX=med-00-08-unknown30
+#
+FILE_PREFIX = os.getenv(
+    "FILE_PREFIX",
+    "xxx-00-08-unknown30"
+)
+# ------------------------------------------------------------
+# SPECIFIC TRAINED MODEL FILENAME
+# ------------------------------------------------------------
+MODEL_FILENAME = os.path.join(
+    MODEL_PATH,
+    "model",
+    f"{FILE_PREFIX}-cnn-128-256-512-1024-1744s-L5205-A9999-T8766"
+)
 
+# DATASET PATH
+# ------------------------------------------------------------
+#
+# Dataset directory name comes directly from FILE_PREFIX.
+#
+# Example:
+#   FILE_PREFIX=med-00-08-unknown30
+#
+# Result:
+#   <MODEL_PATH>/data/med-00-08-unknown30
+#
+DATA_PATH = os.path.join(
+    MODEL_PATH,
+    "data",
+    FILE_PREFIX
+)
 
 # ============================================================
 # TRAINING PARAMETERS
@@ -683,7 +1011,7 @@ NUM_WORKERS = get_env_int("NUM_WORKERS", 0)
 STATIC_FILTERS = get_env_bool("STATIC_FILTERS", False)
 
 # Whether verbose debug output is enabled
-DEBUG_FLAG = get_env_bool("DEBUG_FLAG", True)
+DEBUG_FLAG = get_env_bool("DEBUG_FLAG", False)
 
 
 # ============================================================
@@ -720,6 +1048,12 @@ CONV3_OUT_CHANNELS = get_env_int("CONV3_OUT_CHANNELS", 512)
 CONV4_IN_CHANNELS = get_env_int("CONV4_IN_CHANNELS", 512)
 CONV4_OUT_CHANNELS = get_env_int("CONV4_OUT_CHANNELS", 1024)
 
+# ============================================================
+# IMAGE SIZE CONFIGURATION
+# ============================================================
+
+IMAGE_WIDTH  = get_env_int("IMAGE_WIDTH", 32)
+IMAGE_HEIGHT = get_env_int("IMAGE_HEIGHT", 32)
 
 # ============================================================
 # OPTIONAL SANITY CHECKS
@@ -761,6 +1095,112 @@ if DEBUG_FLAG:
     print("[CONFIG] CONV3              =", CONV3_IN_CHANNELS, "->", CONV3_OUT_CHANNELS)
     print("[CONFIG] CONV4              =", CONV4_IN_CHANNELS, "->", CONV4_OUT_CHANNELS)
     print("=" * 60)
+
+
+# ============================================================
+# CROSS-PLATFORM KEYBOARD INPUT HELPER
+# ============================================================
+# NOTE:
+#   All menu/key-reading code should call get_single_key()
+#   instead of calling msvcrt.getch() directly.
+#   This keeps the script portable across Windows, Ubuntu/Linux, and macOS.
+def get_single_key(prompt="> "):
+    '''
+    Cross-platform single-key/input helper.
+
+    Windows:
+        Uses msvcrt.getch() so the user can press one key without pressing Enter.
+
+    Linux/macOS:
+        Falls back to input() because msvcrt is a Windows-only Python module.
+
+    WHY THIS HELPER WAS ADDED
+    -------------------------
+    Some earlier code used msvcrt.getch() directly. That works on Windows,
+    but it fails on Ubuntu/Linux/macOS because msvcrt does not exist there.
+
+    All menu/key-reading code should call this helper instead of calling
+    msvcrt.getch() directly. This keeps the original Windows behavior while
+    allowing the same script to run on Ubuntu/Linux and macOS.
+    '''
+    if IS_WINDOWS and msvcrt is not None:
+        try:
+            return msvcrt.getch().decode(errors="ignore")
+        except Exception:
+            pass
+
+    return input(prompt).strip()
+
+
+
+# ============================================================
+# CROSS-PLATFORM CONSOLE CLEAR HELPER
+# ============================================================
+def clear_console():
+    '''
+    Clear the terminal/console screen in a cross-platform way.
+
+    WHY THIS HELPER EXISTS
+    ----------------------
+    Windows uses:
+        cls
+
+    Linux / Ubuntu / macOS use:
+        clear
+
+    Older Windows-only code sometimes used:
+        os.system("cls")
+
+    If that command is called directly on Ubuntu/Linux/macOS, it will usually
+    fail because "cls" is a Windows command. This helper chooses the correct command
+    automatically based on the detected operating system.
+
+    This keeps the same behavior on Windows while making the script portable
+    on Ubuntu/Linux and macOS.
+    '''
+    if IS_WINDOWS:
+        os.system("cls")
+    else:
+        os.system("clear")
+
+
+# ============================================================
+# CROSS-PLATFORM PAUSE HELPER
+# ============================================================
+def pause_console(message="Press Enter to continue..."):
+    '''
+    Pause program execution in a cross-platform way.
+
+    WHY THIS HELPER EXISTS
+    ----------------------
+    Older Windows-only code sometimes used:
+        pause_console()
+
+    Linux / Ubuntu / macOS do NOT support the Windows "pause" command.
+
+    Instead of calling the Windows-only pause command directly,
+    this helper uses Python's built-in input(), which works on:
+        - Windows
+        - Linux / Ubuntu
+        - macOS
+
+    The user presses Enter to continue.
+    '''
+    try:
+        input(message)
+    except EOFError:
+        # In some non-interactive environments, input() may not be available.
+        # In that case, do not crash the script; just continue.
+        pass
+
+
+# ============================================================
+# OS INFORMATION
+# ============================================================
+if DEBUG_FLAG:
+    print(f"[INFO] Operating System : {platform.system()}")
+    print(f"[INFO] Python Version   : {sys.version.split()[0]}")
+
 
 # ============================================================
 # EXPLANATION: HOW TRAINING WORKS IN THIS NETWORK
@@ -3267,6 +3707,7 @@ def main():
     # TRAIN TRANSFORM (USED DURING TRAINING)
     # ============================================================
     train_transform = transforms.Compose([
+        transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.ToTensor(),
         transforms.Normalize(
@@ -3279,6 +3720,7 @@ def main():
     # TEST TRANSFORM (USED DURING VALIDATION / INFERENCE)
     # ============================================================
     test_transform = transforms.Compose([
+        transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
@@ -3412,7 +3854,7 @@ def main():
 
         print(prompt, end="", flush=True)
 
-        first = msvcrt.getch().decode(errors="ignore").lower()
+        first = get_single_key().decode(errors="ignore").lower()
 
         if first == "e":
             print("e")
@@ -3426,7 +3868,7 @@ def main():
 
         s = first
         while True:
-            ch = msvcrt.getch()
+            ch = get_single_key()
             if ch in [b"\r", b"\n"]:
                 print()
                 break
@@ -3749,7 +4191,7 @@ def main():
             flush=True
         )
 
-        key = msvcrt.getch().decode(errors="ignore").lower()
+        key = get_single_key().decode(errors="ignore").lower()
 
         if key == 'e':
             print("e")
@@ -3797,7 +4239,7 @@ def main():
         # Read remaining digits until ENTER
         idx_str = key
         while True:
-            ch = msvcrt.getch()
+            ch = get_single_key()
             if ch in [b'\r', b'\n']:
                 print()
                 break
