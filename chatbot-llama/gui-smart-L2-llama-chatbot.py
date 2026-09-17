@@ -2980,29 +2980,57 @@ def print_help():
 # ----------------------------------------------------------
 
 def main():
-    """Show the GUI immediately; prepare Ollama in a background thread."""
+    """Complete setup before showing the chatbot window."""
+    global requests
+
+    print("[INFO] Preparing dependencies, Ollama, and models before opening the GUI...")
+    dependency_result = ensure_python_packages(REQUIRED_PACKAGES, verbose=True)
+    if not dependency_result["success"]:
+        print("[ERROR] Could not install the requests Python package.")
+        return
+    import requests
+
+    ollama_exe = install_ollama()
+    if not ollama_exe:
+        print("[ERROR] Ollama is not installed or could not be installed.")
+        return
+    if not start_ollama_server(ollama_exe):
+        print("[ERROR] Ollama server did not start.")
+        return
+    if not pull_model(ollama_exe, SMALL_MODEL):
+        print(f"[ERROR] Could not prepare model {SMALL_MODEL}.")
+        return
+    if USE_LARGE_MODEL_FALLBACK and not pull_model(ollama_exe, LARGE_MODEL):
+        print(f"[ERROR] Could not prepare fallback model {LARGE_MODEL}.")
+        return
+    load_knowledge()
+    show_processor_info(ollama_exe)
+    print("[OK] Setup complete. Opening the GUI...")
+
+    # Create Tkinter only after every required setup step has finished.
     window = tk.Tk()
     window.title("Smart L2 LLaMA Chatbot")
     window.geometry("800x680")
-    ready = {"value": False}
-
     ttk.Label(window, text="Question:").pack(anchor="w", padx=12, pady=(12, 4))
     question_box = scrolledtext.ScrolledText(window, height=7, wrap=tk.WORD)
     question_box.pack(fill=tk.X, padx=12)
-    answer_button = ttk.Button(window, text="Ask LLaMA", state=tk.DISABLED)
+    answer_button = ttk.Button(window, text="Ask LLaMA")
     answer_button.pack(pady=10)
-    status_label = ttk.Label(window, text="Preparing Ollama and models...", wraplength=760)
+    status_label = ttk.Label(
+        window, text=f"Ready. Knowledge file: {os.path.abspath(SMART_JSON_FILE)}",
+        wraplength=760
+    )
     status_label.pack(anchor="w", padx=12)
     ttk.Label(window, text="Answer:").pack(anchor="w", padx=12, pady=(12, 4))
     answer_box = scrolledtext.ScrolledText(window, wrap=tk.WORD)
     answer_box.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
 
-    def set_answer(status, answer):
-        # Tkinter widgets are updated on the GUI thread only.
+    def finish(status, answer):
+        """Update widgets on the Tkinter main thread."""
         status_label.config(text=status)
         answer_box.delete("1.0", tk.END)
         answer_box.insert(tk.END, answer)
-        answer_button.config(state=tk.NORMAL if ready["value"] else tk.DISABLED)
+        answer_button.config(state=tk.NORMAL)
 
     def ask():
         question = question_box.get("1.0", tk.END).strip()
@@ -3016,44 +3044,14 @@ def main():
         def worker():
             try:
                 answer = answer_user_question(question)
-                window.after(0, lambda: set_answer("Completed", answer))
+                window.after(0, lambda: finish("Completed", answer))
             except Exception as error:
                 message = str(error)
-                window.after(0, lambda: set_answer("Request failed", f"Error: {message}"))
+                window.after(0, lambda: finish("Request failed", f"Error: {message}"))
 
         threading.Thread(target=worker, daemon=True).start()
 
     answer_button.config(command=ask)
-
-    def prepare():
-        try:
-            global requests
-            dependency_result = ensure_python_packages(REQUIRED_PACKAGES, verbose=True)
-            if not dependency_result["success"]:
-                raise RuntimeError("Could not install the requests Python package.")
-            import requests
-            # Preserve the script's installer, local Ollama startup, and
-            # small-model / large-model preparation behavior.
-            ollama_exe = install_ollama()
-            if not ollama_exe:
-                raise RuntimeError("Ollama is not installed or could not be installed.")
-            if not start_ollama_server(ollama_exe):
-                raise RuntimeError("Ollama server did not start.")
-            if not pull_model(ollama_exe, SMALL_MODEL):
-                raise RuntimeError(f"Could not prepare model {SMALL_MODEL}.")
-            if USE_LARGE_MODEL_FALLBACK:
-                pull_model(ollama_exe, LARGE_MODEL)
-            load_knowledge()
-            show_processor_info(ollama_exe)
-            ready["value"] = True
-            window.after(0, lambda: set_answer(
-                f"Ready. Knowledge file: {os.path.abspath(SMART_JSON_FILE)}", ""
-            ))
-        except Exception as error:
-            message = str(error)
-            window.after(0, lambda: set_answer("Startup failed", f"Error: {message}"))
-
-    window.after(100, lambda: threading.Thread(target=prepare, daemon=True).start())
     window.mainloop()
 
 
