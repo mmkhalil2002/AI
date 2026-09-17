@@ -98,5 +98,55 @@
     "expires_at": null,
     "source": "model",
     "model_used": null
+  },
+  {
+    "question": "how are u",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: I'm functioning properly, thank you for asking! How can I assist you today?",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-09-17 08:27:26",
+    "expires_at": null,
+    "source": "model",
+    "model_used": null
+  },
+  {
+    "question": "draw mw an image for battry how it works for kids",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: I'd be happy to help you with a simple explanation of how a battery works, suitable for kids. Unfortunately, I'm a text-based AI and cannot physically draw images. However, I can describe a simple diagram and provide a text-based representation of a battery.\n\n**Battery Diagram:**\n\nImagine a battery as a small container with two main parts:\n\n1. **Positive Terminal (Red)**: This is the positive side of the battery, marked with a \"+\" sign. It's like a \"plus\" sign.\n2. **Negative Terminal (Black)**: This is the negative side of the battery, marked with a \"-\" sign. It's like a \"minus\" sign.\n\n**How it Works:**\n\nWhen you connect a device, like a toy or a light, to the battery, the following happens:\n\n1. The positive terminal (red) sends electrons (tiny particles) out of the battery.\n2. The electrons flow through the device, making it work.\n3. The negative terminal",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-09-17 08:28:48",
+    "expires_at": null,
+    "source": "model",
+    "model_used": null
+  },
+  {
+    "question": "canyt u draw cpolorful diagrams?",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: I can use ASCII art to create simple diagrams. Would you like me to draw something colorful using characters?",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-09-17 08:31:05",
+    "expires_at": null,
+    "source": "model",
+    "model_used": null
+  },
+  {
+    "question": "sho me",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: I'd be happy to help, but you didn't specify what you'd like to see or know. Could you please provide more context or clarify what you're looking for?",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-09-17 08:32:06",
+    "expires_at": null,
+    "source": "model",
+    "model_used": null
+  },
+  {
+    "question": "diagra mo how battry works",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: Here's a simplified diagram and explanation of how a battery works:\n\n**Diagram:**\n\n```\n  +---------------+\n  |  Positive (+) |\n  |  Terminal     |\n  +---------------+\n           |\n           |\n           v\n  +---------------+\n  |  Electrolyte  |\n  |  (Liquid or Gel)|\n  +---------------+\n           |\n           |\n           v\n  +---------------+\n  |  Negative (-) |\n  |  Terminal     |\n  +---------------+\n```\n\n**How it works:**\n\n1. A battery has two terminals: positive (+) and negative (-).\n2. Inside the battery, there's an electrolyte (liquid or gel) that helps conduct electricity.\n3. When a battery is connected to a device, like a light bulb, the following happens:\n\t* The positive terminal (cathode) releases electrons (negative charge).\n\t* The negative terminal (anode) attracts electrons (positive charge).\n\t* The electrons flow",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-09-17 08:33:28",
+    "expires_at": null,
+    "source": "model",
+    "model_used": null
   }
 ]
