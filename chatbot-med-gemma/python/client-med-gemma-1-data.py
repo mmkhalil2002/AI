@@ -1,24 +1,26 @@
 """Windows MedGemma client: how text and image data reach Ollama.
 
-Run: py "client-med-gemma(1).py" (install Pillow: py -m pip install pillow).
+Run: py "med-gemma.py" (install Pillow: py -m pip install pillow).
 
 INPUT AND SELECTION
 -------------------
 Type a question in the left text box. The right panel displays images found
-in the 'data' directory next to this script. Click ONE thumbnail to select
-the corresponding image; click it again to remove the selection. The gallery
-thumbnails are 64 x 64 pixels for display ONLY. They are not uploaded.
+in the 'data' directory next to this script. Click thumbnails to select
+multiple images; click a selected thumbnail again to deselect it. Selected
+images have a blue background and border. The gallery
+thumbnails use IMAGE_WIDTH x IMAGE_HEIGHT from .env for display ONLY
+(256 x 256 pixels if missing or invalid). They are not uploaded.
 
 HOW THE REQUEST IS FORMED
 -------------------------
-1. The text box contains a Python string. An educational instruction is
-   prepended to this question. It becomes the JSON field 'prompt'.
-2. If an image is selected, the worker reads that image from disk. JPEG and
+1. The text box contains your question as a Python string. Its exact text
+   becomes the JSON field 'prompt'; no fixed instruction is added.
+2. For each selected image, the worker reads that image from disk. JPEG and
    PNG bytes are used as-is; other supported formats are converted to PNG in
    memory. This preserves image resolution (the thumbnail is never sent).
 3. base64.b64encode converts those binary bytes to printable ASCII text.
-   The resulting string becomes one item in the JSON 'images' array. An
-   image path is NOT sent; Ollama receives the actual image contents.
+   Each resulting string becomes one item in the JSON 'images' array, in
+   selection order. Image paths are NOT sent; Ollama receives image contents.
 4. A Python dictionary is serialized with json.dumps, encoded as UTF-8, and
    sent as the body of HTTP POST <server URL>/api/generate with the header
    Content-Type: application/json. 'stream': false asks for one JSON reply.
@@ -26,13 +28,13 @@ HOW THE REQUEST IS FORMED
 Example request shape (the base64 string is much longer in reality):
     {
       "model": "medgemma1.5:4b",
-      "prompt": "Educational instruction...\\n\\nWhat is in this image?",
-      "images": ["iVBORw0KGgo..."],
+      "prompt": "What are these images representing?",
+      "images": ["iVBORw0KGgo...", "anotherBase64Image..."],
       "stream": false,
       "options": {"num_predict": 300, "temperature": 0.1}
     }
 
-If no image is selected, the 'images' field is omitted and only text is sent.
+If no images are selected, the 'images' field is omitted and only text is sent.
 The response JSON contains a 'response' string, displayed in the left panel.
 The client runs on Windows; Ollama can run on a Windows or Linux server.
 """
@@ -65,7 +67,7 @@ def load_settings():
                 continue
             key, value = line.split("=", 1)
             key, value = key.strip(), value.strip()
-            if key in ("OLLAMA_URL", "MEDGEMMA_MODEL"):
+            if key in ("OLLAMA_URL", "MEDGEMMA_MODEL", "IMAGE_WIDTH", "IMAGE_HEIGHT", "WINDOW_WIDTH", "WINDOW_HEIGHT"):
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                     value = value[1:-1]
                 values[key] = value
@@ -82,45 +84,87 @@ DEFAULT_MODEL = os.environ.get(
 DEFAULT_MODELS = (DEFAULT_MODEL,)
 IMAGE_DIR = Path(__file__).resolve().parent / "data"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
-THUMBNAIL_SIZE = (64, 64)
 
 
-def select_image(path, button):
-    """Record one clicked image, with a visible pressed-button selection."""
-    previous = selected_image["button"]
-    if previous is not None:
-        previous.config(relief=tk.RAISED)
-    if selected_image["path"] == path:
-        selected_image.update(path=None, button=None)
-        selected_image_label.config(text="No image selected (text only)")
+def image_dimension(name):
+    """Read a positive thumbnail size; use 256 when absent or invalid."""
+    value = os.environ.get(name, settings_from_file.get(name, "256"))
+    try:
+        number = int(value)
+        if 1 <= number <= 2048:
+            return number
+    except (TypeError, ValueError):
+        pass
+    print(f"Invalid {name}={value!r}; using 256 pixels.")
+    return 256
+
+
+THUMBNAIL_SIZE = (image_dimension("IMAGE_WIDTH"), image_dimension("IMAGE_HEIGHT"))
+
+
+def window_dimension(name, default):
+    """Use a positive window dimension from .env or the calculated default."""
+    value = os.environ.get(name, settings_from_file.get(name, str(default)))
+    try:
+        dimension = int(value)
+        if dimension > 0:
+            return dimension
+    except (TypeError, ValueError):
+        pass
+    print(f"Invalid {name}={value!r}; using {default} pixels.")
+    return default
+
+
+def select_image(path, button, tile):
+    """Toggle one image; a blue tile makes each selected image easy to see."""
+    if path in selected_images:
+        del selected_images[path]
+        button.config(relief=tk.RAISED, background=default_button_color)
+        tile.config(background="#eeeeee")
     else:
-        selected_image.update(path=path, button=button)
-        button.config(relief=tk.SUNKEN)
-        selected_image_label.config(text=f"Selected: {path.name}")
+        selected_images[path] = (button, tile)
+        button.config(relief=tk.SUNKEN, background="#90c6ff")
+        tile.config(background="#1976d2")
+    count = len(selected_images)
+    selected_image_label.config(
+        text=f"{count} image{'s' if count != 1 else ''} selected" if count else "No images selected (text only)"
+    )
 
 
 def encode_image(path):
     """Return the original full-resolution image as a base64 ASCII string."""
+    # This path identifies a file on the Windows client. Only the encoded
+    # contents below are sent to Ollama; the path is never added to the JSON.
     if path.suffix.lower() in (".png", ".jpg", ".jpeg"):
+        # PNG/JPEG already have formats Ollama accepts. Read every byte from
+        # the original file; the resized gallery thumbnail is not involved.
         image_bytes = path.read_bytes()
     else:
         from PIL import Image
         with Image.open(path) as source:
+            # Convert formats such as BMP, GIF, or WebP to PNG in memory.
+            # The source keeps its original dimensions; this does not resize it.
+            # The current script handles them differently:
+
+            #    PNG, JPG, JPEG: sends the original file bytes, encoded as Base64.
+            #    BMP, GIF, WebP, TIFF: converts the image to PNG in memory, then sends those PNG bytes encoded as Base64.
             buffer = io.BytesIO()
             source.convert("RGB").save(buffer, format="PNG")
             image_bytes = buffer.getvalue()
+    # JSON contains text, not raw bytes. Base64 represents the image bytes as
+    # ASCII text; Ollama decodes this string when it receives the request.
     return base64.b64encode(image_bytes).decode("ascii")
 
 
 def load_images():
-    """Display data-folder images in three columns at exactly 64 x 64 pixels."""
+    """Display data-folder images in three columns at the configured size."""
     # Destroy old widgets before reloading; keep references to PhotoImage
     # objects so Tkinter does not remove the image data from the screen.
     for widget in image_grid.winfo_children():
         widget.destroy()
     thumbnails.clear()
-    selected_image.update(path=None, button=None)
-    selected_image_label.config(text="No image selected (text only)")
+    selected_images.clear()
+    selected_image_label.config(text="No images selected (text only)")
     IMAGE_DIR.mkdir(exist_ok=True)
     paths = sorted(
         (p for p in IMAGE_DIR.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS),
@@ -160,14 +204,14 @@ def load_images():
 
         thumbnails.append(photo)
         index = len(thumbnails) - 1
-        tile = ttk.Frame(image_grid)
+        tile = tk.Frame(image_grid, background="#eeeeee", padx=3, pady=3)
         tile.grid(row=index // 3, column=index % 3, padx=5, pady=6, sticky="n")
         button = tk.Button(tile, image=photo, relief=tk.RAISED, borderwidth=2)
-        button.config(command=lambda p=path, b=button: select_image(p, b))
+        button.config(command=lambda p=path, b=button, t=tile: select_image(p, b, t))
         button.pack()
         ttk.Label(tile, text=path.name[:12], width=12, anchor="center").pack()
 
-    image_count.config(text=f"{len(thumbnails)} images" + (f"; {errors} unreadable" if errors else ""))
+    image_count.config(text=f"{len(thumbnails)} images ({THUMBNAIL_SIZE[0]} x {THUMBNAIL_SIZE[1]} px)" + (f"; {errors} unreadable" if errors else ""))
     image_grid.update_idletasks()
     image_canvas.configure(scrollregion=image_canvas.bbox("all"))
 
@@ -192,36 +236,54 @@ def list_models(url):
     return [item["name"] for item in data.get("models", []) if item.get("name")]
 
 
-def generate(url, model, question, image_path=None):
-    """POST prompt and optionally full-resolution image to Ollama."""
-    prefix = (
-        "This is for educational demonstration only. Provide a clear educational "
-        "explanation. Do not provide a personal diagnosis or treatment plan.\n\n"
-    )
+def generate(url, model, question, image_paths=()):
+    """POST prompt and all selected full-resolution images to Ollama."""
+    # Form a Python dictionary that will become the HTTP request's JSON body.
+    # "question" is exactly what the user entered in the Question box (apart
+    # from leading/trailing whitespace removed by send_question). No fixed
+    # instruction or filename is added to the prompt.
     payload = {
+        # The installed Ollama model selected in the GUI.
         "model": model,
-        "prompt": prefix + question,
+        # The user's question, for example: "What do these images show?"
+        "prompt": question,
+        # Ask Ollama for one complete JSON reply instead of streamed chunks.
         "stream": False,
+        # Maximum generated tokens and sampling temperature for the answer.
         "options": {"num_predict": 300, "temperature": 0.1},
     }
-    if image_path is not None:
-        # Ollama /api/generate expects base64 strings inside "images".
-        # The gallery's resized PhotoImage object is NOT used here.
-        payload["images"] = [encode_image(image_path)]
+    if image_paths:
+        # encode_image returns one Base64 string for each selected source file.
+        # Dictionary selection order is preserved in image_paths, so the JSON
+        # array follows the order in which images were clicked. The gallery's
+        # resized PhotoImage objects are never sent. With no selected images,
+        # omit the "images" key entirely and submit a text-only request.
+        payload["images"] = [encode_image(path) for path in image_paths]
+    # json.dumps turns the dictionary into JSON text. UTF-8 then converts that
+    # text into bytes for HTTP. Example: {"prompt": "My question", "images":
+    # ["<base64 image 1>", "<base64 image 2>"], ...}.
     request = Request(
+        # The Ollama server address comes from the GUI/.env; /api/generate is
+        # the endpoint that receives a model, a prompt, and optional images.
         f"{url}/api/generate",
         data=json.dumps(payload).encode("utf-8"),
+        # Tell the server that the HTTP body is JSON rather than plain text.
         headers={"Content-Type": "application/json"},
+        # POST sends the JSON body to Ollama.
         method="POST",
     )
     try:
+        # Network requests can take time. run_request calls this function in a
+        # worker thread so the GUI does not freeze while Ollama responds.
         with urlopen(request, timeout=300) as response:
+            # Parse Ollama's reply JSON into a Python dictionary.
             data = json.load(response)
     except HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Ollama HTTP {error.code}: {detail}") from error
     except URLError as error:
         raise RuntimeError(f"Cannot reach Ollama: {error.reason}") from error
+    # /api/generate places the generated answer in its "response" field.
     answer = data.get("response", "")
     if not isinstance(answer, str) or not answer.strip():
         raise RuntimeError("The server returned no answer.")
@@ -241,7 +303,7 @@ def finish(answer=None, error=None):
     answer_box.insert(tk.END, answer if error is None else f"Error: {error}")
 
 
-def run_request(url, model, question, image_path):
+def run_request(url, model, question, image_paths):
     """The HTTP call runs in the background so the window stays responsive."""
     try:
         # Give a useful message before trying generation with a missing model.
@@ -251,7 +313,7 @@ def run_request(url, model, question, image_path):
                 f"Model {model} is not installed on the selected server. "
                 "Check the model name and server address."
             )
-        result = generate(url, model, question, image_path)
+        result = generate(url, model, question, image_paths)
         window.after(0, lambda: finish(answer=result))
     except Exception as error:
         message = str(error)
@@ -260,10 +322,12 @@ def run_request(url, model, question, image_path):
 
 def send_question():
     """Validate GUI values and send one question to the selected model."""
+    # Read all lines in the Question box, then trim surrounding whitespace.
+    # This text is passed unchanged as the JSON "prompt" value.
     question = prompt_box.get("1.0", tk.END).strip()
-    image_path = selected_image["path"]
-    if not question and image_path is not None:
-        question = "Describe this image for educational purposes."
+    # Capture the paths of every selected image in click order. This snapshot
+    # means that later clicks cannot change a request already in progress.
+    image_paths = tuple(selected_images)
     model = model_name.get().strip()
     try:
         url = base_url(server_url.get())
@@ -274,9 +338,11 @@ def send_question():
         return
     send_button.config(state=tk.DISABLED)
     answer_box.delete("1.0", tk.END)
-    show_status(f"Waiting for {model}" + (f" with {image_path.name}" if image_path else " (text only)") + "...")
+    show_status(f"Waiting for {model}" + (f" with {len(image_paths)} image(s)" if image_paths else " (text only)") + "...")
+    # Pass the question and image snapshot together to the background worker.
+    # run_request calls generate(), which builds and sends one HTTP POST.
     threading.Thread(
-        target=run_request, args=(url, model, question, image_path), daemon=True
+        target=run_request, args=(url, model, question, image_paths), daemon=True
     ).start()
 
 
@@ -310,8 +376,23 @@ def refresh_models():
 
 # Build the Tkinter desktop interface on the main thread.
 window = tk.Tk()
-window.title("MedGemma Client")
-window.geometry("1060x690")
+window.title("MedGemma Client - your question only v6")
+# Reserve the full width of three thumbnails, including button borders and
+# spacing, so the third image is not hidden by the answer pane. On a narrow
+# screen, use the horizontal scrollbar underneath the images.
+gallery_width = 3 * (THUMBNAIL_SIZE[0] + 24) + 24
+# Leave enough space for the question on monitors too narrow for all three
+# thumbnails; users can scroll horizontally to reach the third image.
+gallery_viewport_width = min(gallery_width, max(280, window.winfo_screenwidth() - 370))
+# WINDOW_WIDTH and WINDOW_HEIGHT in .env can override the initial size.
+preferred_width = gallery_width + 540
+window_width = window_dimension("WINDOW_WIDTH", max(2400, round(preferred_width * 1.5)))
+window_height = window_dimension("WINDOW_HEIGHT", 850)
+# A requested width wider than the physical monitor cannot be fully visible.
+# Fit the window on screen and allow the image panel to scroll if necessary.
+visible_width = min(window_width, window.winfo_screenwidth() - 30)
+visible_height = min(window_height, window.winfo_screenheight() - 80)
+window.geometry(f"{visible_width}x{visible_height}")
 
 settings = ttk.LabelFrame(window, text="Ollama server and model")
 settings.pack(fill=tk.X, padx=12, pady=12)
@@ -332,21 +413,22 @@ refresh_button.pack(side=tk.LEFT)
 # Place text on the left and the image gallery beside it on the right.
 body = ttk.Frame(window)
 body.pack(fill=tk.BOTH, expand=True, padx=12, pady=(8, 12))
-body.columnconfigure(0, weight=2)
-body.columnconfigure(1, weight=1)
+# Give the image panel enough room before distributing extra window width.
+body.columnconfigure(0, weight=1, minsize=310)
+body.columnconfigure(1, weight=0, minsize=gallery_viewport_width)
 body.rowconfigure(0, weight=1)
 
 text_panel = ttk.Frame(body)
 text_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
 ttk.Label(text_panel, text="Question:").pack(anchor="w", pady=(4, 4))
-prompt_box = scrolledtext.ScrolledText(text_panel, height=7, wrap=tk.WORD)
+prompt_box = scrolledtext.ScrolledText(text_panel, width=35, height=7, wrap=tk.WORD)
 prompt_box.pack(fill=tk.X)
 send_button = ttk.Button(text_panel, text="Send question", command=send_question)
 send_button.pack(pady=10)
 status_label = ttk.Label(text_panel, text="Ready. Select a server and model.", wraplength=690)
 status_label.pack(anchor="w")
 ttk.Label(text_panel, text="Answer:").pack(anchor="w", pady=(12, 4))
-answer_box = scrolledtext.ScrolledText(text_panel, wrap=tk.WORD)
+answer_box = scrolledtext.ScrolledText(text_panel, width=35, wrap=tk.WORD)
 answer_box.pack(fill=tk.BOTH, expand=True)
 
 image_panel = ttk.LabelFrame(body, text="Images from data folder")
@@ -355,27 +437,35 @@ image_panel.rowconfigure(2, weight=1)
 image_panel.columnconfigure(0, weight=1)
 gallery_controls = ttk.Frame(image_panel)
 gallery_controls.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
-image_count = ttk.Label(gallery_controls, text="Loading images...")
+image_count = ttk.Label(gallery_controls, text=f"Loading images... ({THUMBNAIL_SIZE[0]} x {THUMBNAIL_SIZE[1]} px)")
 image_count.pack(side=tk.LEFT)
 ttk.Button(gallery_controls, text="Refresh images", command=load_images).pack(side=tk.RIGHT)
-selected_image = {"path": None, "button": None}
+selected_images = {}  # Insertion order is the order sent to Ollama.
+sample_button = tk.Button(image_panel)
+default_button_color = sample_button.cget("background")
+sample_button.destroy()
 selected_image_label = ttk.Label(
-    image_panel, text="No image selected (text only)", wraplength=260
+    image_panel, text="No images selected (text only)", wraplength=260
 )
 selected_image_label.grid(row=1, column=0, columnspan=2, sticky="w", padx=5, pady=(0, 5))
 
-image_canvas = tk.Canvas(image_panel, highlightthickness=0)
+image_canvas = tk.Canvas(image_panel, width=gallery_viewport_width, highlightthickness=0)
 image_canvas.grid(row=2, column=0, sticky="nsew")
 image_scroll = ttk.Scrollbar(image_panel, orient=tk.VERTICAL, command=image_canvas.yview)
 image_scroll.grid(row=2, column=1, sticky="ns")
 image_canvas.configure(yscrollcommand=image_scroll.set)
+image_hscroll = ttk.Scrollbar(image_panel, orient=tk.HORIZONTAL, command=image_canvas.xview)
+image_hscroll.grid(row=3, column=0, sticky="ew")
+image_canvas.configure(xscrollcommand=image_hscroll.set)
 image_grid = ttk.Frame(image_canvas)
 gallery_window = image_canvas.create_window((0, 0), window=image_grid, anchor="nw")
 image_grid.bind(
     "<Configure>", lambda event: image_canvas.configure(scrollregion=image_canvas.bbox("all"))
 )
 image_canvas.bind(
-    "<Configure>", lambda event: image_canvas.itemconfigure(gallery_window, width=event.width)
+    "<Configure>", lambda event: image_canvas.itemconfigure(
+        gallery_window, width=max(event.width, gallery_width - 24)
+    )
 )
 thumbnails = []
 
