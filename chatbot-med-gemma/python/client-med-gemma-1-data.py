@@ -223,7 +223,7 @@ def base_url(value):
         value = value.removesuffix("/api/generate")
     parsed = urlsplit(value)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        raise ValueError("Enter a full server URL, such as http://192.168.1.50:11434")
+        raise ValueError("Enter a full server URL, such as http://10.0.81.181:11434")
     if parsed.path or parsed.query or parsed.fragment or parsed.username or parsed.password:
         raise ValueError("Enter only the server address and port, without a path or key.")
     return value
