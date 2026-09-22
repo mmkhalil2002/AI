@@ -1,0 +1,35 @@
+{
+  "title": "Hepatocellular Liver Injury Pattern",
+  "educational_only": true,
+  "results": [
+    {
+      "test": "ALT",
+      "value": 286,
+      "unit": "U/L",
+      "reference_range": "7-56",
+      "flag": "HIGH"
+    },
+    {
+      "test": "AST",
+      "value": 192,
+      "unit": "U/L",
+      "reference_range": "10-40",
+      "flag": "HIGH"
+    },
+    {
+      "test": "Total bilirubin",
+      "value": 2.1,
+      "unit": "mg/dL",
+      "reference_range": "0.1-1.2",
+      "flag": "HIGH"
+    },
+    {
+      "test": "Albumin",
+      "value": 3.3,
+      "unit": "g/dL",
+      "reference_range": "3.5-5.0",
+      "flag": "LOW"
+    }
+  ],
+  "disclaimer": "Educational sample only; not for clinical diagnosis or treatment."
+}
