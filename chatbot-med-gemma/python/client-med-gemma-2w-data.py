@@ -336,6 +336,17 @@ def choose_dataset(column):
         load_images()
 
 
+def update_gallery_scrollbars(canvas, canvas_window, grid):
+    """Keep the canvas viewport scrollable when image content is oversized."""
+    grid.update_idletasks()
+    # Fill the visible canvas when content is small, but retain the complete
+    # requested content width when an image is wider than the physical window.
+    content_width = grid.winfo_reqwidth()
+    viewport_width = max(canvas.winfo_width(), 1)
+    canvas.itemconfigure(canvas_window, width=max(viewport_width, content_width))
+    canvas.configure(scrollregion=canvas.bbox("all"))
+
+
 def load_images():
     """Show X-Ray and EKG images in independently scrolling stacked galleries."""
     # Destroy old widgets before reloading; keep PhotoImage references so
@@ -394,7 +405,23 @@ def load_images():
                         configured_width or original_width,
                         configured_height or original_height,
                     )
-                    picture = ImageOps.pad(source.convert("RGB"), target_size, method=Image.Resampling.LANCZOS, color="white")
+                    rgb_source = source.convert("RGB")
+                    if column == 1:
+                        # EKG/ECG is commonly a long waveform. Apply the exact
+                        # configured width and height to the visible image
+                        # instead of preserving its aspect ratio and adding
+                        # white padding around it.
+                        picture = rgb_source.resize(
+                            target_size, Image.Resampling.LANCZOS
+                        )
+                    else:
+                        # Preserve the X-ray aspect ratio and fill unused space.
+                        picture = ImageOps.pad(
+                            rgb_source,
+                            target_size,
+                            method=Image.Resampling.LANCZOS,
+                            color="white",
+                        )
                 photo = ImageTk.PhotoImage(picture)
             except (OSError, ValueError):
                 errors += 1
@@ -417,8 +444,9 @@ def load_images():
             button.pack()
             ttk.Label(tile, text=path.name[:24], anchor="center", wraplength=target_size[0]).pack()
             displayed += 1
-        grid.update_idletasks()
-        gallery["canvas"].configure(scrollregion=gallery["canvas"].bbox("all"))
+        update_gallery_scrollbars(
+            gallery["canvas"], gallery["canvas_window"], gallery["grid"]
+        )
 
 
 def base_url(value):
@@ -646,10 +674,10 @@ body.pack(fill=tk.BOTH, expand=True, padx=12, pady=(4, 12))
 # The text pane gets 7 shares; the stacked gallery area gets 8 shares.
 body.columnconfigure(0, weight=7, minsize=190, uniform="body_parts")
 body.columnconfigure(1, weight=8, minsize=gallery_viewport_width + 16, uniform="body_parts")
-# The upper image area receives 80% of the height and is split equally
-# between XRAY and EKG. Blood Test Result receives the remaining 20%.
-body.rowconfigure(0, weight=4, uniform="body_rows")
-body.rowconfigure(1, weight=1, uniform="body_rows")
+# Blood Test Result receives 30% of the height. The upper 70% is split
+# equally between XRAY and EKG, giving each image window 35% overall.
+body.rowconfigure(0, weight=7, uniform="body_rows")
+body.rowconfigure(1, weight=3, uniform="body_rows")
 
 # One unified question-and-answer window. Its custom style makes the centered
 # title larger, bold, and red while leaving the other panel titles unchanged.
@@ -728,10 +756,22 @@ for gallery_index in range(2):
     canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
     grid = ttk.Frame(canvas)
     canvas_window = canvas.create_window((0, 0), window=grid, anchor="nw")
-    grid.bind("<Configure>", lambda event, c=canvas: c.configure(scrollregion=c.bbox("all")))
-    canvas.bind("<Configure>", lambda event, c=canvas, w=canvas_window, g=grid: c.itemconfigure(
-        w, width=max(event.width, g.winfo_reqwidth())))
-    galleries.append({"title": pane, "canvas": canvas, "grid": grid})
+    grid.bind(
+        "<Configure>",
+        lambda event, c=canvas, w=canvas_window, g=grid: update_gallery_scrollbars(c, w, g),
+    )
+    canvas.bind(
+        "<Configure>",
+        lambda event, c=canvas, w=canvas_window, g=grid: update_gallery_scrollbars(c, w, g),
+    )
+    galleries.append(
+        {
+            "title": pane,
+            "canvas": canvas,
+            "canvas_window": canvas_window,
+            "grid": grid,
+        }
+    )
 
 # Keep the selectable Blood Test Data list below the image galleries.
 blood_test_panel = ttk.LabelFrame(
