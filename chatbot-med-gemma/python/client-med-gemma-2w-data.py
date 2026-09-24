@@ -1,6 +1,14 @@
 """Windows MedGemma client: how text and image data reach Ollama.
 
-Run: py "med-gemma.py" (install Pillow: py -m pip install pillow).
+Required packages are checked and installed automatically at startup:
+    Pillow   - image loading and display
+    pyttsx3  - offline Windows text-to-speech
+
+Manual installation, if automatic installation is blocked:
+    py -m pip install pillow pyttsx3
+
+Run:
+    py "med-gemma.py"
 
 INPUT AND SELECTION
 -------------------
@@ -13,6 +21,18 @@ selected EKG originals, in click order. Folder names are not sent.
 Gallery display sizes come from XRAY_WIDTH, XRAY_HEIGHT, EKG_WIDTH, and
 EKG_HEIGHT in .env (256 by default). A zero dimension keeps that original
 image dimension. Display thumbnails are never uploaded.
+NUM_PREDICT in .env controls the maximum number of tokens generated for each
+answer (4096 by default).
+TEMPERATURE controls how predictable the wording is. Lower values produce
+more focused, repeatable reports; 0.2 is the default.
+REPEAT_PENALTY discourages reuse of recently generated words and phrases.
+1.0 applies no extra penalty; 1.2 is the default moderate penalty.
+REPEAT_LAST_N controls how many recent tokens Ollama checks when applying the
+repetition penalty. The default is 256 tokens.
+THINK in .env controls whether Ollama enables model reasoning (false by
+default). Accepted values include true/false, yes/no, on/off, and 1/0.
+GENERATION_TIMEOUT in .env controls how many seconds the client waits for
+Ollama to finish one response (900 seconds by default).
 
 HOW THE REQUEST IS FORMED
 -------------------------
@@ -35,26 +55,91 @@ Example request shape (the base64 string is much longer in reality):
       "prompt": "What are these images representing?",
       "images": ["iVBORw0KGgo...", "anotherBase64Image..."],
       "stream": false,
-      "options": {"num_predict": 300, "temperature": 0.1}
+      "think": false,
+      "options": {
+        "num_predict": 4096,
+        "temperature": 0.2,
+        "repeat_penalty": 1.2,
+        "repeat_last_n": 256
+      }
     }
 
 If no images are selected, the 'images' field is omitted and only text is sent.
 The response JSON contains a 'response' string, displayed in the left panel.
+When Voice is ON, the completed response is read aloud with the default
+Windows text-to-speech voice. Voice processing runs in a background thread.
 The client runs on Windows; Ollama can run on a Windows or Linux server.
 """
 
 import base64
+import importlib
+import importlib.util
 import io
 import json
 import os
+import re
+import subprocess
+import sys
 from datetime import datetime
 import threading
 import tkinter as tk
-from tkinter import filedialog, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
+
+
+def install_missing_package(import_name, package_name):
+    """Install one required package only when its import is unavailable."""
+    if importlib.util.find_spec(import_name) is not None:
+        return
+
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                package_name,
+            ],
+            check=True,
+        )
+        importlib.invalidate_caches()
+    except (OSError, subprocess.CalledProcessError) as error:
+        startup_window = tk.Tk()
+        startup_window.withdraw()
+        messagebox.showerror(
+            "Required package installation failed",
+            f"Could not install {package_name}.\n\n"
+            f"Run this command manually:\n"
+            f'"{sys.executable}" -m pip install {package_name}\n\n'
+            f"Details: {error}",
+            parent=startup_window,
+        )
+        startup_window.destroy()
+        raise SystemExit(1) from error
+
+    if importlib.util.find_spec(import_name) is None:
+        raise SystemExit(
+            f"{package_name} was installed but {import_name} is still unavailable. "
+            "Restart Python and run the script again."
+        )
+
+
+# These fixed, trusted package names are installed only when missing. Using
+# sys.executable ensures pip installs them into the Python running this script.
+install_missing_package("PIL", "Pillow")
+install_missing_package("pyttsx3", "pyttsx3")
+
+import pyttsx3
+
+
+voice_enabled = False
+speech_engine = None
+speech_lock = threading.Lock()
 
 
 def load_settings():
@@ -75,7 +160,9 @@ def load_settings():
             if key in (
                 "OLLAMA_URL", "MEDGEMMA_MODEL", "IMAGE_DIR", "BLOOD_TEST_DIR",
                 "XRAY_WIDTH", "XRAY_HEIGHT", "EKG_WIDTH", "EKG_HEIGHT",
-                "WINDOW_WIDTH", "WINDOW_HEIGHT",
+                "WINDOW_WIDTH", "WINDOW_HEIGHT", "NUM_PREDICT", "THINK",
+                "GENERATION_TIMEOUT", "TEMPERATURE", "REPEAT_PENALTY",
+                "REPEAT_LAST_N",
             ):
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                     value = value[1:-1]
@@ -99,7 +186,20 @@ IMAGE_DIR = Path(image_dir_setting).expanduser()
 if not IMAGE_DIR.is_absolute():
     IMAGE_DIR = Path(__file__).resolve().parent / IMAGE_DIR
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
-DATASET_COLORS = (("#1976d2", "#90c6ff"), ("#c05713", "#ffd197"))
+# Cheerful clinical-dashboard palette.
+APP_BACKGROUND = "#eef6fb"
+CARD_BACKGROUND = "#ffffff"
+TEXT_COLOR = "#17324d"
+MUTED_TEXT = "#5f7182"
+PRIMARY_BLUE = "#1976d2"
+PRIMARY_BLUE_DARK = "#125ca6"
+TEAL = "#00a896"
+CORAL = "#f26b5e"
+SOFT_BLUE = "#d9efff"
+SOFT_TEAL = "#d8f5ef"
+SOFT_CORAL = "#ffe2dd"
+TILE_BACKGROUND = "#f5f9fc"
+DATASET_COLORS = ((PRIMARY_BLUE, SOFT_BLUE), (TEAL, SOFT_TEAL))
 GALLERY_NAMES = ("XRAY", "EKG/ECG")
 FOLDER_PREFIXES = ("xray-data", "ekg-data")
 blood_test_dir_setting = os.environ.get(
@@ -112,7 +212,61 @@ if BLOOD_TEST_DIR is not None and not BLOOD_TEST_DIR.is_absolute():
 # Remote MedGemma can take several minutes when full-resolution images are sent.
 # Keep the quick server/model check short, but allow inference much longer.
 SERVER_CHECK_TIMEOUT = 15
-GENERATION_TIMEOUT = 900
+
+
+def positive_integer_setting(name, default):
+    """Read a positive integer from the environment or .env."""
+    value = os.environ.get(name, settings_from_file.get(name, str(default)))
+    try:
+        number = int(value)
+        if number > 0:
+            return number
+    except (TypeError, ValueError):
+        pass
+    print(f"Invalid {name}={value!r}; using {default}.")
+    return default
+
+
+NUM_PREDICT = positive_integer_setting("NUM_PREDICT", 4096)
+GENERATION_TIMEOUT = positive_integer_setting("GENERATION_TIMEOUT", 900)
+REPEAT_LAST_N = positive_integer_setting("REPEAT_LAST_N", 256)
+
+
+def float_setting(name, default, minimum, maximum):
+    """Read a floating-point .env value and keep it within a safe range."""
+    value = os.environ.get(name, settings_from_file.get(name, str(default)))
+    try:
+        number = float(value)
+        if minimum <= number <= maximum:
+            return number
+    except (TypeError, ValueError):
+        pass
+    print(
+        f"Invalid {name}={value!r}; expected {minimum} through {maximum}. "
+        f"Using {default}."
+    )
+    return default
+
+
+# Low temperature keeps medical-report wording focused and consistent.
+TEMPERATURE = float_setting("TEMPERATURE", 0.2, 0.0, 2.0)
+# A moderate value above 1.0 discourages loops without making wording unnatural.
+REPEAT_PENALTY = float_setting("REPEAT_PENALTY", 1.2, 0.1, 2.0)
+
+
+def boolean_setting(name, default):
+    """Read a true/false setting from the environment or .env."""
+    value = os.environ.get(name, settings_from_file.get(name, str(default)))
+    normalized = str(value).strip().lower()
+    if normalized in ("true", "yes", "on", "1"):
+        return True
+    if normalized in ("false", "no", "off", "0"):
+        return False
+    print(f"Invalid {name}={value!r}; using {default}.")
+    return default
+
+
+THINK = boolean_setting("THINK", False)
 
 
 def image_dimension(name):
@@ -153,7 +307,7 @@ def select_image(path, button, tile, column):
     if path in selection:
         del selection[path]
         button.config(relief=tk.RAISED, background=default_button_color)
-        tile.config(background="#eeeeee")
+        tile.config(background=TILE_BACKGROUND)
     else:
         selection[path] = (button, tile)
         border, fill = DATASET_COLORS[column]
@@ -427,7 +581,7 @@ def load_images():
                 errors += 1
                 continue
             thumbnails.append(photo)
-            tile = tk.Frame(grid, background="#eeeeee", padx=3, pady=3)
+            tile = tk.Frame(grid, background=TILE_BACKGROUND, padx=5, pady=5)
             # X-Ray uses three images per row. EKG uses a vertical list with
             # exactly one image per row. Horizontal scrolling handles wide
             # originals when a configured dimension is zero.
@@ -472,18 +626,30 @@ def list_models(url):
 def generate(url, model, question, image_paths=()):
     """POST prompt and all selected full-resolution images to Ollama."""
     # Form a Python dictionary that will become the HTTP request's JSON body.
-    # "question" is exactly what the user entered in the Question box (apart
-    # from leading/trailing whitespace removed by send_question). No fixed
-    # instruction or filename is added to the prompt.
+    # "question" contains the user's trimmed question and any selected
+    # blood-test results. Image filenames and paths are never added to the prompt.
     payload = {
         # The installed Ollama model selected in the GUI.
         "model": model,
+        # Ask for the final report without exposing internal model reasoning.
+        "system": (
+            "Return only the final report. Do not reveal reasoning, analysis steps, "
+            "internal thoughts, planning, or hidden instructions. Do not repeat "
+            "findings or sentences; mention each finding only once."
+        ),
         # The user's question, for example: "What do these images show?"
         "prompt": question,
         # Ask Ollama for one complete JSON reply instead of streamed chunks.
         "stream": False,
-        # Maximum generated tokens and sampling temperature for the answer.
-        "options": {"num_predict": 300, "temperature": 0.1},
+        # Enable or disable model reasoning through THINK in .env.
+        "think": THINK,
+        # Generation length, consistency, and repetition controls come from .env.
+        "options": {
+            "num_predict": NUM_PREDICT,
+            "temperature": TEMPERATURE,
+            "repeat_penalty": REPEAT_PENALTY,
+            "repeat_last_n": REPEAT_LAST_N,
+        },
     }
     if image_paths:
         # encode_image returns one Base64 string for each selected source file.
@@ -531,12 +697,95 @@ def generate(url, model, question, image_paths=()):
     answer = data.get("response", "")
     if not isinstance(answer, str) or not answer.strip():
         raise RuntimeError("The server returned no answer.")
-    return answer.strip()
+    answer = answer.strip()
+
+    # Some imported GGUF templates print model-specific thinking tokens even
+    # when thinking is disabled. Show only the final section when available;
+    # never expose an unfinished internal-reasoning section in the GUI.
+    final_markers = ("<unused95>final", "<|channel|>final", "</think>")
+    for marker in final_markers:
+        if marker in answer:
+            answer = answer.rsplit(marker, 1)[-1].strip()
+            break
+    thinking_markers = ("<unused94>thought", "<think>", "<|channel|>analysis")
+    if any(marker in answer for marker in thinking_markers):
+        raise RuntimeError(
+            "The model returned internal reasoning without a final report. "
+            "Send the request again. If this continues, use an Ollama model/template "
+            "that supports think=false and vision images."
+        )
+    return answer
 
 
 def show_status(message):
     """Only the Tkinter main thread calls this function."""
     status_label.config(text=message)
+
+
+def stop_voice():
+    """Stop speech that is currently playing."""
+    with speech_lock:
+        engine = speech_engine
+    if engine is not None:
+        try:
+            engine.stop()
+        except RuntimeError:
+            pass
+
+
+def speech_text(text):
+    """Remove common formatting characters before reading a response aloud."""
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"[`*_#]+", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def speak_response(text):
+    """Read one completed response without blocking the Tkinter GUI."""
+    if not voice_enabled or not text or pyttsx3 is None:
+        return
+
+    stop_voice()
+
+    def worker():
+        global speech_engine
+        engine = None
+        try:
+            engine = pyttsx3.init("sapi5")
+            with speech_lock:
+                if not voice_enabled:
+                    return
+                speech_engine = engine
+            engine.setProperty("rate", 165)
+            engine.setProperty("volume", 1.0)
+            engine.say(speech_text(text))
+            engine.runAndWait()
+        except Exception as error:
+            message = str(error)
+            window.after(0, lambda: show_status(f"Voice error: {message}"))
+        finally:
+            with speech_lock:
+                if speech_engine is engine:
+                    speech_engine = None
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def toggle_voice():
+    """Toggle automatic reading and visually show whether voice is enabled."""
+    global voice_enabled
+
+    voice_enabled = not voice_enabled
+    if voice_enabled:
+        voice_toggle_button.configure(text="Voice: ON", style="VoiceOn.TButton")
+        show_status("Voice is ON. Completed responses will be read aloud.")
+        current_answer = answer_box.get("1.0", tk.END).strip()
+        if current_answer and not current_answer.startswith("Error:"):
+            speak_response(current_answer)
+    else:
+        voice_toggle_button.configure(text="Voice: OFF", style="VoiceOff.TButton")
+        stop_voice()
+        show_status("Voice is OFF.")
 
 
 def finish(answer=None, error=None):
@@ -545,6 +794,8 @@ def finish(answer=None, error=None):
     show_status("Completed" if error is None else "Request failed")
     answer_box.delete("1.0", tk.END)
     answer_box.insert(tk.END, answer if error is None else f"Error: {error}")
+    if error is None and voice_enabled:
+        speak_response(answer)
 
 
 def run_request(url, model, question, image_paths):
@@ -567,8 +818,8 @@ def run_request(url, model, question, image_paths):
 def send_question():
     """Validate GUI values and send one question to the selected model."""
     # Read all lines in the Question box, then trim surrounding whitespace.
-    # This text is passed unchanged as the JSON "prompt" value.
-    question = prompt_box.get("1.0", tk.END).strip()
+    user_question = prompt_box.get("1.0", tk.END).strip()
+    question = user_question
     selected_blood_tests = [
         blood_test_records[index].get("results", [])
         for index in sorted(selected_blood_test_indices)
@@ -585,7 +836,7 @@ def send_question():
     model = model_name.get().strip()
     try:
         url = base_url(server_url.get())
-        if not question or not model:
+        if not user_question or not model:
             raise ValueError("Enter a question and a model name.")
     except ValueError as error:
         show_status(str(error))
@@ -605,7 +856,9 @@ def send_question():
     # Pass the question and image snapshot together to the background worker.
     # run_request calls generate(), which builds and sends one HTTP POST.
     threading.Thread(
-        target=run_request, args=(url, model, question, image_paths), daemon=True
+        target=run_request,
+        args=(url, model, question, image_paths),
+        daemon=True,
     ).start()
 
 
@@ -640,6 +893,109 @@ def refresh_models():
 # Build the Tkinter desktop interface on the main thread.
 window = tk.Tk()
 window.title("AI Clinical Assistant Center")
+window.configure(background=APP_BACKGROUND)
+
+# Use a clean, consistent theme instead of platform-dependent default colors.
+ui_style = ttk.Style(window)
+try:
+    ui_style.theme_use("clam")
+except tk.TclError:
+    pass
+ui_style.configure("App.TFrame", background=APP_BACKGROUND)
+ui_style.configure(
+    "Settings.TLabelframe",
+    background=CARD_BACKGROUND,
+    bordercolor=SOFT_BLUE,
+    relief="solid",
+    borderwidth=1,
+)
+ui_style.configure(
+    "Settings.TLabelframe.Label",
+    background=APP_BACKGROUND,
+    foreground=PRIMARY_BLUE_DARK,
+    font=("Segoe UI", 11, "bold"),
+)
+ui_style.configure(
+    "Assistant.TLabelframe",
+    background=CARD_BACKGROUND,
+    bordercolor=SOFT_BLUE,
+    relief="solid",
+    borderwidth=1,
+)
+ui_style.configure(
+    "Assistant.TLabelframe.Label",
+    background=APP_BACKGROUND,
+    foreground=CORAL,
+    font=("Segoe UI", 16, "bold"),
+)
+ui_style.configure(
+    "Gallery.TLabelframe",
+    background=CARD_BACKGROUND,
+    bordercolor=SOFT_TEAL,
+    relief="solid",
+    borderwidth=1,
+)
+ui_style.configure(
+    "Gallery.TLabelframe.Label",
+    background=APP_BACKGROUND,
+    foreground=TEAL,
+    font=("Segoe UI", 12, "bold"),
+)
+ui_style.configure(
+    "Field.TLabel",
+    background=CARD_BACKGROUND,
+    foreground=TEXT_COLOR,
+    font=("Segoe UI", 10, "bold"),
+)
+ui_style.configure(
+    "Status.TLabel",
+    background=CARD_BACKGROUND,
+    foreground=MUTED_TEXT,
+    font=("Segoe UI", 9),
+)
+ui_style.configure(
+    "Accent.TButton",
+    background=PRIMARY_BLUE,
+    foreground="white",
+    borderwidth=0,
+    padding=(14, 7),
+    font=("Segoe UI", 10, "bold"),
+)
+ui_style.map(
+    "Accent.TButton",
+    background=[("active", PRIMARY_BLUE_DARK), ("disabled", "#9eb6c9")],
+    foreground=[("disabled", "#edf3f7")],
+)
+ui_style.configure(
+    "Secondary.TButton",
+    background=TEAL,
+    foreground="white",
+    borderwidth=0,
+    padding=(10, 6),
+    font=("Segoe UI", 9, "bold"),
+)
+ui_style.map("Secondary.TButton", background=[("active", "#008577")])
+ui_style.configure(
+    "VoiceOn.TButton",
+    background=TEAL,
+    foreground="white",
+    borderwidth=0,
+    padding=(12, 7),
+    font=("Segoe UI", 10, "bold"),
+)
+ui_style.map("VoiceOn.TButton", background=[("active", "#008577")])
+ui_style.configure(
+    "VoiceOff.TButton",
+    background="#d9e2e8",
+    foreground=TEXT_COLOR,
+    borderwidth=0,
+    padding=(12, 7),
+    font=("Segoe UI", 10, "bold"),
+)
+ui_style.map("VoiceOff.TButton", background=[("active", "#c7d4dc")])
+ui_style.configure("TEntry", fieldbackground="white", foreground=TEXT_COLOR, padding=5)
+ui_style.configure("TCombobox", fieldbackground="white", foreground=TEXT_COLOR, padding=4)
+ui_style.configure("TScrollbar", background=SOFT_BLUE, troughcolor="#e8f1f7")
 # Reserve one full-width image area containing two stacked galleries.
 gallery_width = 3 * (max(width or 256 for width, _ in GALLERY_SIZES) + 14) + 60
 # WINDOW_WIDTH and WINDOW_HEIGHT in .env can override the initial size.
@@ -651,46 +1007,53 @@ window_height = window_dimension("WINDOW_HEIGHT", 850)
 visible_width = min(window_width, window.winfo_screenwidth() - 30)
 visible_height = min(window_height, window.winfo_screenheight() - 80)
 window.geometry(f"{visible_width}x{visible_height}")
-# The stacked galleries use the entire right-hand body column.
-gallery_viewport_width = max(105, round((visible_width - 45) * 8 / 15) - 24)
+# The medical-data panels use 65% of the body width.
+gallery_viewport_width = max(105, round((visible_width - 45) * 65 / 100) - 24)
 
-settings = ttk.LabelFrame(window, text="Ollama server and model")
-settings.pack(fill=tk.X, padx=12, pady=(4, 2))
-settings.columnconfigure(1, weight=1)
-settings.columnconfigure(3, weight=1)
+settings = ttk.LabelFrame(
+    window, text="Connection & Model", style="Settings.TLabelframe"
+)
+settings.pack(fill=tk.X, padx=14, pady=(10, 5))
+settings.columnconfigure(1, weight=0)
+settings.columnconfigure(3, weight=0)
 server_url = tk.StringVar(value=DEFAULT_SERVER_URL)
 model_name = tk.StringVar(value=DEFAULT_MODEL)
-ttk.Label(settings, text="Server URL:").grid(row=0, column=0, padx=(8, 4), pady=3, sticky="w")
-ttk.Entry(settings, textvariable=server_url).grid(row=0, column=1, padx=4, pady=3, sticky="ew")
-ttk.Label(settings, text="Model:").grid(row=0, column=2, padx=(12, 4), pady=3, sticky="w")
-model_picker = ttk.Combobox(settings, textvariable=model_name, values=DEFAULT_MODELS)
-model_picker.grid(row=0, column=3, padx=4, pady=3, sticky="ew")
-refresh_button = ttk.Button(settings, text="Check server / models", command=refresh_models)
-refresh_button.grid(row=0, column=4, padx=(8, 6), pady=3)
+ttk.Label(settings, text="Server URL", style="Field.TLabel").grid(row=0, column=0, padx=(10, 5), pady=7, sticky="w")
+server_entry = ttk.Entry(
+    settings,
+    textvariable=server_url,
+    width=max(24, min(42, len(DEFAULT_SERVER_URL) + 2)),
+)
+server_entry.grid(row=0, column=1, padx=4, pady=3, sticky="w")
+ttk.Label(settings, text="Model", style="Field.TLabel").grid(row=0, column=2, padx=(14, 5), pady=7, sticky="w")
+model_picker = ttk.Combobox(
+    settings,
+    textvariable=model_name,
+    values=DEFAULT_MODELS,
+    width=max(16, min(28, len(DEFAULT_MODEL) + 2)),
+)
+model_picker.grid(row=0, column=3, padx=4, pady=3, sticky="w")
+refresh_button = ttk.Button(
+    settings,
+    text="Check Connection",
+    command=refresh_models,
+    style="Secondary.TButton",
+)
+refresh_button.grid(row=0, column=4, padx=(10, 8), pady=3)
 
 # Place text on the left and the image gallery beside it on the right.
-body = ttk.Frame(window)
-body.pack(fill=tk.BOTH, expand=True, padx=12, pady=(4, 12))
-# The text pane gets 7 shares; the stacked gallery area gets 8 shares.
-body.columnconfigure(0, weight=7, minsize=190, uniform="body_parts")
-body.columnconfigure(1, weight=8, minsize=gallery_viewport_width + 16, uniform="body_parts")
+body = ttk.Frame(window, style="App.TFrame")
+body.pack(fill=tk.BOTH, expand=True, padx=14, pady=(5, 14))
+# Question and AI Response receive 35% of the width; the medical image and
+# blood-test panels receive the remaining 65%.
+body.columnconfigure(0, weight=35, minsize=190, uniform="body_parts")
+body.columnconfigure(1, weight=65, minsize=gallery_viewport_width + 16, uniform="body_parts")
 # Blood Test Result receives 30% of the height. The upper 70% is split
 # equally between XRAY and EKG, giving each image window 35% overall.
 body.rowconfigure(0, weight=7, uniform="body_rows")
 body.rowconfigure(1, weight=3, uniform="body_rows")
 
-# One unified question-and-answer window. Its custom style makes the centered
-# title larger, bold, and red while leaving the other panel titles unchanged.
-ui_style = ttk.Style(window)
-ui_style.configure(
-    "Assistant.TLabelframe.Label",
-    foreground="#d00000",
-    font=("Segoe UI", 16, "bold"),
-)
-ui_style.configure(
-    "Gallery.TLabelframe.Label",
-    font=("Segoe UI", 12, "bold"),
-)
+# One unified question-and-answer window.
 qa_panel = ttk.LabelFrame(
     body,
     text="AI Clinical Assistant Center",
@@ -698,18 +1061,62 @@ qa_panel = ttk.LabelFrame(
     style="Assistant.TLabelframe",
 )
 qa_panel.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 12))
-ttk.Label(qa_panel, text="Question:").pack(anchor="w", pady=(4, 4))
-prompt_box = scrolledtext.ScrolledText(qa_panel, width=18, height=4, wrap=tk.WORD)
-prompt_box.pack(fill=tk.X)
-send_button = ttk.Button(qa_panel, text="Send question", command=send_question)
-send_button.pack(pady=10)
-status_label = ttk.Label(qa_panel, text="Ready. Select a server and model.", wraplength=240)
+ttk.Label(qa_panel, text="Your Question", style="Field.TLabel").pack(anchor="w", padx=10, pady=(10, 5))
+prompt_box = scrolledtext.ScrolledText(
+    qa_panel,
+    width=18,
+    height=4,
+    wrap=tk.WORD,
+    font=("Segoe UI", 11),
+    background="#fbfdff",
+    foreground=TEXT_COLOR,
+    insertbackground=PRIMARY_BLUE,
+    selectbackground=SOFT_BLUE,
+    relief=tk.FLAT,
+    borderwidth=6,
+)
+prompt_box.pack(fill=tk.X, padx=10)
+action_bar = ttk.Frame(qa_panel, style="App.TFrame")
+action_bar.pack(pady=10)
+send_button = ttk.Button(
+    action_bar, text="Send to MedGemma", command=send_question, style="Accent.TButton"
+)
+send_button.pack(side=tk.LEFT, padx=(0, 8))
+voice_toggle_button = ttk.Button(
+    action_bar,
+    text="Voice: OFF",
+    command=toggle_voice,
+    style="VoiceOff.TButton",
+)
+voice_toggle_button.pack(side=tk.LEFT)
+status_label = ttk.Label(
+    qa_panel,
+    text="Ready. Select a server and model.",
+    wraplength=240,
+    style="Status.TLabel",
+)
 status_label.pack(anchor="w")
-ttk.Label(qa_panel, text="Answer:").pack(anchor="w", pady=(12, 4))
-answer_box = scrolledtext.ScrolledText(qa_panel, width=18, wrap=tk.WORD)
-answer_box.pack(fill=tk.BOTH, expand=True)
+ttk.Label(qa_panel, text="AI Response", style="Field.TLabel").pack(anchor="w", padx=10, pady=(12, 5))
+answer_box = scrolledtext.ScrolledText(
+    qa_panel,
+    width=18,
+    wrap=tk.WORD,
+    font=("Segoe UI", 11),
+    background="#f8fcff",
+    foreground=TEXT_COLOR,
+    insertbackground=PRIMARY_BLUE,
+    selectbackground=SOFT_BLUE,
+    relief=tk.FLAT,
+    borderwidth=6,
+)
+answer_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
-image_panel = ttk.LabelFrame(body, text="Dated Image Datasets", labelanchor="n")
+image_panel = ttk.LabelFrame(
+    body,
+    text="Medical Image Datasets",
+    labelanchor="n",
+    style="Gallery.TLabelframe",
+)
 image_panel.grid(row=0, column=1, sticky="nsew")
 image_panel.rowconfigure(0, weight=1, uniform="gallery_rows")
 image_panel.rowconfigure(1, weight=1, uniform="gallery_rows")
@@ -721,8 +1128,15 @@ default_button_color = sample_button.cget("background")
 sample_button.destroy()
 
 # Keep folder selection and refresh available without taking gallery space.
-menu_bar = tk.Menu(window)
-images_menu = tk.Menu(menu_bar, tearoff=False)
+menu_bar = tk.Menu(window, background=CARD_BACKGROUND, foreground=TEXT_COLOR)
+images_menu = tk.Menu(
+    menu_bar,
+    tearoff=False,
+    background=CARD_BACKGROUND,
+    foreground=TEXT_COLOR,
+    activebackground=SOFT_BLUE,
+    activeforeground=PRIMARY_BLUE_DARK,
+)
 images_menu.add_command(label="Choose X-Ray folder...", command=lambda: choose_dataset(0))
 images_menu.add_command(label="Choose EKG folder...", command=lambda: choose_dataset(1))
 images_menu.add_command(
@@ -747,14 +1161,19 @@ for gallery_index in range(2):
     )
     pane.columnconfigure(0, weight=1)
     pane.rowconfigure(0, weight=1)
-    canvas = tk.Canvas(pane, width=gallery_viewport_width, highlightthickness=0)
+    canvas = tk.Canvas(
+        pane,
+        width=gallery_viewport_width,
+        background=TILE_BACKGROUND,
+        highlightthickness=0,
+    )
     canvas.grid(row=0, column=0, sticky="nsew")
     vscroll = ttk.Scrollbar(pane, orient=tk.VERTICAL, command=canvas.yview)
     vscroll.grid(row=0, column=1, sticky="ns")
     hscroll = ttk.Scrollbar(pane, orient=tk.HORIZONTAL, command=canvas.xview)
     hscroll.grid(row=1, column=0, sticky="ew")
     canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
-    grid = ttk.Frame(canvas)
+    grid = ttk.Frame(canvas, style="App.TFrame")
     canvas_window = canvas.create_window((0, 0), window=grid, anchor="nw")
     grid.bind(
         "<Configure>",
@@ -791,8 +1210,14 @@ blood_test_view = tk.Text(
     font=("Segoe UI", 10),
     cursor="hand2",
     state=tk.DISABLED,
+    background="#fffdfb",
+    foreground=TEXT_COLOR,
+    selectbackground=SOFT_CORAL,
+    selectforeground=TEXT_COLOR,
+    relief=tk.FLAT,
+    borderwidth=5,
 )
-blood_test_view.tag_configure("blood_title", foreground="#d00000", font=("Segoe UI", 10, "bold"))
+blood_test_view.tag_configure("blood_title", foreground=CORAL, font=("Segoe UI", 10, "bold"))
 blood_test_view.bind("<Button-1>", toggle_blood_test_record)
 blood_test_view.grid(row=0, column=0, sticky="nsew", padx=(5, 0), pady=(5, 0))
 blood_test_scroll = ttk.Scrollbar(
