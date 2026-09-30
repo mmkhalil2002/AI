@@ -635,14 +635,16 @@ def generate(url, model, question, image_paths=()):
         "system": (
             "Return only the final report. Do not reveal reasoning, analysis steps, "
             "internal thoughts, planning, or hidden instructions. Do not repeat "
-            "findings or sentences; mention each finding only once."
+            "findings or sentences; mention each finding only once. Organize the "
+            "report into three separate sections with these exact plain-text headings: "
+            "X-RAY, ECG/EKG, and BLOOD TEST. Never combine information from different "
+            "sections. If a section has no supplied data, write 'No data provided' "
+            "under that section."
         ),
         # The user's question, for example: "What do these images show?"
         "prompt": question,
         # Ask Ollama for one complete JSON reply instead of streamed chunks.
         "stream": False,
-        # Enable or disable model reasoning through THINK in .env.
-        "think": THINK,
         # Generation length, consistency, and repetition controls come from .env.
         "options": {
             "num_predict": NUM_PREDICT,
@@ -699,20 +701,27 @@ def generate(url, model, question, image_paths=()):
         raise RuntimeError("The server returned no answer.")
     answer = answer.strip()
 
-    # Some imported GGUF templates print model-specific thinking tokens even
-    # when thinking is disabled. Show only the final section when available;
-    # never expose an unfinished internal-reasoning section in the GUI.
-    final_markers = ("<unused95>final", "<|channel|>final", "</think>")
-    for marker in final_markers:
-        if marker in answer:
-            answer = answer.rsplit(marker, 1)[-1].strip()
+    # Some MedGemma/Ollama templates emit private planning between <unused94>
+    # and <unused95>. The text after <unused95> is the final report. Templates
+    # vary by inserting spaces or the word "final", so accept each variation.
+    final_patterns = (
+        r"<unused95>\s*(?:final\s*)?",
+        r"<\|channel\|>\s*final\s*",
+        r"</think>\s*",
+    )
+    for pattern in final_patterns:
+        matches = list(re.finditer(pattern, answer, flags=re.IGNORECASE))
+        if matches:
+            answer = answer[matches[-1].end():].strip()
             break
-    thinking_markers = ("<unused94>thought", "<think>", "<|channel|>analysis")
-    if any(marker in answer for marker in thinking_markers):
+
+    # Never display an unfinished reasoning-only response.
+    thinking_pattern = r"(?:<unused94>\s*thought|<think>|<\|channel\|>\s*analysis)"
+    if re.search(thinking_pattern, answer, flags=re.IGNORECASE):
         raise RuntimeError(
             "The model returned internal reasoning without a final report. "
             "Send the request again. If this continues, use an Ollama model/template "
-            "that supports think=false and vision images."
+            "that produces a final response after its reasoning."
         )
     return answer
 
@@ -793,9 +802,28 @@ def finish(answer=None, error=None):
     send_button.config(state=tk.NORMAL)
     show_status("Completed" if error is None else "Request failed")
     answer_box.delete("1.0", tk.END)
-    answer_box.insert(tk.END, answer if error is None else f"Error: {error}")
+    if error is None:
+        insert_highlighted_report(answer)
+    else:
+        answer_box.insert(tk.END, f"Error: {error}")
     if error is None and voice_enabled:
         speak_response(answer)
+
+
+def insert_highlighted_report(report):
+    """Display the report and color medical-section names red."""
+    # Match common spellings regardless of capitalization:
+    # X-ray/Xray/X ray, EKG, ECG, and Blood Test/Blood-Test.
+    pattern = re.compile(
+        r"\b(?:x[\s-]?ray|ecg\s*/\s*ekg|ekg\s*/\s*ecg|ekg|ecg|blood[\s-]?test)\b",
+        flags=re.IGNORECASE,
+    )
+    position = 0
+    for match in pattern.finditer(report):
+        answer_box.insert(tk.END, report[position:match.start()])
+        answer_box.insert(tk.END, match.group(0), ("report_medical_heading",))
+        position = match.end()
+    answer_box.insert(tk.END, report[position:])
 
 
 def run_request(url, model, question, image_paths):
@@ -830,6 +858,21 @@ def send_question():
             "\n\nSelected blood test data (JSON):\n"
             + json.dumps(selected_blood_tests, indent=2, ensure_ascii=False)
         )
+    xray_count = len(selected_images[0])
+    ekg_count = len(selected_images[1])
+    question += (
+        "\n\nImage input identification:\n"
+        f"- The first {xray_count} image(s) are X-ray images.\n"
+        f"- The next {ekg_count} image(s) are ECG/EKG images.\n"
+        "\nRequired final report format:\n"
+        "X-RAY\n"
+        "[X-ray findings, or No data provided]\n\n"
+        "ECG/EKG\n"
+        "[ECG/EKG findings, or No data provided]\n\n"
+        "BLOOD TEST\n"
+        "[Blood-test findings, or No data provided]\n"
+        "Keep these as three separate sections and do not combine them."
+    )
     # Capture blue-column images followed by orange-column images. Click order
     # within each dataset is retained. Later clicks cannot change this request.
     image_paths = tuple(path for group in selected_images for path in group)
@@ -1108,6 +1151,11 @@ answer_box = scrolledtext.ScrolledText(
     selectbackground=SOFT_BLUE,
     relief=tk.FLAT,
     borderwidth=6,
+)
+answer_box.tag_configure(
+    "report_medical_heading",
+    foreground="#d32f2f",
+    font=("Segoe UI", 11, "bold"),
 )
 answer_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 

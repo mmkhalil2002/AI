@@ -1,0 +1,185 @@
+MedGemma 1.5 with Ollama - Ubuntu Server GPU Installation
+==========================================================
+
+Model: medgemma1.5:4b
+Example server IP: 10.0.81.181
+
+
+1. VERIFY THE NVIDIA GPU
+------------------------
+
+nvidia-smi
+
+If this displays the GPU, driver version, and GPU memory, continue to Step 2.
+
+If the command is missing or the driver is not working, install the recommended
+Ubuntu NVIDIA driver:
+
+sudo apt update
+sudo apt install -y ubuntu-drivers-common
+sudo ubuntu-drivers install
+sudo reboot
+
+After reconnecting to the server, verify again:
+
+nvidia-smi
+
+
+2. INSTALL OLLAMA
+-----------------
+
+curl -fsSL https://ollama.com/install.sh | sh
+
+Verify:
+
+ollama --version
+
+
+3. DOWNLOAD AND INSTALL MEDGEMMA
+--------------------------------
+
+ollama pull medgemma1.5:4b
+
+Confirm that it is installed:
+
+ollama list
+
+The output must contain:
+
+medgemma1.5:4b
+
+
+4. ALLOW REMOTE CLIENT CONNECTIONS
+----------------------------------
+
+Create a persistent Ollama service setting:
+
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+
+Run:
+
+sudo systemctl edit ollama
+
+Enter these two lines:
+
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0:11434"
+
+Save the file and exit the editor. Then run:
+
+sudo systemctl daemon-reload
+sudo systemctl enable ollama
+sudo systemctl restart ollama
+
+Ollama now runs continuously as a background service and starts automatically
+after Ubuntu reboots. Do not run "ollama serve" manually.
+
+
+5. OPEN THE FIREWALL PORT
+-------------------------
+
+If UFW is enabled and the client is on the 10.0.81.x network, run:
+
+sudo ufw allow from 10.0.81.0/24 to any port 11434 proto tcp
+
+Check the rule:
+
+sudo ufw status
+
+If the client uses a different subnet, replace 10.0.81.0/24 with that subnet.
+
+
+6. TEST MEDGEMMA
+----------------
+
+ollama run medgemma1.5:4b
+
+Enter:
+
+Reply with exactly: MedGemma is working.
+
+If it responds, enter the following to exit:
+
+/bye
+
+
+7. VERIFY THE API AND NETWORK LISTENER
+--------------------------------------
+
+Test the local API:
+
+curl http://127.0.0.1:11434/api/tags
+
+The response must contain medgemma1.5:4b.
+
+Confirm that Ollama listens for remote connections:
+
+ss -lntp | grep 11434
+
+The output should contain:
+
+0.0.0.0:11434
+
+
+8. VERIFY GPU USE
+-----------------
+
+Run a MedGemma request:
+
+ollama run medgemma1.5:4b "Describe the purpose of a chest X-ray."
+
+While the request is running, open another terminal and run:
+
+nvidia-smi
+
+Ollama should appear as a process and consume GPU memory.
+
+Also check:
+
+ollama ps
+
+The PROCESSOR column should indicate GPU use, such as 100% GPU.
+
+
+9. TEST FROM THE CLIENT COMPUTER
+--------------------------------
+
+From the client computer:
+
+curl http://10.0.81.181:11434/api/tags
+
+If the response contains medgemma1.5:4b, the installation and remote connection
+are working.
+
+
+10. CLIENT .ENV SETTINGS
+------------------------
+
+OLLAMA_URL=http://10.0.81.181:11434
+MEDGEMMA_MODEL=medgemma1.5:4b
+
+Replace 10.0.81.181 if the Ubuntu server has a different IP address.
+
+
+USEFUL STATUS COMMANDS
+----------------------
+
+Check the Ollama service:
+
+systemctl status ollama
+
+Restart Ollama:
+
+sudo systemctl restart ollama
+
+View Ollama logs:
+
+journalctl -u ollama -n 100 --no-pager
+
+List installed models:
+
+ollama list
+
+Show currently loaded models and GPU/CPU allocation:
+
+ollama ps
