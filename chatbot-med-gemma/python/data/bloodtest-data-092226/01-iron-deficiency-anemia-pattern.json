@@ -1,0 +1,35 @@
+{
+  "title": "Iron-Deficiency Anemia Pattern",
+  "educational_only": true,
+  "results": [
+    {
+      "test": "Hemoglobin",
+      "value": 8.7,
+      "unit": "g/dL",
+      "reference_range": "12.0-16.0",
+      "flag": "LOW"
+    },
+    {
+      "test": "MCV",
+      "value": 68,
+      "unit": "fL",
+      "reference_range": "80-100",
+      "flag": "LOW"
+    },
+    {
+      "test": "Ferritin",
+      "value": 7,
+      "unit": "ng/mL",
+      "reference_range": "15-150",
+      "flag": "LOW"
+    },
+    {
+      "test": "Transferrin saturation",
+      "value": 5,
+      "unit": "%",
+      "reference_range": "20-50",
+      "flag": "LOW"
+    }
+  ],
+  "disclaimer": "Educational sample only; not for clinical diagnosis or treatment."
+}

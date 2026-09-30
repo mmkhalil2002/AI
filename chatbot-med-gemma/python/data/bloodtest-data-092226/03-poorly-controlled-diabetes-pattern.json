@@ -1,0 +1,28 @@
+{
+  "title": "Poorly Controlled Diabetes Pattern",
+  "educational_only": true,
+  "results": [
+    {
+      "test": "Fasting glucose",
+      "value": 238,
+      "unit": "mg/dL",
+      "reference_range": "70-99",
+      "flag": "HIGH"
+    },
+    {
+      "test": "Hemoglobin A1c",
+      "value": 9.4,
+      "unit": "%",
+      "reference_range": "<5.7",
+      "flag": "HIGH"
+    },
+    {
+      "test": "Triglycerides",
+      "value": 248,
+      "unit": "mg/dL",
+      "reference_range": "<150",
+      "flag": "HIGH"
+    }
+  ],
+  "disclaimer": "Educational sample only; not for clinical diagnosis or treatment."
+}
