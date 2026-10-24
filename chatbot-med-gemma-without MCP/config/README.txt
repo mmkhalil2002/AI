@@ -1,8 +1,8 @@
-MedGemma installation and cleanup — Windows / Ubuntu
+MedGemma — No-Virtual-Environment INIT/UNINIT
 
-Put all four scripts in PROJECT_ROOT/config/.
-Put Python source files in PROJECT_ROOT/python/.
-The generated requirements.txt belongs in PROJECT_ROOT/.
+Copy the four scripts into PROJECT_ROOT/config/
+Python source belongs in PROJECT_ROOT/python/
+requirements.txt belongs in PROJECT_ROOT/ (generated if missing)
 
 Windows:
   cd /d "C:\Users\Public\mkhalil\AI\AI\chatbot-med-gemma-without MCP\config"
@@ -15,21 +15,19 @@ Ubuntu:
   bash uninit.sh
 
 INIT:
-- Installs/detects Python, pip, Node.js/npm, Codex.
-- Uses a project-local .venv for Python packages.
-- If requirements.txt is missing, installs pipreqs into .venv and scans python/.
-- Displays a clear ERROR if the Python source directory or .py files are missing.
-- Installs packages listed in requirements.txt and runs pip check.
+- Does not create a .venv; automatically removes existing PROJECT_ROOT/.venv.
+- Installs/detects Python, pip, Node.js/npm and Codex.
+- Generates requirements.txt if absent, after installing pipreqs.
+- Prints errors if Python source files are missing.
+- Installs Python packages into the current user's Python site-packages.
+- Ubuntu uses pip --user --break-system-packages for externally managed Python.
+  This is a deliberate tradeoff and may conflict with other Python programs.
 - Optionally installs Ollama locally and downloads MedGemma 1.5 / Qwen3:8B.
-- Does NOT launch Codex, the GUI, or Ollama service. Start those separately.
-- On Windows, Python/Node installations may require a new CMD window and rerun.
-- pipreqs cannot detect every dynamic import; review requirements.txt.
+  Ollama/models can consume multiple GB if you choose Yes.
+- Does NOT start Ollama server, Codex, or the GUI.
 
 UNINIT:
-- Asks before removing globally installed Codex (affects other projects).
-- Asks before deleting the project's .venv.
-- Preserves Python, Node, npm, Ollama, models, PATH, requirements.txt and data.
-- Does not uninstall or stop Ollama.
-
-Ollama model downloads require Ollama service to be running already.
-Use your own separate start/stop script for that service.
+- Offers to uninstall global Codex and delete any remaining project .venv.
+- Does NOT uninstall user Python packages (shared with other projects),
+  Ollama, models, Python, Node.js, or delete project source/patient data.
+- The init removes .venv automatically, without a separate confirmation.

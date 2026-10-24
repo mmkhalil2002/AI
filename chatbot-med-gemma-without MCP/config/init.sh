@@ -8,7 +8,7 @@ echo "Project: $ROOT"
 trap 'echo "[ERROR] Initialization failed at line $LINENO." >&2' ERR
 command -v apt-get >/dev/null || { echo '[ERROR] Ubuntu/Debian apt-get required.' >&2; exit 1; }
 sudo apt-get update
-sudo apt-get install -y python3 python3-venv python3-pip curl ca-certificates
+sudo apt-get install -y python3 python3-pip curl ca-certificates
 node_major=0
 if command -v node >/dev/null 2>&1; then
   node_major="$(node -p 'process.versions.node.split(".")[0]')"
@@ -36,11 +36,22 @@ npm install -g @openai/codex
 command -v codex >/dev/null || { echo '[ERROR] Codex not found on PATH.' >&2; exit 1; }
 codex --version
 
-# Use one project-local Python environment for pipreqs AND app dependencies.
-VPY="$ROOT/.venv/bin/python"
-if [[ ! -x "$VPY" ]]; then
-  python3 -m venv "$ROOT/.venv"
+# Never create a virtual environment. Delete an existing project .venv.
+# Do not follow symlinks outside the project.
+if [[ -L "$ROOT/.venv" ]]; then
+  echo '[ERROR] .venv is a symbolic link. Remove it manually for safety.' >&2
+  exit 1
 fi
+if [[ -d "$ROOT/.venv" ]]; then
+  echo '[INFO] Removing existing project .venv...'
+  rm -rf -- "$ROOT/.venv"
+fi
+
+# Modern Ubuntu marks system Python as externally managed (PEP 668).
+# This explicit override installs into user site packages without creating a venv.
+# It can still conflict with system/user Python packages; review requirements.txt.
+PYTHON=python3
+PIP_ARGS=(--user --break-system-packages)
 if [[ ! -f "$ROOT/requirements.txt" ]]; then
   if [[ ! -d "$ROOT/python" ]]; then
     echo "[ERROR] Cannot generate requirements.txt: missing $ROOT/python" >&2
@@ -49,19 +60,18 @@ if [[ ! -f "$ROOT/requirements.txt" ]]; then
   fi
   if ! find "$ROOT/python" -type f -name '*.py' -print -quit | grep -q .; then
     echo "[ERROR] Cannot generate requirements.txt: no .py files under $ROOT/python" >&2
-    echo '[ACTION] Add Python source files or create requirements.txt at project root.' >&2
     exit 1
   fi
-  echo '[INFO] Installing pipreqs in the project environment...'
-  "$VPY" -m pip install pipreqs
+  echo '[INFO] Installing pipreqs in user Python site-packages (no .venv)...'
+  "$PYTHON" -m pip install "${PIP_ARGS[@]}" pipreqs
   echo '[INFO] Generating requirements.txt...'
-  "$VPY" -m pipreqs.pipreqs "$ROOT/python" \
+  "$PYTHON" -m pipreqs.pipreqs "$ROOT/python" \
     --savepath "$ROOT/requirements.txt" --mode no-pin --use-local
   [[ -f "$ROOT/requirements.txt" ]] || { echo '[ERROR] requirements.txt was not created.' >&2; exit 1; }
 fi
-echo '[INFO] Installing application dependencies...'
-"$VPY" -m pip install -r "$ROOT/requirements.txt"
-"$VPY" -m pip check
+echo '[INFO] Installing application dependencies in user Python site-packages...'
+"$PYTHON" -m pip install "${PIP_ARGS[@]}" -r "$ROOT/requirements.txt"
+"$PYTHON" -m pip check
 
 # Local Ollama installation is optional. Service startup is separate.
 printf '\n'
@@ -95,5 +105,5 @@ if [[ "$configure" =~ ^[Yy]$ ]]; then
   fi
 fi
 echo '[SUCCESS] INIT finished. No application or server was launched.'
-echo "Python for GUI: $VPY"
+echo "Python for GUI: $(command -v python3)"
 echo 'Open a new terminal for the updated Codex PATH.'

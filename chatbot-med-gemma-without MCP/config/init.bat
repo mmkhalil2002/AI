@@ -81,38 +81,38 @@ if not exist "%NPM_PREFIX%\codex.cmd" (
 call "%NPM_PREFIX%\codex.cmd" --version
 if errorlevel 1 goto failed
 
-rem Project-local Python environment: pipreqs and application dependencies use SAME Python.
-if not exist "%VENV%\Scripts\python.exe" (
-  echo [INFO] Creating project virtual environment...
-  "%PYEXE%" -m venv "%VENV%"
-  if errorlevel 1 goto failed
+rem Never create a virtual environment; delete only this project's existing .venv.
+if exist "%ROOT%\.venv\" (
+  echo [INFO] Removing existing project .venv directory...
+  rmdir /s /q "%ROOT%\.venv"
+  if exist "%ROOT%\.venv\" (
+    echo [ERROR] Could not remove "%ROOT%\.venv". Close programs using it.
+    goto failed
+  )
 )
-set "VPY=%VENV%\Scripts\python.exe"
-"%VPY%" -m pip --version >nul 2>&1
-if errorlevel 1 goto failed
-
+rem Install pipreqs and application packages in the current user's Python environment.
+set "VPY=%PYEXE%"
 if not exist "%ROOT%\requirements.txt" (
   if not exist "%ROOT%\python\" (
     echo [ERROR] Cannot generate requirements.txt: "%ROOT%\python" does not exist.
-    echo [ACTION] Put Python .py files under python\ or create requirements.txt in project root.
+    echo [ACTION] Put .py files in python\ or create requirements.txt in project root.
     goto failed
   )
   dir /s /b /a-d "%ROOT%\python\*.py" 2>nul | findstr /r "." >nul
   if errorlevel 1 (
     echo [ERROR] Cannot generate requirements.txt: no .py files found under "%ROOT%\python".
-    echo [ACTION] Add Python source files or create requirements.txt in project root.
     goto failed
   )
-  echo [INFO] Installing pipreqs in project virtual environment...
-  "%VPY%" -m pip install pipreqs
+  echo [INFO] Installing pipreqs into user Python packages...
+  "%VPY%" -m pip install --user pipreqs
   if errorlevel 1 goto failed
-  echo [INFO] Generating project-root requirements.txt...
+  echo [INFO] Generating requirements.txt...
   "%VPY%" -m pipreqs.pipreqs "%ROOT%\python" --savepath "%ROOT%\requirements.txt" --mode no-pin --use-local
   if errorlevel 1 goto failed
   if not exist "%ROOT%\requirements.txt" goto failed
 )
-echo [INFO] Installing Python application dependencies...
-"%VPY%" -m pip install -r "%ROOT%\requirements.txt"
+echo [INFO] Installing Python dependencies into user Python packages...
+"%VPY%" -m pip install --user -r "%ROOT%\requirements.txt"
 if errorlevel 1 goto failed
 "%VPY%" -m pip check
 if errorlevel 1 goto failed
@@ -163,7 +163,7 @@ if errorlevel 1 echo [WARNING] Qwen3 model download failed.
 :done
 echo.
 echo [SUCCESS] INIT finished. No servers or GUI were started.
-echo Python for GUI: "%VPY%"
+echo Python for GUI: "%PYEXE%"
 echo Codex: "%NPM_PREFIX%\codex.cmd"
 exit /b 0
 
