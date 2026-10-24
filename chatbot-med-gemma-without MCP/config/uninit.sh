@@ -1,28 +1,25 @@
 #!/usr/bin/env bash
-# MedGemma project cleanup for Ubuntu.
-# Removes global Codex CLI from the active npm prefix and project-local .venv.
-# Preserves Python, Node.js, npm, PATH, pipreqs, requirements.txt, code and data.
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
-printf '=== MedGemma Ubuntu uninitialization ===\nProject: %s\n\n' "$PROJECT_ROOT"
-printf '%s\n' 'This removes the globally installed OpenAI Codex CLI and project .venv.' \
-  'It does NOT remove Python, Node.js, npm, pipreqs, PATH settings,' \
-  'requirements.txt, code, patient records, or Ollama models.'
-read -r -p 'Continue? [y/N]: ' confirm
-case "$confirm" in y|Y|yes|YES) ;; *) echo 'Cancelled. No changes made.'; exit 0 ;; esac
-if command -v npm >/dev/null 2>&1; then
-  echo '[1/2] Removing Codex CLI from active npm global prefix...'
-  if ! npm uninstall -g @openai/codex; then
-    echo '[WARNING] Codex removal failed; check npm permissions/prefix.' >&2
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+echo '=== MedGemma Ubuntu UNINIT ==='
+echo 'Optionally remove global Codex CLI and project .venv.'
+echo 'Preserves Python, Node.js, npm, PATH, Ollama, models, requirements.txt, code and data.'
+echo 'Does NOT stop any running server.'
+read -r -p 'Proceed with cleanup? [y/N] ' confirm
+[[ "$confirm" =~ ^[Yy]$ ]] || exit 0
+read -r -p 'Remove globally installed Codex CLI (affects other projects)? [y/N] ' codex_confirm
+if [[ "$codex_confirm" =~ ^[Yy]$ ]]; then
+  if command -v npm >/dev/null 2>&1; then
+    npm uninstall -g @openai/codex || echo '[WARNING] Codex removal failed.'
+  else
+    echo '[WARNING] npm not found; Codex removal skipped.'
   fi
-else
-  echo '[1/2] npm not found; skipping Codex uninstall.'
 fi
-if [[ -d "$PROJECT_ROOT/.venv" ]]; then
-  echo '[2/2] Removing project virtual environment...'
-  rm -rf -- "$PROJECT_ROOT/.venv"
-else
-  echo '[2/2] No project .venv found.'
+if [[ -d "$ROOT/.venv" ]]; then
+  read -r -p 'Delete project .venv directory? [y/N] ' venv_confirm
+  if [[ "$venv_confirm" =~ ^[Yy]$ ]]; then
+    rm -rf -- "$ROOT/.venv"
+  fi
 fi
-echo 'Finished. requirements.txt and all project files were preserved.'
+echo '[SUCCESS] Cleanup finished. Application and Ollama files preserved.'

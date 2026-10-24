@@ -1,206 +1,178 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
-REM Windows setup for Medical AI project. Run this script from the config folder.
-REM Installs Node.js, Python, Codex CLI; generates requirements.txt if absent.
-REM Adds Node.js and npm global prefix permanently to the current USER PATH.
-cd /d "%~dp0"
-for %%I in ("%~dp0..") do set "PROJECT_DIR=%%~fI"
-echo === Medical AI Windows initialization ===
-echo Project: %PROJECT_DIR%
-echo.
+rem Run from config\. Does NOT start Codex, Ollama, or the Python GUI.
+for %%I in ("%~dp0..") do set "ROOT=%%~fI"
+set "VENV=%ROOT%\.venv"
+echo === MedGemma Windows INIT ===
+echo Project: "%ROOT%"
 
-REM Find Node.js in typical locations if this CMD has a stale PATH.
+rem Node.js and npm
 if exist "%ProgramFiles%\nodejs\node.exe" set "PATH=%ProgramFiles%\nodejs;%PATH%"
 if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" set "PATH=%LOCALAPPDATA%\Programs\nodejs;%PATH%"
 where node.exe >nul 2>&1
 if errorlevel 1 (
-  echo [1/5] Installing Node.js LTS...
   where winget.exe >nul 2>&1
-  if errorlevel 1 goto :manual_node
-  winget install --id OpenJS.NodeJS.LTS --exact --accept-package-agreements --accept-source-agreements
-  if errorlevel 1 goto :manual_node
+  if errorlevel 1 goto node_error
+  echo [INFO] Installing Node.js LTS...
+  winget install -e --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+  if errorlevel 1 goto node_error
   if exist "%ProgramFiles%\nodejs\node.exe" set "PATH=%ProgramFiles%\nodejs;%PATH%"
-  where node.exe >nul 2>&1
-  if errorlevel 1 (
-    echo [ACTION] Open a new CMD and rerun this script after Node.js installation.
-    exit /b 0
-  )
 )
 where npm.cmd >nul 2>&1
-if errorlevel 1 goto :manual_node
-echo [1/5] Node.js and npm:
+if errorlevel 1 (
+  echo [ACTION] Reopen CMD and rerun init.bat after Node.js installation.
+  exit /b 1
+)
 node --version
 call npm.cmd --version
-if errorlevel 1 goto :failed
+if errorlevel 1 goto failed
 
-REM IMPORTANT: Create npm's global prefix before npm list/install commands.
-REM Use the CURRENT Windows account; never hardcode a username.
-echo [2/5] Configuring npm global installation directory...
-if not defined APPDATA (
-  echo [ERROR] APPDATA environment variable is missing.
-  goto :failed
-)
+rem Use the actual current account, never a hardcoded user profile.
+if not defined APPDATA goto failed
 set "NPM_PREFIX=%APPDATA%\npm"
 if not exist "%NPM_PREFIX%" mkdir "%NPM_PREFIX%"
-if errorlevel 1 goto :failed
+if not exist "%NPM_PREFIX%" goto failed
 call npm.cmd config set prefix "%NPM_PREFIX%"
-if errorlevel 1 goto :failed
+if errorlevel 1 goto failed
 set "PATH=%NPM_PREFIX%;%PATH%"
-echo npm global prefix: %NPM_PREFIX%
-
-REM Permanently update USER PATH without using SETX (which can truncate PATH).
-REM PowerShell reads existing user PATH and adds only missing entries.
-echo [3/5] Saving Node.js and npm locations in user PATH...
 for /f "delims=" %%I in ('where node.exe') do if not defined NODE_DIR for %%J in ("%%I") do set "NODE_DIR=%%~dpJ"
-if not defined NODE_DIR (
-  echo [ERROR] Unable to locate Node.js executable.
-  goto :failed
-)
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$paths = @($env:NODE_DIR, $env:NPM_PREFIX); $old = [Environment]::GetEnvironmentVariable('Path','User'); $entries = @($old -split ';' | Where-Object { $_ }); foreach ($p in $paths) { $p = $p.TrimEnd('\'); if ($entries -notcontains $p) { $entries += $p } }; [Environment]::SetEnvironmentVariable('Path', ($entries -join ';'), 'User')"
-if errorlevel 1 (
-  echo [WARNING] Could not save permanent user PATH. Current script PATH is still configured.
-) else (
-  echo User PATH updated. New CMD windows will use it.
+if defined NODE_DIR (
+  powershell.exe -NoProfile -Command "$add=@($env:NODE_DIR,$env:NPM_PREFIX);$old=[Environment]::GetEnvironmentVariable('Path','User');$a=@($old -split ';' | Where-Object { $_ });foreach($p in $add){$p=$p.TrimEnd('\');if($a -notcontains $p){$a+=$p}};[Environment]::SetEnvironmentVariable('Path',($a -join ';'),'User')"
+  if errorlevel 1 echo [WARNING] Could not persist PATH. Current CMD will still work.
 )
 
-REM Python installation. A new CMD may be needed after winget installs Python.
-echo [4/5] Checking Python...
-set "PYTHON_CMD="
+rem Find a working Python, not the Windows Store alias.
+set "PYEXE="
 where py.exe >nul 2>&1
 if not errorlevel 1 (
-  py -3 -c "import sys; print(sys.version)" >nul 2>&1
-  if not errorlevel 1 set "PYTHON_CMD=py -3"
+  for /f "delims=" %%I in ('py -3 -c "import sys;print(sys.executable)" 2^>nul') do if not defined PYEXE set "PYEXE=%%I"
 )
-if not defined PYTHON_CMD (
+if not defined PYEXE (
   where python.exe >nul 2>&1
   if not errorlevel 1 (
-    python -c "import sys; print(sys.version)" >nul 2>&1
-    if not errorlevel 1 set "PYTHON_CMD=python"
+    for /f "delims=" %%I in ('python -c "import sys;print(sys.executable)" 2^>nul') do if not defined PYEXE set "PYEXE=%%I"
   )
 )
-if not defined PYTHON_CMD (
-  if exist "%LOCALAPPDATA%\Programs\Python\Python313\python.exe" set "PYTHON_CMD="%LOCALAPPDATA%\Programs\Python\Python313\python.exe""
+if not defined PYEXE (
+  for /d %%I in ("%LOCALAPPDATA%\Programs\Python\Python3*") do if exist "%%~fI\python.exe" set "PYEXE=%%~fI\python.exe"
 )
-if not defined PYTHON_CMD (
-  echo Installing Python 3.13...
+if not defined PYEXE (
   where winget.exe >nul 2>&1
-  if errorlevel 1 goto :manual_python
-  winget install --id Python.Python.3.13 --exact --accept-package-agreements --accept-source-agreements
-  if errorlevel 1 goto :manual_python
+  if errorlevel 1 goto python_error
+  echo [INFO] Installing Python 3.13...
+  winget install -e --id Python.Python.3.13 --accept-package-agreements --accept-source-agreements
   echo [ACTION] Open a new CMD and rerun init.bat to finish setup.
-  exit /b 0
+  exit /b 1
 )
-%PYTHON_CMD% --version
-%PYTHON_CMD% -m pip --version >nul 2>&1
-if errorlevel 1 %PYTHON_CMD% -m ensurepip --upgrade
-%PYTHON_CMD% -m pip --version
-if errorlevel 1 goto :failed
+"%PYEXE%" --version
+if errorlevel 1 goto python_error
+"%PYEXE%" -m pip --version >nul 2>&1
+if errorlevel 1 "%PYEXE%" -m ensurepip --upgrade
+if errorlevel 1 goto failed
 
-REM Install Codex after npm prefix has been created and configured.
-echo [5/5] Installing/updating Codex CLI...
-call npm.cmd install --global @openai/codex
-if errorlevel 1 goto :failed
-where codex.cmd >nul 2>&1
-if errorlevel 1 (
-  echo [ERROR] Codex launcher not found. Expected: %NPM_PREFIX%\codex.cmd
-  goto :failed
+rem Codex CLI, installed under current user npm prefix.
+echo [INFO] Installing/updating Codex CLI...
+call npm.cmd install -g @openai/codex
+if errorlevel 1 goto failed
+if not exist "%NPM_PREFIX%\codex.cmd" (
+  echo [ERROR] Codex launcher missing at "%NPM_PREFIX%\codex.cmd".
+  goto failed
 )
-call codex.cmd --version
-if errorlevel 1 goto :failed
+call "%NPM_PREFIX%\codex.cmd" --version
+if errorlevel 1 goto failed
 
-REM Bootstrap pipreqs, then generate requirements.txt only if absent.
-REM Scan the python source folder, not config or the entire project.
-echo Checking Python project packages...
-if not exist "%PROJECT_DIR%\requirements.txt" (
-  if not exist "%PROJECT_DIR%\python" (
-    echo [ERROR] Python source directory not found: "%PROJECT_DIR%\python"
-    echo [ERROR] Cannot generate requirements.txt. Put your .py files in the python folder,
-    echo [ERROR] or create requirements.txt manually in "%PROJECT_DIR%".
-    goto :failed
-  ) else (
-    dir /b /s /a-d "%PROJECT_DIR%\python\*.py" 2>nul | findstr /r "." >nul
-    if errorlevel 1 (
-      echo [ERROR] No .py Python source files found under "%PROJECT_DIR%\python".
-      echo [ERROR] Cannot generate requirements.txt. Add your Python program first,
-      echo [ERROR] or create requirements.txt manually in "%PROJECT_DIR%".
-      goto :failed
-    )
-    echo [INFO] Installing pipreqs to detect Python dependencies...
-    %PYTHON_CMD% -m pip install pipreqs
-    if errorlevel 1 goto :failed
-    echo [INFO] Generating requirements.txt from python source files...
-    %PYTHON_CMD% -m pipreqs.pipreqs "%PROJECT_DIR%\python" --savepath "%PROJECT_DIR%\requirements.txt" --force --mode no-pin --ignore .venv,venv
-    if errorlevel 1 (
-      echo [ERROR] Automatic dependency detection failed. Check the Python source files.
-      echo [ERROR] Alternatively create requirements.txt manually in "%PROJECT_DIR%".
-      goto :failed
-    )
-    if not exist "%PROJECT_DIR%\requirements.txt" (
-      echo [ERROR] pipreqs completed but did not create requirements.txt.
-      goto :failed
-    )
+rem Project-local Python environment: pipreqs and application dependencies use SAME Python.
+if not exist "%VENV%\Scripts\python.exe" (
+  echo [INFO] Creating project virtual environment...
+  "%PYEXE%" -m venv "%VENV%"
+  if errorlevel 1 goto failed
+)
+set "VPY=%VENV%\Scripts\python.exe"
+"%VPY%" -m pip --version >nul 2>&1
+if errorlevel 1 goto failed
+
+if not exist "%ROOT%\requirements.txt" (
+  if not exist "%ROOT%\python\" (
+    echo [ERROR] Cannot generate requirements.txt: "%ROOT%\python" does not exist.
+    echo [ACTION] Put Python .py files under python\ or create requirements.txt in project root.
+    goto failed
   )
+  dir /s /b /a-d "%ROOT%\python\*.py" 2>nul | findstr /r "." >nul
+  if errorlevel 1 (
+    echo [ERROR] Cannot generate requirements.txt: no .py files found under "%ROOT%\python".
+    echo [ACTION] Add Python source files or create requirements.txt in project root.
+    goto failed
+  )
+  echo [INFO] Installing pipreqs in project virtual environment...
+  "%VPY%" -m pip install pipreqs
+  if errorlevel 1 goto failed
+  echo [INFO] Generating project-root requirements.txt...
+  "%VPY%" -m pipreqs.pipreqs "%ROOT%\python" --savepath "%ROOT%\requirements.txt" --mode no-pin --use-local
+  if errorlevel 1 goto failed
+  if not exist "%ROOT%\requirements.txt" goto failed
 )
+echo [INFO] Installing Python application dependencies...
+"%VPY%" -m pip install -r "%ROOT%\requirements.txt"
+if errorlevel 1 goto failed
+"%VPY%" -m pip check
+if errorlevel 1 goto failed
 
-if exist "%PROJECT_DIR%\requirements.txt" (
-  %PYTHON_CMD% -m pip install -r "%PROJECT_DIR%\requirements.txt"
-  if errorlevel 1 goto :failed
-) else (
-  echo [WARNING] requirements.txt not found; Python packages skipped.
-)
+rem Ollama is OPTIONAL and installed only on this machine.
+rem Running the Ollama service is intentionally handled separately.
 echo.
-REM Optional Ollama installation on THIS Windows machine only.
-echo.
-choice /C YN /N /M "Configure Ollama and AI models on THIS Windows computer? [Y/N] "
-if errorlevel 2 goto :models_done
-choice /C YN /N /M "Install Ollama locally if missing? [Y/N] "
-if errorlevel 2 goto :local_models
+choice /C YN /N /M "Configure Ollama and AI models on THIS computer? [Y/N] "
+if errorlevel 2 goto done
+if exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" set "PATH=%LOCALAPPDATA%\Programs\Ollama;%PATH%"
 where ollama.exe >nul 2>&1
 if errorlevel 1 (
+  choice /C YN /N /M "Install Ollama locally? [Y/N] "
+  if errorlevel 2 goto done
   where winget.exe >nul 2>&1
   if errorlevel 1 (
-    echo [WARNING] winget unavailable. Install Ollama from https://ollama.com/download/windows
-  ) else (
-    winget install --id Ollama.Ollama -e --accept-package-agreements --accept-source-agreements
-    if errorlevel 1 echo [WARNING] Ollama installation failed.
-    set "PATH=%LOCALAPPDATA%\Programs\Ollama;%PATH%"
+    echo [ERROR] winget unavailable. Install Ollama manually from https://ollama.com/download/windows
+    goto done
   )
+  winget install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements
+  if errorlevel 1 (
+    echo [WARNING] Ollama installation failed.
+    goto done
+  )
+  set "PATH=%LOCALAPPDATA%\Programs\Ollama;%PATH%"
 )
-:local_models
 where ollama.exe >nul 2>&1
 if errorlevel 1 (
-  echo [WARNING] Ollama not found; model downloads skipped.
-  goto :models_done
+  echo [WARNING] Ollama not on PATH yet. Open a new CMD and rerun init.bat.
+  goto done
 )
+ollama --version
+echo [INFO] Ollama is installed. Model downloads require a running Ollama service.
 ollama list >nul 2>&1
 if errorlevel 1 (
-  echo [WARNING] Ollama is not running. Start the Ollama application and rerun init.
-  goto :models_done
+  echo [ACTION] Start Ollama separately, then rerun init.bat to download models.
+  goto done
 )
-choice /C YN /N /M "Download MedGemma 1.5 on THIS computer? [Y/N] "
-if errorlevel 2 goto :local_qwen
+choice /C YN /N /M "Download MedGemma 1.5? [Y/N] "
+if errorlevel 2 goto ask_qwen
 ollama pull medgemma1.5
-if errorlevel 1 echo [WARNING] MedGemma download failed.
-:local_qwen
-choice /C YN /N /M "Download Qwen3:8B on THIS computer? [Y/N] "
-if errorlevel 2 goto :models_done
+if errorlevel 1 echo [WARNING] MedGemma model download failed.
+:ask_qwen
+choice /C YN /N /M "Download Qwen3:8B? [Y/N] "
+if errorlevel 2 goto done
 ollama pull qwen3:8b
-if errorlevel 1 echo [WARNING] Qwen3 download failed.
-:models_done
-echo [SUCCESS] Setup completed.
-echo Codex CLI installed at: %NPM_PREFIX%\codex.cmd
-echo Open a NEW CMD window and run:
-echo   cd /d "%PROJECT_DIR%"
-echo   codex --no-daemon
+if errorlevel 1 echo [WARNING] Qwen3 model download failed.
+:done
 echo.
+echo [SUCCESS] INIT finished. No servers or GUI were started.
+echo Python for GUI: "%VPY%"
+echo Codex: "%NPM_PREFIX%\codex.cmd"
 exit /b 0
 
-:manual_node
-echo [ERROR] Install Node.js LTS from https://nodejs.org/en/download
+:node_error
+echo [ERROR] Node.js/npm unavailable. Install Node.js LTS and rerun.
 exit /b 1
-:manual_python
-echo [ERROR] Install Python from https://www.python.org/downloads/windows/
+:python_error
+echo [ERROR] Python unavailable. Install Python 3 and rerun.
 exit /b 1
 :failed
-echo [ERROR] Initialization failed. See details above.
+echo [ERROR] Initialization failed. See messages above.
 exit /b 1
