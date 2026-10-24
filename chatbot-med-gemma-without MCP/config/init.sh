@@ -1,65 +1,78 @@
 #!/usr/bin/env bash
-# Medical AI development bootstrap for Ubuntu.
-# Installs Python tooling, Node.js LTS, Codex CLI and requirements.txt packages.
-# Uses a project-local Python virtual environment to avoid Ubuntu's externally-managed
-# system Python restrictions. Does not install remote Ollama models or modify .env.
+# Ubuntu bootstrap: Python, Node.js LTS, npm, Codex CLI, and project requirements.
+# Run: bash init_updated.sh  (from config/ or anywhere)
 set -Eeuo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
-echo '=== Medical AI - Ubuntu initialization ==='
-echo "Project: $PWD"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$(basename "$SCRIPT_DIR")" == "config" ]]; then
+  PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+else
+  PROJECT_DIR="$SCRIPT_DIR"
+fi
+printf '=== Medical AI - Ubuntu initialization ===\nProject: %s\n' "$PROJECT_DIR"
 
 if ! command -v apt-get >/dev/null 2>&1; then
-  echo '[ERROR] This script targets Ubuntu with apt-get.' >&2
+  echo '[ERROR] This installer requires Ubuntu/Debian apt-get.' >&2
   exit 1
 fi
 
+# Install Python and required OS tools if missing.
 if ! command -v python3 >/dev/null 2>&1 || ! python3 -m venv --help >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
-  echo 'Installing Python 3, venv, pip, curl, and certificates...'
   sudo apt-get update
   sudo apt-get install -y python3 python3-venv python3-pip curl ca-certificates
 fi
 
-if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-  echo 'Installing Node.js and npm from Ubuntu repositories...'
+# Modern Node.js is required for Codex. Ubuntu's default Node may be too old.
+NODE_MAJOR=0
+if command -v node >/dev/null 2>&1; then
+  NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"
+fi
+if ! command -v npm >/dev/null 2>&1 || (( NODE_MAJOR < 20 )); then
+  echo '[INFO] Installing modern Node.js and npm (NodeSource Node 22.x).'
   sudo apt-get update
-  sudo apt-get install -y nodejs npm
+  sudo apt-get install -y ca-certificates curl gnupg
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+  sudo apt-get install -y nodejs
+fi
+printf 'Node: %s | npm: %s\n' "$(node --version)" "$(npm --version)"
+
+# npm global packages are installed in a writable, user-owned location.
+NPM_PREFIX="$HOME/.local/npm"
+mkdir -p "$NPM_PREFIX/bin" "$HOME/.npm"
+npm config set prefix "$NPM_PREFIX" --location=user
+export PATH="$NPM_PREFIX/bin:$PATH"
+
+# Persist the npm executable directory for NEW interactive bash terminals.
+BASHRC="$HOME/.bashrc"
+PATH_LINE='export PATH="$HOME/.local/npm/bin:$PATH"'
+touch "$BASHRC"
+if ! grep -Fqx "$PATH_LINE" "$BASHRC"; then
+  printf '\n# User-installed npm commands (including Codex)\n%s\n' "$PATH_LINE" >> "$BASHRC"
 fi
 
-# Codex requires a modern Node.js version. Do not silently continue with an old distro package.
-node_major="$(node -p 'process.versions.node.split(".")[0]')"
-if (( node_major < 18 )); then
-  echo "[ERROR] Node.js $(node --version) is too old. Install current Node.js LTS and rerun." >&2
-  echo 'See https://nodejs.org/en/download' >&2
+# Install Codex or upgrade the existing package in the configured prefix.
+echo '[INFO] Installing/updating OpenAI Codex CLI...'
+npm install --global @openai/codex
+if ! command -v codex >/dev/null 2>&1; then
+  echo "[ERROR] Codex not found on PATH. Expected: $NPM_PREFIX/bin/codex" >&2
   exit 1
 fi
+echo "Codex: $(codex --version)"
 
-if ! command -v codex >/dev/null 2>&1; then
-  echo 'Installing OpenAI Codex CLI...'
-  if ! npm install --global @openai/codex; then
-    echo '[ERROR] npm global install failed. Configure an npm user prefix (or use a Node version manager), then rerun.' >&2
-    exit 1
-  fi
+# Isolate Python dependencies from the system interpreter.
+if [[ ! -x "$PROJECT_DIR/.venv/bin/python" ]]; then
+  echo '[INFO] Creating project Python environment...'
+  python3 -m venv "$PROJECT_DIR/.venv"
+fi
+if [[ -f "$PROJECT_DIR/requirements.txt" ]]; then
+  echo '[INFO] Installing project requirements...'
+  "$PROJECT_DIR/.venv/bin/python" -m pip install -r "$PROJECT_DIR/requirements.txt"
 else
-  echo "Codex CLI already installed: $(codex --version)"
+  echo '[INFO] No requirements.txt at project root; skipping Python package installation.'
 fi
 
-if [[ ! -x .venv/bin/python ]]; then
-  echo 'Creating local Python environment (.venv)...'
-  if ! python3 -m venv .venv; then
-    echo '[ERROR] Python venv creation failed. Try: sudo apt-get install python3-venv' >&2
-    exit 1
-  fi
-fi
-
-if [[ -f requirements.txt ]]; then
-  echo 'Installing Python packages from requirements.txt...'
-  .venv/bin/python -m pip install -r requirements.txt
-else
-  echo '[INFO] requirements.txt not found; skipping project Python packages.'
-  echo '[INFO] Rerun bash init.sh after Codex generates requirements.txt.'
-fi
-
-echo 'Initialization complete.'
+echo '=== Initialization complete ==='
+echo "Run: cd \"$PROJECT_DIR\""
+echo 'In this terminal: source ~/.bashrc'
 echo 'Verify: codex --version'
-echo 'Start Codex: codex'
-echo 'After app is generated: .venv/bin/python client_gui.py'
+echo 'Start: codex --no-daemon  (if your Codex version supports this flag)'
+echo 'Python environment: .venv/bin/python'

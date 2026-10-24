@@ -1,20 +1,20 @@
 @echo off
-setlocal EnableExtensions
-REM Bootstrap Windows development tools for the simplified Medical AI project.
-REM Does not install Ollama models or change .env. Run from CMD.
+setlocal EnableExtensions DisableDelayedExpansion
+REM Windows setup for Medical AI project. Run this script from the config folder.
+REM Installs Node.js, Python, Codex CLI and project requirements when available.
+REM Adds Node.js and npm global prefix permanently to the current USER PATH.
 cd /d "%~dp0"
+for %%I in ("%~dp0..") do set "PROJECT_DIR=%%~fI"
 echo === Medical AI Windows initialization ===
-echo Directory: %CD%
+echo Project: %PROJECT_DIR%
 echo.
 
-REM Add common Node.js and npm paths to this CMD session, even if PATH is stale.
+REM Find Node.js in typical locations if this CMD has a stale PATH.
 if exist "%ProgramFiles%\nodejs\node.exe" set "PATH=%ProgramFiles%\nodejs;%PATH%"
-if exist "%APPDATA%\npm" set "PATH=%APPDATA%\npm;%PATH%"
 if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" set "PATH=%LOCALAPPDATA%\Programs\nodejs;%PATH%"
-
 where node.exe >nul 2>&1
 if errorlevel 1 (
-  echo [1/4] Node.js missing. Installing Node.js LTS...
+  echo [1/5] Installing Node.js LTS...
   where winget.exe >nul 2>&1
   if errorlevel 1 goto :manual_node
   winget install --id OpenJS.NodeJS.LTS --exact --accept-package-agreements --accept-source-agreements
@@ -22,22 +22,49 @@ if errorlevel 1 (
   if exist "%ProgramFiles%\nodejs\node.exe" set "PATH=%ProgramFiles%\nodejs;%PATH%"
   where node.exe >nul 2>&1
   if errorlevel 1 (
-    echo [ACTION] Node.js installation completed but PATH is not refreshed.
-    echo Close CMD, open a new CMD, and rerun init.bat.
+    echo [ACTION] Open a new CMD and rerun this script after Node.js installation.
     exit /b 0
   )
 )
 where npm.cmd >nul 2>&1
-if errorlevel 1 (
-  echo [ERROR] node exists but npm.cmd is missing. Repair Node.js LTS from https://nodejs.org/en/download
-  exit /b 1
-)
-echo [1/4] Node.js and npm:
-call node --version
+if errorlevel 1 goto :manual_node
+echo [1/5] Node.js and npm:
+node --version
 call npm.cmd --version
 if errorlevel 1 goto :failed
 
-REM Locate Python or install it. Do not rely on the Windows Store python alias.
+REM IMPORTANT: Create npm's global prefix before npm list/install commands.
+REM Use the CURRENT Windows account; never hardcode a username.
+echo [2/5] Configuring npm global installation directory...
+if not defined APPDATA (
+  echo [ERROR] APPDATA environment variable is missing.
+  goto :failed
+)
+set "NPM_PREFIX=%APPDATA%\npm"
+if not exist "%NPM_PREFIX%" mkdir "%NPM_PREFIX%"
+if errorlevel 1 goto :failed
+call npm.cmd config set prefix "%NPM_PREFIX%"
+if errorlevel 1 goto :failed
+set "PATH=%NPM_PREFIX%;%PATH%"
+echo npm global prefix: %NPM_PREFIX%
+
+REM Permanently update USER PATH without using SETX (which can truncate PATH).
+REM PowerShell reads existing user PATH and adds only missing entries.
+echo [3/5] Saving Node.js and npm locations in user PATH...
+for /f "delims=" %%I in ('where node.exe') do if not defined NODE_DIR for %%J in ("%%I") do set "NODE_DIR=%%~dpJ"
+if not defined NODE_DIR (
+  echo [ERROR] Unable to locate Node.js executable.
+  goto :failed
+)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$paths = @($env:NODE_DIR, $env:NPM_PREFIX); $old = [Environment]::GetEnvironmentVariable('Path','User'); $entries = @($old -split ';' | Where-Object { $_ }); foreach ($p in $paths) { $p = $p.TrimEnd('\'); if ($entries -notcontains $p) { $entries += $p } }; [Environment]::SetEnvironmentVariable('Path', ($entries -join ';'), 'User')"
+if errorlevel 1 (
+  echo [WARNING] Could not save permanent user PATH. Current script PATH is still configured.
+) else (
+  echo User PATH updated. New CMD windows will use it.
+)
+
+REM Python installation. A new CMD may be needed after winget installs Python.
+echo [4/5] Checking Python...
 set "PYTHON_CMD="
 where py.exe >nul 2>&1
 if not errorlevel 1 (
@@ -52,63 +79,58 @@ if not defined PYTHON_CMD (
   )
 )
 if not defined PYTHON_CMD (
-  echo [2/4] Python missing. Installing Python 3...
+  echo Installing Python 3.13...
   where winget.exe >nul 2>&1
   if errorlevel 1 goto :manual_python
   winget install --id Python.Python.3.13 --exact --accept-package-agreements --accept-source-agreements
   if errorlevel 1 goto :manual_python
-  echo [ACTION] Close CMD, open a new CMD, and rerun init.bat to detect Python.
+  echo [ACTION] Open a new CMD and rerun init_updated.bat to finish setup.
   exit /b 0
 )
-echo [2/4] Python:
 %PYTHON_CMD% --version
 %PYTHON_CMD% -m pip --version >nul 2>&1
 if errorlevel 1 %PYTHON_CMD% -m ensurepip --upgrade
 %PYTHON_CMD% -m pip --version
 if errorlevel 1 goto :failed
 
-REM Install or update Codex and add npm's global bin prefix to this session.
-echo [3/4] Installing/updating OpenAI Codex CLI...
+REM Install Codex after npm prefix has been created and configured.
+echo [5/5] Installing/updating Codex CLI...
 call npm.cmd install --global @openai/codex
 if errorlevel 1 goto :failed
-for /f "usebackq delims=" %%P in (`npm.cmd config get prefix 2^>nul`) do set "NPM_PREFIX=%%P"
-if defined NPM_PREFIX set "PATH=%NPM_PREFIX%;%PATH%"
-if exist "%APPDATA%\npm" set "PATH=%APPDATA%\npm;%PATH%"
 where codex.cmd >nul 2>&1
 if errorlevel 1 (
-  echo [ERROR] Codex installed but its executable is not on PATH.
-  echo npm global prefix: %NPM_PREFIX%
-  echo Add that directory to your user PATH, then open a new CMD.
-  echo You can try: npx --yes @openai/codex
-  exit /b 1
+  echo [ERROR] Codex launcher not found. Expected: %NPM_PREFIX%\codex.cmd
+  goto :failed
 )
 call codex.cmd --version
 if errorlevel 1 goto :failed
 
-REM Install dependencies only when Codex has generated requirements.txt.
-echo [4/4] Python project packages...
-if exist "requirements.txt" (
-  %PYTHON_CMD% -m pip install -r "requirements.txt"
+REM requirements.txt may be at project root or next to this batch file.
+echo Checking Python project packages...
+if exist "%PROJECT_DIR%\requirements.txt" (
+  %PYTHON_CMD% -m pip install -r "%PROJECT_DIR%\requirements.txt"
+  if errorlevel 1 goto :failed
+) else if exist "%~dp0requirements.txt" (
+  %PYTHON_CMD% -m pip install -r "%~dp0requirements.txt"
   if errorlevel 1 goto :failed
 ) else (
-  echo [INFO] No requirements.txt yet. Rerun init.bat after Codex generates it.
+  echo [INFO] requirements.txt not found; Python packages skipped.
 )
 echo.
-echo [SUCCESS] Initialization complete.
-echo To start Codex in this directory, run: codex
-echo If this CMD session still cannot find Codex, open a NEW CMD window.
+echo [SUCCESS] Setup completed.
+echo Codex CLI installed at: %NPM_PREFIX%\codex.cmd
+echo Open a NEW CMD window and run:
+echo   cd /d "%PROJECT_DIR%"
+echo   codex --no-daemon
+echo.
 exit /b 0
 
 :manual_node
-echo [ERROR] Automatic Node.js installation unavailable or failed.
-echo Install Node.js LTS from https://nodejs.org/en/download
- echo Then close CMD, reopen it, and rerun init.bat.
+echo [ERROR] Install Node.js LTS from https://nodejs.org/en/download
 exit /b 1
 :manual_python
-echo [ERROR] Automatic Python installation unavailable or failed.
-echo Install Python 3 from https://www.python.org/downloads/windows/
-echo Then close CMD, reopen it, and rerun init.bat.
+echo [ERROR] Install Python from https://www.python.org/downloads/windows/
 exit /b 1
 :failed
-echo [ERROR] Initialization failed. Review the message above.
+echo [ERROR] Initialization failed. See details above.
 exit /b 1
