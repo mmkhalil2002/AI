@@ -63,6 +63,19 @@ if [[ ! -x "$PROJECT_DIR/.venv/bin/python" ]]; then
   echo '[INFO] Creating project Python environment...'
   python3 -m venv "$PROJECT_DIR/.venv"
 fi
+# Bootstrap dependency scanner only when requirements.txt is missing.
+# Never overwrite a hand-maintained requirements.txt.
+if [[ ! -f "$PROJECT_DIR/requirements.txt" ]]; then
+  if [[ -d "$PROJECT_DIR/python" ]]; then
+    echo '[INFO] Installing pipreqs and generating requirements.txt from python/ ...'
+    "$PROJECT_DIR/.venv/bin/python" -m pip install pipreqs
+    "$PROJECT_DIR/.venv/bin/python" -m pipreqs.pipreqs "$PROJECT_DIR/python" \
+      --savepath "$PROJECT_DIR/requirements.txt" --force --mode no-pin --ignore .venv,venv
+  else
+    echo '[WARNING] python/ source folder not found; cannot generate requirements.txt.'
+  fi
+fi
+
 if [[ -f "$PROJECT_DIR/requirements.txt" ]]; then
   echo '[INFO] Installing project requirements...'
   "$PROJECT_DIR/.venv/bin/python" -m pip install -r "$PROJECT_DIR/requirements.txt"

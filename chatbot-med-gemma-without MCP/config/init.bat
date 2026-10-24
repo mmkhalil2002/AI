@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 REM Windows setup for Medical AI project. Run this script from the config folder.
-REM Installs Node.js, Python, Codex CLI and project requirements when available.
+REM Installs Node.js, Python, Codex CLI; generates requirements.txt if absent.
 REM Adds Node.js and npm global prefix permanently to the current USER PATH.
 cd /d "%~dp0"
 for %%I in ("%~dp0..") do set "PROJECT_DIR=%%~fI"
@@ -79,12 +79,15 @@ if not defined PYTHON_CMD (
   )
 )
 if not defined PYTHON_CMD (
+  if exist "%LOCALAPPDATA%\Programs\Python\Python313\python.exe" set "PYTHON_CMD="%LOCALAPPDATA%\Programs\Python\Python313\python.exe""
+)
+if not defined PYTHON_CMD (
   echo Installing Python 3.13...
   where winget.exe >nul 2>&1
   if errorlevel 1 goto :manual_python
   winget install --id Python.Python.3.13 --exact --accept-package-agreements --accept-source-agreements
   if errorlevel 1 goto :manual_python
-  echo [ACTION] Open a new CMD and rerun init_updated.bat to finish setup.
+  echo [ACTION] Open a new CMD and rerun init.bat to finish setup.
   exit /b 0
 )
 %PYTHON_CMD% --version
@@ -105,16 +108,30 @@ if errorlevel 1 (
 call codex.cmd --version
 if errorlevel 1 goto :failed
 
-REM requirements.txt may be at project root or next to this batch file.
+REM Bootstrap pipreqs, then generate requirements.txt only if absent.
+REM Scan the python source folder, not config or the entire project.
 echo Checking Python project packages...
+if not exist "%PROJECT_DIR%\requirements.txt" (
+  if not exist "%PROJECT_DIR%\python" (
+    echo [WARNING] No python source folder. Cannot generate requirements.txt.
+  ) else (
+    echo [INFO] Installing pipreqs to detect Python dependencies...
+    %PYTHON_CMD% -m pip install pipreqs
+    if errorlevel 1 goto :failed
+    echo [INFO] Generating requirements.txt from python source files...
+    %PYTHON_CMD% -m pipreqs.pipreqs "%PROJECT_DIR%\python" --savepath "%PROJECT_DIR%\requirements.txt" --force --mode no-pin --ignore .venv,venv
+    if errorlevel 1 (
+      echo [ERROR] Automatic dependency detection failed. Please create requirements.txt manually.
+      goto :failed
+    )
+  )
+)
+
 if exist "%PROJECT_DIR%\requirements.txt" (
   %PYTHON_CMD% -m pip install -r "%PROJECT_DIR%\requirements.txt"
   if errorlevel 1 goto :failed
-) else if exist "%~dp0requirements.txt" (
-  %PYTHON_CMD% -m pip install -r "%~dp0requirements.txt"
-  if errorlevel 1 goto :failed
 ) else (
-  echo [INFO] requirements.txt not found; Python packages skipped.
+  echo [WARNING] requirements.txt not found; Python packages skipped.
 )
 echo.
 echo [SUCCESS] Setup completed.
