@@ -1,16 +1,23 @@
-"""Patient-specific single-file MedGemma GUI, adapted from the neighboring reference.
+"""Single-file patient GUI, adapted from the original MedGemma Tkinter client.
 
-Run: python client_medgemma_patients.py
-Requires Pillow; pyttsx3 is optional. Settings are read from .env beside this file.
-PATIENT_RECORDS_DIR defaults to patient_records beside this file. Relative paths
-are script-relative. Existing settings and patient data are never modified.
+Configuration is read from .env beside this file. Optional setting:
+PATIENT_RECORDS_DIR=patient_records (relative to this script, or absolute).
+OLLAMA_URL and MEDGEMMA_MODEL retain the existing .env values.
+Select a patient, select records, type a question, and press Send.
+Original image bytes are uploaded; thumbnails remain local.
+AI-generated output requires clinician review.
 """
 
 import base64
+import importlib
+import importlib.util
+import io
 import json
 import os
 import re
+import sys
 import threading
+import queue
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 from pathlib import Path
@@ -19,10 +26,15 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 
+
+
+# Voice is optional; no automatic package or model installation.
 try:
     import pyttsx3
 except ImportError:
     pyttsx3 = None
+
+PYTHON_DIR = Path(__file__).resolve().parent
 
 voice_enabled = False
 speech_engine = None
@@ -58,21 +70,129 @@ def load_settings():
 
 
 settings_from_file = load_settings()
-DISK = os.environ.get("DISK", settings_from_file.get("DISK", "")).strip()
+
+def patient_records_root():
+    """Resolve and validate the configured root before any Tk window exists.
+
+    Iterating the directory verifies real access rather than relying solely on
+    permission bits. Missing roots are never created or replaced.
+    """
+    value = os.environ.get("PATIENT_RECORDS_DIR", settings_from_file.get(
+        "PATIENT_RECORDS_DIR", "patient_records"))
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = PYTHON_DIR / path
+    path = path.resolve()
+    try:
+        if not path.is_dir() or not os.access(path, os.R_OK | os.X_OK):
+            raise OSError("Not a readable directory")
+        with os.scandir(path) as entries:
+            next(entries, None)
+    except OSError as error:
+        raise RuntimeError(
+            f"[ERROR] Patient records directory not found or not accessible: {path}\n"
+            "[ACTION] Restore the patient_records directory alongside the GUI, "
+            "or correct PATIENT_RECORDS_DIR in python/.env.\n"
+            "[STOP] Application terminated."
+        ) from error
+    return path
+
+
+def safe_path(path, patient):
+    """Reject symlinks/junctions and files resolving outside the patient folder."""
+    path, patient = Path(path), Path(patient).resolve()
+    resolved = path.resolve(strict=True)
+    if not resolved.is_relative_to(patient):
+        raise ValueError("Record path escapes the active patient directory")
+    current = path
+    while current != patient:
+        if current.is_symlink() or getattr(current, "is_junction", lambda: False)():
+            raise ValueError("Linked record paths are not allowed")
+        if current == current.parent:
+            raise ValueError("Record path is outside the active patient")
+        current = current.parent
+    return resolved
+
+
+def discover_patients(root):
+    """List immediate ordinary patient directories without name-pattern rules."""
+    patients = {}
+    for path in sorted(root.iterdir(), key=lambda p: p.name.casefold()):
+        try:
+            attributes = getattr(path.stat(), "st_file_attributes", 0)
+            if path.name.startswith('.') or path.name == '__pycache__' or attributes & 6:
+                continue
+            if path.is_dir() and not path.is_symlink() and not getattr(path, 'is_junction', lambda: False)():
+                safe_path(path, root)
+                patients[path.name] = path.resolve()
+        except (OSError, ValueError):
+            continue
+    return patients
+
+
+def patient_files(modality, extensions):
+    """Return safe immediate modality files and a nonfatal loading message."""
+    if active_patient is None:
+        return [], "Select a patient to load records."
+    folder = active_patient / modality
+    try:
+        safe_path(folder, active_patient)
+        if not folder.is_dir():
+            return [], f"No {modality} folder for this patient."
+        paths = []
+        for path in sorted(folder.iterdir(), key=lambda p: p.name.casefold()):
+            if path.suffix.lower() in extensions and path.is_file():
+                try:
+                    safe_path(path, active_patient)
+                    paths.append(path)
+                except (OSError, ValueError):
+                    print(f"Skipped unsafe record: {path}")
+        return paths, f"No supported records in {modality}." if not paths else ""
+    except (OSError, ValueError):
+        return [], f"Missing or inaccessible {modality} folder."
+
+
+active_patient = None
+request_in_flight = False
+ui_callbacks = queue.Queue()
+
+
+def post_ui(callback):
+    """Queue work for Tk; background workers never invoke Tcl directly."""
+    ui_callbacks.put(callback)
+
+
+def drain_ui():
+    """Process queued network completions on the main GUI thread."""
+    try:
+        while True:
+            ui_callbacks.get_nowait()()
+    except queue.Empty:
+        pass
+    window.after(50, drain_ui)
+
+
+def select_patient(event=None):
+    """Clear previous context and selections before loading the chosen patient."""
+    global active_patient
+    if request_in_flight:
+        return
+    stop_voice()
+    active_patient = patients.get(patient_name.get())
+    answer_box.delete("1.0", tk.END)
+    prompt_box.delete("1.0", tk.END)
+    load_images()
+    load_blood_tests()
+    show_status(f"Patient: {patient_name.get()}" if active_patient else "No patient directories found")
+
+
 DEFAULT_SERVER_URL = os.environ.get(
-    "OLLAMA_URL", settings_from_file.get("OLLAMA_URL", "")
+    "OLLAMA_URL", settings_from_file.get("OLLAMA_URL", "http://127.0.0.1:11434")
 )
 DEFAULT_MODEL = os.environ.get(
     "MEDGEMMA_MODEL", settings_from_file.get("MEDGEMMA_MODEL", "medgemma1.5:4b")
 )
 DEFAULT_MODELS = (DEFAULT_MODEL,)
-# IMAGE_DIR can be an absolute path or relative to the directory containing
-# this script. Automatic folders are xray-data-MMDDYY and
-# ekg-data-MMDDYY within it.
-image_dir_setting = os.environ.get("IMAGE_DIR", settings_from_file.get("IMAGE_DIR", "data"))
-IMAGE_DIR = Path(image_dir_setting).expanduser()
-if not IMAGE_DIR.is_absolute():
-    IMAGE_DIR = Path(__file__).resolve().parent / IMAGE_DIR
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
 # Cheerful clinical-dashboard palette.
 APP_BACKGROUND = "#eef6fb"
@@ -89,27 +209,6 @@ SOFT_CORAL = "#ffe2dd"
 TILE_BACKGROUND = "#f5f9fc"
 DATASET_COLORS = ((PRIMARY_BLUE, SOFT_BLUE), (TEAL, SOFT_TEAL))
 GALLERY_NAMES = ("XRAY", "EKG/ECG")
-FOLDER_PREFIXES = ("xray-data", "ekg-data")
-# The Data menu accepts these source-folder spellings. Folder names end in a
-# six-digit MMDDYY date, for example D:\\xray-data-092926. The date is used to
-# identify valid folders but users do not have to enter or select it.
-DATASET_FOLDER_PREFIXES = {
-    "xray": ("xray-data", "x-ray-data"),
-    "ekg": ("ekg-data", "ekg", "ecg-data", "ecg"),
-    "blood": ("bloodtest-data", "blood-test-data"),
-}
-CANONICAL_DATASET_PREFIX = {
-    "xray": "xray-data",
-    "ekg": "ekg-data",
-    "blood": "bloodtest-data",
-}
-blood_test_dir_setting = os.environ.get(
-    "BLOOD_TEST_DIR", settings_from_file.get("BLOOD_TEST_DIR", "")
-).strip()
-BLOOD_TEST_DIR = Path(blood_test_dir_setting).expanduser() if blood_test_dir_setting else None
-if BLOOD_TEST_DIR is not None and not BLOOD_TEST_DIR.is_absolute():
-    BLOOD_TEST_DIR = Path(__file__).resolve().parent / BLOOD_TEST_DIR
-
 # Remote MedGemma can take several minutes when full-resolution images are sent.
 # Keep the quick server/model check short, but allow inference much longer.
 SERVER_CHECK_TIMEOUT = 15
@@ -217,174 +316,48 @@ def select_image(path, button, tile, column):
     # The colored image border is the visible selection indicator.
 
 
-def encode_image(path, patient_root=None):
-    """Encode original file bytes only after validating patient containment.
-
-    Validation is repeated in the worker immediately before reading, preventing
-    a changed symlink from bypassing the GUI's earlier selection validation.
-    Display thumbnails and resized pixels never enter this function.
-    """
-    path = validate_patient_path(path, patient_root or active_patient)
-    return base64.b64encode(path.read_bytes()).decode("ascii")
-
-PATIENT_RECORDS_DIR = Path(os.environ.get(
-    "PATIENT_RECORDS_DIR", settings_from_file.get("PATIENT_RECORDS_DIR", "patient_records")
-)).expanduser()
-if not PATIENT_RECORDS_DIR.is_absolute():
-    PATIENT_RECORDS_DIR = Path(__file__).resolve().parent / PATIENT_RECORDS_DIR
-active_patient = None
-request_busy = False
-blood_test_paths = []
+def encode_image(path):
+    """Encode original source bytes; gallery resizing never changes uploads."""
+    return base64.b64encode(Path(path).read_bytes()).decode("ascii")
 
 
-def visible_directory(path):
-    """Exclude hidden/system directories and links, including Windows junctions."""
-    try:
-        attributes = getattr(path.lstat(), "st_file_attributes", 0)
-        return (path.is_dir() and not path.name.startswith(".")
-                and path.name not in ("__pycache__", "$RECYCLE.BIN", "System Volume Information")
-                and not path.is_symlink() and not attributes & (2 | 4 | 1024))
-    except OSError:
-        return False
-
-
-def discover_patients():
-    """List immediate patient directories without imposing a naming pattern."""
-    try:
-        return sorted((p.name for p in PATIENT_RECORDS_DIR.iterdir()
-                       if visible_directory(p)), key=str.casefold)
-    except OSError:
-        return []
-
-
-def validate_patient_path(path, patient):
-    """Reject any file or directory whose resolved location escapes its patient."""
-    root = patient.resolve(strict=True)
-    if root.parent != PATIENT_RECORDS_DIR.resolve(strict=True):
-        raise ValueError("Patient directory is outside the configured records directory.")
-    resolved = path.resolve(strict=True)
-    if resolved != root and root not in resolved.parents:
-        raise ValueError("Record is outside the active patient directory.")
-    return resolved
-
-
-def modality_folder(name):
-    """Return an existing, contained modality folder, or None for missing data."""
-    if active_patient is None:
-        return None
-    try:
-        folder = validate_patient_path(active_patient / name, active_patient)
-        return folder if folder.is_dir() else None
-    except (OSError, ValueError):
-        return None
-
-
-def record_files(folder, extensions):
-    """Enumerate contained records without traversing linked directories."""
-    paths = []
-    if folder is None:
-        return paths
-    for parent, dirs, files in os.walk(folder, followlinks=False):
-        dirs[:] = [name for name in dirs if visible_directory(Path(parent) / name)]
-        for name in files:
-            path = Path(parent) / name
-            if path.suffix.lower() in extensions:
-                try:
-                    validate_patient_path(path, active_patient)
-                    paths.append(path)
-                except (OSError, ValueError):
-                    pass
-    return sorted(paths, key=lambda p: str(p).casefold())
-
-
-def image_folders():
-    """Use only the active patient's X-ray and EKG modality directories."""
-    return [modality_folder("xrays"), modality_folder("ekgs")]
-
-
-def friendly_folder_date(folder):
-    """Label a modality with its patient rather than a legacy folder date."""
-    return active_patient.name if active_patient else "No patient"
-
-
-def latest_blood_test_folder():
-    """Return the active patient's blood_tests directory, without date discovery."""
-    return modality_folder("blood_tests")
-
-
-def select_patient(event=None):
-    """Clear all prior context before loading the newly selected patient."""
-    global active_patient
-    if request_busy:
-        patient_name.set(active_patient.name if active_patient else "")
-        return
-    stop_voice()
-    active_patient = None
-    name = patient_name.get()
-    if name in discover_patients():
-        active_patient = PATIENT_RECORDS_DIR / name
-    answer_box.delete("1.0", tk.END)
-    prompt_box.delete("1.0", tk.END)
-    load_images()
-    load_blood_tests()
-    show_status(f"Patient: {name}. Select records to include." if active_patient
-                else "No patients found. Add patient folders under PATIENT_RECORDS_DIR.")
 
 def load_blood_tests():
-    """Load one selectable list row per JSON blood-test record."""
+    """Load selectable JSON records, preserving units and reference ranges.
+
+    A title is optional: panel or filename supplies the visible label. Each
+    displayed record retains its source path for validation at request time.
+    """
     blood_test_view.config(state=tk.NORMAL)
     blood_test_view.delete("1.0", tk.END)
     blood_test_records.clear()
     blood_test_paths.clear()
     selected_blood_test_indices.clear()
-    folder = latest_blood_test_folder()
-    if folder is None:
-        blood_test_panel.config(text="BLOOD TEST (missing)")
-        blood_test_view.insert(tk.END, "No blood_tests folder for the selected patient")
-        blood_test_view.config(state=tk.DISABLED)
-        return
-
-    blood_test_panel.config(text=f"BLOOD TEST — {friendly_folder_date(folder)}")
-    errors = 0
-    for path in record_files(folder, {".json"}):
-        if path.name.lower() == "index.json":
-            continue
+    paths, message = patient_files("blood_tests", {".json"})
+    errors = []
+    for path in paths:
         try:
             data = json.loads(path.read_text(encoding="utf-8-sig"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            errors += 1
-            continue
-        records = data if isinstance(data, list) else [data]
-        for record in records:
-            if not isinstance(record, dict):
-                errors += 1
-                continue
-            title = record.get("title") or record.get("panel") or path.stem
-            if not isinstance(title, str) or not title.strip():
-                errors += 1
-                continue
-            title = title.replace("\n", " ").replace("\r", " ")
-            record_index = len(blood_test_records)
-            blood_test_records.append(record)
-            blood_test_paths.append(path)
-            line_tag = f"blood_record_{record_index}"
-            remaining_data = {key: value for key, value in record.items() if key != "title"}
-            blood_test_view.insert(tk.END, title.strip(), (line_tag, "blood_title"))
-            blood_test_view.insert(
-                tk.END,
-                " : "
-                + json.dumps(remaining_data, ensure_ascii=False, separators=(", ", ": "))
-                + "\n",
-                (line_tag,),
-            )
-
+            records = data if isinstance(data, list) else [data]
+            for record in records:
+                if not isinstance(record, dict) or not record:
+                    raise ValueError("Expected a nonempty JSON object")
+                index = len(blood_test_records)
+                blood_test_records.append(record)
+                blood_test_paths.append(path)
+                tag = f"blood_record_{index}"
+                title = str(record.get("title") or record.get("panel") or path.stem)
+                blood_test_view.insert(tk.END, title.replace("\n", " "), (tag, "blood_title"))
+                blood_test_view.insert(tk.END, " : " + json.dumps(record, ensure_ascii=False) + "\n", (tag,))
+        except (OSError, UnicodeError, ValueError) as error:
+            errors.append(f"{path.name}: {error}")
     if not blood_test_records:
-        blood_test_view.insert(tk.END, "No valid blood-test JSON records found")
-    blood_test_view.config(state=tk.DISABLED)
+        blood_test_view.insert(tk.END, (message or "No valid blood-test JSON records.") + "\n")
     if errors:
-        blood_test_view.config(state=tk.NORMAL)
-        blood_test_view.insert(tk.END, f"Skipped {errors} invalid blood-test record(s).")
-        blood_test_view.config(state=tk.DISABLED)
+        blood_test_view.insert(tk.END, "Invalid JSON: " + "; ".join(errors))
+        print("Invalid blood-test JSON: " + "; ".join(errors))
+    blood_test_view.config(state=tk.DISABLED)
+
 
 
 def toggle_blood_test_record(event):
@@ -426,8 +399,6 @@ def load_images():
     for selection in selected_images:
         selection.clear()
 
-    folders = image_folders()
-
     try:
         from PIL import Image, ImageOps, ImageTk
     except ImportError:
@@ -442,21 +413,11 @@ def load_images():
                 grid_column,
                 weight=1 if (column == 0 or grid_column == 0) else 0,
             )
-        # Explicit folder choices take priority; discovered image folders
-        # beside the script or inside IMAGE_DIR fill the remaining columns.
-        folder = folders[column]
-        if folder is None:
-            expected = f"{FOLDER_PREFIXES[column]}-MMDDYY"
-            gallery["title"].config(text=f"{GALLERY_NAMES[column]} (missing)")
-            ttk.Label(grid, text="No modality folder for the selected patient.", wraplength=500).grid(row=0, column=0, padx=5, pady=12)
-            continue
-        friendly_date = friendly_folder_date(folder)
-        gallery["title"].config(
-            text=f"{GALLERY_NAMES[column]} — {friendly_date}"
-        )
-        paths = record_files(folder, IMAGE_EXTENSIONS)
+        modality = ("xrays", "ekgs")[column]
+        paths, message = patient_files(modality, IMAGE_EXTENSIONS)
+        gallery["title"].config(text=GALLERY_NAMES[column])
         if not paths:
-            ttk.Label(grid, text="No supported images in this patient folder.", wraplength=220).grid(row=0, column=0, padx=5, pady=12)
+            ttk.Label(grid, text=message, wraplength=400).grid(row=0, column=0, padx=5, pady=12)
         if Image is None and paths:
             ttk.Label(grid, text="Install Pillow: py -m pip install pillow", wraplength=220).grid(row=0, column=0, padx=5, pady=12)
             continue
@@ -513,7 +474,8 @@ def load_images():
             ttk.Label(tile, text=path.name[:24], anchor="center", wraplength=target_size[0]).pack()
             displayed += 1
         if errors:
-            ttk.Label(grid, text=f"Skipped {errors} invalid image(s).").grid(row=displayed + 1, column=0)
+            ttk.Label(grid, text=f"Could not load {errors} invalid image(s).").grid(
+                row=displayed + 1, column=0, padx=5, pady=5)
         update_gallery_scrollbars(
             gallery["canvas"], gallery["canvas_window"], gallery["grid"]
         )
@@ -526,7 +488,7 @@ def base_url(value):
         value = value.removesuffix("/api/generate")
     parsed = urlsplit(value)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        raise ValueError("Enter a full server URL, such as http://YOUR_REMOTE_SERVER:11434")
+        raise ValueError("Enter a full HTTP or HTTPS server URL including its port.")
     if parsed.path or parsed.query or parsed.fragment or parsed.username or parsed.password:
         raise ValueError("Enter only the server address and port, without a path or key.")
     return value
@@ -539,7 +501,7 @@ def list_models(url):
     return [item["name"] for item in data.get("models", []) if item.get("name")]
 
 
-def generate(url, model, question, image_paths=(), patient_root=None):
+def generate(url, model, question, image_paths=()):
     """POST prompt and all selected full-resolution images to Ollama."""
     # Form a Python dictionary that will become the HTTP request's JSON body.
     # "question" contains the user's trimmed question and any selected
@@ -561,7 +523,6 @@ def generate(url, model, question, image_paths=(), patient_root=None):
         "prompt": question,
         # Ask Ollama for one complete JSON reply instead of streamed chunks.
         "stream": False,
-        "think": THINK,
         # Generation length, consistency, and repetition controls come from .env.
         "options": {
             "num_predict": NUM_PREDICT,
@@ -570,13 +531,14 @@ def generate(url, model, question, image_paths=(), patient_root=None):
             "repeat_last_n": REPEAT_LAST_N,
         },
     }
+    payload["think"] = THINK
     if image_paths:
         # encode_image returns one Base64 string for each selected source file.
         # image_paths contains the first date's selection followed by the
         # second date's selection, preserving click order within each. The gallery's
         # resized PhotoImage objects are never sent. With no selected images,
         # omit the "images" key entirely and submit a text-only request.
-        payload["images"] = [encode_image(path, patient_root) for path in image_paths]
+        payload["images"] = [encode_image(path) for path in image_paths]
     # json.dumps turns the dictionary into JSON text. UTF-8 then converts that
     # text into bytes for HTTP. Example: {"prompt": "My question", "images":
     # ["<base64 image 1>", "<base64 image 2>"], ...}.
@@ -677,7 +639,7 @@ def speak_response(text):
         global speech_engine
         engine = None
         try:
-            engine = pyttsx3.init("sapi5")
+            engine = pyttsx3.init("sapi5" if sys.platform == "win32" else None)
             with speech_lock:
                 if not voice_enabled:
                     return
@@ -688,7 +650,7 @@ def speak_response(text):
             engine.runAndWait()
         except Exception as error:
             message = str(error)
-            window.after(0, lambda: show_status(f"Voice error: {message}"))
+            post_ui(lambda: show_status(f"Voice error: {message}"))
         finally:
             with speech_lock:
                 if speech_engine is engine:
@@ -701,6 +663,9 @@ def toggle_voice():
     """Toggle automatic reading and visually show whether voice is enabled."""
     global voice_enabled
 
+    if pyttsx3 is None:
+        show_status("Voice unavailable: install pyttsx3 to enable it.")
+        return
     voice_enabled = not voice_enabled
     if voice_enabled:
         voice_toggle_button.configure(text="Voice: ON", style="VoiceOn.TButton")
@@ -716,13 +681,14 @@ def toggle_voice():
 
 def finish(answer=None, error=None):
     """Display a finished answer or error and restore the Send button."""
-    global request_busy
-    request_busy = False
+    global request_in_flight
+    request_in_flight = False
     patient_picker.config(state="readonly")
     send_button.config(state=tk.NORMAL)
     show_status("Completed" if error is None else "Request failed")
     answer_box.delete("1.0", tk.END)
     if error is None:
+        answer_box.insert(tk.END, "AI-generated — requires clinician review.\n\n")
         insert_highlighted_report(answer)
     else:
         answer_box.insert(tk.END, f"Error: {error}")
@@ -746,9 +712,11 @@ def insert_highlighted_report(report):
     answer_box.insert(tk.END, report[position:])
 
 
-def run_request(url, model, question, image_paths, patient_root):
+def run_request(url, model, question, image_paths, patient):
     """The HTTP call runs in the background so the window stays responsive."""
     try:
+        for path in image_paths:
+            safe_path(path, patient)
         # Give a useful message before trying generation with a missing model.
         models = list_models(url)
         if model not in models and f"{model}:latest" not in models:
@@ -756,18 +724,29 @@ def run_request(url, model, question, image_paths, patient_root):
                 f"Model {model} is not installed on the selected server. "
                 "Check the model name and server address."
             )
-        result = generate(url, model, question, image_paths, patient_root)
-        window.after(0, lambda: finish(answer=result))
+        result = generate(url, model, question, image_paths)
+        post_ui(lambda: finish(answer=result) if active_patient == patient else None)
     except Exception as error:
         message = str(error)
-        window.after(0, lambda: finish(error=message))
+        post_ui(lambda: finish(error=message) if active_patient == patient else None)
 
 
 def send_question():
-    """Snapshot and validate active-patient selections before background inference."""
-    global request_busy
-    if request_busy or active_patient is None:
-        show_status("Select a patient and wait for any running request.")
+    """Validate GUI values and send one question to the selected model."""
+    global request_in_flight
+    if request_in_flight:
+        return
+    patient = active_patient
+    if patient is None:
+        show_status("Select a patient first.")
+        return
+    try:
+        for path in tuple(p for group in selected_images for p in group):
+            safe_path(path, patient)
+        for index in selected_blood_test_indices:
+            safe_path(blood_test_paths[index], patient)
+    except (OSError, ValueError) as error:
+        show_status(f"Invalid selected record: {error}")
         return
     # Read all lines in the Question box, then trim surrounding whitespace.
     user_question = prompt_box.get("1.0", tk.END).strip()
@@ -808,14 +787,7 @@ def send_question():
     except ValueError as error:
         show_status(str(error))
         return
-    try:
-        image_paths = tuple(validate_patient_path(p, active_patient) for p in image_paths)
-        for index in selected_blood_test_indices:
-            validate_patient_path(blood_test_paths[index], active_patient)
-    except (OSError, ValueError, IndexError) as error:
-        show_status(f"Invalid selected record: {error}")
-        return
-    request_busy = True
+    request_in_flight = True
     patient_picker.config(state=tk.DISABLED)
     send_button.config(state=tk.DISABLED)
     answer_box.delete("1.0", tk.END)
@@ -833,7 +805,7 @@ def send_question():
     # run_request calls generate(), which builds and sends one HTTP POST.
     threading.Thread(
         target=run_request,
-        args=(url, model, question, image_paths, active_patient.resolve()),
+        args=(url, model, question, image_paths, patient),
         daemon=True,
     ).start()
 
@@ -855,23 +827,33 @@ def refresh_models():
                 refresh_button.config(state=tk.NORMAL)
                 model_picker.configure(values=models or DEFAULT_MODELS)
                 show_status(f"Connected. {len(models)} installed model(s): {', '.join(models)}")
-            window.after(0, complete)
+            post_ui(complete)
         except Exception as error:
             message = str(error)
             def failed():
                 refresh_button.config(state=tk.NORMAL)
                 show_status(f"Cannot reach the selected server: {message}")
-            window.after(0, failed)
+            post_ui(failed)
 
     threading.Thread(target=worker, daemon=True).start()
 
 
-if __name__ == "__main__":
+def main():
+    """Validate startup data, then construct the preserved Tkinter interface."""
+    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_picker, prompt_box, send_button, voice_toggle_button, status_label, answer_box, selected_images, default_button_color, galleries, blood_test_panel, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, thumbnails, gallery_viewport_width, actions_placeholder
+    # Fatal data-root validation precedes construction of any Tk widget.
+    try:
+        PATIENT_RECORDS_DIR = patient_records_root()
+    except (RuntimeError, OSError) as error:
+        print(str(error), file=sys.stderr, flush=True)
+        raise SystemExit(1)
+    patients = discover_patients(PATIENT_RECORDS_DIR)
+
     # Build the Tkinter desktop interface on the main thread.
     window = tk.Tk()
     window.title("AI Clinical Assistant Center")
     window.configure(background=APP_BACKGROUND)
-    
+
     # Use a clean, consistent theme instead of platform-dependent default colors.
     ui_style = ttk.Style(window)
     try:
@@ -986,7 +968,7 @@ if __name__ == "__main__":
     window.geometry(f"{visible_width}x{visible_height}")
     # The medical-data panels use 65% of the body width.
     gallery_viewport_width = max(105, round((visible_width - 45) * 65 / 100) - 24)
-    
+
     settings = ttk.LabelFrame(
         window, text="Connection & Model", style="Settings.TLabelframe"
     )
@@ -1017,16 +999,17 @@ if __name__ == "__main__":
         style="Secondary.TButton",
     )
     refresh_button.grid(row=0, column=4, padx=(10, 8), pady=3)
-    
-    patient_bar = ttk.Frame(window, style="App.TFrame")
-    patient_bar.pack(fill=tk.X, padx=14, pady=4)
-    ttk.Label(patient_bar, text="Patient", style="Field.TLabel").pack(side=tk.LEFT)
+
+    patient_bar = ttk.LabelFrame(window, text="Patient", style="Settings.TLabelframe")
+    patient_bar.pack(fill=tk.X, padx=14, pady=5)
     patient_name = tk.StringVar()
     patient_picker = ttk.Combobox(patient_bar, textvariable=patient_name,
-                                  values=discover_patients(), state="readonly", width=36)
-    patient_picker.pack(side=tk.LEFT, padx=8)
+                                  values=tuple(patients), state="readonly", width=40)
+    patient_picker.pack(side=tk.LEFT, padx=10, pady=5)
     patient_picker.bind("<<ComboboxSelected>>", select_patient)
-    
+    ttk.Label(patient_bar, text="Choose the patient whose selected records will be sent.",
+              style="Status.TLabel").pack(side=tk.LEFT, padx=8)
+
     # Place text on the left and the image gallery beside it on the right.
     body = ttk.Frame(window, style="App.TFrame")
     body.pack(fill=tk.BOTH, expand=True, padx=14, pady=(5, 14))
@@ -1038,7 +1021,7 @@ if __name__ == "__main__":
     # equally between XRAY and EKG, giving each image window 35% overall.
     body.rowconfigure(0, weight=7, uniform="body_rows")
     body.rowconfigure(1, weight=3, uniform="body_rows")
-    
+
     # One unified question-and-answer window.
     qa_panel = ttk.LabelFrame(
         body,
@@ -1062,10 +1045,6 @@ if __name__ == "__main__":
         borderwidth=6,
     )
     prompt_box.pack(fill=tk.X, padx=10)
-    actions_placeholder = ttk.LabelFrame(qa_panel, text="Actions", height=42)
-    actions_placeholder.pack(fill=tk.X, padx=10, pady=(8, 0))
-    actions_placeholder.pack_propagate(False)
-    
     action_bar = ttk.Frame(qa_panel, style="App.TFrame")
     action_bar.pack(pady=10)
     send_button = ttk.Button(
@@ -1086,7 +1065,13 @@ if __name__ == "__main__":
         style="Status.TLabel",
     )
     status_label.pack(anchor="w")
-    ttk.Label(qa_panel, text="AI Response - clinician review required", style="Field.TLabel").pack(anchor="w", padx=10, pady=(12, 5))
+    actions_placeholder = ttk.LabelFrame(qa_panel, text="Actions", height=38,
+                                         style="Settings.TLabelframe")
+    actions_placeholder.pack(fill=tk.X, padx=10, pady=5)
+    actions_placeholder.pack_propagate(False)
+    ttk.Label(qa_panel, text="AI-generated output requires clinician review.",
+              style="Status.TLabel", wraplength=300).pack(anchor="w", padx=10)
+    ttk.Label(qa_panel, text="AI Response", style="Field.TLabel").pack(anchor="w", padx=10, pady=(12, 5))
     answer_box = scrolledtext.ScrolledText(
         qa_panel,
         width=18,
@@ -1105,7 +1090,7 @@ if __name__ == "__main__":
         font=("Segoe UI", 11, "bold"),
     )
     answer_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-    
+
     image_panel = ttk.LabelFrame(
         body,
         text="Medical Image Datasets",
@@ -1117,11 +1102,10 @@ if __name__ == "__main__":
     image_panel.rowconfigure(1, weight=1, uniform="gallery_rows")
     image_panel.columnconfigure(0, weight=1)
     selected_images = [{}, {}]  # Blue first, then orange; each keeps click order.
-    dataset_overrides = [None, None]  # Optional folders selected through Images menu.
     sample_button = tk.Button(image_panel)
     default_button_color = sample_button.cget("background")
     sample_button.destroy()
-    
+
     galleries = []
     for gallery_index in range(2):
         pane = ttk.LabelFrame(
@@ -1167,7 +1151,7 @@ if __name__ == "__main__":
                 "grid": grid,
             }
         )
-    
+
     # Keep the selectable Blood Test Data list below the image galleries.
     blood_test_panel = ttk.LabelFrame(
         body,
@@ -1179,6 +1163,7 @@ if __name__ == "__main__":
     blood_test_panel.rowconfigure(0, weight=1)
     blood_test_panel.columnconfigure(0, weight=1)
     blood_test_records = []
+    blood_test_paths = []
     selected_blood_test_indices = set()
     blood_test_view = tk.Text(
         blood_test_panel,
@@ -1212,11 +1197,16 @@ if __name__ == "__main__":
         yscrollcommand=blood_test_scroll.set,
         xscrollcommand=blood_test_hscroll.set,
     )
-    
+
     thumbnails = []
-    
+
     # Load images and check the server after the complete window is assembled.
+    window.after(50, drain_ui)
     window.after(100, select_patient)
-    
+    # Connection checks are explicit; startup never transmits clinical data.
+
     window.mainloop()
-    
+
+
+if __name__ == "__main__":
+    main()
