@@ -113,15 +113,30 @@ REM Scan the python source folder, not config or the entire project.
 echo Checking Python project packages...
 if not exist "%PROJECT_DIR%\requirements.txt" (
   if not exist "%PROJECT_DIR%\python" (
-    echo [WARNING] No python source folder. Cannot generate requirements.txt.
+    echo [ERROR] Python source directory not found: "%PROJECT_DIR%\python"
+    echo [ERROR] Cannot generate requirements.txt. Put your .py files in the python folder,
+    echo [ERROR] or create requirements.txt manually in "%PROJECT_DIR%".
+    goto :failed
   ) else (
+    dir /b /s /a-d "%PROJECT_DIR%\python\*.py" 2>nul | findstr /r "." >nul
+    if errorlevel 1 (
+      echo [ERROR] No .py Python source files found under "%PROJECT_DIR%\python".
+      echo [ERROR] Cannot generate requirements.txt. Add your Python program first,
+      echo [ERROR] or create requirements.txt manually in "%PROJECT_DIR%".
+      goto :failed
+    )
     echo [INFO] Installing pipreqs to detect Python dependencies...
     %PYTHON_CMD% -m pip install pipreqs
     if errorlevel 1 goto :failed
     echo [INFO] Generating requirements.txt from python source files...
     %PYTHON_CMD% -m pipreqs.pipreqs "%PROJECT_DIR%\python" --savepath "%PROJECT_DIR%\requirements.txt" --force --mode no-pin --ignore .venv,venv
     if errorlevel 1 (
-      echo [ERROR] Automatic dependency detection failed. Please create requirements.txt manually.
+      echo [ERROR] Automatic dependency detection failed. Check the Python source files.
+      echo [ERROR] Alternatively create requirements.txt manually in "%PROJECT_DIR%".
+      goto :failed
+    )
+    if not exist "%PROJECT_DIR%\requirements.txt" (
+      echo [ERROR] pipreqs completed but did not create requirements.txt.
       goto :failed
     )
   )
@@ -134,6 +149,44 @@ if exist "%PROJECT_DIR%\requirements.txt" (
   echo [WARNING] requirements.txt not found; Python packages skipped.
 )
 echo.
+REM Optional Ollama installation on THIS Windows machine only.
+echo.
+choice /C YN /N /M "Configure Ollama and AI models on THIS Windows computer? [Y/N] "
+if errorlevel 2 goto :models_done
+choice /C YN /N /M "Install Ollama locally if missing? [Y/N] "
+if errorlevel 2 goto :local_models
+where ollama.exe >nul 2>&1
+if errorlevel 1 (
+  where winget.exe >nul 2>&1
+  if errorlevel 1 (
+    echo [WARNING] winget unavailable. Install Ollama from https://ollama.com/download/windows
+  ) else (
+    winget install --id Ollama.Ollama -e --accept-package-agreements --accept-source-agreements
+    if errorlevel 1 echo [WARNING] Ollama installation failed.
+    set "PATH=%LOCALAPPDATA%\Programs\Ollama;%PATH%"
+  )
+)
+:local_models
+where ollama.exe >nul 2>&1
+if errorlevel 1 (
+  echo [WARNING] Ollama not found; model downloads skipped.
+  goto :models_done
+)
+ollama list >nul 2>&1
+if errorlevel 1 (
+  echo [WARNING] Ollama is not running. Start the Ollama application and rerun init.
+  goto :models_done
+)
+choice /C YN /N /M "Download MedGemma 1.5 on THIS computer? [Y/N] "
+if errorlevel 2 goto :local_qwen
+ollama pull medgemma1.5
+if errorlevel 1 echo [WARNING] MedGemma download failed.
+:local_qwen
+choice /C YN /N /M "Download Qwen3:8B on THIS computer? [Y/N] "
+if errorlevel 2 goto :models_done
+ollama pull qwen3:8b
+if errorlevel 1 echo [WARNING] Qwen3 download failed.
+:models_done
 echo [SUCCESS] Setup completed.
 echo Codex CLI installed at: %NPM_PREFIX%\codex.cmd
 echo Open a NEW CMD window and run:
