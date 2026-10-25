@@ -1,33 +1,11 @@
-MedGemma — No-Virtual-Environment INIT/UNINIT
+MedGemma INIT and UNINIT — Windows and Ubuntu
 
-Copy the four scripts into PROJECT_ROOT/config/
-Python source belongs in PROJECT_ROOT/python/
-requirements.txt belongs in PROJECT_ROOT/ (generated if missing)
+Put all four scripts in the project config/ directory.
+Windows: run init.bat or uninit.bat from CMD.
+Ubuntu: bash init.sh or bash uninit.sh.
 
-Windows:
-  cd /d "C:\Users\Public\mkhalil\AI\AI\chatbot-med-gemma-without MCP\config"
-  init.bat
-  uninit.bat
+INIT: Does not create/use .venv. Deletes existing project-root .venv. Installs Python dependencies into existing user Python environment, installs Codex, optionally installs Ollama/models. Does not start GUI or server.
 
-Ubuntu:
-  cd /path/to/project/config
-  bash init.sh
-  bash uninit.sh
+UNINIT: Preserves Python installation, pip, all installed Python packages (including pipreqs), all Python-related environment variables and PATH settings. Preserves Node.js, npm, Ollama, models, requirements.txt, .env, source and patient data. Does not stop running servers. Asks before optionally uninstalling globally installed Codex and deleting a leftover project .venv.
 
-INIT:
-- Does not create a .venv; automatically removes existing PROJECT_ROOT/.venv.
-- Installs/detects Python, pip, Node.js/npm and Codex.
-- Generates requirements.txt if absent, after installing pipreqs.
-- Prints errors if Python source files are missing.
-- Installs Python packages into the current user's Python site-packages.
-- Ubuntu uses pip --user --break-system-packages for externally managed Python.
-  This is a deliberate tradeoff and may conflict with other Python programs.
-- Optionally installs Ollama locally and downloads MedGemma 1.5 / Qwen3:8B.
-  Ollama/models can consume multiple GB if you choose Yes.
-- Does NOT start Ollama server, Codex, or the GUI.
-
-UNINIT:
-- Offers to uninstall global Codex and delete any remaining project .venv.
-- Does NOT uninstall user Python packages (shared with other projects),
-  Ollama, models, Python, Node.js, or delete project source/patient data.
-- The init removes .venv automatically, without a separate confirmation.
+Note: Ubuntu init uses pip --user --break-system-packages, which can affect Python package compatibility. Ollama model downloads can be large if approved.

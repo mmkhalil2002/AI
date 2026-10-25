@@ -4,8 +4,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 echo '=== MedGemma Ubuntu UNINIT ==='
 echo 'Optionally remove global Codex CLI and project .venv.'
-echo 'Preserves Python, Node.js, npm, PATH, Ollama, models, requirements.txt, code and data.'
-echo 'Does NOT stop any running server.'
+echo 'Preserves Python, ALL Python packages, pip, pipreqs, Python environment variables,'
+echo 'PATH, Node.js, npm, Ollama, models, requirements.txt, .env, code and patient data.'
+echo 'Does NOT stop servers or uninstall Python packages.'
 read -r -p 'Proceed with cleanup? [y/N] ' confirm
 [[ "$confirm" =~ ^[Yy]$ ]] || exit 0
 read -r -p 'Remove globally installed Codex CLI (affects other projects)? [y/N] ' codex_confirm
@@ -22,4 +23,4 @@ if [[ -d "$ROOT/.venv" ]]; then
     rm -rf -- "$ROOT/.venv"
   fi
 fi
-echo '[SUCCESS] Cleanup finished. Application and Ollama files preserved.'
+echo '[SUCCESS] Cleanup finished. Python, packages, Python PATH and variables preserved.'

@@ -3,9 +3,10 @@ setlocal EnableExtensions
 for %%I in ("%~dp0..") do set "ROOT=%%~fI"
 echo === MedGemma Windows UNINIT ===
 echo This can remove Codex CLI globally and this project's .venv.
-echo It PRESERVES Node.js, Python, npm, pipreqs outside .venv, Ollama,
-echo downloaded AI models, PATH, requirements.txt, code, and patient data.
-echo It does NOT stop running servers.
+echo It PRESERVES Python, ALL installed Python packages, pip, pipreqs,
+echo Python environment variables and PATH, Node.js, npm, Ollama, models,
+echo requirements.txt, .env, application code, and patient data.
+echo It does NOT stop running servers or uninstall Python packages.
 choice /C YN /N /M "Proceed with cleanup? [Y/N] "
 if errorlevel 2 exit /b 0
 choice /C YN /N /M "Remove globally installed Codex CLI (affects other projects)? [Y/N] "
@@ -27,5 +28,5 @@ if exist "%ROOT%\.venv\" (
   if exist "%ROOT%\.venv\" echo [WARNING] Could not delete .venv completely.
 )
 :done
-echo [SUCCESS] Cleanup finished. Source code, requirements.txt, Ollama and models preserved.
+echo [SUCCESS] Cleanup finished. Python, packages, Python PATH and variables preserved.
 exit /b 0
