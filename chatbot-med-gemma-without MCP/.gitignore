@@ -1,0 +1,19 @@
+# Local configuration and private clinical/demo records
+python/.env
+python/patient_records/
+med_data/.env
+med_data/data/
+med_data/patient_records/
+
+# Generated reports and local caches
+reports/
+work/
+**/__pycache__/
+*.py[cod]
+*.log
+
+# Local editor and OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

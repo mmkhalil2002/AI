@@ -9,7 +9,7 @@
 - Preserve `../python/.env`, `../python/patient_records/`, and the original Python source. Never move, overwrite, or automatically create patient records.
 - The running GUI must resolve its own location using `Path(__file__).resolve().parent`, then load `.env` and validate `patient_records` relative to that location. It must not use Codex's working directory as the data root.
 - Use the Ollama URL from `../python/.env`; it may be local or remote. Do not hardcode an IP.
-- Test the resulting file using `cd ../python` followed by `python client_medgemma_patients.py` on Windows or `python3 client_medgemma_patients.py` on Ubuntu. The existing launchers in `../config/` can also be used, but because they choose the first `.py` file, verify that they select the intended GUI.
+- Run the GUI from `python/` with `python client_medgemma_patients.py` on Windows or `python3 client_medgemma_patients.py` on Ubuntu. The launchers in `../config/` explicitly start this named application.
 
 ## 1. Overview
 
@@ -125,18 +125,27 @@ This behavior must be implemented in **the Python application**, not the launche
 
 ## 4. How to use the GUI
 
-1. Launch `client_medgemma_patients.py`.
-2. Choose a patient in the new **Patient** dropdown. The program loads that patient's X-rays, EKGs, and blood tests into the existing panels.
-3. Click the X-ray thumbnails, EKG thumbnails, and/or blood-test rows you want included. Clicking an item again deselects it.
-4. Enter the doctor's request in the existing prompt box.
-5. Click **Send**. The application sends the prompt and **only the selected patient data** directly to MedGemma.
-6. Read the generated answer in the existing AI Response panel. Review all findings clinically.
+1. Launch `client_medgemma_patients.py` with the command for your operating system in section 8. Confirm the **Records**, **Server**, **Model**, and **Generation** readiness labels.
+2. Select a patient. Check the active-patient name and modality counts before choosing any records. The session-level **Demo data** checkbox is manual; the application does not infer that a patient or filename is synthetic.
+3. Select only the X-ray, EKG, and blood-test records you want to include. Nothing is selected automatically. Use the modality **Select all** and **Clear** controls when helpful, or remove an item from the selection tray. Clicking an image's **View details** control opens inspection without selecting it.
+4. Choose a report preset or write the doctor's request in the editable question box. Review the visible input summary; zero selected records means a text-only request.
+5. Click **Send**. The app snapshots the active patient and selected paths, checks the configured server/model, and sends one request in the background. **Cancel** immediately stops accepting the result locally and closes the response where possible; the Ollama server may continue its computation.
+6. Review the completed draft beside the immutable original AI draft. Edit the user draft as needed. The review acknowledgement is a local reminder, not a signature or authentication step.
+7. Use **Export TXT + HTML + JSON** to save deliberately to an existing folder outside `patient_records`. The versioned JSON bundle records both draft versions, completion/review state, model/time, and patient-relative references to inputs actually sent; it does not embed source images. Choose that folder under **Saved report history** to filter and reopen reports for the active patient. Reopening never sends a request.
 
 When switching patients, the application clears previous selections, prior response/context, and displayed records. It must also prevent an earlier in-flight response from appearing under a different patient.
 
 The **Actions** section remains **empty** in this version. The existing **Send** button continues to function independently.
 
-## 5. Data sent to MedGemma
+## 5. Review, saving, and history
+
+- A response must complete successfully before it can be acknowledged or exported as a completed report. Failed, timed-out, cancelled, empty, or truncated output is not a completed report.
+- The original AI wording and user-edited draft are shown separately. Editing invalidates a prior review acknowledgement until the changed version is reviewed again.
+- **Export TXT + HTML + JSON** is an explicit save action. Pick an existing output directory outside `patient_records`; the app refuses a report destination inside patient source data. Keep report files in a user-approved writable location.
+- To reopen reports, select **Choose history folder…**, choose the folder that contains exported JSON bundles, select a patient, then choose a report and click **Reopen selected**. The list is filtered to the active patient. Malformed, unsupported, or other-patient bundles are skipped. Reopened reports are not added to a new model prompt.
+- Exported review status means only that the user acknowledged the displayed draft locally. It does not identify or authenticate the reviewer and is not a clinical signature.
+
+## 6. Data sent to MedGemma
 
 The application reuses the original `/api/generate` implementation:
 
@@ -148,7 +157,7 @@ The application reuses the original `/api/generate` implementation:
 
 The existing connection/model check (`/api/tags`), timeout handling, status messages, and optional voice playback should be preserved.
 
-## 6. Configuration
+## 7. Configuration
 
 Keep the existing `.env` file. The new patient-directory setting is optional; when omitted, the application uses `patient_records` beside the script.
 
@@ -162,7 +171,7 @@ The URL above is a **placeholder**. Keep the actual local or remote server addre
 
 The GUI must not automatically install MedGemma. It must already be available on the configured Ollama server, whether local or remote.
 
-## 7. Installation and execution
+## 8. Installation and execution
 
 From Windows Command Prompt, run the launcher from `config/` (or run Python directly from `python/`):
 
@@ -171,9 +180,14 @@ cd /d "C:\Users\Public\mkhalil\AI\AI\chatbot-med-gemma-without MCP\config"
 run.bat
 ```
 
-The launcher selects the first `.py` file in the sibling `python/` directory. Ensure the intended GUI is that file, or run `python client_medgemma_patients.py` directly from `python/`.
+To run the app directly:
 
-The reference program can also install missing supported packages automatically. `pyttsx3` is optional if voice output is not needed.
+```cmd
+cd /d "C:\Users\Public\mkhalil\AI\AI\chatbot-med-gemma-without MCP\python"
+python client_medgemma_patients.py
+```
+
+The Windows launcher explicitly starts `python/client_medgemma_patients.py` and checks that its selected Python interpreter is Python 3.9 or newer with Tkinter. If the `python` command is a Windows Store alias, it tries `py -3`; if neither is usable, install Python with Tcl/Tk support or turn off the alias under Windows **App execution aliases**. Pillow is required for image previews. `pyttsx3` is optional for voice playback.
 
 On Ubuntu, install Python, Tkinter, and Pillow as appropriate for the system, then run from `config/`:
 
@@ -181,21 +195,27 @@ On Ubuntu, install Python, Tkinter, and Pillow as appropriate for the system, th
 bash run.sh
 ```
 
-Or run `python3 client_medgemma_patients.py` directly from `python/`. The launcher selects the first `.py` file; confirm that it is the intended GUI.
+Or run `python3 client_medgemma_patients.py` directly from `python/`. The shell launcher explicitly starts the named GUI and checks Python 3.9+ with Tkinter.
 
 Speech support is platform-dependent. A graphical desktop session is required for Tkinter.
 
-**Note:** `client_medgemma_patients.py` is the output Codex should create from `AGENTS.md`; it is not supplied by this README.
+### Troubleshooting
 
-## 8. Instructions for Codex
+- **Patient records directory missing or inaccessible:** startup stops before opening the GUI and prints the resolved path. Restore the existing `python/patient_records/` directory or correct `PATIENT_RECORDS_DIR` in `python/.env`. A relative value is resolved beside the application script. The app never creates this directory. An existing, readable but empty directory is different and displays “No patient directories found.”
+- **Ollama is offline or intermittent:** patient records remain browsable, but generation is not ready until the configured server responds. Check `OLLAMA_URL`, server availability, and firewall/network access, then click **Check Connection** again. A successful GUI or mocked check does not guarantee the service will remain reachable. The app keeps the configured endpoint; it does not switch servers.
+- **Model is missing:** confirm `MEDGEMMA_MODEL` names a model installed on the configured server. The GUI does not install or download models.
+- **Timeout, cancel, or incomplete response:** full-resolution images may take longer. Check server/GPU load and the selected input count, then retry explicitly if appropriate. Cancel stops local acceptance; it does not establish that Ollama stopped computing.
+- **Bad image or blood-test JSON:** that file is reported/skipped while the remaining patient records stay available. Correct the source file only through the normal data-owner workflow; the app does not rewrite source records.
+- **Cannot save or reopen a report:** choose an existing writable folder outside `patient_records`. For history, point the history control to the same folder used for export. Reopening is patient-filtered and does not contact the model.
+- **Voice unavailable:** voice is optional and platform-dependent. The text report remains available.
 
-Place this README and the simplified `AGENTS.md` in `Project/md/`, with the original Python source in `Project/python/`. Open a terminal in `Project/md/` and run `codex`. In Codex, use:
+## 9. Instructions for Codex
 
-> Read AGENTS.md and README.md from the current md/ directory and read ../python/client-med-gemma-2w-data-v2(1).py. Modify the existing design and write exactly one new application file directly to ../python/client_medgemma_patients.py. Preserve the GUI, add patient selection and patient-specific loading, enforce fatal startup validation of the patient_records root relative to the Python script, keep the Send-to-MedGemma flow, and leave Actions empty. Do not implement Qwen, MCP, or separate Python modules. Do not overwrite the original program, .env, or patient data. Run available tests and report what was actually verified.
+For maintenance, start Codex in this `md/` directory and read `AGENTS.md`, this README, and `VERIFICATION.md` before changing the application. The current GUI is `../python/client_medgemma_patients.py`; keep application logic in that file and preserve the existing `.env` and source patient data. Use temporary synthetic fixtures for development checks, and record which checks were mocked, visually inspected, or run against a live synthetic model. Do not claim clinical accuracy from software tests.
 
-If older Markdown documents in the folder describe a multi-module Qwen or agent architecture, **the simplified `AGENTS.md` takes precedence**.
+The existing Codex instructions in `AGENTS.md` describe the original one-file patient-GUI build. Follow the active task scope when maintaining later features, while keeping the single-file/direct-Ollama constraints and the empty Actions placeholder.
 
-## 9. Verification checklist
+## 10. Verification checklist
 
 - Missing or inaccessible `python/patient_records/` produces a fatal startup error with the full path; no directory is created.
 - The same check works when launched from `config/` or after moving the project.
@@ -211,6 +231,6 @@ If older Markdown documents in the folder describe a multi-module Qwen or agent 
 
 Use synthetic or de-identified test data. **MedGemma is a research/clinician-review aid, not an autonomous diagnostic system.** Plain HTTP is unencrypted; do not transmit identifiable patient data over an unsecured connection. For real clinical use, implement appropriate authenticated, encrypted transport and organizational privacy controls.
 
-## 10. Future extension: Qwen (not part of current build)
+## 11. Future extension: Qwen (not part of current build)
 
 If flexible doctor-directed multi-step decision-making is later required, add Qwen calls and a bounded, validated Python execution loop **inside the same application file**. Qwen can interpret the doctor's requested sequence, MedGemma can analyze medical content, and Python should enforce patient isolation, data-selection rules, and numeric comparisons. This future extension must not be assumed present in the current version.

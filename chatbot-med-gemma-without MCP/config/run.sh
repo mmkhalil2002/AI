@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch the first .py file (alphabetical order) in ../python.
+# Launch the named MedGemma patient GUI.
 # Ollama address is configured by the Python application in python/.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,14 +8,14 @@ if [[ ! -d "$PYTHON_DIR" ]]; then
   echo "[ERROR] Python directory not found: $PYTHON_DIR" >&2
   exit 1
 fi
-if ! command -v python3 >/dev/null 2>&1; then
-  echo '[ERROR] Python 3 is not installed or not on PATH.' >&2
+MAIN_PY="$PYTHON_DIR/client_medgemma_patients.py"
+if [[ ! -f "$MAIN_PY" ]]; then
+  echo "[ERROR] MedGemma application not found: $MAIN_PY" >&2
   exit 1
 fi
-# Alphabetical selection matches Windows' dir /on behavior.
-MAIN_PY="$(find "$PYTHON_DIR" -maxdepth 1 -type f -name '*.py' -printf '%f\n' | LC_ALL=C sort | head -n 1)"
-if [[ -z "$MAIN_PY" ]]; then
-  echo "[ERROR] No .py files found in $PYTHON_DIR" >&2
+if ! command -v python3 >/dev/null 2>&1 || ! python3 -c 'import sys, tkinter; print(sys.executable); sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+  echo '[ERROR] A working Python 3.9+ interpreter with Tkinter is unavailable.' >&2
+  echo '[ACTION] Install Python 3.9 or newer and the Tkinter package (often python3-tk), then retry.' >&2
   exit 1
 fi
 cd "$PYTHON_DIR"
