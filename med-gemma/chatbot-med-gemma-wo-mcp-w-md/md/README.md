@@ -13,6 +13,13 @@ The project root is the directory containing the three sibling folders `config/`
 - Use the Ollama URL from `../python/.env`; it may be local or remote. Do not hardcode an IP.
 - Run the GUI from `python/` with `python client_medgemma_patients.py` on Windows or `python3 client_medgemma_patients.py` on Ubuntu. The launchers in `../config/` explicitly start this named application.
 
+## Maintenance update — date-range callback fix (2026-10-26)
+
+- The date-range controls are `date_from_var`, `date_to_var` (`tk.StringVar`) and `date_filter_status` (`ttk.Label`). They are constructed inside `main()` and referenced by the module-level callbacks `apply_date_range()` and `clear_date_range()`.
+- **Keep `global date_from_var, date_to_var, date_filter_status` in `main()`** so those callbacks use the same live Tkinter controls. Do not create duplicate date variables inside callbacks or alter the inclusive `MMDDYY` filter behavior.
+- Regression test: start the GUI, select a patient, enter valid From/To dates, press **Apply range**, then **Clear range**; verify there is no `NameError`, panels reload, and selections reset. Also test an invalid date and a start date after the end date.
+- This maintenance fix does not require changes to `.env`, the `config/` launchers, patient folders, or the MedGemma request format.
+
 ## 1. Overview
 
 This project is a **minimal extension of the existing Tkinter program** `client-med-gemma-2w-data-v2(1).py`. It adds patient selection and patient-specific loading while retaining the original image galleries, doctor prompt, MedGemma connection, and AI response display.
@@ -195,14 +202,14 @@ Both launchers use the project root based on their own location and explicitly i
 From Windows Command Prompt, run the launcher from `config/` (or run Python directly from `python/`):
 
 ```cmd
-cd /d "C:\Users\Public\mkhalil\AI\AI\chatbot-med-gemma-without MCP\config"
+cd /d "C:\Users\Public\mkhalil\AI\AI\med-gemma\chatbot-med-gemma-wo-mcp-w-md\config"
 run.bat
 ```
 
 To run the app directly:
 
 ```cmd
-cd /d "C:\Users\Public\mkhalil\AI\AI\chatbot-med-gemma-without MCP\python"
+cd /d "C:\Users\Public\mkhalil\AI\AI\med-gemma\chatbot-med-gemma-wo-mcp-w-md\python"
 python client_medgemma_patients.py
 ```
 
@@ -233,6 +240,8 @@ Speech support is platform-dependent. A graphical desktop session is required fo
 For maintenance, start Codex in this `md/` directory and read `AGENTS.md`, this README, and `VERIFICATION.md` before changing the application. The current GUI is `../python/client_medgemma_patients.py`; keep application logic in that file and preserve the existing `.env` and source patient data. Use temporary synthetic fixtures for development checks, and record which checks were mocked, visually inspected, or run against a live synthetic model. Do not claim clinical accuracy from software tests.
 
 The existing Codex instructions in `AGENTS.md` describe the original one-file patient-GUI build. Follow the active task scope when maintaining later features, while keeping the single-file/direct-Ollama constraints and the approved simplified GUI layout.
+
+**Verification note:** The date-range scope correction was checked in the supplied Python source; the GUI interaction and live Ollama request have not been executed as part of this documentation update.
 
 ## 10. Verification checklist
 

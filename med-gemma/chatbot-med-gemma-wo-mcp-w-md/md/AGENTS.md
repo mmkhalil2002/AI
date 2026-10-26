@@ -11,6 +11,13 @@
 - Use the Ollama URL from `../python/.env`; it may be local or remote. Do not hardcode an IP.
 - Test the resulting file using `cd ../python` followed by `python client_medgemma_patients.py` on Windows or `python3 client_medgemma_patients.py` on Ubuntu. The launchers in `../config/` explicitly start `../python/client_medgemma_patients.py`.
 
+## Maintenance update — date-range callback fix (2026-10-26)
+
+- The date-range controls are `date_from_var`, `date_to_var` (`tk.StringVar`) and `date_filter_status` (`ttk.Label`). They are constructed inside `main()` and referenced by the module-level callbacks `apply_date_range()` and `clear_date_range()`.
+- **Keep `global date_from_var, date_to_var, date_filter_status` in `main()`** so those callbacks use the same live Tkinter controls. Do not create duplicate date variables inside callbacks or alter the inclusive `MMDDYY` filter behavior.
+- Regression test: start the GUI, select a patient, enter valid From/To dates, press **Apply range**, then **Clear range**; verify there is no `NameError`, panels reload, and selections reset. Also test an invalid date and a start date after the end date.
+- This maintenance fix does not require changes to `.env`, the `config/` launchers, patient folders, or the MedGemma request format.
+
 ## 1. Goal — keep it simple
 
 **Modify the attached existing program `client-med-gemma-2w-data-v2(1).py` rather than designing a new application.** Deliver **ONE Python application file only**, named `client_medgemma_patients.py`. Keep the original Python file unchanged as a backup/reference. All patient discovery, GUI controls, image and JSON loading, Ollama HTTP calls, and response display must be implemented **inside this one file**.
