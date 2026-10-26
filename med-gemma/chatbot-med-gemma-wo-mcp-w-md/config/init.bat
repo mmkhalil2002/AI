@@ -38,7 +38,10 @@ set "PATH=%NPM_PREFIX%;%PATH%"
 for /f "delims=" %%I in ('where node.exe') do if not defined NODE_DIR for %%J in ("%%I") do set "NODE_DIR=%%~dpJ"
 if defined NODE_DIR (
   powershell.exe -NoProfile -Command "$add=@($env:NODE_DIR,$env:NPM_PREFIX);$old=[Environment]::GetEnvironmentVariable('Path','User');$a=@($old -split ';' | Where-Object { $_ });foreach($p in $add){$p=$p.TrimEnd('\');if($a -notcontains $p){$a+=$p}};[Environment]::SetEnvironmentVariable('Path',($a -join ';'),'User')"
-  if errorlevel 1 echo [WARNING] Could not persist PATH. Current CMD will still work.
+  if errorlevel 1 (
+    echo [WARNING] Could not save user PATH permanently.
+    echo [ACTION] Add "%NPM_PREFIX%" to User Path manually.
+  )
 )
 
 rem Find a working Python, not the Windows Store alias.
@@ -165,6 +168,14 @@ echo.
 echo [SUCCESS] INIT finished. No servers or GUI were started.
 echo Python for GUI: "%PYEXE%"
 echo Codex: "%NPM_PREFIX%\codex.cmd"
+echo.
+echo [IMPORTANT] This batch cannot change PATH in the CMD window that called it.
+echo [ACTION] For this CURRENT CMD window, run:
+echo     set "PATH=%NPM_PREFIX%;%%PATH%%"
+echo [ACTION] Or CLOSE this CMD window and OPEN a NEW one.
+echo [ACTION] Then run: codex --version
+echo [FALLBACK] Always works using full path:
+echo     "%NPM_PREFIX%\codex.cmd" --version
 exit /b 0
 
 :node_error

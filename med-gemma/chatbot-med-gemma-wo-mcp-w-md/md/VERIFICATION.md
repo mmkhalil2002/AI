@@ -61,3 +61,9 @@ The configured Ollama `/api/tags` check was intermittent at first because the in
 ## User launch
 
 Use the explicit named launcher from `config/` (`run.bat` on Windows or `bash run.sh` on Ubuntu), or run `python client_medgemma_patients.py` / `python3 client_medgemma_patients.py` from `python/`. Workflow, report export/history, and troubleshooting steps are in `README.md`.
+
+## Layout rule added 2026-10-26
+
+At normal desktop width, the Patient ID menu and date-range controls (`From`, `To`, Apply Range, Clear Range) must be rendered in one shared top row. A wrap to a second row is permitted only for a display too narrow to render that strip without clipping. This is a visual-layout requirement and should be checked after every GUI launch.
+
+The filters must appear immediately after the Patient ID menu, before the active-patient indicator. Blood-test table headings and values must use a fixed-width font and fixed-width columns; visual inspection must confirm vertical column alignment.

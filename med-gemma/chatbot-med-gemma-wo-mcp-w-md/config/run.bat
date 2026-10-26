@@ -38,6 +38,29 @@ for /d %%D in ("%LOCALAPPDATA%\Programs\Python\Python*") do (
     )
   )
 )
+REM Microsoft Store Python and some managed installs are registered under
+REM PythonCore but are not exposed through PATH or the ``py`` launcher.
+REM Check the registration before reporting that Python is unavailable.
+for %%V in (3.13 3.12 3.11 3.10 3.9) do (
+  for %%K in ("HKCU\Software\Python\PythonCore\%%V\InstallPath" "HKLM\Software\Python\PythonCore\%%V\InstallPath") do (
+    for /f "tokens=2,*" %%A in ('reg query %%K /ve 2^>nul ^| find /i "REG_SZ"') do (
+      if exist "%%B\python.exe" (
+        "%%B\python.exe" -c "import sys, tkinter; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1
+        if not errorlevel 1 (
+          set "PYTHON_EXE=%%B\python.exe"
+          goto :python_ready
+        )
+      )
+      if exist "%%B\python%%V.exe" (
+        "%%B\python%%V.exe" -c "import sys, tkinter; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1
+        if not errorlevel 1 (
+          set "PYTHON_EXE=%%B\python%%V.exe"
+          goto :python_ready
+        )
+      )
+    )
+  )
+)
 echo [ERROR] A working Python 3.9+ interpreter with Tkinter is unavailable.
 echo [ACTION] Install Python 3.9 or newer with Tcl/Tk support, then retry. If the Windows Store alias intercepted Python, disable it in App execution aliases.
 exit /b 1

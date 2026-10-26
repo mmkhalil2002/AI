@@ -272,6 +272,33 @@ def date_is_in_active_range(record_dates):
     )
 
 
+def active_date_range_label(modality=None):
+    """Return the filter, or a modality's available minimum/maximum dates."""
+    if active_date_start is None and active_date_end is None:
+        if modality is None or active_patient is None:
+            return "Undated records"
+        extensions = {".json"} if modality == "blood_tests" else IMAGE_EXTENSIONS
+        paths, _message = patient_files(modality, extensions)
+        dates = []
+        for path in paths:
+            try:
+                if modality == "blood_tests":
+                    data = json.loads(path.read_text(encoding="utf-8-sig"))
+                    records = data if isinstance(data, list) else [data]
+                    for record in records:
+                        dates.extend(json_record_dates(record) or path_record_dates(path))
+                else:
+                    dates.extend(path_record_dates(path))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                dates.extend(path_record_dates(path))
+        if not dates:
+            return "Undated records"
+        return f"{min(dates).strftime('%m/%d/%Y')} - {max(dates).strftime('%m/%d/%Y')}"
+    start = active_date_start.strftime("%m/%d/%Y") if active_date_start else ""
+    end = active_date_end.strftime("%m/%d/%Y") if active_date_end else ""
+    return f"{start} - {end}" if start and end else (f"From {start}" if start else f"Through {end}")
+
+
 def record_matches_date_range(record, path):
     """Match clinical JSON dates, falling back to its dated file/folder name."""
     if active_date_start is None and active_date_end is None:
@@ -298,11 +325,23 @@ def file_matches_date_range(path, modality):
 
 
 def patient_files(modality, extensions):
-    """Return safe recursive modality files filtered by the active date range."""
+    """Return safe patient-modality files filtered by the active date range.
+
+    New record sets use ``<patient>/data/<modality>``.  Some of the bundled
+    legacy record sets predate that wrapper and use ``<patient>/<modality>``.
+    Prefer the documented layout, but safely fall back to the legacy location
+    when the documented folder is absent.  This keeps discovery patient-scoped
+    and never broadens it to another patient's files.
+    """
     if active_patient is None:
         return [], "Select a patient to load records."
-    folder = active_patient / "data" / modality
+    preferred_folder = active_patient / "data" / modality
+    legacy_folder = active_patient / modality
     try:
+        # Do not merge layouts: if a patient has the documented folder it is
+        # authoritative.  Falling back only when it is missing avoids showing
+        # duplicate or stale legacy records alongside current ones.
+        folder = preferred_folder if preferred_folder.is_dir() else legacy_folder
         safe_path(folder, active_patient)
         if not folder.is_dir():
             return [], f"No {modality} folder for this patient."
@@ -499,8 +538,9 @@ def select_patient(event=None):
     stop_voice()
     active_patient = next_patient
     clear_report_review()
+    # A patient change must not insert a canned request into the doctor's
+    # question field.  Every request begins with explicit clinician input.
     prompt_box.delete("1.0", tk.END)
-    prompt_box.insert(tk.END, REPORT_PRESETS.get(preset_name.get(), REPORT_PRESETS["Draft report"]))
     load_images()
     load_blood_tests()
     show_status(f"Patient: {patient_name.get()}" if active_patient else "No patient directories found")
@@ -913,7 +953,7 @@ def reopen_saved_report(event=None):
     restore_original_button.config(state=tk.NORMAL)
     export_report_button.config(state=tk.NORMAL)
     save_quick_button.config(state=tk.NORMAL)
-    report_notebook.tab(0, state="normal")
+    report_notebook.hide(0)
     report_notebook.tab(1, state="normal")
     report_notebook.select(1)
     update_report_version_label()
@@ -1627,6 +1667,23 @@ def window_dimension(name, default):
     return default
 
 
+def fit_dialog_to_display(dialog, width_fraction, height_fraction, minimum_width, minimum_height):
+    """Size and center a secondary window within the current display.
+
+    Hard-coded dialog geometries make the app either tiny on high-DPI screens
+    or larger than a laptop display.  Every auxiliary window uses this shared
+    display-relative policy instead.
+    """
+    dialog.update_idletasks()
+    screen_width = dialog.winfo_screenwidth()
+    screen_height = dialog.winfo_screenheight()
+    width = min(max(minimum_width, round(screen_width * width_fraction)), screen_width - 60)
+    height = min(max(minimum_height, round(screen_height * height_fraction)), screen_height - 100)
+    x = max(20, (screen_width - width) // 2)
+    y = max(20, (screen_height - height) // 2)
+    dialog.geometry(f"{width}x{height}+{x}+{y}")
+
+
 def select_image(path, button, tile, column):
     """Toggle one image with the selection color of its gallery."""
     selection = selected_images[column]
@@ -1653,6 +1710,7 @@ def encode_image(path):
 
 def load_blood_tests():
     """Load original selectable lab records and render their normalized rows."""
+    blood_test_panel.config(text=f"BLOOD TEST ({active_date_range_label('blood_tests')})")
     blood_test_view.config(state=tk.NORMAL)
     blood_test_view.delete("1.0", tk.END)
     blood_test_records.clear()
@@ -1714,7 +1772,7 @@ def show_blood_details(event=None):
         return
     dialog = tk.Toplevel(window)
     dialog.title("Original blood-test record details")
-    dialog.geometry("760x520")
+    fit_dialog_to_display(dialog, 0.52, 0.64, 520, 360)
     dialog.transient(window)
     dialog.columnconfigure(0, weight=1)
     dialog.rowconfigure(1, weight=1)
@@ -2109,7 +2167,7 @@ def open_image_viewer(path):
     close_image_viewer()
     viewer = tk.Toplevel(window)
     viewer.title("Image detail viewer")
-    viewer.geometry("1000x720")
+    fit_dialog_to_display(viewer, 0.78, 0.80, 640, 480)
     viewer.minsize(420, 320)
     viewer.transient(window)
     viewer.protocol("WM_DELETE_WINDOW", close_image_viewer)
@@ -2189,7 +2247,7 @@ def load_images():
             )
         modality = ("xrays", "ekgs")[column]
         paths, message = patient_files(modality, IMAGE_EXTENSIONS)
-        gallery["title"].config(text=GALLERY_NAMES[column])
+        gallery["title"].config(text=f"{GALLERY_NAMES[column]} ({active_date_range_label(modality)})")
         if not paths:
             ttk.Label(grid, text=message, wraplength=400).grid(row=0, column=0, padx=5, pady=12)
         if Image is None and paths:
@@ -2227,17 +2285,16 @@ def load_images():
             tile.bind("<MouseWheel>", wheel_handler, add="+")
             button.pack()
             button.selection_status.pack()
-            # Inspection is a separate control so opening a record never selects it.
-            ttk.Button(
-                tile, text="View details", takefocus=True,
-                command=lambda p=path: open_image_viewer(p),
-            ).pack(pady=(3, 0))
+            if not streamlined_layout:
+                ttk.Button(tile, text="View details", takefocus=True,
+                           command=lambda p=path: open_image_viewer(p)).pack(pady=(3, 0))
             # The button label and explicit state text make selection clear without color.
             thumbnail_items[column].append({
                 "path": path, "button": button, "tile": tile,
                 "status": button.selection_status, "index": index,
             })
         gallery["title"].config(text=f"{GALLERY_NAMES[column]} — {len(paths)} image(s)")
+        gallery["title"].config(text=f"{GALLERY_NAMES[column]} ({active_date_range_label(modality)})")
         update_gallery_scrollbars(
             gallery["canvas"], gallery["canvas_window"], gallery["grid"]
         )
@@ -2686,7 +2743,7 @@ def finish_request(request_id, answer=None, metadata=None, error=None, cancelled
         restore_original_button.config(state=tk.NORMAL)
         export_report_button.config(state=tk.NORMAL)
         save_quick_button.config(state=tk.NORMAL)
-        report_notebook.tab(0, state="normal")
+        report_notebook.hide(0)
         report_notebook.tab(1, state="normal")
         report_notebook.select(1)
         report_version_label.config(text="Displayed version: User-edited draft")
@@ -2977,7 +3034,7 @@ def refresh_models():
 
 def main():
     """Validate startup data, then construct the preserved Tkinter interface."""
-    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_picker, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness
+    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_picker, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout
     # Fatal data-root validation precedes construction of any Tk widget.
     try:
         PATIENT_RECORDS_DIR = patient_records_root()
@@ -3109,19 +3166,27 @@ def main():
     # Start at a laptop-friendly size; users can drag the panes to allocate space.
     window_width = window_dimension("WINDOW_WIDTH", 1360)
     window_height = window_dimension("WINDOW_HEIGHT", 900)
-    # A requested width wider than the physical monitor cannot be fully visible.
-    # Fit the window on screen and allow the image panel to scroll if necessary.
-    visible_width = min(window_width, window.winfo_screenwidth() - 30)
-    visible_height = min(window_height, window.winfo_screenheight() - 80)
+    # Keep the clinical workspace readable on ultrawide displays as well as
+    # laptops.  A giant, edge-to-edge form makes each panel harder to scan.
+    visible_width = min(window_width, 1600, window.winfo_screenwidth() - 30)
+    visible_height = min(window_height, 900, window.winfo_screenheight() - 80)
     window.geometry(f"{visible_width}x{visible_height}")
     try:
         tk_scale = float(window.tk.call("tk", "scaling"))
     except (tk.TclError, ValueError):
         tk_scale = 1.0
-    compact_layout = visible_width < 1120 or tk_scale >= 1.65
+    # Only genuinely narrow windows use the two-row header fallback.  Display
+    # scaling alone must not separate the patient menu from its date filters.
+    compact_layout = visible_width < 900
+    # Keep the clinical screen focused on selecting records and asking a
+    # question.  Background callback support remains intact, but optional
+    # report-management and demo controls are not shown in the main workflow.
+    streamlined_layout = True
     qa_wraplength = max(250, min(440, round(visible_width * 0.34)))
     window.minsize(min(880, visible_width), min(560, visible_height))
-    gallery_viewport_width = max(105, round((visible_width - 45) * 58 / 100) - 24)
+    # X-ray and EKG share one row on normal desktop displays, so calculate a
+    # per-gallery viewport instead of requesting nearly the entire data area.
+    gallery_viewport_width = max(220, round((visible_width - 45) * 0.58))
 
     settings = ttk.LabelFrame(
         window, text="Connection & Model", style="Settings.TLabelframe"
@@ -3170,8 +3235,9 @@ def main():
     readiness_label.grid(row=2 if compact_layout else 1, column=0,
                          columnspan=3 if compact_layout else 5,
                          padx=10, pady=(1, 5), sticky="w")
+    settings.pack_forget()
 
-    patient_bar = ttk.LabelFrame(window, text="Patient and Selection", style="Settings.TLabelframe")
+    patient_bar = ttk.LabelFrame(window, text="Patient Selection and Date Range", style="Settings.TLabelframe")
     patient_bar.pack(fill=tk.X, padx=14, pady=5)
     patient_name = tk.StringVar()
     ttk.Label(patient_bar, text="Patient ID", style="Field.TLabel").grid(row=0, column=0, padx=(10, 4), pady=5)
@@ -3181,40 +3247,49 @@ def main():
     patient_picker.bind("<<ComboboxSelected>>", select_patient)
     active_label = ttk.Label(patient_bar, text="Active patient: none", style="Field.TLabel")
     if compact_layout:
-        active_label.grid(row=1, column=0, columnspan=2, padx=(10, 5), pady=5, sticky="w")
+        active_label.grid(row=2, column=0, columnspan=2, padx=(10, 5), pady=5, sticky="w")
     else:
-        active_label.grid(row=0, column=2, padx=8, pady=5, sticky="w")
+        active_label.grid(row=0, column=4, padx=8, pady=5, sticky="w")
     demo_data = tk.BooleanVar(value=False)
-    ttk.Checkbutton(patient_bar, text="Demo data for this session", variable=demo_data,
-                    command=toggle_demo_data).grid(
-        row=1 if compact_layout else 0, column=2 if compact_layout else 4,
-        columnspan=2 if compact_layout else 1, padx=8, pady=5, sticky="w"
-    )
+    demo_toggle = ttk.Checkbutton(patient_bar, text="Demo data for this session", variable=demo_data,
+                                  command=toggle_demo_data)
+    if not streamlined_layout:
+        demo_toggle.grid(
+            row=1 if compact_layout else 0, column=2 if compact_layout else 4,
+            columnspan=2 if compact_layout else 1, padx=8, pady=5, sticky="w"
+        )
     demo_status = ttk.Label(patient_bar, text="Demo data: OFF (this session)", style="Status.TLabel")
-    demo_status.grid(row=1 if compact_layout else 0, column=4 if compact_layout else 5,
-                     padx=(0, 10), pady=5, sticky="w")
+    if not streamlined_layout:
+        demo_status.grid(row=1 if compact_layout else 0, column=4 if compact_layout else 5,
+                         padx=(0, 10), pady=5, sticky="w")
     counts_label = ttk.Label(patient_bar, text="X-ray 0/0 selected   |   EKG 0/0 selected   |   Blood 0/0 selected",
                              style="Status.TLabel")
-    counts_label.grid(row=2 if compact_layout else 1, column=0, columnspan=6,
-                      padx=10, pady=(1, 4), sticky="w")
-    ttk.Label(patient_bar, text="Selected-record tray", style="Field.TLabel").grid(
-        row=3 if compact_layout else 2, column=0, padx=10, pady=(3, 4), sticky="nw")
+    if not streamlined_layout:
+        counts_label.grid(row=2 if compact_layout else 1, column=0, columnspan=6,
+                          padx=10, pady=(1, 4), sticky="w")
+    tray_label = ttk.Label(patient_bar, text="Selected-record tray", style="Field.TLabel")
+    if not streamlined_layout:
+        tray_label.grid(row=3 if compact_layout else 2, column=0, padx=10, pady=(3, 4), sticky="nw")
     tray_list = tk.Listbox(patient_bar, height=2, exportselection=False,
                            activestyle="underline", takefocus=True)
-    tray_list.grid(row=3 if compact_layout else 2, column=1,
-                   columnspan=4, padx=4, pady=(3, 5), sticky="ew")
+    if not streamlined_layout:
+        tray_list.grid(row=3 if compact_layout else 2, column=1,
+                       columnspan=4, padx=4, pady=(3, 5), sticky="ew")
     tray_list.bind("<Double-Button-1>", remove_tray_selection)
-    ttk.Button(patient_bar, text="Remove selected", command=remove_tray_selection).grid(
-        row=3 if compact_layout else 2, column=5, padx=(4, 10), pady=3, sticky="n")
-    patient_bar.columnconfigure(3, weight=1)
+    remove_tray_button = ttk.Button(patient_bar, text="Remove selected", command=remove_tray_selection)
+    if not streamlined_layout:
+        remove_tray_button.grid(row=3 if compact_layout else 2, column=5, padx=(4, 10), pady=3, sticky="n")
+    patient_bar.columnconfigure(3, weight=0)
     patient_bar.columnconfigure(4, weight=0)
     patient_bar.columnconfigure(1, weight=1)
     tray_items = []
     tray_list.bind("<Return>", remove_tray_selection)
     tray_list.bind("<Delete>", remove_tray_selection)
 
-    date_filter_bar = ttk.LabelFrame(window, text="Record date range (MMDDYY)", style="Settings.TLabelframe")
-    date_filter_bar.pack(fill=tk.X, padx=14, pady=(0, 5))
+    date_filter_bar = ttk.Frame(patient_bar, style="App.TFrame")
+    date_filter_bar.grid(row=0 if not compact_layout else 1, column=2 if not compact_layout else 0,
+                         columnspan=3 if compact_layout else 2, padx=(8, 10), pady=5,
+                         sticky="e" if not compact_layout else "w")
     date_from_var = tk.StringVar(value="")
     date_to_var = tk.StringVar(value="")
     ttk.Label(date_filter_bar, text="From", style="Field.TLabel").pack(side=tk.LEFT, padx=(10, 4), pady=5)
@@ -3242,8 +3317,8 @@ def main():
         labelanchor="n",
         style="Assistant.TLabelframe",
     )
-    body.add(qa_panel, weight=2)
-    body.add(data_panes, weight=3)
+    body.add(qa_panel, weight=35)
+    body.add(data_panes, weight=65)
     ttk.Label(qa_panel, text="Your Question", style="Field.TLabel").pack(anchor="w", padx=10, pady=(10, 5))
     preset_row = ttk.Frame(qa_panel, style="App.TFrame")
     preset_row.pack(fill=tk.X, padx=10, pady=(0, 4))
@@ -3264,6 +3339,8 @@ def main():
         style="Status.TLabel",
         wraplength=min(260, qa_wraplength),
     ).pack(side=tk.LEFT, padx=7)
+    if streamlined_layout:
+        preset_row.pack_forget()
     context_label = ttk.Label(
         qa_panel,
         text="Inputs to send: no active patient.",
@@ -3271,11 +3348,12 @@ def main():
         wraplength=qa_wraplength,
         justify=tk.LEFT,
     )
-    context_label.pack(anchor="w", padx=10, pady=(0, 4))
+    # Hide verbose context from Question panel; counts remain in medical dataset panels.
+    # The label object stays available to existing status-update routines.
     prompt_box = scrolledtext.ScrolledText(
         qa_panel,
         width=18,
-        height=4,
+        height=6,
         wrap=tk.WORD,
         font=("Segoe UI", 11),
         background="#fbfdff",
@@ -3343,14 +3421,12 @@ def main():
         wraplength=qa_wraplength,
         style="Status.TLabel",
     )
-    diagnostics_label.pack(anchor="w", padx=2, pady=(2, 0))
-    actions_placeholder = ttk.LabelFrame(qa_panel, text="Actions", height=38,
-                                         style="Settings.TLabelframe")
-    actions_placeholder.pack(fill=tk.X, padx=10, pady=5)
-    actions_placeholder.pack_propagate(False)
-    ttk.Label(qa_panel, text="AI-generated output requires clinician review.",
-              style="Status.TLabel", wraplength=min(300, qa_wraplength)).pack(anchor="w", padx=10)
-    ttk.Label(qa_panel, text="Report review", style="Field.TLabel").pack(anchor="w", padx=10, pady=(8, 3))
+    if not streamlined_layout:
+        diagnostics_label.pack(anchor="w", padx=2, pady=(2, 0))
+    actions_placeholder = None
+    # Avoid cluttering the question and response layout with a redundant banner.
+    report_review_heading = ttk.Label(qa_panel, text="Report review", style="Field.TLabel")
+    report_review_heading.pack(anchor="w", padx=10, pady=(8, 3))
     report_meta_label = ttk.Label(
         qa_panel, text="No completed report.", style="Status.TLabel", wraplength=qa_wraplength
     )
@@ -3409,7 +3485,11 @@ def main():
         qa_panel, text="Report view: no completed draft", style="Status.TLabel"
     )
     report_version_label.pack(anchor="w", padx=10, pady=(0, 2))
-    report_notebook = ttk.Notebook(qa_panel)
+    ttk.Label(qa_panel, text="AI Response", style="Field.TLabel").pack(anchor="w", padx=10, pady=(8, 3))
+    # Retain the notebook internally for report-safety callbacks, but hide
+    # its tabs so clinicians see one response area, not draft variants.
+    ui_style.layout("Response.TNotebook.Tab", [])
+    report_notebook = ttk.Notebook(qa_panel, style="Response.TNotebook")
     report_notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
     original_box = scrolledtext.ScrolledText(
         report_notebook,
@@ -3441,21 +3521,29 @@ def main():
             font=("Segoe UI", 11, "bold"),
         )
     report_notebook.add(original_box, text="Original AI draft")
-    report_notebook.add(answer_box, text="User-edited draft")
+    report_notebook.add(answer_box, text="Response")
     report_notebook.tab(0, state="disabled")
     report_notebook.tab(1, state="disabled")
+    # The original draft remains available to internal report-export logic,
+    # while clinicians see one clear response surface rather than editor tabs.
+    report_notebook.hide(0)
     report_notebook.bind("<<NotebookTabChanged>>", update_report_version_label)
     answer_box.bind("<<Modified>>", on_report_modified)
+    if streamlined_layout:
+        # Hide non-requested report-management controls while retaining the
+        # answer editor and its existing callback wiring.
+        for widget in (
+            cancel_button, save_quick_button, retry_button, report_meta_label,
+            report_review_heading, report_provenance_label, review_controls, history_frame,
+            report_version_label,
+        ):
+            widget.pack_forget()
+            widget.grid_remove()
 
-    image_panel = ttk.LabelFrame(
-        body,
-        text="Medical Image Datasets",
-        labelanchor="n",
-        style="Gallery.TLabelframe",
-    )
-    data_panes.add(image_panel, weight=3)
-    image_panel.rowconfigure(0, weight=1, uniform="gallery_rows")
-    image_panel.rowconfigure(2, weight=1, uniform="gallery_rows")
+    image_panel = ttk.Frame(body, style="App.TFrame")
+    data_panes.add(image_panel, weight=70)
+    image_panel.rowconfigure(0, weight=1, uniform="image_rows")
+    image_panel.rowconfigure(2, weight=1, uniform="image_rows")
     image_panel.columnconfigure(0, weight=1)
     selected_images = [{}, {}]  # Blue first, then orange; each keeps click order.
     sample_button = tk.Button(image_panel)
@@ -3481,14 +3569,17 @@ def main():
         pane.rowconfigure(2, weight=0)
         control_row = ttk.Frame(pane, style="App.TFrame")
         control_row.grid(row=0, column=0, columnspan=2, sticky="ew", padx=5, pady=(3, 0))
-        ttk.Button(control_row, text="Select all", command=lambda m=gallery_index: set_modality_selection(m, True)).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(control_row, text="Clear", command=lambda m=gallery_index: set_modality_selection(m, False)).pack(side=tk.LEFT)
+        if not streamlined_layout:
+            ttk.Button(control_row, text="Select all", command=lambda m=gallery_index: set_modality_selection(m, True)).pack(side=tk.LEFT, padx=(0, 5))
+            ttk.Button(control_row, text="Clear", command=lambda m=gallery_index: set_modality_selection(m, False)).pack(side=tk.LEFT)
         modality_count = ttk.Label(control_row, text="0/0 selected", style="Status.TLabel")
-        modality_count.pack(side=tk.LEFT, padx=10)
+        if not streamlined_layout:
+            modality_count.pack(side=tk.LEFT, padx=10)
         gallery_count_labels.append(modality_count)
         canvas = tk.Canvas(
             pane,
             width=gallery_viewport_width,
+            height=220,
             background=TILE_BACKGROUND,
             highlightthickness=0,
         )
@@ -3524,16 +3615,18 @@ def main():
         labelanchor="nw",
         style="Gallery.TLabelframe",
     )
-    data_panes.add(blood_test_panel, weight=2)
+    data_panes.add(blood_test_panel, weight=30)
     blood_test_panel.rowconfigure(1, weight=1)
     blood_test_panel.columnconfigure(0, weight=1)
     blood_controls = ttk.Frame(blood_test_panel, style="App.TFrame")
     blood_controls.grid(row=0, column=0, columnspan=2, sticky="ew", padx=5, pady=(4, 0))
-    ttk.Button(blood_controls, text="Select all", command=lambda: set_modality_selection(2, True)).pack(side=tk.LEFT, padx=(0, 5))
-    ttk.Button(blood_controls, text="Clear", command=lambda: set_modality_selection(2, False)).pack(side=tk.LEFT)
-    ttk.Button(blood_controls, text="Details", command=show_blood_details).pack(side=tk.LEFT, padx=(5, 0))
+    if not streamlined_layout:
+        ttk.Button(blood_controls, text="Select all", command=lambda: set_modality_selection(2, True)).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(blood_controls, text="Clear", command=lambda: set_modality_selection(2, False)).pack(side=tk.LEFT)
+        ttk.Button(blood_controls, text="Details", command=show_blood_details).pack(side=tk.LEFT, padx=(5, 0))
     blood_count_label = ttk.Label(blood_controls, text="0/0 selected", style="Status.TLabel")
-    blood_count_label.pack(side=tk.LEFT, padx=10)
+    if not streamlined_layout:
+        blood_count_label.pack(side=tk.LEFT, padx=10)
     blood_test_records = []
     blood_test_paths = []
     blood_record_header_lines = []
@@ -3543,7 +3636,7 @@ def main():
     blood_test_view = tk.Text(
         blood_test_panel,
         wrap=tk.NONE,
-        font=("Segoe UI", 10),
+        font=("Consolas", 10),
         cursor="hand2",
         state=tk.NORMAL,
         background="#fffdfb",
@@ -3554,8 +3647,8 @@ def main():
         borderwidth=5,
         takefocus=True,
     )
-    blood_test_view.tag_configure("blood_title", foreground=CORAL, font=("Segoe UI", 10, "bold"))
-    blood_test_view.tag_configure("blood_columns", foreground=MUTED_TEXT, font=("Segoe UI", 9, "bold"))
+    blood_test_view.tag_configure("blood_title", foreground=CORAL, font=("Consolas", 10, "bold"))
+    blood_test_view.tag_configure("blood_columns", foreground=MUTED_TEXT, font=("Consolas", 10, "bold"))
     blood_test_view.bind("<Button-1>", toggle_blood_test_record)
     blood_test_view.bind("<KeyPress>", blood_test_keypress)
     blood_test_view.bind("<KeyRelease>", blood_test_keyup)
@@ -3576,6 +3669,23 @@ def main():
         yscrollcommand=blood_test_scroll.set,
         xscrollcommand=blood_test_hscroll.set,
     )
+
+    # Explicit initial sash positions prevent the large blood-test text widget
+    # from squeezing the X-ray and EKG previews into a narrow horizontal strip.
+    # Users can still drag both sashes after startup.
+    def establish_workspace_proportions():
+        try:
+            window.update_idletasks()
+            width = body.winfo_width()
+            height = data_panes.winfo_height()
+            if width > 500:
+                body.sashpos(0, int(width * 0.35))
+            if height > 250:
+                data_panes.sashpos(0, int(height * 0.70))
+        except tk.TclError:
+            pass
+
+    window.after(180, establish_workspace_proportions)
 
     # Select and load the first available patient as soon as the UI is ready.
     if patients:

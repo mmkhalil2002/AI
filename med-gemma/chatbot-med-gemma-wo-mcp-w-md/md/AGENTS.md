@@ -26,7 +26,7 @@
 5. **Send to MedGemma:** On Send, submit the doctor's request and **only the selected records belonging to the active patient and date range** directly to the configured MedGemma model on the Ollama server specified in `.env` (local or remote). Use the existing `/api/generate` request implementation and `.env` settings. Include selected blood-test values and reference ranges in the prompt. Send selected X-ray and EKG **original image bytes** encoded in base64; never send resized thumbnails. Keep network calls off the GUI thread.
 6. **Show answer:** Display MedGemma's answer in the existing AI Response panel, with existing status/error handling. Preserve optional voice playback if already working. Indicate that the output is AI-generated and requires clinician review.
 
-**Actions area:** Include an empty, labeled **Actions** section in the GUI as a placeholder. **No action buttons, tool workflows, routing, or agent logic** are to be implemented now. The existing **Send** button is outside this placeholder and must work.
+**Actions area:** Do not create an Actions section, label, frame, placeholder, or tab. The existing **Send to MedGemma** button must work independently.
 
 ## 3. Patient directory structure
 
@@ -94,15 +94,28 @@ Test startup with the patient records root present, missing, a regular file inst
 
 Study the entire attached `client-med-gemma-2w-data-v2(1).py` before editing. **Reuse and minimally adapt** its existing functions and styling, especially:
 
-- Tkinter GUI layout, prompt input, Send button, response area, status text, model/server controls, and voice toggle.
+- Tkinter GUI layout, prompt input, Send button, response area, status/error handling, and voice toggle. Keep model/server configuration and connectivity checks internally, but do not display Server URL, Model, or Check Connection controls in the GUI.
 - X-ray and EKG thumbnail galleries, scrollbars, selection colors, and selection toggling.
 - Blood-test selectable records and display formatting.
 - `encode_image()`, `generate()`, `/api/tags` model check, `/api/generate` call, asynchronous request worker, and existing timeout/error handling.
 - Existing `.env` keys, including `OLLAMA_URL`, `MEDGEMMA_MODEL`, image preview sizes, `NUM_PREDICT`, `TEMPERATURE`, `REPEAT_PENALTY`, `REPEAT_LAST_N`, `THINK`, and `GENERATION_TIMEOUT`.
 
-**Change only what is necessary** to replace the previous latest-dated-folder data discovery with active-patient-folder loading. Existing `Data > Load/Delete` logic for legacy dated folders is **not required in this simplified version**: remove or disable it rather than automatically assigning data to a patient. Do not delete or move any source files. Keep the current layout unless a small adjustment is needed for the patient selector and empty Actions section.
+**Change only what is necessary** to replace the previous latest-dated-folder data discovery with active-patient-folder loading. Existing `Data > Load/Delete` logic for legacy dated folders is **not required in this simplified version**: remove or disable it rather than automatically assigning data to a patient. Do not delete or move any source files. Use the mandatory GUI layout in section 4A below; it supersedes the reference layout where different.
 
 The original script sends one combined prompt and selected images directly to MedGemma. **Keep that same simple request model**; no conditional analysis, automatic AI tool selection, or separate medical functions. The doctor controls which records are included by selecting them in the GUI.
+
+## 4A. Mandatory GUI layout (approved reference)
+
+Reproduce the approved desktop layout, adapting the original Tkinter GUI rather than rebuilding its behavior:
+
+- **Top row only:** `Patient Selection and Date Range` with the patient ID dropdown followed **immediately** by `From`, `To`, `Apply Range`, and `Clear Range`, then the active-patient indicator, all **on one physical line at ordinary desktop widths**. Treat the patient menu and date range as one compact control strip; do not put them in separate header bands or place the active-patient label between the menu and filters. A two-row wrap is permitted only when the usable display width cannot fit the controls without clipping. Date fields accept **MMDDYY** (six digits) as specified above; if dates are displayed with slashes, convert them correctly to/from MMDDYY internally. Do not put connection/server URL, model name/selector, or Check Connection widgets in the visible GUI. Read connection and model from `.env` and preserve background readiness/error handling.
+- **Main area, left approximately 30–35%:** red `AI Clinical Assistant Center` heading; `Your Question` multiline input **blank on startup**, with no default prompt, instructions, or injected status text; `Send to MedGemma` and `Voice: OFF/ON` controls below; then a large **single** `AI Response` text area. No `Response` or `Original` tabs, no separate original/draft side-by-side panes, and **no Actions section whatsoever**. Keep clinician-review notice in a status/footer location outside the question input if needed.
+- **Main area, right approximately 65–70%:** three large panels **stacked vertically**, never side-by-side: `XRAY`, `EKG/ECG`, `BLOOD TEST`. Allocate roughly **35% / 35% / 30%** of right-side height; keep independent scrolling, record selection/deselection, and original-resolution sending. **Remove** the `Medical Image Datasets` heading to save vertical space.
+- Each modality panel title must show the **currently applied date range**, e.g. `XRAY (01/01/2026 - 12/31/2026)`, `EKG/ECG (...)`, `BLOOD TEST (...)`. With blank filters, show the modality's recognized minimum and maximum available dates; for an open-ended filter show the actual open-ended bound. If no record has a recognizable date, show `Undated records`; do not invent a range. Update headings when Apply/Clear is pressed or the patient changes.
+- **Do not display counts** such as `3 image(s)`, `0/3 selected`, `Blood 0/1 selected`, or any number of images/records in headings, captions, selection status, or elsewhere in the GUI. Selection state may be shown through highlighting/checkmarks without numerical counts.
+- Keep the X-ray gallery, EKG gallery, and blood-test results visible and spacious, with no unnecessary blank header bands. The Question area and AI Response should be usable at ordinary desktop window sizes.
+- Render blood-test headings and result rows with one fixed-width font and fixed-width columns so test name, value, unit, reference range, and flag align vertically in every row. Do not use a proportional font for the tabular blood-test content.
+- Do not add report presets, prefilled question text, Actions placeholders, Response/Original tabs, or extra visual controls merely because they exist in a different version of the application. Preserve underlying patient isolation, date filtering, original-image payload, and asynchronous MedGemma generation.
 
 ## 5. Configuration and dependencies
 
@@ -129,7 +142,7 @@ The values above are examples, not replacements for the user's current settings.
 - Doctor can select one or more images/blood records, type a question, and press Send.
 - The outgoing MedGemma request contains only selected patient data, with original image resolution retained.
 - MedGemma answer appears in the existing response panel. Handle missing data, bad JSON, unavailable Ollama, and timeouts gracefully.
-- **Actions section is visible and EMPTY.** No extra Python modules, no Qwen, no MCP.
+- **No Actions section, no Response/Original tabs, no visible server URL/model controls, no image counts, and no Medical Image Datasets heading.** No extra Python modules, no Qwen, no MCP.
 - Test syntax/imports and patient switching with synthetic files; test network payload using a mock or reachable Ollama server. Report explicitly whether the GUI was visually tested and whether live MedGemma was contacted.
 
 ## 7. Codex execution instructions

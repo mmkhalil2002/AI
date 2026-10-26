@@ -36,42 +36,30 @@ npm install -g @openai/codex
 command -v codex >/dev/null || { echo '[ERROR] Codex not found on PATH.' >&2; exit 1; }
 codex --version
 
-# Never create a virtual environment. Delete an existing project .venv.
-# Do not follow symlinks outside the project.
-if [[ -L "$ROOT/.venv" ]]; then
-  echo '[ERROR] .venv is a symbolic link. Remove it manually for safety.' >&2
-  exit 1
-fi
+# No virtual environment. Install Python packages in user site packages.
+# Ubuntu 24.04+ enforces PEP 668: --break-system-packages permits --user installs.
+# This does not modify apt-managed Python packages; it installs in ~/.local.
 if [[ -d "$ROOT/.venv" ]]; then
-  echo '[INFO] Removing existing project .venv...'
+  echo '[INFO] Removing project .venv (requested no-venv setup)...'
   rm -rf -- "$ROOT/.venv"
 fi
-
-# Modern Ubuntu marks system Python as externally managed (PEP 668).
-# This explicit override installs into user site packages without creating a venv.
-# It can still conflict with system/user Python packages; review requirements.txt.
-PYTHON=python3
+VPY="$(command -v python3)"
 PIP_ARGS=(--user --break-system-packages)
 if [[ ! -f "$ROOT/requirements.txt" ]]; then
-  if [[ ! -d "$ROOT/python" ]]; then
-    echo "[ERROR] Cannot generate requirements.txt: missing $ROOT/python" >&2
-    echo '[ACTION] Add Python source files to python/ or create requirements.txt at project root.' >&2
+  if [[ ! -d "$ROOT/python" ]] || ! find "$ROOT/python" -type f -name '*.py' -print -quit | grep -q .; then
+    echo '[ERROR] Need requirements.txt or Python sources in python/.' >&2
     exit 1
   fi
-  if ! find "$ROOT/python" -type f -name '*.py' -print -quit | grep -q .; then
-    echo "[ERROR] Cannot generate requirements.txt: no .py files under $ROOT/python" >&2
-    exit 1
-  fi
-  echo '[INFO] Installing pipreqs in user Python site-packages (no .venv)...'
-  "$PYTHON" -m pip install "${PIP_ARGS[@]}" pipreqs
+  echo '[INFO] Installing pipreqs in user Python packages...'
+  "$VPY" -m pip install "${PIP_ARGS[@]}" pipreqs
   echo '[INFO] Generating requirements.txt...'
-  "$PYTHON" -m pipreqs.pipreqs "$ROOT/python" \
+  "$VPY" -m pipreqs.pipreqs "$ROOT/python" \
     --savepath "$ROOT/requirements.txt" --mode no-pin --use-local
-  [[ -f "$ROOT/requirements.txt" ]] || { echo '[ERROR] requirements.txt was not created.' >&2; exit 1; }
+  [[ -f "$ROOT/requirements.txt" ]] || { echo '[ERROR] requirements.txt not created.' >&2; exit 1; }
 fi
-echo '[INFO] Installing application dependencies in user Python site-packages...'
-"$PYTHON" -m pip install "${PIP_ARGS[@]}" -r "$ROOT/requirements.txt"
-"$PYTHON" -m pip check
+echo '[INFO] Installing application dependencies in user Python packages...'
+"$VPY" -m pip install "${PIP_ARGS[@]}" -r "$ROOT/requirements.txt"
+"$VPY" -m pip check
 
 # Local Ollama installation is optional. Service startup is separate.
 printf '\n'
@@ -105,5 +93,9 @@ if [[ "$configure" =~ ^[Yy]$ ]]; then
   fi
 fi
 echo '[SUCCESS] INIT finished. No application or server was launched.'
-echo "Python for GUI: $(command -v python3)"
-echo 'Open a new terminal for the updated Codex PATH.'
+echo "Python for GUI: $VPY"
+echo '[IMPORTANT] The installer cannot change the PATH of the terminal that launched it.'
+echo '[ACTION] For THIS terminal, run:'
+echo '    export PATH="$HOME/.local/npm/bin:$PATH"'
+echo '[ACTION] Or open a NEW terminal, then run: codex --version'
+echo "[FALLBACK] Direct launcher: $NPM_PREFIX/bin/codex --version"
