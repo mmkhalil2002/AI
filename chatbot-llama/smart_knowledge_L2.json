@@ -1,0 +1,152 @@
+[
+  {
+    "question": "what is ai",
+    "answer": "Artificial Intelligence is the ability of machines to perform tasks that normally require human intelligence.",
+    "is_time_sensitive": false,
+    "category": "definition",
+    "created_at": "2026-03-11 11:00:00",
+    "expires_at": null,
+    "source": "json",
+    "model_used": null
+  },
+  {
+    "question": "what is 5g",
+    "answer": "5G is the fifth generation of mobile networks with higher speed, lower latency, and support for massive device connectivity.",
+    "is_time_sensitive": false,
+    "category": "definition",
+    "created_at": "2026-03-11 11:00:00",
+    "expires_at": null,
+    "source": "json",
+    "model_used": null
+  },
+  {
+    "question": "who is mohamed khalil",
+    "answer": "Mohamed Khalil is an engineer working on telecom, AI, and advanced technical systems.",
+    "is_time_sensitive": false,
+    "category": "definition",
+    "created_at": "2026-03-11 11:00:00",
+    "expires_at": null,
+    "source": "json",
+    "model_used": null
+  },
+  {
+    "question": "what is the population of egypt",
+    "answer": "As of 2021, the estimated population of Egypt is approximately 101 million people.",
+    "is_time_sensitive": true,
+    "category": "demographics",
+    "created_at": "2026-03-11 09:52:14",
+    "expires_at": "2026-04-10 09:52:14",
+    "source": "model",
+    "model_used": "llama3.2"
+  },
+  {
+    "question": "what is the stock market today",
+    "answer": "I'm a large language model, I don't have real-time access to current market data. However, I can suggest some ways for you to find out the current stock market information:\n\n1. Check online financial news websites such as Bloomberg, CNBC, or Yahoo Finance for real-time market updates.\n2. Visit the website of a stock exchange, such as the New York Stock Exchange (NYSE) or NASDAQ, for current market data.\n3. Use a financial app or website, such as Robinhood or Fidelity, to track your investments and get real-time market updates.\n\nPlease note that the stock market is constantly changing, and prices can fluctuate rapidly. For the most up-to-date information, I recommend checking a reliable financial source.",
+    "is_time_sensitive": true,
+    "category": "finance",
+    "created_at": "2026-03-11 09:53:03",
+    "expires_at": "2026-03-12 09:53:03",
+    "source": "model",
+    "model_used": "llama3.2"
+  },
+  {
+    "question": "what is egypt",
+    "answer": "Egypt is a country located in northeastern Africa. It is bordered by the Mediterranean Sea to the north, the Gaza Strip and Israel to the northeast, the Red Sea to the east, Sudan to the south, and Libya to the west. Egypt is known for its rich history, ancient pyramids, and diverse culture.",
+    "is_time_sensitive": false,
+    "category": "definition",
+    "created_at": "2026-03-11 12:41:19",
+    "expires_at": null,
+    "source": "model",
+    "model_used": "llama3.2"
+  },
+  {
+    "question": "update the info to be 2025",
+    "answer": "I'm happy to help, but I don't have any information to update. This conversation just started. What information would you like me to update for 2025?",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-03-11 12:43:49",
+    "expires_at": null,
+    "source": "model",
+    "model_used": "llama3.2"
+  },
+  {
+    "question": "update me with most recent number of people in egypt",
+    "answer": "According to the United Nations, the estimated population of Egypt as of mid-2022 is approximately 104,444,000 people.",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-03-11 12:45:11",
+    "expires_at": null,
+    "source": "model",
+    "model_used": "llama3.2"
+  },
+  {
+    "question": "provide the 5G architecture diagram",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: Here is a high-level overview of the 5G architecture diagram:\n\n**5G Architecture Components:**\n\n1. **User Equipment (UE)**: Mobile device (e.g., smartphone)\n2. **Network Slices**: Logical partitioning of network resources\n3. **Network Functions Virtualization (NFV)**: Virtualized network functions\n4. **Radio Access Network (RAN)**: Radio frequency communication\n5. **Core Network (CN)**: Backhaul and control plane\n\n**5G Architecture Layers:**\n\n1. **Radio Access Layer (RAL)**: RAN and UE interaction\n2. **Control and User Plane Separation (CUPS)**: Separation of control and user plane functions\n3. **Network Slicing Layer (NSL)**: Network slicing management\n4. **Management and Orchestration Layer (MOL)**: Network management and orchestration\n5. **Cloud Native Application Management Layer (CNAM)**: Cloud-native application management",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-03-13 10:26:42",
+    "expires_at": null,
+    "source": "model",
+    "model_used": null
+  },
+  {
+    "question": "quit",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: Is everything okay? Would you like to talk about what's on your mind? I'm here to listen.",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-03-13 10:29:01",
+    "expires_at": null,
+    "source": "model",
+    "model_used": null
+  },
+  {
+    "question": "how are u",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: I'm functioning properly, thank you for asking! How can I assist you today?",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-09-17 08:27:26",
+    "expires_at": null,
+    "source": "model",
+    "model_used": null
+  },
+  {
+    "question": "draw mw an image for battry how it works for kids",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: I'd be happy to help you with a simple explanation of how a battery works, suitable for kids. Unfortunately, I'm a text-based AI and cannot physically draw images. However, I can describe a simple diagram and provide a text-based representation of a battery.\n\n**Battery Diagram:**\n\nImagine a battery as a small container with two main parts:\n\n1. **Positive Terminal (Red)**: This is the positive side of the battery, marked with a \"+\" sign. It's like a \"plus\" sign.\n2. **Negative Terminal (Black)**: This is the negative side of the battery, marked with a \"-\" sign. It's like a \"minus\" sign.\n\n**How it Works:**\n\nWhen you connect a device, like a toy or a light, to the battery, the following happens:\n\n1. The positive terminal (red) sends electrons (tiny particles) out of the battery.\n2. The electrons flow through the device, making it work.\n3. The negative terminal",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-09-17 08:28:48",
+    "expires_at": null,
+    "source": "model",
+    "model_used": null
+  },
+  {
+    "question": "canyt u draw cpolorful diagrams?",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: I can use ASCII art to create simple diagrams. Would you like me to draw something colorful using characters?",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-09-17 08:31:05",
+    "expires_at": null,
+    "source": "model",
+    "model_used": null
+  },
+  {
+    "question": "sho me",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: I'd be happy to help, but you didn't specify what you'd like to see or know. Could you please provide more context or clarify what you're looking for?",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-09-17 08:32:06",
+    "expires_at": null,
+    "source": "model",
+    "model_used": null
+  },
+  {
+    "question": "diagra mo how battry works",
+    "answer": "SOURCE: LLAMA MODEL\nllama3.2: Here's a simplified diagram and explanation of how a battery works:\n\n**Diagram:**\n\n```\n  +---------------+\n  |  Positive (+) |\n  |  Terminal     |\n  +---------------+\n           |\n           |\n           v\n  +---------------+\n  |  Electrolyte  |\n  |  (Liquid or Gel)|\n  +---------------+\n           |\n           |\n           v\n  +---------------+\n  |  Negative (-) |\n  |  Terminal     |\n  +---------------+\n```\n\n**How it works:**\n\n1. A battery has two terminals: positive (+) and negative (-).\n2. Inside the battery, there's an electrolyte (liquid or gel) that helps conduct electricity.\n3. When a battery is connected to a device, like a light bulb, the following happens:\n\t* The positive terminal (cathode) releases electrons (negative charge).\n\t* The negative terminal (anode) attracts electrons (positive charge).\n\t* The electrons flow",
+    "is_time_sensitive": false,
+    "category": "general_fact",
+    "created_at": "2026-09-17 08:33:28",
+    "expires_at": null,
+    "source": "model",
+    "model_used": null
+  }
+]

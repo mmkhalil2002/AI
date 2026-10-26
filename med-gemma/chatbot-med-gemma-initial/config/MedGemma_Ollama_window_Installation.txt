@@ -1,0 +1,119 @@
+MedGemma 1.5 with Ollama - Short Windows CMD Installation
+==========================================================
+
+Server IP: 10.0.81.181
+Model: medgemma1.5:4b
+
+ONE-TIME SETUP
+--------------
+
+1. Download and install Ollama for Windows:
+   https://ollama.com/download/windows
+
+2. Open Command Prompt and download MedGemma:
+
+   ollama pull medgemma1.5:4b
+
+3. Create the firewall rule:
+
+   - Close the current Command Prompt.
+   - Search for cmd in the Windows Start menu.
+   - Right-click Command Prompt and select Run as administrator.
+   - Run:
+
+   netsh advfirewall firewall add rule name="Ollama 11434" dir=in action=allow protocol=TCP localport=11434 remoteip=localsubnet
+
+   The expected result is: Ok.
+
+
+START THE SERVER
+----------------
+
+1. Quit the Ollama application from the Windows system tray if it is running.
+
+2. Open Command Prompt and run:
+
+   set OLLAMA_HOST=0.0.0.0:11434
+   ollama serve
+
+3. Keep this Command Prompt window open while the client uses MedGemma.
+
+
+CLIENT CONFIGURATION
+--------------------
+
+Put these lines in the client's .env file:
+
+OLLAMA_URL=http://10.0.81.181:11434
+MEDGEMMA_MODEL=medgemma1.5:4b
+
+
+QUICK CONNECTION TEST
+---------------------
+
+On the client computer, open Command Prompt and run:
+
+curl http://10.0.81.181:11434/api/tags
+
+If the response contains medgemma1.5:4b, the connection is working.
+
+
+AFTER RESTARTING WINDOWS
+------------------------
+
+Quit the Ollama tray application, open Command Prompt, and run:
+
+set OLLAMA_HOST=0.0.0.0:11434
+ollama serve
+
+Keep the window open.
+
+
+VERIFY THE INSTALLATION
+-----------------------
+
+1. Confirm that MedGemma is installed on the server:
+
+   ollama list
+
+   The output must contain:
+
+   medgemma1.5:4b
+
+2. Test the model directly:
+
+   ollama run medgemma1.5:4b
+
+   Enter this question:
+
+   Reply with: MedGemma is working.
+
+   If MedGemma answers, the model is installed and working. Enter /bye to exit.
+
+3. Start the network server:
+
+   Quit the Ollama tray application first. Then run:
+
+   set OLLAMA_HOST=0.0.0.0:11434
+   ollama serve
+
+   Keep this window open.
+
+4. Open a second Command Prompt on the server and verify the API:
+
+   curl http://127.0.0.1:11434/api/tags
+
+   The response must contain medgemma1.5:4b.
+
+5. Confirm that Ollama accepts network connections:
+
+   netstat -ano | findstr :11434
+
+   The output should contain 0.0.0.0:11434 and LISTENING.
+
+6. On the client computer, verify the remote connection:
+
+   curl http://10.0.81.181:11434/api/tags
+
+   If the response contains medgemma1.5:4b, installation and network access
+   are both working.
