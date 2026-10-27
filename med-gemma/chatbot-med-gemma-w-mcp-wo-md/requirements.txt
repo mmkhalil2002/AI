@@ -1,3 +1,4 @@
-mcp[cli]
-requests
-python-dotenv
+# MedGemma GUI + separate MCP client and servers
+mcp>=1.20,<2
+Pillow>=10
+pyttsx3>=2.90
