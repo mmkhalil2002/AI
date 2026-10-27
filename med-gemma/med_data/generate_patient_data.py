@@ -2,7 +2,7 @@
 """Interactive MedGemma patient-date data importer (Windows / Ubuntu).
 
 Uses BASE_INPUT_DIR and BASE_OUTPUT_DIR from .env beside this script.
-Creates BASE_OUTPUT_DIR/patient_records/PATIENT_ID/YYYY-MM-DD/{xrays,ekgs,blood_tests}.
+Creates BASE_OUTPUT_DIR/patient_records/PATIENT_ID/YYYY-MM-DD/HH-MM_AM/{xrays,ekgs,blood_tests}.
 Only standard-library modules are required. Educational images come from
 Wikimedia Commons; blood test records are synthetic educational examples.
 """
@@ -66,7 +66,7 @@ def configured_directory(key: str) -> Path:
     """Resolve a path from .env relative to the directory containing .env.
 
     On both Windows and Ubuntu, forward and backward slashes are accepted in
-    relative paths, such as BASE_OUTPUT_DIR=..\python.
+    relative paths, such as BASE_OUTPUT_DIR=../python.
     """
     env_file = next((p for p in ENV_CANDIDATES if p.is_file()), None)
     if env_file is None:
@@ -116,6 +116,22 @@ def prompt_date() -> str:
             except ValueError:
                 pass
         print("[ERROR] Invalid date. Example: 2026-10-25")
+
+
+
+def prompt_exam_time() -> str:
+    """Ask for 12-hour examination time; return a Windows-safe folder name.
+
+    Example: 05:20 PM becomes 05-20_PM. Different times on the same
+    examination date are stored in separate directories beneath that date.
+    """
+    while True:
+        raw = input("Examination time (HH:MM AM/PM, e.g. 05:20 PM): ").strip()
+        if not re.fullmatch(r"(?:0[1-9]|1[0-2]):[0-5][0-9] (?:AM|PM)", raw, re.IGNORECASE):
+            print("[ERROR] Use HH:MM AM or PM, for example 05:20 PM.")
+            continue
+        parsed = datetime.strptime(raw.upper(), "%I:%M %p")
+        return parsed.strftime("%I-%M_%p")
 
 
 def prompt_count(label: str) -> int:
@@ -334,7 +350,8 @@ def main() -> int:
     root = output_root()
     patient = prompt_patient_id()
     date = prompt_date()
-    destination = root / "patient_records" / patient / date
+    exam_time = prompt_exam_time()
+    destination = root / "patient_records" / patient / date / exam_time
     print(f"\nDestination: {destination}")
     while True:
         choice = input("Source: [1] External device/folder  [2] Educational internet data: ").strip()
@@ -358,7 +375,7 @@ def main() -> int:
         print("[INFO] Cancelled; no files created.")
         return 0
     if destination.exists() and any(destination.iterdir()):
-        print("[INFO] Patient/date already exists; merging only new files (SHA-256 duplicate check).")
+        print("[INFO] Patient/date/time already exists; merging only new files (SHA-256 duplicate check).")
     for folder in ("xrays", "ekgs", "blood_tests"):
         (destination / folder).mkdir(parents=True, exist_ok=True)
     if choice == "1":

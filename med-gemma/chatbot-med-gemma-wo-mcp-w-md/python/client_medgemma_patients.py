@@ -273,30 +273,22 @@ def date_is_in_active_range(record_dates):
 
 
 def active_date_range_label(modality=None):
-    """Return the filter, or a modality's available minimum/maximum dates."""
-    if active_date_start is None and active_date_end is None:
-        if modality is None or active_patient is None:
-            return "Undated records"
-        extensions = {".json"} if modality == "blood_tests" else IMAGE_EXTENSIONS
-        paths, _message = patient_files(modality, extensions)
-        dates = []
-        for path in paths:
-            try:
-                if modality == "blood_tests":
-                    data = json.loads(path.read_text(encoding="utf-8-sig"))
-                    records = data if isinstance(data, list) else [data]
-                    for record in records:
-                        dates.extend(json_record_dates(record) or path_record_dates(path))
-                else:
-                    dates.extend(path_record_dates(path))
-            except (OSError, UnicodeError, json.JSONDecodeError):
-                dates.extend(path_record_dates(path))
-        if not dates:
-            return "Undated records"
-        return f"{min(dates).strftime('%m/%d/%Y')} - {max(dates).strftime('%m/%d/%Y')}"
-    start = active_date_start.strftime("%m/%d/%Y") if active_date_start else ""
-    end = active_date_end.strftime("%m/%d/%Y") if active_date_end else ""
-    return f"{start} - {end}" if start and end else (f"From {start}" if start else f"Through {end}")
+    """Return the selected snapshot's date/time label, never a range."""
+    if selected_snapshot_dir is None:
+        return "No date/time selected"
+    return f"{selected_snapshot_dir.parent.name} {selected_snapshot_dir.name}"
+
+
+def set_snapshot_heading(name_label, date_label, time_label, title):
+    """Render a panel heading with green date and contrasting purple time."""
+    if selected_snapshot_dir is None:
+        name_label.config(text=f"{title} (No date/time selected)")
+        date_label.config(text="")
+        time_label.config(text="")
+        return
+    name_label.config(text=f"{title} (")
+    date_label.config(text=selected_snapshot_dir.parent.name)
+    time_label.config(text=f" {selected_snapshot_dir.name})")
 
 
 def record_matches_date_range(record, path):
@@ -335,13 +327,28 @@ def patient_files(modality, extensions):
     """
     if active_patient is None:
         return [], "Select a patient to load records."
-    preferred_folder = active_patient / "data" / modality
-    legacy_folder = active_patient / modality
+    if selected_snapshot_dir is None and patient_snapshots(active_patient):
+        return [], "Choose a date and time to load this patient's data."
+    if selected_snapshot_dir is not None:
+        try:
+            safe_path(selected_snapshot_dir, active_patient)
+            folder = selected_snapshot_dir / modality
+            safe_path(folder, active_patient)
+        except (OSError, ValueError):
+            return [], "Selected date/time data is no longer available."
+    else:
+        folder = None
+    if folder is not None:
+        # A selected snapshot is deliberately confined to one date/time folder.
+        pass
+    else:
+        preferred_folder = active_patient / "data" / modality
+        legacy_folder = active_patient / modality
+        folder = preferred_folder if preferred_folder.is_dir() else legacy_folder
     try:
         # Do not merge layouts: if a patient has the documented folder it is
         # authoritative.  Falling back only when it is missing avoids showing
         # duplicate or stale legacy records alongside current ones.
-        folder = preferred_folder if preferred_folder.is_dir() else legacy_folder
         safe_path(folder, active_patient)
         if not folder.is_dir():
             return [], f"No {modality} folder for this patient."
@@ -371,6 +378,7 @@ def patient_files(modality, extensions):
 active_patient = None
 active_date_start = None
 active_date_end = None
+selected_snapshot_dir = None
 image_viewer = None
 ui_callbacks = queue.Queue()
 # Thumbnail work is streamed through bounded queues. The decoder keeps only one
@@ -524,9 +532,127 @@ def clear_date_range():
     apply_date_range()
 
 
+def patient_snapshots(patient):
+    """Return safe ``date/time`` record folders for one patient.
+
+    The new layout is ``patient_records/<id>/<date>/<time>/<modality>``.
+    Only time folders containing at least one expected modality directory are
+    offered; legacy folders are never shown in this date/time picker.
+    """
+    snapshots = []
+    if patient is None:
+        return snapshots
+    try:
+        for date_dir in sorted(patient.iterdir(), key=lambda item: item.name, reverse=True):
+            if not date_dir.is_dir() or date_dir.name.startswith(".") or not parse_record_dates(date_dir.name):
+                continue
+            safe_path(date_dir, patient)
+            for time_dir in sorted(date_dir.iterdir(), key=lambda item: item.name, reverse=True):
+                if not time_dir.is_dir() or time_dir.name.startswith("."):
+                    continue
+                safe_path(time_dir, patient)
+                if any((time_dir / modality).is_dir() for modality in ("xrays", "ekgs", "blood_tests")):
+                    snapshots.append((date_dir.name, time_dir.name, time_dir.resolve()))
+    except (OSError, ValueError):
+        return []
+    return snapshots
+
+
+def choose_snapshot():
+    """Show one date/time picker and load a snapshot when a time is clicked."""
+    if active_patient is None:
+        show_status("Select a patient first.")
+        return
+    snapshots = patient_snapshots(active_patient)
+    if not snapshots:
+        messagebox.showinfo(
+            "No date/time data",
+            "No date/time record folders were found for this patient.",
+            parent=window,
+        )
+        return
+    dialog = tk.Toplevel(window)
+    dialog.title("Choose patient date and time")
+    dialog.transient(window)
+    fit_dialog_to_display(dialog, 0.30, 0.50, 440, 360)
+    dialog.columnconfigure(0, weight=1)
+    dialog.rowconfigure(1, weight=1)
+    ttk.Label(dialog, text="Select date & time", padding=10).grid(
+        row=0, column=0, sticky="w")
+    patient_id_var = tk.StringVar(value=active_patient.name)
+    ttk.Label(dialog, text="Patient ID", style="Field.TLabel").grid(
+        row=0, column=1, padx=(8, 10), pady=8, sticky="e")
+    dialog_patient_picker = ttk.Combobox(dialog, textvariable=patient_id_var, values=tuple(patients),
+                                         state="readonly", width=18)
+    dialog_patient_picker.grid(row=0, column=2, padx=(0, 10), pady=8, sticky="e")
+    tree = ttk.Treeview(dialog, show="tree", selectmode="browse")
+    tree.grid(row=1, column=0, sticky="nsew", padx=(10, 0), pady=(0, 10))
+    scrollbar = ttk.Scrollbar(dialog, orient=tk.VERTICAL, command=tree.yview)
+    scrollbar.grid(row=1, column=1, sticky="ns", padx=(0, 10), pady=(0, 10))
+    tree.configure(yscrollcommand=scrollbar.set)
+    # Dates keep the default theme color; selectable times use a contrasting
+    # purple so the two hierarchy levels are visually distinct.
+    tree.tag_configure("snapshot_time", foreground="#6a1b9a")
+    date_nodes = {}
+    snapshot_paths = {}
+    for index, (date_name, time_name, path) in enumerate(snapshots):
+        parent = date_nodes.get(date_name)
+        if parent is None:
+            parent = tree.insert("", tk.END, text=date_name, open=True)
+            date_nodes[date_name] = parent
+        item_id = f"snapshot_{index}"
+        snapshot_paths[item_id] = path
+        tree.insert(parent, tk.END, iid=item_id, text=time_name, tags=("snapshot_time",))
+
+    def load_selected(_event=None):
+        item = tree.focus()
+        path = snapshot_paths.get(item)
+        if path is None:
+            return
+        select_snapshot(path)
+        dialog.destroy()
+
+    def change_dialog_patient(_event=None):
+        if patient_id_var.get() == patient_name.get():
+            return
+        dialog.destroy()
+        patient_name.set(patient_id_var.get())
+        select_patient()
+        window.after_idle(choose_snapshot)
+
+    tree.bind("<Double-Button-1>", load_selected)
+    dialog_patient_picker.bind("<<ComboboxSelected>>", change_dialog_patient)
+    ttk.Button(dialog, text="Load selected date & time", command=load_selected).grid(
+        row=2, column=0, columnspan=2, pady=(0, 10))
+
+
+def select_snapshot(path):
+    """Load only one selected date/time folder for the active patient."""
+    global selected_snapshot_dir, active_date_start, active_date_end
+    if active_patient is None or current_request is not None:
+        return
+    try:
+        path = safe_path(path, active_patient)
+        date_value = parse_record_dates(path.parent.name)
+        if not date_value:
+            raise ValueError("Snapshot date is invalid")
+    except (OSError, ValueError):
+        show_status("The selected date/time folder is unavailable.")
+        return
+    selected_snapshot_dir = path
+    active_date_start = active_date_end = date_value[0]
+    snapshot_selection_label.config(text=f"Loaded: {path.parent.name} {path.name}")
+    clear_report_review()
+    prompt_box.delete("1.0", tk.END)
+    load_images()
+    load_blood_tests()
+    update_selection_workspace()
+    show_status(f"Loaded {active_patient.name}: {path.parent.name} at {path.name}")
+
+
 def select_patient(event=None):
     """Clear previous context and selections before loading the chosen patient."""
-    global active_patient
+    global active_patient, selected_snapshot_dir, active_date_start, active_date_end
     if current_request is not None:
         return
     next_patient = patients.get(patient_name.get())
@@ -537,12 +663,22 @@ def select_patient(event=None):
     close_image_viewer()  # Never leave one patient's image visible after rebinding.
     stop_voice()
     active_patient = next_patient
+    selected_snapshot_dir = None
+    active_date_start = active_date_end = None
     clear_report_review()
     # A patient change must not insert a canned request into the doctor's
     # question field.  Every request begins with explicit clinician input.
     prompt_box.delete("1.0", tk.END)
-    load_images()
-    load_blood_tests()
+    snapshots = patient_snapshots(active_patient)
+    if snapshots:
+        # The newest folder is listed first; load it immediately so each
+        # patient opens with a usable, isolated date/time snapshot.
+        select_snapshot(snapshots[0][2])
+    else:
+        load_images()
+        load_blood_tests()
+        if active_patient is not None:
+            snapshot_selection_label.config(text="Choose a date and time to load data.")
     show_status(f"Patient: {patient_name.get()}" if active_patient else "No patient directories found")
     refresh_saved_report_history()
     update_selection_workspace()
@@ -1710,7 +1846,8 @@ def encode_image(path):
 
 def load_blood_tests():
     """Load original selectable lab records and render their normalized rows."""
-    blood_test_panel.config(text=f"BLOOD TEST ({active_date_range_label('blood_tests')})")
+    set_snapshot_heading(blood_test_panel.heading_name, blood_test_panel.heading_date,
+                         blood_test_panel.heading_time, "BLOOD TEST")
     blood_test_view.config(state=tk.NORMAL)
     blood_test_view.delete("1.0", tk.END)
     blood_test_records.clear()
@@ -2247,7 +2384,8 @@ def load_images():
             )
         modality = ("xrays", "ekgs")[column]
         paths, message = patient_files(modality, IMAGE_EXTENSIONS)
-        gallery["title"].config(text=f"{GALLERY_NAMES[column]} ({active_date_range_label(modality)})")
+        set_snapshot_heading(gallery["heading_name"], gallery["heading_date"],
+                             gallery["heading_time"], GALLERY_NAMES[column])
         if not paths:
             ttk.Label(grid, text=message, wraplength=400).grid(row=0, column=0, padx=5, pady=12)
         if Image is None and paths:
@@ -2294,7 +2432,8 @@ def load_images():
                 "status": button.selection_status, "index": index,
             })
         gallery["title"].config(text=f"{GALLERY_NAMES[column]} — {len(paths)} image(s)")
-        gallery["title"].config(text=f"{GALLERY_NAMES[column]} ({active_date_range_label(modality)})")
+        set_snapshot_heading(gallery["heading_name"], gallery["heading_date"],
+                             gallery["heading_time"], GALLERY_NAMES[column])
         update_gallery_scrollbars(
             gallery["canvas"], gallery["canvas_window"], gallery["grid"]
         )
@@ -3034,7 +3173,7 @@ def refresh_models():
 
 def main():
     """Validate startup data, then construct the preserved Tkinter interface."""
-    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_picker, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout
+    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_picker, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label
     # Fatal data-root validation precedes construction of any Tk widget.
     try:
         PATIENT_RECORDS_DIR = patient_records_root()
@@ -3292,18 +3431,15 @@ def main():
                          sticky="e" if not compact_layout else "w")
     date_from_var = tk.StringVar(value="")
     date_to_var = tk.StringVar(value="")
-    ttk.Label(date_filter_bar, text="From", style="Field.TLabel").pack(side=tk.LEFT, padx=(10, 4), pady=5)
-    date_from_entry = ttk.Entry(date_filter_bar, textvariable=date_from_var, width=8)
-    date_from_entry.pack(side=tk.LEFT, padx=3, pady=5)
-    ttk.Label(date_filter_bar, text="To", style="Field.TLabel").pack(side=tk.LEFT, padx=(8, 4), pady=5)
-    date_to_entry = ttk.Entry(date_filter_bar, textvariable=date_to_var, width=8)
-    date_to_entry.pack(side=tk.LEFT, padx=3, pady=5)
-    ttk.Button(date_filter_bar, text="Apply range", command=apply_date_range).pack(side=tk.LEFT, padx=(8, 4), pady=5)
-    ttk.Button(date_filter_bar, text="Clear range", command=clear_date_range).pack(side=tk.LEFT, padx=4, pady=5)
-    date_filter_status = ttk.Label(date_filter_bar, text="Blank range shows all records.", style="Status.TLabel")
-    date_filter_status.pack(side=tk.LEFT, padx=10, pady=5)
-    date_from_entry.bind("<Return>", lambda _event: apply_date_range())
-    date_to_entry.bind("<Return>", lambda _event: apply_date_range())
+    ttk.Button(date_filter_bar, text="Choose date & time", command=choose_snapshot,
+               style="Secondary.TButton").pack(side=tk.LEFT, padx=(4, 8), pady=5)
+    snapshot_selection_label = ttk.Label(
+        date_filter_bar, text="Choose a date and time to load data.", style="Status.TLabel"
+    )
+    snapshot_selection_label.pack(side=tk.LEFT, padx=(0, 4), pady=5)
+    # Retained only for compatibility with old saved-session helper callbacks;
+    # the visible workflow uses exactly one date/time picker.
+    date_filter_status = snapshot_selection_label
 
     # Horizontal and vertical sash panes keep all core panels user-resizable.
     body = ttk.Panedwindow(window, orient=tk.HORIZONTAL)
@@ -3553,9 +3689,19 @@ def main():
     galleries = []
     gallery_count_labels = []
     for gallery_index in range(2):
+        heading = tk.Frame(image_panel, background=APP_BACKGROUND)
+        heading_name = tk.Label(heading, text=GALLERY_NAMES[gallery_index], background=APP_BACKGROUND,
+                                foreground=TEAL, font=("Segoe UI", 12, "bold"))
+        heading_date = tk.Label(heading, text="", background=APP_BACKGROUND,
+                                foreground=TEAL, font=("Segoe UI", 12, "bold"))
+        heading_time = tk.Label(heading, text="", background=APP_BACKGROUND,
+                                foreground="#6a1b9a", font=("Segoe UI", 12, "bold"))
+        heading_name.pack(side=tk.LEFT)
+        heading_date.pack(side=tk.LEFT)
+        heading_time.pack(side=tk.LEFT)
         pane = ttk.LabelFrame(
             image_panel,
-            text=GALLERY_NAMES[gallery_index],
+            labelwidget=heading,
             style="Gallery.TLabelframe",
         )
         pane.grid(
@@ -3602,6 +3748,9 @@ def main():
         galleries.append(
             {
                 "title": pane,
+                "heading_name": heading_name,
+                "heading_date": heading_date,
+                "heading_time": heading_time,
                 "canvas": canvas,
                 "canvas_window": canvas_window,
                 "grid": grid,
@@ -3609,12 +3758,22 @@ def main():
         )
 
     # Keep the selectable Blood Test Data list below the image galleries.
+    blood_heading = tk.Frame(body, background=APP_BACKGROUND)
+    blood_heading_name = tk.Label(blood_heading, text="BLOOD TEST", background=APP_BACKGROUND,
+                                  foreground=TEAL, font=("Segoe UI", 12, "bold"))
+    blood_heading_date = tk.Label(blood_heading, text="", background=APP_BACKGROUND,
+                                  foreground=TEAL, font=("Segoe UI", 12, "bold"))
+    blood_heading_time = tk.Label(blood_heading, text="", background=APP_BACKGROUND,
+                                  foreground="#6a1b9a", font=("Segoe UI", 12, "bold"))
+    blood_heading_name.pack(side=tk.LEFT)
+    blood_heading_date.pack(side=tk.LEFT)
+    blood_heading_time.pack(side=tk.LEFT)
     blood_test_panel = ttk.LabelFrame(
-        body,
-        text="BLOOD TEST",
-        labelanchor="nw",
-        style="Gallery.TLabelframe",
+        body, labelwidget=blood_heading, style="Gallery.TLabelframe",
     )
+    blood_test_panel.heading_name = blood_heading_name
+    blood_test_panel.heading_date = blood_heading_date
+    blood_test_panel.heading_time = blood_heading_time
     data_panes.add(blood_test_panel, weight=30)
     blood_test_panel.rowconfigure(1, weight=1)
     blood_test_panel.columnconfigure(0, weight=1)

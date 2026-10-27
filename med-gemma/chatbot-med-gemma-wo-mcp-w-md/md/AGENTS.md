@@ -61,6 +61,31 @@ Project/
                 └── blood_tests/
 ```
 
+### Date/time snapshots
+
+In addition to the legacy layout, support the current snapshot layout read from
+`PATIENT_RECORDS_DIR` in `.env`:
+
+```text
+patient_records/
+  <patient-id>/
+    <date>/
+      <time>/
+        xrays/
+        ekgs/
+        blood_tests/
+```
+
+Use one visible **Choose date & time** control, not separate From/To range
+fields. Clicking it opens one picker window: dates are parents and their time
+folders are children. Selecting a time loads only that date/time folder's
+three modalities for the active patient. Never combine different times. Load
+the first available snapshot automatically when a patient is selected. Panel
+titles show the selected date and time only; never show a date range.
+The picker includes a Patient ID dropdown, a complete `Select date & time`
+heading, and no filesystem paths. Dates remain green; times use a contrasting
+purple in both the picker and modality headings.
+
 - Add support for optional `.env` key `PATIENT_RECORDS_DIR=patient_records`; if absent, use the `patient_records` folder beside the Python script. Relative paths are relative to the script directory.
 - Discover only immediate patient directories, excluding hidden/system folders. Allow ordinary folder names with spaces and letters. Do not infer patient identity from image names or dated folders.
 - Inside each patient's `data/` folder, display supported image formats in `xrays/` and `ekgs/`, and load `.json` files from `blood_tests/`. Support both the original `{"title": "...", "results": ...}` format and structured CBC-style JSON such as `{"panel": "CBC", "results": [{"test": "WBC", "value": 7.4, "unit": "10^3/uL"}]}`. Do not discard records simply because `title` is absent.
@@ -108,13 +133,13 @@ The original script sends one combined prompt and selected images directly to Me
 
 Reproduce the approved desktop layout, adapting the original Tkinter GUI rather than rebuilding its behavior:
 
-- **Top row only:** `Patient Selection and Date Range` with the patient ID dropdown followed **immediately** by `From`, `To`, `Apply Range`, and `Clear Range`, then the active-patient indicator, all **on one physical line at ordinary desktop widths**. Treat the patient menu and date range as one compact control strip; do not put them in separate header bands or place the active-patient label between the menu and filters. A two-row wrap is permitted only when the usable display width cannot fit the controls without clipping. Date fields accept **MMDDYY** (six digits) as specified above; if dates are displayed with slashes, convert them correctly to/from MMDDYY internally. Do not put connection/server URL, model name/selector, or Check Connection widgets in the visible GUI. Read connection and model from `.env` and preserve background readiness/error handling.
+- **Top row only:** `Patient Selection and Date Range` with the patient ID dropdown followed immediately by `From`, `To`, `Apply Range`, and `Clear Range`, then the active-patient indicator, all on one physical line at ordinary desktop widths. Do not place the active-patient indicator between the menu and filters or split them into header bands. A two-row wrap is permitted only when the usable display width cannot fit the controls without clipping. Date fields accept **MMDDYY** (six digits) as specified above; if dates are displayed with slashes, convert them correctly to/from MMDDYY internally. Do not put connection/server URL, model name/selector, or Check Connection widgets in the visible GUI. Read connection and model from `.env` and preserve background readiness/error handling.
 - **Main area, left approximately 30–35%:** red `AI Clinical Assistant Center` heading; `Your Question` multiline input **blank on startup**, with no default prompt, instructions, or injected status text; `Send to MedGemma` and `Voice: OFF/ON` controls below; then a large **single** `AI Response` text area. No `Response` or `Original` tabs, no separate original/draft side-by-side panes, and **no Actions section whatsoever**. Keep clinician-review notice in a status/footer location outside the question input if needed.
 - **Main area, right approximately 65–70%:** three large panels **stacked vertically**, never side-by-side: `XRAY`, `EKG/ECG`, `BLOOD TEST`. Allocate roughly **35% / 35% / 30%** of right-side height; keep independent scrolling, record selection/deselection, and original-resolution sending. **Remove** the `Medical Image Datasets` heading to save vertical space.
 - Each modality panel title must show the **currently applied date range**, e.g. `XRAY (01/01/2026 - 12/31/2026)`, `EKG/ECG (...)`, `BLOOD TEST (...)`. With blank filters, show the modality's recognized minimum and maximum available dates; for an open-ended filter show the actual open-ended bound. If no record has a recognizable date, show `Undated records`; do not invent a range. Update headings when Apply/Clear is pressed or the patient changes.
 - **Do not display counts** such as `3 image(s)`, `0/3 selected`, `Blood 0/1 selected`, or any number of images/records in headings, captions, selection status, or elsewhere in the GUI. Selection state may be shown through highlighting/checkmarks without numerical counts.
 - Keep the X-ray gallery, EKG gallery, and blood-test results visible and spacious, with no unnecessary blank header bands. The Question area and AI Response should be usable at ordinary desktop window sizes.
-- Render blood-test headings and result rows with one fixed-width font and fixed-width columns so test name, value, unit, reference range, and flag align vertically in every row. Do not use a proportional font for the tabular blood-test content.
+- Render blood-test headings and rows with a fixed-width font and fixed-width columns so test name, value, unit, reference range, and flag align vertically.
 - Do not add report presets, prefilled question text, Actions placeholders, Response/Original tabs, or extra visual controls merely because they exist in a different version of the application. Preserve underlying patient isolation, date filtering, original-image payload, and asynchronous MedGemma generation.
 
 ## 5. Configuration and dependencies

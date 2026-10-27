@@ -57,6 +57,26 @@ All GUI, patient loading, and HTTP logic runs in the **same Python file** on the
 
 Each immediate subdirectory of `patient_records/` is a patient ID. Modality files are stored under that patient's `data/` folder. Names can contain letters and numbers; they do not have to match `P0001`.
 
+### Current date/time layout
+
+The current data-snapshot layout is also supported, with `PATIENT_RECORDS_DIR`
+read from `python/.env`:
+
+```text
+patient_records/<patient-id>/<date>/<time>/{xrays,ekgs,blood_tests}/
+```
+
+The GUI exposes one **Choose date & time** control. Its single picker window
+lists dates for the selected patient and, under each date, its time folders.
+Selecting a time loads only that snapshot; separate From/To date-range fields
+are not shown for this layout. When a patient is selected, the first available
+snapshot loads automatically. Panel labels show the selected date and time,
+not a date range.
+
+The picker includes a Patient ID dropdown and shows only dates and times—never
+filesystem paths. Dates use green text and times use a contrasting purple in
+both the picker and the modality headings.
+
 ```text
 Project/
 ├── config/
@@ -146,12 +166,12 @@ The **Actions** section is removed entirely. The existing **Send to MedGemma** b
 
 The following overrides any legacy UI instructions elsewhere in this README while retaining the same single-file patient workflow:
 
-- **Top:** one compact `Patient Selection and Date Range` row containing the Patient ID dropdown followed immediately by From/To dates, Apply Range, Clear Range, then the active-patient indicator **on the same physical line at ordinary desktop widths**. Do not split patient selection and date filtering into separate header rows or panels, or put the active-patient indicator between the menu and filters. A second row is allowed only as a narrow-window fallback that prevents clipping. Input dates use `MMDDYY`; formatted display may show `MM/DD/YYYY` if conversion is correct. Do not display Server URL, Model, or Check Connection widgets. Ollama settings still come from `.env`.
+- **Top:** one compact `Patient Selection and Date Range` row containing the Patient ID dropdown followed immediately by From/To dates, Apply Range, Clear Range, then the active-patient indicator, all on the same physical line at ordinary desktop widths. Do not place the active-patient indicator between the menu and filters or split them into separate header rows. A second row is allowed only as a narrow-window fallback that prevents clipping. Input dates use `MMDDYY`; formatted display may show `MM/DD/YYYY` if conversion is correct. Do not display Server URL, Model, or Check Connection widgets. Ollama settings still come from `.env`.
 - **Left (~35% width):** `AI Clinical Assistant Center`; **blank** `Your Question` box on startup; `Send to MedGemma` and Voice toggle; one large `AI Response` box. **No Actions section** and **no Response/Original tabs**. No default question/prompt text.
 - **Right (~65% width):** **XRAY**, **EKG/ECG**, **BLOOD TEST** in three **vertically stacked** panels, approximately 35%/35%/30% of available height, with scrolling and click selection preserved. **No Medical Image Datasets heading**.
 - **Panel labels:** show the active date range in each panel title, e.g. `XRAY (01/01/2026 - 12/31/2026)`. If no range is applied, show that modality's recognized minimum-to-maximum available dates instead of `All dates`; if every record is undated, show `Undated records`. For one open bound, show only the applicable limit. The displayed date range must match the actual filtering.
 - **No image/record counts anywhere in the GUI**, including modality headings and selection status. Use visual selection indicators instead of `0/3 selected` or `3 image(s)`.
-- **Blood-test alignment:** render all blood-test table headings and rows in a fixed-width font with fixed-width columns for test, value, unit, reference range, and flag. Headers and their values must align vertically.
+- **Blood-test alignment:** render headings and rows in a fixed-width font with fixed-width columns so test name, value, unit, reference range, and flag align vertically.
 - Preserve patient isolation, date filtering, image/JSON loading, direct Ollama requests, original image bytes, optional voice, errors, and clinical review safeguards. Hide or omit any legacy report preset, input summary, original/draft tabs, or Actions placeholder that conflicts with this layout. Advanced export/history logic may remain if already implemented, but must not reintroduce removed GUI panels.
 
 ## 5. Review, saving, and history
@@ -246,7 +266,6 @@ The existing Codex instructions in `AGENTS.md` describe the original one-file pa
 - Only the active patient's selected data appears in the outgoing request.
 - The response appears in the original GUI, with meaningful error handling for unreachable Ollama, invalid files, and timeouts.
 - The Actions section is absent; Response/Original tabs, Medical Image Datasets heading, visible model/server controls, and image counts are absent.
-- At ordinary desktop width, the patient menu and From/To/Apply/Clear controls appear together in one top row; they do not occupy separate header bands.
 - Exactly one new application `.py` file is generated.
 
 Use synthetic or de-identified test data. **MedGemma is a research/clinician-review aid, not an autonomous diagnostic system.** Plain HTTP is unencrypted; do not transmit identifiable patient data over an unsecured connection. For real clinical use, implement appropriate authenticated, encrypted transport and organizational privacy controls.
