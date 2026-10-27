@@ -327,11 +327,11 @@ def file_matches_date_range(path, modality):
 def patient_files(modality, extensions):
     """Return safe patient-modality files filtered by the active date range.
 
-    New record sets use ``<patient>/data/<modality>``.  Some of the bundled
-    legacy record sets predate that wrapper and use ``<patient>/<modality>``.
-    Prefer the documented layout, but safely fall back to the legacy location
-    when the documented folder is absent.  This keeps discovery patient-scoped
-    and never broadens it to another patient's files.
+    New record sets use ``<patient>/data/<modality>``. Some legacy sets use
+    ``<patient>/<modality>`` or nest modality folders beneath dated folders.
+    Prefer the documented layout, then the direct legacy layout, and search
+    dated child folders only when those layouts are absent. This keeps
+    discovery scoped to the active patient and avoids merging duplicate sets.
     """
     if active_patient is None:
         return [], "Select a patient to load records."
@@ -341,24 +341,47 @@ def patient_files(modality, extensions):
         # Do not merge layouts: if a patient has the documented folder it is
         # authoritative.  Falling back only when it is missing avoids showing
         # duplicate or stale legacy records alongside current ones.
-        folder = preferred_folder if preferred_folder.is_dir() else legacy_folder
-        safe_path(folder, active_patient)
-        if not folder.is_dir():
+        if preferred_folder.is_dir():
+            folders = [preferred_folder]
+        elif legacy_folder.is_dir():
+            folders = [legacy_folder]
+        else:
+            folders = []
+            for dated_folder in sorted(active_patient.iterdir(), key=lambda p: p.name.casefold()):
+                try:
+                    if (dated_folder.name.startswith(".") or not dated_folder.is_dir()
+                            or dated_folder.is_symlink()
+                            or getattr(dated_folder, "is_junction", lambda: False)()):
+                        continue
+                    safe_path(dated_folder, active_patient)
+                    candidate = dated_folder / modality
+                    if candidate.is_dir():
+                        safe_path(candidate, active_patient)
+                        folders.append(candidate)
+                except (OSError, ValueError):
+                    continue
+        if not folders:
             return [], f"No {modality} folder for this patient."
         paths = []
-        for path in sorted(folder.rglob("*"), key=lambda p: str(p).casefold()):
-            try:
-                if (not path.is_file() or path.suffix.lower() not in extensions
-                        or any(part.startswith(".") for part in path.relative_to(folder).parts)):
+        seen = set()
+        for folder in folders:
+            safe_path(folder, active_patient)
+            for path in sorted(folder.rglob("*"), key=lambda p: str(p).casefold()):
+                try:
+                    if (not path.is_file() or path.suffix.lower() not in extensions
+                            or any(part.startswith(".") for part in path.relative_to(folder).parts)):
+                        continue
+                    resolved = safe_path(path, active_patient)
+                    if resolved in seen:
+                        continue
+                    attributes = getattr(path.stat(), "st_file_attributes", 0)
+                    if attributes & 6 or not file_matches_date_range(path, modality):
+                        continue
+                    paths.append(path)
+                    seen.add(resolved)
+                except (OSError, ValueError):
+                    # Do not follow linked paths outside the selected patient.
                     continue
-                safe_path(path, active_patient)
-                attributes = getattr(path.stat(), "st_file_attributes", 0)
-                if attributes & 6 or not file_matches_date_range(path, modality):
-                    continue
-                paths.append(path)
-            except (OSError, ValueError):
-                # Do not follow linked paths outside the selected patient.
-                continue
         if paths:
             return paths, ""
         if active_date_start is not None or active_date_end is not None:
@@ -3026,7 +3049,7 @@ def refresh_models():
             def failed():
                 refresh_button.config(state=tk.NORMAL)
                 set_readiness("OFFLINE", "UNKNOWN (server check failed)")
-                show_status(f"Server check failed ({message}). Records remain available; use Check Connection to retry.")
+                show_status(f"Server check failed ({message}). Records remain available; retry Send after checking the configured service.")
             post_ui(failed)
 
     threading.Thread(target=worker, daemon=True).start()
@@ -3034,7 +3057,7 @@ def refresh_models():
 
 def main():
     """Validate startup data, then construct the preserved Tkinter interface."""
-    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_picker, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout
+    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_picker, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, date_from_var, date_to_var, date_filter_status
     # Fatal data-root validation precedes construction of any Tk widget.
     try:
         PATIENT_RECORDS_DIR = patient_records_root()
@@ -3408,7 +3431,7 @@ def main():
         voice_toggle_button.pack(side=tk.LEFT)
     status_label = ttk.Label(
         qa_panel,
-        text="Ready. Select a server and model.",
+        text="Ready. Select a patient, records, and enter a question.",
         wraplength=min(300, qa_wraplength),
         style="Status.TLabel",
     )

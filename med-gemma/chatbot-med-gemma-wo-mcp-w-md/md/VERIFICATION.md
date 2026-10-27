@@ -67,3 +67,7 @@ Use the explicit named launcher from `config/` (`run.bat` on Windows or `bash ru
 At normal desktop width, the Patient ID menu and date-range controls (`From`, `To`, Apply Range, Clear Range) must be rendered in one shared top row. A wrap to a second row is permitted only for a display too narrow to render that strip without clipping. This is a visual-layout requirement and should be checked after every GUI launch.
 
 The filters must appear immediately after the Patient ID menu, before the active-patient indicator. Blood-test table headings and values must use a fixed-width font and fixed-width columns; visual inspection must confirm vertical column alignment.
+
+## Dated-folder image discovery follow-up 2026-10-26
+
+The application now supports legacy modality folders nested under a patient's dated subfolders when the preferred `data/<modality>/` and direct `<patient>/<modality>/` locations are absent. Local discovery against the existing dated-folder layout returned X-ray and EKG image paths. The source passed an import/syntax check. No image bytes were sent to Ollama, and the GUI was not visually verified in this follow-up.

@@ -62,7 +62,7 @@ All GUI, patient loading, and HTTP logic runs in the **same Python file** on the
 
 ## 3. Patient directory hierarchy
 
-Each immediate subdirectory of `patient_records/` is a patient ID. Modality files are stored under that patient's `data/` folder. Names can contain letters and numbers; they do not have to match `P0001`.
+Each immediate subdirectory of `patient_records/` is a patient ID. The preferred modality layout is under that patient's `data/` folder. Names can contain letters and numbers; they do not have to match `P0001`.
 
 ```text
 Project/
@@ -94,6 +94,8 @@ Project/
 ```
 
 No `patients.json`, mapping table, or patient metadata file is required. The folder name identifies the patient. Blood-test `.json` files contain the medical test records and are retained.
+
+For compatibility with existing records, the application also reads a modality from `<patient>/<modality>/` or from dated folders such as `<patient>/2026-10-26/xrays/`, `<patient>/2026-10-26/ekgs/`, and `<patient>/2026-10-26/blood_tests/` when the preferred `data/<modality>/` and direct legacy folder are absent. It does not combine these layouts when a preferred location exists. Patient identity always comes from the immediate patient directory; dated folders only group that patient's records.
 
 Blood-test files may use the original format:
 
@@ -245,11 +247,11 @@ The existing Codex instructions in `AGENTS.md` describe the original one-file pa
 
 ## 10. Verification checklist
 
-- Missing or inaccessible `python/patient_records/` produces a fatal startup error with the full path; no directory is created. Each patient's modalities are beneath `data/`.
+- Missing or inaccessible `python/patient_records/` produces a fatal startup error with the full path; no directory is created. Each patient's modalities are preferably beneath `data/`, with the documented legacy folder layouts supported as a fallback.
 - The same check works when launched from `config/` or after moving the project.
 - Patient dropdown discovers both ordinary names and `P0002`-style IDs.
 - Switching patients refreshes all three panels and clears prior selections and answers.
-- Images load from the active patient's `data/xrays/` and `data/ekgs/` folders.
+- Images load from the active patient's `data/xrays/` and `data/ekgs/` folders, or its dated-folder compatibility layout when the preferred folders are absent.
 - Blood-test JSON loads even when it uses `panel` instead of `title`.
 - Selected originals, not thumbnails, are sent to MedGemma.
 - Only the active patient's selected data appears in the outgoing request.

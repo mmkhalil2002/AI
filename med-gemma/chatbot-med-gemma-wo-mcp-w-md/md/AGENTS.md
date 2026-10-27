@@ -70,7 +70,8 @@ Project/
 
 - Add support for optional `.env` key `PATIENT_RECORDS_DIR=patient_records`; if absent, use the `patient_records` folder beside the Python script. Relative paths are relative to the script directory.
 - Discover only immediate patient directories, excluding hidden/system folders. Allow ordinary folder names with spaces and letters. Do not infer patient identity from image names or dated folders.
-- Inside each patient's `data/` folder, display supported image formats in `xrays/` and `ekgs/`, and load `.json` files from `blood_tests/`. Support both the original `{"title": "...", "results": ...}` format and structured CBC-style JSON such as `{"panel": "CBC", "results": [{"test": "WBC", "value": 7.4, "unit": "10^3/uL"}]}`. Do not discard records simply because `title` is absent.
+- Prefer the documented `data/xrays/`, `data/ekgs/`, and `data/blood_tests/` folders. For compatibility, if a modality folder is absent there, also support older direct folders (`<patient>/xrays/`, etc.) and dated folders (`<patient>/<date>/xrays/`, etc.). Do not merge layouts when the preferred or direct folder exists. All discovered files must remain confined to the active patient, and folder/file dates continue to participate in date filtering.
+- Display supported image formats in X-ray/EKG folders and load `.json` files from blood-test folders. Support both the original `{"title": "...", "results": ...}` format and structured CBC-style JSON such as `{"panel": "CBC", "results": [{"test": "WBC", "value": 7.4, "unit": "10^3/uL"}]}`. Do not discard records simply because `title` is absent.
 - Missing or empty modality folders are allowed; display a clear message, not an exception. Report invalid images/JSON without crashing the GUI.
 - Do **not** create or require `patients.json`, `index.json`, `record.json`, patient metadata, or a database. Blood-test JSON files are the actual clinical-content inputs and must remain intact.
 - Never mix records from different patients. When switching patients, clear selections and the displayed response. Capture a snapshot of the active patient and selected file paths before starting each request; prevent patient switching during an in-flight request or discard its result if the patient has changed. Validate that resolved file paths stay inside the selected patient directory, and avoid following symlinks outside it.
@@ -143,7 +144,7 @@ The values above are examples, not replacements for the user's current settings.
 - Patient selector lists both `MohamedLjalil` and `P0002` when those directories exist.
 - Selecting each patient loads only their own X-rays, EKGs, and blood tests.
 - Switching patients clears all previous selections and the previous response.
-- EKG gallery correctly loads images from `patient_records/<patient_id>/data/ekgs/` (not from legacy `ekg-data-MMDDYY`).
+- EKG gallery correctly loads images from the preferred `patient_records/<patient_id>/data/ekgs/` layout and the documented dated-folder compatibility layout.
 - An inclusive `MMDDYY` range filters X-rays, EKGs, and blood-test records; applying or clearing the range clears stale selections and response context.
 - A CBC JSON without a `title` field is displayed and can be selected.
 - Doctor can select one or more images/blood records, type a question, and press Send.
