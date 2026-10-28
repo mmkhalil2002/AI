@@ -1,0 +1,102 @@
+# MedGemma GUI with MCP patient-record servers
+
+A Windows/Ubuntu desktop application for selecting patient X-rays, EKGs and blood-test results, submitting explicitly selected information and a doctor's prompt to Ollama-hosted MedGemma, and reviewing the returned report. Qwen is not part of this runtime. Use educational or de-identified records and require clinician review of every output.
+
+## Application files
+
+| File | Responsibility |
+|---|---|
+| `client_medgemma_patients_mcp.py` | Tkinter GUI, patient navigation, record selection, direct Ollama requests and report workspace |
+| `mcp_client.py` | `MCPRecords`, MCP child-process startup, stdio sessions, tool calls and cleanup |
+| `mcp_record_server.py` | Shared read-only record access, path checks and response handling |
+| `mcp_xray_server.py` | X-ray server entry point |
+| `mcp_ekg_server.py` | EKG server entry point |
+| `mcp_blood_server.py` | Blood-test server entry point |
+
+The GUI and MCP client run in one Python process. The client starts one local stdio child process for each modality. No MCP TCP ports or manually opened server terminals are needed.
+
+## Setup and launch
+
+Use Python 3.10 or newer with Tkinter. Install the application dependencies from the project root:
+
+```bat
+py -m pip install -r python\requirements.txt
+py python\client_medgemma_patients_mcp.py
+```
+
+On Ubuntu, install Tkinter if needed (for example, `sudo apt install python3-tk`), install the requirements using the supported pip method for that Python installation, and launch with:
+
+```bash
+python3 python/client_medgemma_patients_mcp.py
+```
+
+Expected requirements are:
+
+```text
+mcp>=1.20,<2
+Pillow>=10
+pyttsx3>=2.90
+```
+
+Voice support is optional at runtime and may require operating-system speech components.
+
+## Configuration
+
+Copy `.env.example` to `.env` beside the GUI and edit it for the local environment. Existing operating-system environment variables take precedence over `.env` values.
+
+```dotenv
+OLLAMA_URL=http://127.0.0.1:11434
+MEDGEMMA_MODEL=medgemma1.5:latest
+PATIENT_RECORDS_DIR=patient_records
+NUM_PREDICT=4048
+GENERATION_TIMEOUT=1200
+TEMPERATURE=0.2
+REPEAT_PENALTY=1.2
+REPEAT_LAST_N=256
+THINK=false
+```
+
+`PATIENT_RECORDS_DIR` is resolved relative to this `python/` directory when it is not absolute. `OLLAMA_URL` may point to a reachable remote Ollama host. Use the exact installed model name. `GENERATION_TIMEOUT` is the recognized inference-timeout key; `GENERATE_TIMEOUT` and `MODEL_LIST_TIMEOUT` are not recognized application settings.
+
+## Patient records
+
+The patient root must already exist. Use one folder per patient and recognized modality directories:
+
+```text
+patient_records/
+└── P0001/
+    ├── xrays/
+    │   └── chest.png
+    ├── ekgs/
+    │   └── rhythm.png
+    └── blood_tests/
+        └── cbc.json
+```
+
+Date/time snapshots are supported, for example `P0001/2026-10-26/05-23_AM/xrays/`, with matching `ekgs/` and `blood_tests/` folders. Supported images are PNG, JPG/JPEG, BMP, GIF, TIF/TIFF and WebP. Blood-test records are JSON.
+
+## Record retrieval
+
+All local MCP servers provide these tools and return JSON text:
+
+| Tool | Arguments | Response |
+|---|---|---|
+| `list_records` | `{"relative_folder":"P0001/xrays"}` | `{"paths":["P0001/xrays/chest.png"]}` |
+| Image `read_record` | `{"relative_path":"P0001/xrays/chest.png"}` | `{"base64":"..."}` |
+| Blood `read_record` | `{"relative_path":"P0001/blood_tests/cbc.json"}` | `{"record": ...}` |
+
+Servers select records only from the configured patient root. They reject traversal, hidden paths, wrong-modality paths, unsupported files, links, and files over 64 MiB. Image responses are Base64 decoded to original bytes by `MCPRecords`; blood responses are parsed JSON. Servers do not perform medical interpretation, invoke models, or write patient data.
+
+## GUI workflow
+
+1. Start the GUI and select a patient.
+2. Select the intended X-ray, EKG, and/or blood-test files.
+3. Enter the clinician request and choose **Send to MedGemma**.
+4. The GUI retrieves selected records through MCP, sends original image bytes and blood JSON to Ollama, and displays the response.
+5. Review generated content clinically before any downstream use.
+
+X-rays are sent before EKGs. A local request failure can result from missing records, unavailable MCP child processes, an unreachable Ollama service, or a missing model. Verify the configured address, service, and installed model when troubleshooting.
+
+## Safety and limits
+
+This application is not an authentication or authorization system. Path validation does not implement user-level access control or database permissions. Local cancellation cannot establish that a remote inference request has stopped. Never treat a generated report as a clinician signature or a substitute for professional review.
