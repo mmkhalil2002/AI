@@ -1,3 +1,15 @@
+# READING GUIDE
+# This GUI module owns Tkinter, patient navigation, selection, report review,
+# export, voice and the direct Ollama inference request. mcp_client.py owns MCP
+# connections; the three modality servers read patient image/JSON files.
+# Typical flow: main -> select_patient/select_snapshot -> load_images and
+# load_blood_tests -> record_client -> separate MCP client -> modality server.
+# Send flow: send_question -> run_request -> generate -> finish_request.
+# Original source images are retrieved through MCP; display thumbnails are not
+# uploaded to Ollama. Blood selections are included as JSON text in the prompt.
+# Worker threads post UI callbacks; Tk widgets are updated on the main thread.
+# Some record retrieval calls are synchronous and can briefly pause the GUI.
+# All added explanatory lines are comments; executable behavior is unchanged.
 """Patient GUI using a separate MCP client module, adapted from the original MedGemma Tkinter client.
 
 Configuration is read from .env beside this file. Optional setting:
@@ -68,6 +80,7 @@ try:
 except Exception:
     PIL = None
 
+# Locate the GUI script directory, regardless of the directory it is launched from.
 PYTHON_DIR = Path(__file__).resolve().parent
 
 voice_enabled = False
@@ -75,6 +88,17 @@ speech_engine = None
 speech_lock = threading.Lock()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: load_settings
+# Purpose: Read simple KEY=VALUE lines from .env next to this script.
+# Operation: Returns a dictionary of supported .env keys. This parser ignores unknown keys
+# and does not install packages. Environment overrides are applied later by the setting
+# readers.
+#
+# Example (illustrative; not executed):
+#   With .env containing PATIENT_RECORDS_DIR=patient_records, load_settings() returns a
+#   dictionary containing that key/value.
+# -------------------------------------------------------------------------
 def load_settings():
     """Read simple KEY=VALUE lines from .env next to this script.
 
@@ -114,6 +138,7 @@ def load_settings():
     return values
 
 
+# Read supported .env values once; setting helpers apply environment overrides later.
 settings_from_file = load_settings()
 
 
@@ -124,20 +149,71 @@ from mcp_client import MCPRecords
 _mcp_records = None
 _mcp_start_lock = threading.Lock()
 
+# -------------------------------------------------------------------------
+# FUNCTION: record_client
+# Purpose: Returns the shared MCPRecords instance.
+# Operation: Returns the shared MCPRecords instance. The lock prevents two GUI/background
+# callers from constructing duplicate clients. Creation passes the patient root and
+# server-script directory to mcp_client.py; subsequent calls reuse its connections.
+# Shared state declared here: _mcp_records.
+#
+# Example (illustrative; not executed):
+#   client = record_client(); a second record_client() returns the same object, without
+#   creating another set of server connections.
+# -------------------------------------------------------------------------
 def record_client():
     global _mcp_records
+    # Protect lazy creation of the shared client if multiple threads request it together.
     with _mcp_start_lock:
         if _mcp_records is None:
+            # Pass the absolute patient root and the directory containing the server scripts.
             _mcp_records = MCPRecords(patient_records_root(), PYTHON_DIR)
     return _mcp_records
 
+# -------------------------------------------------------------------------
+# FUNCTION: read_record_bytes
+# Purpose: path identifies one image file.
+# Operation: path identifies one image file. Delegates to MCPRecords.read_record_bytes and
+# returns original image bytes. The separate module chooses the X-ray/EKG server from the
+# modality folder and handles Base64 decoding. This wrapper does not open the file
+# directly.
+# Parameters: path.
+#   path: source or destination filesystem path, as used below.
+#
+# Example (illustrative; not executed):
+#   read_record_bytes(Path('C:/AI/python/patient_records/P0001/xrays/chest.png'))
+#   retrieves that image through the X-ray MCP server and returns bytes.
+# -------------------------------------------------------------------------
 def read_record_bytes(path):
+    # Delegate image retrieval to the separate MCP module and return its bytes.
     return record_client().read_record_bytes(path)
 
+# -------------------------------------------------------------------------
+# FUNCTION: read_blood_record
+# Purpose: path identifies one blood-test JSON file.
+# Operation: path identifies one blood-test JSON file. Delegates to the separate MCP
+# client and returns parsed JSON data. The GUI uses this object for display and selected-
+# input construction.
+# Parameters: path.
+#   path: source or destination filesystem path, as used below.
+#
+# Example (illustrative; not executed):
+#   read_blood_record(Path('C:/AI/python/patient_records/P0001/blood_tests/cbc.json'))
+#   retrieves that file through MCP and returns its parsed JSON value.
+# -------------------------------------------------------------------------
 def read_blood_record(path):
+    # Delegate blood JSON retrieval to the separate MCP module.
     return record_client().read_blood_record(path)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: runtime_diagnostics
+# Purpose: Return sanitized runtime versions without exposing record or config paths.
+#
+# Example (illustrative; not executed):
+#   runtime_diagnostics() returns a status string with installed Python, Tk, Pillow and
+#   optional voice versions; actual versions depend on the machine.
+# -------------------------------------------------------------------------
 def runtime_diagnostics():
     """Return sanitized runtime versions without exposing record or config paths."""
     try:
@@ -152,6 +228,15 @@ def runtime_diagnostics():
     )
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: server_error_category
+# Purpose: Map transport failures to safe categories without raw bodies or paths.
+# Parameters: error.
+#   error: exception to classify.
+#
+# Example (illustrative; not executed):
+#   server_error_category(TimeoutError()) returns 'request timed out'.
+# -------------------------------------------------------------------------
 def server_error_category(error):
     """Map transport failures to safe categories without raw bodies or paths."""
     if isinstance(error, HTTPError):
@@ -172,6 +257,18 @@ def server_error_category(error):
         return "connection failed"
     return "server check failed"
 
+# -------------------------------------------------------------------------
+# FUNCTION: patient_records_root
+# Purpose: Resolve and validate the configured root before any Tk window exists.
+# Operation: Returns a resolved Path. An OS environment value overrides the .env value;
+# the default is patient_records. Relative paths are anchored to PYTHON_DIR.
+# Missing/inaccessible directories cause a startup error; this function does not create
+# directories.
+#
+# Example (illustrative; not executed):
+#   If PYTHON_DIR is C:/AI/python and .env says PATIENT_RECORDS_DIR=patient_records,
+#   patient_records_root() returns C:/AI/python/patient_records after validating it.
+# -------------------------------------------------------------------------
 def patient_records_root():
     """Resolve and validate the configured root before any Tk window exists.
 
@@ -199,6 +296,20 @@ def patient_records_root():
     return path
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: safe_path
+# Purpose: Reject symlinks/junctions and files resolving outside the patient folder.
+# Operation: Returns the resolved safe Path or raises an exception. Checks both resolved
+# containment and symlink/junction components so a record cannot silently point outside
+# the chosen patient directory.
+# Parameters: path, patient.
+#   path: source or destination filesystem path, as used below.
+#   patient: patient directory whose records are being considered.
+#
+# Example (illustrative; not executed):
+#   safe_path(patient / 'xrays/chest.png', patient) returns a safe resolved image path; an
+#   existing file outside patient raises an error.
+# -------------------------------------------------------------------------
 def safe_path(path, patient):
     """Reject symlinks/junctions and files resolving outside the patient folder."""
     path, patient = Path(path), Path(patient).resolve()
@@ -215,6 +326,19 @@ def safe_path(path, patient):
     return resolved
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: discover_patients
+# Purpose: List immediate ordinary patient directories without name-pattern rules.
+# Operation: Returns a mapping from patient directory name to absolute Path. Only
+# immediate, ordinary, accessible directories are offered. Hidden/system directories and
+# links are skipped.
+# Parameters: root.
+#   root: base records directory.
+#
+# Example (illustrative; not executed):
+#   If root contains ordinary folders P0001 and P0002, discover_patients(root) maps those
+#   IDs to their absolute directory paths.
+# -------------------------------------------------------------------------
 def discover_patients(root):
     """List immediate ordinary patient directories without name-pattern rules."""
     patients = {}
@@ -224,6 +348,7 @@ def discover_patients(root):
             if path.name.startswith('.') or path.name == '__pycache__' or attributes & 6:
                 continue
             if path.is_dir() and not path.is_symlink() and not getattr(path, 'is_junction', lambda: False)():
+                # Validate record containment and links before using a patient path.
                 safe_path(path, root)
                 patients[path.name] = path.resolve()
         except (OSError, ValueError, RuntimeError):
@@ -231,6 +356,16 @@ def discover_patients(root):
     return patients
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: parse_record_dates
+# Purpose: Extract MMDDYY dates from names or common ISO/date representations.
+# Parameters: value.
+#   value: value to parse or format.
+#
+# Example (illustrative; not executed):
+#   parse_record_dates('xray-102126.png') returns a list containing datetime.date(2026,
+#   10, 21).
+# -------------------------------------------------------------------------
 def parse_record_dates(value):
     """Extract MMDDYY dates from names or common ISO/date representations."""
     text = str(value)
@@ -252,6 +387,16 @@ def parse_record_dates(value):
     return found
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: path_record_dates
+# Purpose: Read dates from the most specific file and folder names first.
+# Parameters: path.
+#   path: source or destination filesystem path, as used below.
+#
+# Example (illustrative; not executed):
+#   path_record_dates(Path('P0001/xrays/chest-102126.png')) extracts the October 21, 2026
+#   date from the filename.
+# -------------------------------------------------------------------------
 def path_record_dates(path):
     """Read dates from the most specific file and folder names first."""
     try:
@@ -265,6 +410,15 @@ def path_record_dates(path):
     return []
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: json_record_dates
+# Purpose: Find dates in common clinical JSON fields, including nested records.
+# Parameters: value.
+#   value: value to parse or format.
+#
+# Example (illustrative; not executed):
+#   json_record_dates({'test_date': '2026-10-21'}) extracts that date into a list.
+# -------------------------------------------------------------------------
 def json_record_dates(value):
     """Find dates in common clinical JSON fields, including nested records."""
     dates = []
@@ -282,6 +436,16 @@ def json_record_dates(value):
     return dates
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: date_is_in_active_range
+# Purpose: Return whether a date falls inside the currently applied inclusive range.
+# Parameters: record_dates.
+#   record_dates: dates extracted from a record or its path.
+#
+# Example (illustrative; not executed):
+#   With October 1-31, 2026 applied, date_is_in_active_range([datetime(2026, 10,
+#   21).date()]) returns True.
+# -------------------------------------------------------------------------
 def date_is_in_active_range(record_dates):
     """Return whether a date falls inside the currently applied inclusive range."""
     if active_date_start is None and active_date_end is None:
@@ -293,6 +457,15 @@ def date_is_in_active_range(record_dates):
     )
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: active_date_range_label
+# Purpose: Return the selected snapshot's date/time label, never a range.
+# Parameters: modality.
+#   modality: xrays, ekgs, or blood_tests.
+#
+# Example (illustrative; not executed):
+#   With no snapshot selected, active_date_range_label() returns 'No date/time selected'.
+# -------------------------------------------------------------------------
 def active_date_range_label(modality=None):
     """Return the selected snapshot's date/time label, never a range."""
     if selected_snapshot_dir is None:
@@ -300,6 +473,15 @@ def active_date_range_label(modality=None):
     return f"{selected_snapshot_dir.parent.name} {selected_snapshot_dir.name}"
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: set_snapshot_heading
+# Purpose: Render a panel heading with green date and contrasting purple time.
+# Parameters: name_label, date_label, time_label, title.
+#
+# Example (illustrative; not executed):
+#   set_snapshot_heading(name_label, date_label, time_label, 'XRAY') updates those
+#   existing labels with the modality and current snapshot date/time.
+# -------------------------------------------------------------------------
 def set_snapshot_heading(name_label, date_label, time_label, title):
     """Render a panel heading with green date and contrasting purple time."""
     if selected_snapshot_dir is None:
@@ -312,6 +494,17 @@ def set_snapshot_heading(name_label, date_label, time_label, title):
     time_label.config(text=f" {selected_snapshot_dir.name})")
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: record_matches_date_range
+# Purpose: Match clinical JSON dates, falling back to its dated file/folder name.
+# Parameters: record, path.
+#   record: one parsed source record.
+#   path: source or destination filesystem path, as used below.
+#
+# Example (illustrative; not executed):
+#   record_matches_date_range({'test_date': '2026-10-21'}, blood_path) checks the JSON
+#   date against the active filter, using path dates if needed.
+# -------------------------------------------------------------------------
 def record_matches_date_range(record, path):
     """Match clinical JSON dates, falling back to its dated file/folder name."""
     if active_date_start is None and active_date_end is None:
@@ -322,6 +515,17 @@ def record_matches_date_range(record, path):
     return date_is_in_active_range(dates)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: file_matches_date_range
+# Purpose: Filter images by path dates and blood tests by JSON or path dates.
+# Parameters: path, modality.
+#   path: source or destination filesystem path, as used below.
+#   modality: xrays, ekgs, or blood_tests.
+#
+# Example (illustrative; not executed):
+#   file_matches_date_range(chest_path, 'xrays') checks filename/folder dates; passing a
+#   blood path and 'blood_tests' also examines JSON dates.
+# -------------------------------------------------------------------------
 def file_matches_date_range(path, modality):
     """Filter images by path dates and blood tests by JSON or path dates."""
     if active_date_start is None and active_date_end is None:
@@ -329,6 +533,7 @@ def file_matches_date_range(path, modality):
     if modality != "blood_tests":
         return date_is_in_active_range(path_record_dates(path))
     try:
+        # Obtain parsed JSON through the blood MCP server.
         data = read_blood_record(path)
     except (OSError, UnicodeError, json.JSONDecodeError):
         # Keep invalid JSON visible so the existing loader can report it.
@@ -337,6 +542,21 @@ def file_matches_date_range(path, modality):
     return any(record_matches_date_range(record, path) for record in records)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: patient_files
+# Purpose: Return safe patient-modality files filtered by the active date range.
+# Operation: Returns (list_of_paths, message). Metadata/navigation remains local, but
+# listing is delegated to the modality server through list_records. Snapshot choice,
+# extension checks, path confinement and date filtering narrow the returned files. Returns
+# an explanatory message when no usable records remain.
+# Parameters: modality, extensions.
+#   modality: xrays, ekgs, or blood_tests.
+#   extensions: allowed filename suffixes.
+#
+# Example (illustrative; not executed):
+#   patient_files('xrays', {'.png', '.jpg'}) returns (paths, message) for the active
+#   patient/snapshot; no selected patient yields an empty list and guidance.
+# -------------------------------------------------------------------------
 def patient_files(modality, extensions):
     """Return safe patient-modality files filtered by the active date range.
 
@@ -352,8 +572,10 @@ def patient_files(modality, extensions):
         return [], "Choose a date and time to load this patient's data."
     if selected_snapshot_dir is not None:
         try:
+            # Validate record containment and links before using a patient path.
             safe_path(selected_snapshot_dir, active_patient)
             folder = selected_snapshot_dir / modality
+            # Validate record containment and links before using a patient path.
             safe_path(folder, active_patient)
         except (OSError, ValueError, RuntimeError):
             return [], "Selected date/time data is no longer available."
@@ -370,11 +592,13 @@ def patient_files(modality, extensions):
         # Do not merge layouts: if a patient has the documented folder it is
         # authoritative.  Falling back only when it is missing avoids showing
         # duplicate or stale legacy records alongside current ones.
+        # Validate record containment and links before using a patient path.
         safe_path(folder, active_patient)
         if not folder.is_dir():
             return [], f"No {modality} folder for this patient."
         paths = []
         relative_folder = folder.relative_to(patient_records_root()).as_posix()
+        # Ask the selected MCP server to list files; do not read record contents here.
         listed = record_client().call(modality, 'list_records', {'relative_folder': relative_folder})
         for relative_path in listed['paths']:
             path = patient_records_root() / relative_path
@@ -382,6 +606,7 @@ def patient_files(modality, extensions):
                 if (not path.is_file() or path.suffix.lower() not in extensions
                         or any(part.startswith(".") for part in path.relative_to(folder).parts)):
                     continue
+                # Validate record containment and links before using a patient path.
                 safe_path(path, active_patient)
                 attributes = getattr(path.stat(), "st_file_attributes", 0)
                 if attributes & 6 or not file_matches_date_range(path, modality):
@@ -440,6 +665,10 @@ REPORT_SCHEMA_VERSION = "1.0.0"
 REPORT_TEMPLATE_VERSION = "medgemma-report-v1"
 
 
+# -------------------------------------------------------------------------
+# DATA CLASS: RequestSnapshot
+# Purpose: Immutable inputs captured before a worker begins network activity.
+# -------------------------------------------------------------------------
 @dataclass(frozen=True)
 class RequestSnapshot:
     """Immutable inputs captured before a worker begins network activity."""
@@ -455,6 +684,10 @@ class RequestSnapshot:
     ekg_count: int = 0
 
 
+# -------------------------------------------------------------------------
+# DATA CLASS: RequestState
+# Purpose: Lifecycle and cancellation handles for one generation request.
+# -------------------------------------------------------------------------
 @dataclass
 class RequestState:
     """Lifecycle and cancellation handles for one generation request."""
@@ -469,6 +702,10 @@ class RequestState:
     completion: dict = field(default_factory=dict)
 
 
+# -------------------------------------------------------------------------
+# DATA CLASS: GenerationResult
+# Purpose: Final user-facing text and non-content completion metadata.
+# -------------------------------------------------------------------------
 @dataclass(frozen=True)
 class GenerationResult:
     """Final user-facing text and non-content completion metadata."""
@@ -477,6 +714,16 @@ class GenerationResult:
     metadata: dict
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: request_is_current
+# Purpose: Return whether callbacks still belong to the active nonterminal request.
+# Parameters: request_id.
+#   request_id: identifier used to reject stale callbacks.
+#
+# Example (illustrative; not executed):
+#   request_is_current(state.snapshot.request_id) is True only while that request is the
+#   current nonterminal request.
+# -------------------------------------------------------------------------
 def request_is_current(request_id):
     """Return whether callbacks still belong to the active nonterminal request."""
     return (
@@ -487,11 +734,34 @@ def request_is_current(request_id):
     )
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: post_ui
+# Purpose: Queue work for Tk; background workers never invoke Tcl directly.
+# Operation: The callback is placed on ui_queue, not executed immediately. A background
+# worker must use this bridge rather than modifying Tk widgets directly.
+# Parameters: callback.
+#   callback: callable to execute on the UI thread.
+#
+# Example (illustrative; not executed):
+#   post_ui(lambda: show_status('Ready')) queues the status update so a worker does not
+#   directly modify a Tk label.
+# -------------------------------------------------------------------------
 def post_ui(callback):
     """Queue work for Tk; background workers never invoke Tcl directly."""
     ui_callbacks.put(callback)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: drain_ui
+# Purpose: Process network and bounded thumbnail results on the Tk main thread.
+# Operation: Runs on the Tk main thread. Executes queued callbacks, handles a bounded
+# batch of thumbnail completions and schedules the next drain, keeping background results
+# compatible with Tkinter.
+#
+# Example (illustrative; not executed):
+#   Scheduled by window.after(50, drain_ui), it executes queued UI work and processes
+#   thumbnail results, then schedules another drain.
+# -------------------------------------------------------------------------
 def drain_ui():
     """Process network and bounded thumbnail results on the Tk main thread."""
     try:
@@ -502,9 +772,20 @@ def drain_ui():
     drain_thumbnail_results(limit=3)
     for column in range(2):
         request_visible_thumbnails(column)
+    # Schedule later execution in the Tk event loop; this is not a blocking sleep.
     window.after(35, drain_ui)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: parse_mmddyy_input
+# Purpose: Validate one optional date bound in the requested six-digit MMDDYY format.
+# Parameters: value.
+#   value: value to parse or format.
+#
+# Example (illustrative; not executed):
+#   parse_mmddyy_input('102126') parses October 21, 2026; an invalid date such as '133226'
+#   raises ValueError.
+# -------------------------------------------------------------------------
 def parse_mmddyy_input(value):
     """Validate one optional date bound in the requested six-digit MMDDYY format."""
     value = value.strip()
@@ -518,6 +799,15 @@ def parse_mmddyy_input(value):
         raise ValueError(f"{value} is not a valid MMDDYY calendar date.") from error
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: apply_date_range
+# Purpose: Apply inclusive date bounds and reload all three original record panels.
+# Shared state declared here: active_date_start, active_date_end.
+#
+# Example (illustrative; not executed):
+#   Enter 100126 and 103126 in the date fields, then invoke apply_date_range(); the record
+#   panels reload with the inclusive October filter.
+# -------------------------------------------------------------------------
 def apply_date_range():
     """Apply inclusive date bounds and reload all three original record panels."""
     global active_date_start, active_date_end
@@ -546,6 +836,14 @@ def apply_date_range():
         update_selection_workspace()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: clear_date_range
+# Purpose: Clear both date bounds and restore all records for the active patient.
+#
+# Example (illustrative; not executed):
+#   After applying an October filter, clear_date_range() empties the bounds and reloads
+#   the active patient's records without that date restriction.
+# -------------------------------------------------------------------------
 def clear_date_range():
     """Clear both date bounds and restore all records for the active patient."""
     if current_request is not None:
@@ -556,6 +854,16 @@ def clear_date_range():
     apply_date_range()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: patient_snapshots
+# Purpose: Return safe ``date/time`` record folders for one patient.
+# Parameters: patient.
+#   patient: patient directory whose records are being considered.
+#
+# Example (illustrative; not executed):
+#   patient_snapshots(patient) finds usable date/time folders beneath that patient,
+#   offering only snapshot folders containing expected modalities.
+# -------------------------------------------------------------------------
 def patient_snapshots(patient):
     """Return safe ``date/time`` record folders for one patient.
 
@@ -570,10 +878,12 @@ def patient_snapshots(patient):
         for date_dir in sorted(patient.iterdir(), key=lambda item: item.name, reverse=True):
             if not date_dir.is_dir() or date_dir.name.startswith(".") or not parse_record_dates(date_dir.name):
                 continue
+            # Validate record containment and links before using a patient path.
             safe_path(date_dir, patient)
             for time_dir in sorted(date_dir.iterdir(), key=lambda item: item.name, reverse=True):
                 if not time_dir.is_dir() or time_dir.name.startswith("."):
                     continue
+                # Validate record containment and links before using a patient path.
                 safe_path(time_dir, patient)
                 if any((time_dir / modality).is_dir() for modality in ("xrays", "ekgs", "blood_tests")):
                     snapshots.append((date_dir.name, time_dir.name, time_dir.resolve()))
@@ -582,6 +892,14 @@ def patient_snapshots(patient):
     return snapshots
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: choose_snapshot
+# Purpose: Show one date/time picker and load a snapshot when a time is clicked.
+#
+# Example (illustrative; not executed):
+#   After selecting P0001, choose_snapshot() opens the date/time picker; loading a time
+#   row triggers select_snapshot for its mapped folder.
+# -------------------------------------------------------------------------
 def choose_snapshot():
     """Show one date/time picker and load a snapshot when a time is clicked."""
     if active_patient is None:
@@ -628,6 +946,20 @@ def choose_snapshot():
         snapshot_paths[item_id] = path
         tree.insert(parent, tk.END, iid=item_id, text=time_name, tags=("snapshot_time",))
 
+    # -------------------------------------------------------------------------
+    # FUNCTION: load_selected
+    # Purpose: Nested snapshot-dialog callback.
+    # Operation: Nested snapshot-dialog callback. Looks up the focused tree item, loads
+    # its stored snapshot path and closes the dialog. Rows without a mapped path are
+    # ignored.
+    # Parameters: _event.
+    #   _event: optional Tkinter event, unused by this callback.
+    #
+    # Example (illustrative; not executed):
+    #   Double-click a valid time row in the snapshot dialog; load_selected() retrieves
+    #   its mapped path, loads it and closes the dialog.
+    #   GUI examples require the running application and existing widgets/state.
+    # -------------------------------------------------------------------------
     def load_selected(_event=None):
         item = tree.focus()
         path = snapshot_paths.get(item)
@@ -636,12 +968,27 @@ def choose_snapshot():
         select_snapshot(path)
         dialog.destroy()
 
+    # -------------------------------------------------------------------------
+    # FUNCTION: change_dialog_patient
+    # Purpose: Nested callback for the snapshot dialog patient selector.
+    # Operation: Nested callback for the snapshot dialog patient selector. Closes the
+    # dialog, updates the main patient selector, clears/loads the patient context and
+    # schedules a fresh snapshot chooser.
+    # Parameters: _event.
+    #   _event: optional Tkinter event, unused by this callback.
+    #
+    # Example (illustrative; not executed):
+    #   Choose P0002 inside the snapshot dialog; change_dialog_patient() updates the main
+    #   patient selection and schedules its snapshot picker.
+    #   GUI examples require the running application and existing widgets/state.
+    # -------------------------------------------------------------------------
     def change_dialog_patient(_event=None):
         if patient_id_var.get() == patient_name.get():
             return
         dialog.destroy()
         patient_name.set(patient_id_var.get())
         select_patient()
+        # Run this callback after Tk finishes its currently pending UI work.
         window.after_idle(choose_snapshot)
 
     tree.bind("<Double-Button-1>", load_selected)
@@ -650,6 +997,17 @@ def choose_snapshot():
         row=2, column=0, columnspan=2, pady=(0, 10))
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: select_snapshot
+# Purpose: Load only one selected date/time folder for the active patient.
+# Parameters: path.
+#   path: source or destination filesystem path, as used below.
+# Shared state declared here: selected_snapshot_dir, active_date_start, active_date_end.
+#
+# Example (illustrative; not executed):
+#   select_snapshot(patient / '102126' / '090000') loads only that existing snapshot's
+#   records, provided it passes path checks.
+# -------------------------------------------------------------------------
 def select_snapshot(path):
     """Load only one selected date/time folder for the active patient."""
     global selected_snapshot_dir, active_date_start, active_date_end
@@ -674,6 +1032,18 @@ def select_snapshot(path):
     show_status(f"Loaded {active_patient.name}: {path.parent.name} at {path.name}")
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: select_patient
+# Purpose: Clear previous context and selections before loading the chosen patient.
+# Parameters: event.
+#   event: optional Tkinter event supplied by a binding.
+# Shared state declared here: active_patient, selected_snapshot_dir, active_date_start,
+# active_date_end.
+#
+# Example (illustrative; not executed):
+#   Choose P0002 in the patient dropdown; select_patient() clears P0001's
+#   selections/report context before loading P0002.
+# -------------------------------------------------------------------------
 def select_patient(event=None):
     """Clear previous context and selections before loading the chosen patient."""
     global active_patient, selected_snapshot_dir, active_date_start, active_date_end
@@ -708,6 +1078,14 @@ def select_patient(event=None):
     update_selection_workspace()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: report_has_unsaved_edits
+# Purpose: Return whether the completed report currently differs from its AI draft.
+#
+# Example (illustrative; not executed):
+#   After editing the generated draft, report_has_unsaved_edits() reports whether the
+#   current report differs from its preserved AI original.
+# -------------------------------------------------------------------------
 def report_has_unsaved_edits():
     """Return whether the completed report currently differs from its AI draft."""
     if not report_completed or report_original_draft is None:
@@ -722,6 +1100,16 @@ def report_has_unsaved_edits():
     return answer_box.get("1.0", "end-1c") != report_original_draft
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: report_input_references
+# Purpose: Format only record paths captured in the immutable request snapshot.
+# Parameters: snapshot.
+#   snapshot: frozen generation inputs.
+#
+# Example (illustrative; not executed):
+#   report_input_references(state.snapshot) creates display references for the X-ray, EKG
+#   and blood files captured in that request.
+# -------------------------------------------------------------------------
 def report_input_references(snapshot):
     """Format only record paths captured in the immutable request snapshot."""
     if snapshot is None:
@@ -749,12 +1137,33 @@ def report_input_references(snapshot):
     return "\n".join(lines) if lines else "No records were supplied (text-only request)."
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: report_input_reference_data
+# Purpose: Return actual request files as patient-relative references for export.
+# Parameters: snapshot.
+#   snapshot: frozen generation inputs.
+#
+# Example (illustrative; not executed):
+#   report_input_reference_data(state.snapshot) creates patient-relative source references
+#   for export rather than embedding image contents.
+# -------------------------------------------------------------------------
 def report_input_reference_data(snapshot):
     """Return actual request files as patient-relative references for export."""
     if snapshot is None:
         return {"xray": [], "ekg": [], "blood_test": []}
     patient = Path(snapshot.patient).resolve()
 
+    # -------------------------------------------------------------------------
+    # FUNCTION: relative_refs
+    # Purpose: Nested export helper.
+    # Operation: Nested export helper. Converts selected paths into validated patient-
+    # relative references for report metadata rather than embedding image bytes.
+    # Parameters: paths.
+    #
+    # Example (illustrative; not executed):
+    #   Within report_input_reference_data(), relative_refs((chest_path,)) converts that
+    #   request's path into a validated patient-relative export reference.
+    # -------------------------------------------------------------------------
     def relative_refs(paths):
         refs = []
         for path in paths:
@@ -775,6 +1184,17 @@ def report_input_reference_data(snapshot):
     }
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: build_report_export_bundle
+# Purpose: Build versioned, content-only report metadata without source bytes or prompts.
+# Parameters: patient_id, request, generated_at, original_text, edited_text, completion,
+# review_acknowledged.
+#   patient_id: patient identifier to include or validate.
+#
+# Example (illustrative; not executed):
+#   build_report_export_bundle('P0001', snapshot, timestamp, ai_text, edited_text, {},
+#   False) creates a versioned export dictionary; snapshot must have a valid request_id.
+# -------------------------------------------------------------------------
 def build_report_export_bundle(patient_id, request, generated_at, original_text,
                                edited_text, completion, review_acknowledged):
     """Build versioned, content-only report metadata without source bytes or prompts."""
@@ -807,6 +1227,16 @@ def build_report_export_bundle(patient_id, request, generated_at, original_text,
     }
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: render_report_export_text
+# Purpose: Render a readable plain-text report bundle with both draft versions.
+# Parameters: bundle.
+#   bundle: versioned report dictionary.
+#
+# Example (illustrative; not executed):
+#   render_report_export_text(valid_bundle) returns a readable text export containing the
+#   original and edited report versions.
+# -------------------------------------------------------------------------
 def render_report_export_text(bundle):
     """Render a readable plain-text report bundle with both draft versions."""
     generation = bundle["generation"]
@@ -835,10 +1265,32 @@ def render_report_export_text(bundle):
     )
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: render_report_export_html
+# Purpose: Render a standalone HTML report while escaping all dynamic text.
+# Parameters: bundle.
+#   bundle: versioned report dictionary.
+#
+# Example (illustrative; not executed):
+#   render_report_export_html(valid_bundle) returns standalone HTML; a report containing
+#   '<script>' is escaped as text.
+# -------------------------------------------------------------------------
 def render_report_export_html(bundle):
     """Render a standalone HTML report while escaping all dynamic text."""
     generation = bundle["generation"]
 
+    # -------------------------------------------------------------------------
+    # FUNCTION: escaped
+    # Purpose: Nested HTML helper.
+    # Operation: Nested HTML helper. Converts the supplied value to text and escapes HTML
+    # characters before placing it in the exported document.
+    # Parameters: value.
+    #   value: value to parse or format.
+    #
+    # Example (illustrative; not executed):
+    #   Inside the HTML renderer, escaped('<b>text</b>') escapes markup so it is displayed
+    #   as text in the report.
+    # -------------------------------------------------------------------------
     def escaped(value):
         return html.escape(str(value), quote=True)
 
@@ -871,6 +1323,15 @@ def render_report_export_html(bundle):
     )
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: report_output_directory_is_safe
+# Purpose: Require an existing chosen output directory outside the patient root.
+# Parameters: directory, records_root.
+#
+# Example (illustrative; not executed):
+#   report_output_directory_is_safe(Path('C:/Reports'), records_root) accepts an existing
+#   safe export folder outside patient data; a patient-data destination is rejected.
+# -------------------------------------------------------------------------
 def report_output_directory_is_safe(directory, records_root):
     """Require an existing chosen output directory outside the patient root."""
     destination = Path(directory).expanduser().resolve(strict=True)
@@ -882,6 +1343,19 @@ def report_output_directory_is_safe(directory, records_root):
     return destination
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: atomic_write_report_exports
+# Purpose: Atomically write TXT, standalone HTML and JSON files to the chosen directory.
+# Operation: Writes complete temporary sibling files before replacing final destinations.
+# Atomic replacement applies to each individual file; the three formats are not one all-
+# or-nothing transaction. Export does not modify patient source files.
+# Parameters: directory, bundle, records_root.
+#   bundle: versioned report dictionary.
+#
+# Example (illustrative; not executed):
+#   atomic_write_report_exports(export_dir, valid_bundle, records_root) writes TXT, HTML
+#   and JSON exports through sibling temporary files.
+# -------------------------------------------------------------------------
 def atomic_write_report_exports(directory, bundle, records_root):
     """Atomically write TXT, standalone HTML and JSON files to the chosen directory.
 
@@ -912,7 +1386,9 @@ def atomic_write_report_exports(directory, bundle, records_root):
                 temp_path = Path(temp_file.name)
                 temp_file.write(content)
                 temp_file.flush()
+                # Flush buffered export data to the filesystem before replacement.
                 os.fsync(temp_file.fileno())
+            # Publish a completed temporary export file at its final destination.
             os.replace(temp_path, target)
             written.append(target)
         except Exception:
@@ -932,6 +1408,16 @@ def atomic_write_report_exports(directory, bundle, records_root):
     return tuple(written)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: validate_saved_report_bundle
+# Purpose: Validate a saved bundle without mutating it or trusting its file contents.
+# Parameters: bundle, expected_patient_id, filename.
+#   bundle: versioned report dictionary.
+#
+# Example (illustrative; not executed):
+#   validate_saved_report_bundle(bundle, 'P0001') checks that the supported schema and
+#   completed report belong to P0001 before history accepts them.
+# -------------------------------------------------------------------------
 def validate_saved_report_bundle(bundle, expected_patient_id, filename=None):
     """Validate a saved bundle without mutating it or trusting its file contents.
 
@@ -984,6 +1470,16 @@ def validate_saved_report_bundle(bundle, expected_patient_id, filename=None):
     return bundle
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: read_saved_report_bundle
+# Purpose: Read and validate one exported JSON bundle without ever rewriting it.
+# Parameters: path, expected_patient_id.
+#   path: source or destination filesystem path, as used below.
+#
+# Example (illustrative; not executed):
+#   read_saved_report_bundle(export_json_path, 'P0001') reads and validates the saved
+#   JSON; it does not rewrite the file or call MedGemma.
+# -------------------------------------------------------------------------
 def read_saved_report_bundle(path, expected_patient_id):
     """Read and validate one exported JSON bundle without ever rewriting it."""
     path = Path(path)
@@ -996,6 +1492,15 @@ def read_saved_report_bundle(path, expected_patient_id):
     return validate_saved_report_bundle(bundle, expected_patient_id, path.name)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: choose_saved_report_history
+# Purpose: Let the user choose an existing history directory outside patient data.
+# Shared state declared here: report_history_directory.
+#
+# Example (illustrative; not executed):
+#   Click the history-folder selector; choose_saved_report_history() asks for a safe
+#   existing report-export directory.
+# -------------------------------------------------------------------------
 def choose_saved_report_history():
     """Let the user choose an existing history directory outside patient data."""
     global report_history_directory
@@ -1014,6 +1519,15 @@ def choose_saved_report_history():
     refresh_saved_report_history()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: refresh_saved_report_history
+# Purpose: List only valid explicitly exported bundles belonging to the active patient.
+# Shared state declared here: report_history_paths, report_history_directory.
+#
+# Example (illustrative; not executed):
+#   With P0001 active and a history folder selected, refresh_saved_report_history() lists
+#   valid saved bundles for P0001 only.
+# -------------------------------------------------------------------------
 def refresh_saved_report_history():
     """List only valid explicitly exported bundles belonging to the active patient."""
     global report_history_paths, report_history_directory
@@ -1069,6 +1583,18 @@ def refresh_saved_report_history():
         report_history_directory = None
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: reopen_saved_report
+# Purpose: Reopen the selected saved bundle for the active patient, with no model call.
+# Parameters: event.
+#   event: optional Tkinter event supplied by a binding.
+# Shared state declared here: report_original_draft, report_patient, report_snapshot,
+# report_history_bundle, report_completed, report_review_acknowledged, report_rendering.
+#
+# Example (illustrative; not executed):
+#   Select a report in history and invoke reopen_saved_report(); its saved text/review
+#   information is loaded without model inference.
+# -------------------------------------------------------------------------
 def reopen_saved_report(event=None):
     """Reopen the selected saved bundle for the active patient, with no model call."""
     global report_original_draft, report_patient, report_snapshot
@@ -1120,6 +1646,15 @@ def reopen_saved_report(event=None):
     history_status_label.config(text=f"Reopened saved report {bundle['report_id'][:8]} for {active_patient.name}.")
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: export_current_report
+# Purpose: Ask for a destination and deliberately export all supported formats.
+# Shared state declared here: report_history_bundle.
+#
+# Example (illustrative; not executed):
+#   After receiving a completed report, export_current_report() opens a destination
+#   chooser and exports supported report formats.
+# -------------------------------------------------------------------------
 def export_current_report():
     """Ask for a destination and deliberately export all supported formats."""
     global report_history_bundle
@@ -1170,6 +1705,14 @@ def export_current_report():
         refresh_saved_report_history()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: report_provenance_text
+# Purpose: Describe patient, model, time and inputs from the actual completed request.
+#
+# Example (illustrative; not executed):
+#   report_provenance_text() describes the patient, model, time and selected inputs
+#   recorded for the completed request.
+# -------------------------------------------------------------------------
 def report_provenance_text():
     """Describe patient, model, time and inputs from the actual completed request."""
     if report_history_bundle is not None:
@@ -1197,6 +1740,16 @@ def report_provenance_text():
     )
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: update_report_version_label
+# Purpose: Label which immutable or editable report version is currently visible.
+# Parameters: event.
+#   event: optional Tkinter event supplied by a binding.
+#
+# Example (illustrative; not executed):
+#   Switch from the original AI tab to the edited tab; update_report_version_label()
+#   updates the visible version label.
+# -------------------------------------------------------------------------
 def update_report_version_label(event=None):
     """Label which immutable or editable report version is currently visible."""
     if not report_completed:
@@ -1209,6 +1762,17 @@ def update_report_version_label(event=None):
     )
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: on_report_modified
+# Purpose: Track edits separately and invalidate acknowledgement after any change.
+# Parameters: event.
+#   event: optional Tkinter event supplied by a binding.
+# Shared state declared here: report_review_acknowledged, report_rendering.
+#
+# Example (illustrative; not executed):
+#   Typing in the editable report triggers on_report_modified(); edit tracking is
+#   refreshed and any earlier review acknowledgement is invalidated.
+# -------------------------------------------------------------------------
 def on_report_modified(event=None):
     """Track edits separately and invalidate acknowledgement after any change."""
     global report_review_acknowledged, report_rendering
@@ -1230,6 +1794,15 @@ def on_report_modified(event=None):
     update_report_version_label()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: acknowledge_report_review
+# Purpose: Record local clinician acknowledgement for the complete displayed report.
+# Shared state declared here: report_review_acknowledged.
+#
+# Example (illustrative; not executed):
+#   After reviewing a complete report, acknowledge_report_review() records local
+#   acknowledgement; it is not a digital signature.
+# -------------------------------------------------------------------------
 def acknowledge_report_review():
     """Record local clinician acknowledgement for the complete displayed report."""
     global report_review_acknowledged
@@ -1248,6 +1821,15 @@ def acknowledge_report_review():
         review_button.config(text="Acknowledge review")
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: restore_original_draft
+# Purpose: Restore the editable pane from the preserved original AI wording.
+# Shared state declared here: report_review_acknowledged, report_rendering.
+#
+# Example (illustrative; not executed):
+#   After changing a sentence, restore_original_draft() replaces the editable draft with
+#   the preserved original AI wording.
+# -------------------------------------------------------------------------
 def restore_original_draft():
     """Restore the editable pane from the preserved original AI wording."""
     global report_review_acknowledged, report_rendering
@@ -1267,6 +1849,16 @@ def restore_original_draft():
     update_report_version_label()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: clear_report_review
+# Purpose: Clear report content and all completion/review state for patient changes.
+# Shared state declared here: report_original_draft, report_patient, report_snapshot,
+# report_history_bundle, report_completed, report_review_acknowledged, report_rendering.
+#
+# Example (illustrative; not executed):
+#   On a patient change, clear_report_review() clears displayed report text and
+#   completion/review state from the previous context.
+# -------------------------------------------------------------------------
 def clear_report_review():
     """Clear report content and all completion/review state for patient changes."""
     global report_original_draft, report_patient, report_snapshot, report_history_bundle
@@ -1294,6 +1886,14 @@ def clear_report_review():
     report_notebook.tab(1, state="disabled")
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: offer_report_recovery
+# Purpose: Ask before losing edits on patient change; optionally save a local TXT copy.
+#
+# Example (illustrative; not executed):
+#   If the report contains edits, offer_report_recovery() lets the user preserve them or
+#   cancel the action that would discard them.
+# -------------------------------------------------------------------------
 def offer_report_recovery():
     """Ask before losing edits on patient change; optionally save a local TXT copy."""
     answer = messagebox.askyesnocancel(
@@ -1343,6 +1943,16 @@ def offer_report_recovery():
     return True
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: apply_report_preset
+# Purpose: Place the chosen editable starter request into the question editor.
+# Parameters: event.
+#   event: optional Tkinter event supplied by a binding.
+#
+# Example (illustrative; not executed):
+#   Choose a starter request from the preset dropdown; apply_report_preset() places its
+#   editable wording in the prompt box.
+# -------------------------------------------------------------------------
 def apply_report_preset(event=None):
     """Place the chosen editable starter request into the question editor."""
     preset = preset_name.get()
@@ -1354,6 +1964,14 @@ def apply_report_preset(event=None):
     prompt_box.focus_set()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: update_selection_workspace
+# Purpose: Refresh visible patient/modality counts and the removable selection tray.
+#
+# Example (illustrative; not executed):
+#   After selecting two X-rays and one EKG, update_selection_workspace() refreshes the
+#   counters and attachment tray to reflect those selections.
+# -------------------------------------------------------------------------
 def update_selection_workspace():
     """Refresh visible patient/modality counts and the removable selection tray."""
     if active_patient is None:
@@ -1401,6 +2019,16 @@ def update_selection_workspace():
         tray_list.insert(tk.END, "No records selected — text-only request")
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: remove_tray_selection
+# Purpose: Remove the selected tray row from its current modality and patient.
+# Parameters: event.
+#   event: optional Tkinter event supplied by a binding.
+#
+# Example (illustrative; not executed):
+#   Select an X-ray row in the attachment tray and invoke remove_tray_selection(); that
+#   image is removed from the current selection.
+# -------------------------------------------------------------------------
 def remove_tray_selection(event=None):
     """Remove the selected tray row from its current modality and patient."""
     rows = tray_list.curselection()
@@ -1421,6 +2049,17 @@ def remove_tray_selection(event=None):
     update_selection_workspace()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: set_modality_selection
+# Purpose: Select or clear only one modality for the active patient.
+# Parameters: modality, selected.
+#   modality: xrays, ekgs, or blood_tests.
+#   selected: whether the target item(s) should be selected.
+#
+# Example (illustrative; not executed):
+#   set_modality_selection(0, True) selects the X-ray gallery's records;
+#   set_modality_selection(0, False) clears that gallery's selection.
+# -------------------------------------------------------------------------
 def set_modality_selection(modality, selected):
     """Select or clear only one modality for the active patient."""
     if active_patient is None:
@@ -1460,12 +2099,30 @@ def set_modality_selection(modality, selected):
     update_selection_workspace()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: toggle_demo_data
+# Purpose: Update the session-only demo indicator from the user's explicit choice.
+#
+# Example (illustrative; not executed):
+#   Changing the demo checkbox invokes toggle_demo_data() to refresh the session
+#   indicator; it does not create patient files.
+# -------------------------------------------------------------------------
 def toggle_demo_data():
     """Update the session-only demo indicator from the user's explicit choice."""
     demo_status.config(text="Demo data: ON (this session)" if demo_data.get() else
                        "Demo data: OFF (this session)")
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: set_blood_row_marker
+# Purpose: Write a textual checkbox marker so blood selection is not color-only.
+# Parameters: index, selected.
+#   selected: whether the target item(s) should be selected.
+#
+# Example (illustrative; not executed):
+#   set_blood_row_marker(0, True) displays a checked textual marker for the first blood
+#   record.
+# -------------------------------------------------------------------------
 def set_blood_row_marker(index, selected):
     """Write a textual checkbox marker so blood selection is not color-only."""
     if index >= len(blood_test_records):
@@ -1478,6 +2135,16 @@ def set_blood_row_marker(index, selected):
     blood_test_view.config(state=tk.NORMAL)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: _display_scalar
+# Purpose: Render one lab cell on a single line without hiding unknown values.
+# Parameters: value.
+#   value: value to parse or format.
+#
+# Example (illustrative; not executed):
+#   _display_scalar('first\nsecond') formats the value as one display line rather than a
+#   multiline table cell.
+# -------------------------------------------------------------------------
 def _display_scalar(value):
     """Render one lab cell on a single line without hiding unknown values."""
     if value is None or value == "":
@@ -1487,6 +2154,17 @@ def _display_scalar(value):
     return str(value).replace("\r", " ").replace("\n", " ")
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: lab_record_title
+# Purpose: Choose a short display label without requiring a particular schema.
+# Parameters: record, path.
+#   record: one parsed source record.
+#   path: source or destination filesystem path, as used below.
+#
+# Example (illustrative; not executed):
+#   lab_record_title(record, Path('cbc.json')) chooses a title from the record or filename
+#   when a recognized title field is absent.
+# -------------------------------------------------------------------------
 def lab_record_title(record, path):
     """Choose a short display label without requiring a particular schema."""
     if isinstance(record, dict):
@@ -1494,6 +2172,16 @@ def lab_record_title(record, path):
     return path.stem
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: _lab_number
+# Purpose: Return a finite numeric lab value, excluding booleans and labels.
+# Parameters: value.
+#   value: value to parse or format.
+#
+# Example (illustrative; not executed):
+#   _lab_number('13.5') returns 13.5, while _lab_number(True) returns None because
+#   booleans are not treated as lab numbers.
+# -------------------------------------------------------------------------
 def _lab_number(value):
     """Return a finite numeric lab value, excluding booleans and labels."""
     if isinstance(value, bool) or value is None:
@@ -1505,6 +2193,15 @@ def _lab_number(value):
     return number if number == number and number not in (float("inf"), float("-inf")) else None
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: _lab_reference_bounds
+# Purpose: Parse only explicit numeric reference bounds; never infer a range.
+# Parameters: reference.
+#
+# Example (illustrative; not executed):
+#   _lab_reference_bounds('10-20') returns (10.0, 20.0, None, None), representing explicit
+#   lower and upper bounds.
+# -------------------------------------------------------------------------
 def _lab_reference_bounds(reference):
     """Parse only explicit numeric reference bounds; never infer a range."""
     if isinstance(reference, dict):
@@ -1532,6 +2229,16 @@ def _lab_reference_bounds(reference):
     return None
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: _lab_flag
+# Purpose: Flag a numeric value only when supplied bounds and units are compatible.
+# Parameters: value, unit, reference.
+#   value: value to parse or format.
+#
+# Example (illustrative; not executed):
+#   _lab_flag(25, None, '10-20') returns 'High'; mismatched supplied units produce an
+#   unknown-unit flag.
+# -------------------------------------------------------------------------
 def _lab_flag(value, unit, reference):
     """Flag a numeric value only when supplied bounds and units are compatible."""
     number = _lab_number(value)
@@ -1557,6 +2264,17 @@ def _lab_flag(value, unit, reference):
     return "In range"
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: lab_view_rows
+# Purpose: Normalize a selectable source object into readable rows and keep raw data
+# elsewhere.
+# Parameters: record.
+#   record: one parsed source record.
+#
+# Example (illustrative; not executed):
+#   lab_view_rows({'results': {'hemoglobin': 13.5}}) normalizes the source into display
+#   rows without modifying the original dictionary.
+# -------------------------------------------------------------------------
 def lab_view_rows(record):
     """Normalize a selectable source object into readable rows and keep raw data elsewhere.
 
@@ -1653,6 +2371,15 @@ REPORT_PRESETS = {
 SERVER_CHECK_TIMEOUT = 15
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: build_report_request
+# Purpose: Build one grounded request plus a human-readable summary of exact inputs.
+# Parameters: user_text, preset, xray_paths, ekg_paths, blood_tests.
+#
+# Example (illustrative; not executed):
+#   build_report_request('Summarize findings', preset, xray_paths=(chest_path,)) builds
+#   the grounded prompt/input summary using the supplied preset and selected image.
+# -------------------------------------------------------------------------
 def build_report_request(user_text, preset, xray_paths=(), ekg_paths=(), blood_tests=()):
     """Build one grounded request plus a human-readable summary of exact inputs.
 
@@ -1717,6 +2444,16 @@ def build_report_request(user_text, preset, xray_paths=(), ekg_paths=(), blood_t
     return "\n\n".join(sections), summary, image_paths
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: build_input_context_summary
+# Purpose: Summarize the active patient and exact explicit selections for the UI.
+# Parameters: patient, xray_paths, ekg_paths, blood_paths.
+#   patient: patient directory whose records are being considered.
+#
+# Example (illustrative; not executed):
+#   build_input_context_summary(patient, xray_paths=(chest_path,), ekg_paths=(),
+#   blood_paths=()) summarizes this one-image selection for the GUI.
+# -------------------------------------------------------------------------
 def build_input_context_summary(patient, xray_paths=(), ekg_paths=(), blood_paths=()):
     """Summarize the active patient and exact explicit selections for the UI."""
     if patient is None:
@@ -1740,6 +2477,17 @@ def build_input_context_summary(patient, xray_paths=(), ekg_paths=(), blood_path
     return f"Active patient: {Path(patient).name}  |  {summary}"
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: positive_integer_setting
+# Purpose: Read a positive integer from the environment or .env.
+# Parameters: name, default.
+#   name: configuration key.
+#   default: fallback setting when input is absent or invalid.
+#
+# Example (illustrative; not executed):
+#   If NUM_PREDICT=4048 is configured, positive_integer_setting('NUM_PREDICT', 2048) reads
+#   4048; invalid input follows the fallback behavior below.
+# -------------------------------------------------------------------------
 def positive_integer_setting(name, default):
     """Read a positive integer from the environment or .env."""
     value = os.environ.get(name, settings_from_file.get(name, str(default)))
@@ -1758,6 +2506,17 @@ GENERATION_TIMEOUT = positive_integer_setting("GENERATION_TIMEOUT", 900)
 REPEAT_LAST_N = positive_integer_setting("REPEAT_LAST_N", 256)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: float_setting
+# Purpose: Read a floating-point .env value and keep it within a safe range.
+# Parameters: name, default, minimum, maximum.
+#   name: configuration key.
+#   default: fallback setting when input is absent or invalid.
+#
+# Example (illustrative; not executed):
+#   float_setting('TEMPERATURE', 0.2, 0.0, 2.0) reads and validates the configured
+#   temperature using the supplied limits.
+# -------------------------------------------------------------------------
 def float_setting(name, default, minimum, maximum):
     """Read a floating-point .env value and keep it within a safe range."""
     value = os.environ.get(name, settings_from_file.get(name, str(default)))
@@ -1780,6 +2539,16 @@ TEMPERATURE = float_setting("TEMPERATURE", 0.2, 0.0, 2.0)
 REPEAT_PENALTY = float_setting("REPEAT_PENALTY", 1.2, 0.1, 2.0)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: boolean_setting
+# Purpose: Read a true/false setting from the environment or .env.
+# Parameters: name, default.
+#   name: configuration key.
+#   default: fallback setting when input is absent or invalid.
+#
+# Example (illustrative; not executed):
+#   With THINK=false, boolean_setting('THINK', True) returns False.
+# -------------------------------------------------------------------------
 def boolean_setting(name, default):
     """Read a true/false setting from the environment or .env."""
     value = os.environ.get(name, settings_from_file.get(name, str(default)))
@@ -1795,6 +2564,16 @@ def boolean_setting(name, default):
 THINK = boolean_setting("THINK", False)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: image_dimension
+# Purpose: Read a thumbnail dimension; zero preserves that original dimension.
+# Parameters: name.
+#   name: configuration key.
+#
+# Example (illustrative; not executed):
+#   With XRAY_WIDTH=256, image_dimension('XRAY_WIDTH') reads 256; a configured zero
+#   preserves the original image dimension in display sizing.
+# -------------------------------------------------------------------------
 def image_dimension(name):
     """Read a thumbnail dimension; zero preserves that original dimension."""
     value = os.environ.get(name, settings_from_file.get(name, "256"))
@@ -1814,6 +2593,17 @@ GALLERY_SIZES = (
 )
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: window_dimension
+# Purpose: Use a positive window dimension from .env or the calculated default.
+# Parameters: name, default.
+#   name: configuration key.
+#   default: fallback setting when input is absent or invalid.
+#
+# Example (illustrative; not executed):
+#   window_dimension('WINDOW_WIDTH', 1200) uses a valid configured positive width,
+#   otherwise its fallback policy below.
+# -------------------------------------------------------------------------
 def window_dimension(name, default):
     """Use a positive window dimension from .env or the calculated default."""
     value = os.environ.get(name, settings_from_file.get(name, str(default)))
@@ -1827,6 +2617,15 @@ def window_dimension(name, default):
     return default
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: fit_dialog_to_display
+# Purpose: Size and center a secondary window within the current display.
+# Parameters: dialog, width_fraction, height_fraction, minimum_width, minimum_height.
+#
+# Example (illustrative; not executed):
+#   fit_dialog_to_display(dialog, 0.7, 0.7, 600, 400) sizes/centers an existing dialog
+#   using the current display and minimum dimensions.
+# -------------------------------------------------------------------------
 def fit_dialog_to_display(dialog, width_fraction, height_fraction, minimum_width, minimum_height):
     """Size and center a secondary window within the current display.
 
@@ -1844,6 +2643,17 @@ def fit_dialog_to_display(dialog, width_fraction, height_fraction, minimum_width
     dialog.geometry(f"{width}x{height}+{x}+{y}")
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: select_image
+# Purpose: Toggle one image with the selection color of its gallery.
+# Parameters: path, button, tile, column.
+#   path: source or destination filesystem path, as used below.
+#   column: image gallery index.
+#
+# Example (illustrative; not executed):
+#   select_image(chest_path, button, tile, 0) toggles that X-ray's selection and gallery
+#   appearance; a second click deselects it.
+# -------------------------------------------------------------------------
 def select_image(path, button, tile, column):
     """Toggle one image with the selection color of its gallery."""
     selection = selected_images[column]
@@ -1862,12 +2672,37 @@ def select_image(path, button, tile, column):
     update_selection_workspace()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: encode_image
+# Purpose: Encode original source bytes; gallery resizing never changes uploads.
+# Operation: Returns Base64 text for the original source bytes retrieved through MCP.
+# Thumbnail resizing does not reduce the image sent to Ollama.
+# Parameters: path.
+#   path: source or destination filesystem path, as used below.
+#
+# Example (illustrative; not executed):
+#   encode_image(chest_path) retrieves the original image through MCP and returns its
+#   Base64 string for the Ollama payload.
+# -------------------------------------------------------------------------
 def encode_image(path):
     """Encode original source bytes; gallery resizing never changes uploads."""
     return base64.b64encode(read_record_bytes(path)).decode("ascii")
 
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: load_blood_tests
+# Purpose: Load original selectable lab records and render their normalized rows.
+# Operation: Retrieves each supported JSON file through MCP, normalizes records for
+# display and rebuilds the selectable row-to-record mappings. Original parsed objects
+# remain separate from display formatting; per-file errors are shown rather than treated
+# as valid records.
+# Shared state declared here: blood_focus_record_index.
+#
+# Example (illustrative; not executed):
+#   After selecting a patient/snapshot, load_blood_tests() reads its blood JSON via MCP
+#   and rebuilds the blood display and selection mappings.
+# -------------------------------------------------------------------------
 def load_blood_tests():
     """Load original selectable lab records and render their normalized rows."""
     set_snapshot_heading(blood_test_panel.heading_name, blood_test_panel.heading_date,
@@ -1883,6 +2718,7 @@ def load_blood_tests():
     errors = []
     for path in paths:
         try:
+            # Obtain parsed JSON through the blood MCP server.
             data = read_blood_record(path)
             records = data if isinstance(data, list) else [data]
             for record in records:
@@ -1923,6 +2759,16 @@ def load_blood_tests():
     blood_test_view.config(state=tk.NORMAL)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: show_blood_details
+# Purpose: Open the complete original JSON object for the focused/selected record.
+# Parameters: event.
+#   event: optional Tkinter event supplied by a binding.
+#
+# Example (illustrative; not executed):
+#   Focus a blood record and invoke show_blood_details(); a dialog shows its complete
+#   parsed JSON, not only the normalized table cells.
+# -------------------------------------------------------------------------
 def show_blood_details(event=None):
     """Open the complete original JSON object for the focused/selected record."""
     index = blood_focus_record_index
@@ -1948,6 +2794,16 @@ def show_blood_details(event=None):
     ttk.Button(dialog, text="Close", command=dialog.destroy).grid(row=2, column=0, sticky="e", padx=8, pady=8)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: blood_record_index_for_line
+# Purpose: Map any rendered title/table line back to its original selectable object.
+# Parameters: line_number.
+#   line_number: display line to map to a blood record.
+#
+# Example (illustrative; not executed):
+#   blood_record_index_for_line(5) looks up which original blood record owns display line
+#   5, if that line has a mapping.
+# -------------------------------------------------------------------------
 def blood_record_index_for_line(line_number):
     """Map any rendered title/table line back to its original selectable object."""
     if 1 <= line_number <= len(blood_line_record_indices):
@@ -1956,6 +2812,17 @@ def blood_record_index_for_line(line_number):
 
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: toggle_blood_test_record
+# Purpose: Select the original record represented by any of its displayed rows.
+# Parameters: event.
+#   event: optional Tkinter event supplied by a binding.
+# Shared state declared here: blood_focus_record_index.
+#
+# Example (illustrative; not executed):
+#   Click a rendered blood-test line; Tk supplies event coordinates, and
+#   toggle_blood_test_record(event) selects its source record.
+# -------------------------------------------------------------------------
 def toggle_blood_test_record(event):
     """Select the original record represented by any of its displayed rows."""
     line_number = int(blood_test_view.index(f"@{event.x},{event.y}").split(".")[0])
@@ -1968,6 +2835,16 @@ def toggle_blood_test_record(event):
     return toggle_blood_test_index(record_index)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: toggle_blood_test_index
+# Purpose: Toggle one blood-test record and refresh the explicit selection state.
+# Parameters: record_index.
+#   record_index: index into original blood-test records.
+#
+# Example (illustrative; not executed):
+#   toggle_blood_test_index(0) toggles selection of the first original blood record and
+#   refreshes the selection display.
+# -------------------------------------------------------------------------
 def toggle_blood_test_index(record_index):
     """Toggle one blood-test record and refresh the explicit selection state."""
     if not 0 <= record_index < len(blood_test_records):
@@ -1988,6 +2865,16 @@ def toggle_blood_test_index(record_index):
     return "break"
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: blood_test_keypress
+# Purpose: Allow keyboard navigation and Space/Enter selection without editing text.
+# Parameters: event.
+#   event: optional Tkinter event supplied by a binding.
+#
+# Example (illustrative; not executed):
+#   Press Space while focused on a blood record; blood_test_keypress(event) handles
+#   selection without allowing text edits.
+# -------------------------------------------------------------------------
 def blood_test_keypress(event):
     """Allow keyboard navigation and Space/Enter selection without editing text."""
     if event.keysym in ("space", "Return", "KP_Enter"):
@@ -2009,6 +2896,17 @@ def blood_test_keypress(event):
     return "break"
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: blood_test_keyup
+# Purpose: Keep the Details button targeted at the record under keyboard focus.
+# Parameters: event.
+#   event: optional Tkinter event supplied by a binding.
+# Shared state declared here: blood_focus_record_index.
+#
+# Example (illustrative; not executed):
+#   After moving keyboard focus in the blood panel, blood_test_keyup(event) updates the
+#   focused record used by Details.
+# -------------------------------------------------------------------------
 def blood_test_keyup(event):
     """Keep the Details button targeted at the record under keyboard focus."""
     global blood_focus_record_index
@@ -2018,6 +2916,15 @@ def blood_test_keyup(event):
         blood_focus_record_index = record_index
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: update_gallery_scrollbars
+# Purpose: Keep the canvas viewport scrollable when image content is oversized.
+# Parameters: canvas, canvas_window, grid.
+#
+# Example (illustrative; not executed):
+#   update_gallery_scrollbars(canvas, canvas_window, grid) recalculates the scrollable
+#   area after gallery content or viewport size changes.
+# -------------------------------------------------------------------------
 def update_gallery_scrollbars(canvas, canvas_window, grid):
     """Keep the canvas viewport scrollable when image content is oversized."""
     grid.update_idletasks()
@@ -2029,6 +2936,18 @@ def update_gallery_scrollbars(canvas, canvas_window, grid):
     canvas.configure(scrollregion=canvas.bbox("all"))
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: decode_gallery_thumbnail
+# Purpose: Decode one bounded display copy off-thread; never retain source bytes.
+# Operation: Runs Pillow work away from the GUI thread. Retrieves image bytes through MCP
+# and returns a bounded display image or error marker. Does not create Tk PhotoImage
+# objects or modify source files.
+# Parameters: request.
+#
+# Example (illustrative; not executed):
+#   decode_gallery_thumbnail((generation, 0, item)) decodes item['path'] into an X-ray
+#   display thumbnail and returns the result/error tuple.
+# -------------------------------------------------------------------------
 def decode_gallery_thumbnail(request):
     """Decode one bounded display copy off-thread; never retain source bytes."""
     generation, column, item = request
@@ -2036,6 +2955,7 @@ def decode_gallery_thumbnail(request):
     try:
         from PIL import Image, ImageOps
 
+        # Open a Pillow image from MCP-returned bytes in memory, rather than a local filename.
         with Image.open(io.BytesIO(read_record_bytes(path))) as opened:
             source = ImageOps.exif_transpose(opened).convert("RGB")
             original_width, original_height = source.size
@@ -2061,6 +2981,14 @@ def decode_gallery_thumbnail(request):
         return generation, column, item, None, type(error).__name__
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: thumbnail_decode_worker
+# Purpose: Run serial Pillow decoding with bounded input/output queues.
+#
+# Example (illustrative; not executed):
+#   Once started by ensure_thumbnail_worker(), thumbnail_decode_worker() consumes queued
+#   decode jobs until shutdown, returning decoded results through the result queue.
+# -------------------------------------------------------------------------
 def thumbnail_decode_worker():
     """Run serial Pillow decoding with bounded input/output queues."""
     while not thumbnail_worker_shutdown.is_set():
@@ -2079,6 +3007,15 @@ def thumbnail_decode_worker():
                 continue
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: ensure_thumbnail_worker
+# Purpose: Start the single background decoder lazily on first gallery load.
+# Shared state declared here: thumbnail_worker_thread.
+#
+# Example (illustrative; not executed):
+#   On the first gallery load, ensure_thumbnail_worker() starts one decoder worker;
+#   subsequent calls reuse the existing live worker.
+# -------------------------------------------------------------------------
 def ensure_thumbnail_worker():
     """Start the single background decoder lazily on first gallery load."""
     global thumbnail_worker_thread
@@ -2091,6 +3028,16 @@ def ensure_thumbnail_worker():
         thumbnail_worker_thread.start()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: request_visible_thumbnails
+# Purpose: Queue only thumbnails in or near a gallery's current viewport.
+# Parameters: column.
+#   column: image gallery index.
+#
+# Example (illustrative; not executed):
+#   request_visible_thumbnails(0) queues images near the X-ray gallery viewport, avoiding
+#   immediate decoding of every patient image.
+# -------------------------------------------------------------------------
 def request_visible_thumbnails(column):
     """Queue only thumbnails in or near a gallery's current viewport."""
     if not galleries or column >= len(galleries):
@@ -2132,6 +3079,20 @@ def request_visible_thumbnails(column):
             break
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: drain_thumbnail_results
+# Purpose: Create Tk images on the UI thread and evict beyond the fixed LRU cap.
+# Operation: Consumes decoded images on the GUI thread, rejects obsolete generation IDs,
+# creates Tk image objects and keeps the least-recently-used cache bounded. The limit
+# argument controls work per UI update.
+# Parameters: limit.
+#   limit: maximum result batch size.
+# Shared state declared here: thumbnail_first_paint, thumbnail_decoded_count.
+#
+# Example (illustrative; not executed):
+#   drain_thumbnail_results(limit=3) consumes at most three queued thumbnail results for
+#   that UI pass and updates the bounded cache.
+# -------------------------------------------------------------------------
 def drain_thumbnail_results(limit=3):
     """Create Tk images on the UI thread and evict beyond the fixed LRU cap."""
     global thumbnail_first_paint, thumbnail_decoded_count
@@ -2175,6 +3136,15 @@ def drain_thumbnail_results(limit=3):
     # The queue limits decoded Pillow objects waiting for Tk to <= four.
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: invalidate_thumbnail_work
+# Purpose: Drop stale patient work and free cached Tk images before rebuilding.
+# Shared state declared here: thumbnail_generation.
+#
+# Example (illustrative; not executed):
+#   Before loading another patient, invalidate_thumbnail_work() advances the generation
+#   and clears stale queued/cached display work.
+# -------------------------------------------------------------------------
 def invalidate_thumbnail_work():
     """Drop stale patient work and free cached Tk images before rebuilding."""
     global thumbnail_generation
@@ -2189,6 +3159,14 @@ def invalidate_thumbnail_work():
                 break
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: current_viewer_records
+# Purpose: Return the active patient's safe image paths in gallery order.
+#
+# Example (illustrative; not executed):
+#   current_viewer_records() collects the active patient's eligible image paths in gallery
+#   order for previous/next viewer navigation.
+# -------------------------------------------------------------------------
 def current_viewer_records():
     """Return the active patient's safe image paths in gallery order."""
     records = []
@@ -2198,6 +3176,15 @@ def current_viewer_records():
     return records
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: close_image_viewer
+# Purpose: Close the detail window and release its display-only image references.
+# Shared state declared here: image_viewer.
+#
+# Example (illustrative; not executed):
+#   Clicking the viewer close control calls close_image_viewer(), releasing viewer
+#   references without deselecting gallery images.
+# -------------------------------------------------------------------------
 def close_image_viewer():
     """Close the detail window and release its display-only image references."""
     global image_viewer
@@ -2210,6 +3197,15 @@ def close_image_viewer():
             pass
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: viewer_fit_scale
+# Purpose: Calculate an aspect-preserving fit scale for any image orientation.
+# Parameters: source_size, viewport_size.
+#
+# Example (illustrative; not executed):
+#   viewer_fit_scale((1000, 500), (500, 500)) computes 0.5, fitting the wide image while
+#   preserving its aspect ratio.
+# -------------------------------------------------------------------------
 def viewer_fit_scale(source_size, viewport_size):
     """Calculate an aspect-preserving fit scale for any image orientation."""
     width, height = source_size
@@ -2219,6 +3215,15 @@ def viewer_fit_scale(source_size, viewport_size):
     return min(viewport_width / width, viewport_height / height)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: viewer_render_size
+# Purpose: Return bounded display dimensions for fit-relative zoom levels.
+# Parameters: source_size, viewport_size, zoom, max_dimension.
+#
+# Example (illustrative; not executed):
+#   viewer_render_size((1000, 500), (500, 500), zoom=2.0) calculates display dimensions
+#   for twice the fit scale, within the maximum bound.
+# -------------------------------------------------------------------------
 def viewer_render_size(source_size, viewport_size, zoom=1.0, max_dimension=12000):
     """Return bounded display dimensions for fit-relative zoom levels."""
     width, height = source_size
@@ -2229,6 +3234,16 @@ def viewer_render_size(source_size, viewport_size, zoom=1.0, max_dimension=12000
     return max(1, round(width * scale)), max(1, round(height * scale))
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: render_viewer_image
+# Purpose: Render a transformed display copy; never write it back to the source.
+# Parameters: state, center.
+#   state: request or viewer state used by this function.
+#
+# Example (illustrative; not executed):
+#   render_viewer_image(viewer_state, center=True) redraws the current image at the
+#   current zoom and centers the view.
+# -------------------------------------------------------------------------
 def render_viewer_image(state, center=True):
     """Render a transformed display copy; never write it back to the source."""
     if image_viewer is not state or not state["window"].winfo_exists():
@@ -2259,6 +3274,16 @@ def render_viewer_image(state, center=True):
     )
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: show_viewer_record
+# Purpose: Load one record belonging to the patient's viewer snapshot.
+# Parameters: state, index.
+#   state: request or viewer state used by this function.
+#
+# Example (illustrative; not executed):
+#   show_viewer_record(viewer_state, 1) loads the second viewer record if that state still
+#   belongs to the active patient.
+# -------------------------------------------------------------------------
 def show_viewer_record(state, index):
     """Load one record belonging to the patient's viewer snapshot."""
     from PIL import Image, ImageOps
@@ -2271,7 +3296,9 @@ def show_viewer_record(state, index):
     state["index"] = index  # Keep navigation moving past unreadable files.
     state["path"] = path
     try:
+        # Validate record containment and links before using a patient path.
         safe_path(path, state["patient"])
+        # Open a Pillow image from MCP-returned bytes in memory, rather than a local filename.
         with Image.open(io.BytesIO(read_record_bytes(path))) as opened:
             source = ImageOps.exif_transpose(opened).convert("RGB")
             source.load()
@@ -2288,12 +3315,32 @@ def show_viewer_record(state, index):
     render_viewer_image(state)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: navigate_viewer
+# Purpose: Move to the previous or next image without changing its selection.
+# Parameters: delta.
+#   delta: relative viewer navigation step.
+#
+# Example (illustrative; not executed):
+#   navigate_viewer(1) moves to the next viewer image; navigate_viewer(-1) moves to the
+#   previous one without changing selections.
+# -------------------------------------------------------------------------
 def navigate_viewer(delta):
     """Move to the previous or next image without changing its selection."""
     if image_viewer is not None:
         show_viewer_record(image_viewer, image_viewer["index"] + delta)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: zoom_viewer
+# Purpose: Zoom relative to fit while keeping the current image available to pan.
+# Parameters: multiplier.
+#   multiplier: zoom adjustment factor.
+#
+# Example (illustrative; not executed):
+#   zoom_viewer(1.25) increases the current viewer zoom relative to its previous value,
+#   subject to the limits in the function.
+# -------------------------------------------------------------------------
 def zoom_viewer(multiplier):
     """Zoom relative to fit while keeping the current image available to pan."""
     if image_viewer is None:
@@ -2303,6 +3350,13 @@ def zoom_viewer(multiplier):
     render_viewer_image(state)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: reset_viewer
+# Purpose: Return the current image to the full-view fit and centered position.
+#
+# Example (illustrative; not executed):
+#   After zooming/panning, reset_viewer() returns the current image to centered fit view.
+# -------------------------------------------------------------------------
 def reset_viewer():
     """Return the current image to the full-view fit and centered position."""
     if image_viewer is not None:
@@ -2310,12 +3364,24 @@ def reset_viewer():
         render_viewer_image(image_viewer)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: open_image_viewer
+# Purpose: Open a separate, nonselecting detail viewer for an active-patient image.
+# Parameters: path.
+#   path: source or destination filesystem path, as used below.
+# Shared state declared here: image_viewer.
+#
+# Example (illustrative; not executed):
+#   open_image_viewer(chest_path) opens the detail viewer for a safe active-patient image
+#   without toggling its gallery selection.
+# -------------------------------------------------------------------------
 def open_image_viewer(path):
     """Open a separate, nonselecting detail viewer for an active-patient image."""
     global image_viewer
     if active_patient is None:
         return
     try:
+        # Validate record containment and links before using a patient path.
         safe_path(path, active_patient)
     except (OSError, ValueError, RuntimeError):
         show_status("This image is no longer available for the active patient.")
@@ -2378,6 +3444,16 @@ def open_image_viewer(path):
     canvas.focus_set()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: load_images
+# Purpose: Build lightweight tiles, then decode visible thumbnails asynchronously.
+# Shared state declared here: thumbnail_items, thumbnail_started_at,
+# thumbnail_first_paint, thumbnail_decoded_count.
+#
+# Example (illustrative; not executed):
+#   After selecting P0001, load_images() builds X-ray/EKG tiles and starts asynchronous
+#   loading of visible thumbnails.
+# -------------------------------------------------------------------------
 def load_images():
     """Build lightweight tiles, then decode visible thumbnails asynchronously."""
     global thumbnail_items, thumbnail_started_at, thumbnail_first_paint, thumbnail_decoded_count
@@ -2479,6 +3555,16 @@ def load_images():
         request_visible_thumbnails(column)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: base_url
+# Purpose: Accept a base URL or an /api/generate URL from the GUI.
+# Parameters: value.
+#   value: value to parse or format.
+#
+# Example (illustrative; not executed):
+#   base_url('http://127.0.0.1:11434/api/generate') normalizes the entry to the Ollama
+#   base address.
+# -------------------------------------------------------------------------
 def base_url(value):
     """Accept a base URL or an /api/generate URL from the GUI."""
     value = value.strip().rstrip("/")
@@ -2492,6 +3578,16 @@ def base_url(value):
     return value
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: list_models
+# Purpose: GET /api/tags: verifies connectivity and lists installed models.
+# Parameters: url.
+#   url: normalized Ollama server address.
+#
+# Example (illustrative; not executed):
+#   list_models('http://127.0.0.1:11434') requests /api/tags and returns installed names
+#   when that server is reachable.
+# -------------------------------------------------------------------------
 def list_models(url):
     """GET /api/tags: verifies connectivity and lists installed models."""
     try:
@@ -2505,6 +3601,17 @@ def list_models(url):
             if isinstance(item, dict) and item.get("name")]
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: model_capabilities
+# Purpose: Read optional Ollama model capabilities; unknown metadata stays unknown.
+# Parameters: url, model.
+#   url: normalized Ollama server address.
+#   model: Ollama model name.
+#
+# Example (illustrative; not executed):
+#   model_capabilities(server_url, 'medgemma1.5:latest') checks optional model metadata;
+#   unavailable/unknown capability information remains unknown.
+# -------------------------------------------------------------------------
 def model_capabilities(url, model):
     """Read optional Ollama model capabilities; unknown metadata stays unknown."""
     request = Request(
@@ -2528,16 +3635,37 @@ def model_capabilities(url, model):
     return None
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: set_request_stage
+# Purpose: Publish an honest request phase without exposing response content.
+# Parameters: request_state, stage.
+#   request_state: request lifecycle and cancellation state.
+#
+# Example (illustrative; not executed):
+#   set_request_stage(state, 'Preparing selected records') updates the active request
+#   phase through the UI-safe reporting path.
+# -------------------------------------------------------------------------
 def set_request_stage(request_state, stage):
     """Publish an honest request phase without exposing response content."""
     if request_state is None:
         return
     request_state.stage = stage
     request_id = request_state.snapshot.request_id
+    # Queue this result for the Tk main thread instead of touching widgets here.
     post_ui(lambda rid=request_id, value=stage: show_status(value)
             if request_is_current(rid) else None)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: final_only_answer
+# Purpose: Strip supported reasoning wrappers and reject reasoning-only output.
+# Parameters: response_text.
+#   response_text: assembled response text to filter.
+#
+# Example (illustrative; not executed):
+#   final_only_answer('<think>internal text</think>Final findings') removes the supported
+#   reasoning wrapper and retains the final answer.
+# -------------------------------------------------------------------------
 def final_only_answer(response_text):
     """Strip supported reasoning wrappers and reject reasoning-only output.
 
@@ -2572,6 +3700,16 @@ def final_only_answer(response_text):
     return answer
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: parse_stream_events
+# Purpose: Parse synthetic or live Ollama NDJSON events into response and metadata.
+# Parameters: lines.
+#   lines: iterable of Ollama response lines.
+#
+# Example (illustrative; not executed):
+#   parse_stream_events(response) combines Ollama NDJSON response fragments and completion
+#   metadata; malformed or incomplete events are rejected.
+# -------------------------------------------------------------------------
 def parse_stream_events(lines):
     """Parse synthetic or live Ollama NDJSON events into response and metadata."""
     response_parts = []
@@ -2615,6 +3753,15 @@ def parse_stream_events(lines):
     return "".join(response_parts), metadata
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: completion_metadata
+# Purpose: Return actual Ollama completion fields, excluding all generated text.
+# Parameters: data.
+#
+# Example (illustrative; not executed):
+#   completion_metadata({'response': 'private text', 'done': True, 'eval_count': 12})
+#   retains supported completion fields and omits generated response text.
+# -------------------------------------------------------------------------
 def completion_metadata(data):
     """Return actual Ollama completion fields, excluding all generated text."""
     allowed = ("done_reason", "total_duration", "load_duration", "prompt_eval_count",
@@ -2623,6 +3770,18 @@ def completion_metadata(data):
             if isinstance(data.get(key), (str, int, float)) and not isinstance(data.get(key), bool)}
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: _post_generate
+# Purpose: POST one request and retain the response handle for local cancellation.
+# Parameters: url, payload, request_state, stream.
+#   url: normalized Ollama server address.
+#   request_state: request lifecycle and cancellation state.
+#   stream: whether to request streamed response events.
+#
+# Example (illustrative; not executed):
+#   _post_generate(server_url, payload, state, True) opens one streamed Ollama POST and
+#   stores its response handle for local cancellation.
+# -------------------------------------------------------------------------
 def _post_generate(url, payload, request_state, stream):
     """POST one request and retain the response handle for local cancellation."""
     outgoing = dict(payload)
@@ -2631,15 +3790,37 @@ def _post_generate(url, payload, request_state, stream):
         f"{url}/api/generate", data=json.dumps(outgoing).encode("utf-8"),
         headers={"Content-Type": "application/json"}, method="POST",
     )
+    # Open the HTTP connection using the timeout specified by this call.
     response = urlopen(request, timeout=GENERATION_TIMEOUT)
     if request_state is not None:
         with request_state.connection_lock:
             request_state.response = response
             if request_state.cancel_event.is_set():
+                # Release the HTTP response/connection after completion or cancellation.
                 response.close()
     return response
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: generate
+# Purpose: POST selected full-resolution images and return final text plus metadata.
+# Operation: Returns GenerationResult(answer, metadata). Builds an Ollama payload, uploads
+# selected original images, processes streaming or regular JSON responses, rejects
+# incomplete output and returns final user-facing text. MCP is used for image retrieval;
+# model inference is a separate HTTP request.
+# Parameters: url, model, question, image_paths, request_state, stream.
+#   url: normalized Ollama server address.
+#   model: Ollama model name.
+#   question: assembled model prompt.
+#   image_paths: selected original image file paths.
+#   request_state: request lifecycle and cancellation state.
+#   stream: whether to request streamed response events.
+#
+# Example (illustrative; not executed):
+#   generate(server_url, 'medgemma1.5:latest', 'Describe selected inputs',
+#   image_paths=(chest_path,)) sends one selected image plus the prompt and returns
+#   GenerationResult.
+# -------------------------------------------------------------------------
 def generate(url, model, question, image_paths=(), request_state=None, stream=True):
     """POST selected full-resolution images and return final text plus metadata."""
     # Form a Python dictionary that will become the HTTP request's JSON body.
@@ -2727,6 +3908,7 @@ def generate(url, model, question, image_paths=(), request_state=None, stream=Tr
                 with request_state.connection_lock:
                     if request_state.response is response:
                         request_state.response = None
+            # Release the HTTP response/connection after completion or cancellation.
             response.close()
     except HTTPError as error:
         raise RuntimeError(server_error_category(error)) from None
@@ -2755,11 +3937,32 @@ def generate(url, model, question, image_paths=(), request_state=None, stream=Tr
     return GenerationResult(answer=answer, metadata=metadata)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: show_status
+# Purpose: Only the Tkinter main thread calls this function.
+# Parameters: message.
+#   message: status text to display.
+#
+# Example (illustrative; not executed):
+#   show_status('Loading patient records...') updates the status label; invoke on the Tk
+#   thread or through post_ui.
+# -------------------------------------------------------------------------
 def show_status(message):
     """Only the Tkinter main thread calls this function."""
     status_label.config(text=message)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: set_readiness
+# Purpose: Update independent, non-content readiness indicators on the Tk thread.
+# Parameters: server, model.
+#   model: Ollama model name.
+# Shared state declared here: server_readiness, model_readiness.
+#
+# Example (illustrative; not executed):
+#   set_readiness('READY', 'INSTALLED (medgemma1.5:latest)') updates the server/model
+#   readiness indicators without generating a report.
+# -------------------------------------------------------------------------
 def set_readiness(server, model):
     """Update independent, non-content readiness indicators on the Tk thread."""
     global server_readiness, model_readiness
@@ -2775,6 +3978,13 @@ def set_readiness(server, model):
     )
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: stop_voice
+# Purpose: Stop speech that is currently playing.
+#
+# Example (illustrative; not executed):
+#   If a report is being read aloud, stop_voice() asks the speech engine to stop.
+# -------------------------------------------------------------------------
 def stop_voice():
     """Stop speech that is currently playing."""
     with speech_lock:
@@ -2786,6 +3996,15 @@ def stop_voice():
             pass
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: speech_text
+# Purpose: Remove common formatting characters before reading a response aloud.
+# Parameters: text.
+#   text: text to format or speak.
+#
+# Example (illustrative; not executed):
+#   speech_text('**Findings**') removes common formatting characters before speech output.
+# -------------------------------------------------------------------------
 def speech_text(text):
     """Remove common formatting characters before reading a response aloud."""
     text = re.sub(r"<[^>]+>", " ", text)
@@ -2793,6 +4012,16 @@ def speech_text(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: speak_response
+# Purpose: Read one completed response without blocking the Tkinter GUI.
+# Parameters: text.
+#   text: text to format or speak.
+#
+# Example (illustrative; not executed):
+#   speak_response('Selected inputs reviewed.') starts optional voice reading in a
+#   background worker when voice support is available/enabled.
+# -------------------------------------------------------------------------
 def speak_response(text):
     """Read one completed response without blocking the Tkinter GUI."""
     if not voice_enabled or not text or pyttsx3 is None:
@@ -2800,6 +4029,17 @@ def speak_response(text):
 
     stop_voice()
 
+    # -------------------------------------------------------------------------
+    # FUNCTION: worker
+    # Purpose: Background worker for speak_response.
+    # Operation: Uses the speech lock and speech engine to read completed text; GUI
+    # changes are posted through the UI queue.
+    # Shared state declared here: speech_engine.
+    #
+    # Example (illustrative; not executed):
+    #   During speak_response(), worker() acquires the speech lock and uses the engine to
+    #   read the captured response, posting any UI status back to Tk.
+    # -------------------------------------------------------------------------
     def worker():
         global speech_engine
         engine = None
@@ -2815,15 +4055,26 @@ def speak_response(text):
             engine.runAndWait()
         except Exception as error:
             message = str(error)
+            # Queue this result for the Tk main thread instead of touching widgets here.
             post_ui(lambda: show_status(f"Voice error: {message}"))
         finally:
             with speech_lock:
                 if speech_engine is engine:
                     speech_engine = None
 
+    # Start background work; Tk widget changes must return through post_ui.
     threading.Thread(target=worker, daemon=True).start()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: toggle_voice
+# Purpose: Toggle automatic reading and visually show whether voice is enabled.
+# Shared state declared here: voice_enabled.
+#
+# Example (illustrative; not executed):
+#   Clicking the voice toggle calls toggle_voice() to change automatic readout and update
+#   the button indicator.
+# -------------------------------------------------------------------------
 def toggle_voice():
     """Toggle automatic reading and visually show whether voice is enabled."""
     global voice_enabled
@@ -2844,6 +4095,23 @@ def toggle_voice():
         show_status("Voice is OFF.")
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: finish_request
+# Purpose: Finish a request once; obsolete and duplicate worker callbacks are ignored.
+# Operation: Runs on the UI thread and accepts only the current active request. Updates
+# report content, completion/review state and controls for success, cancellation or error.
+# The terminal flag prevents duplicate finalization.
+# Parameters: request_id, answer, metadata, error, cancelled.
+#   request_id: identifier used to reject stale callbacks.
+#   metadata: non-content completion measurements/status.
+#   error: exception to classify.
+# Shared state declared here: current_request, report_original_draft, report_patient,
+# report_snapshot, report_completed, report_review_acknowledged, report_rendering.
+#
+# Example (illustrative; not executed):
+#   finish_request(active_id, answer='Report text', metadata={}) finalizes that active
+#   request; a stale request ID is ignored.
+# -------------------------------------------------------------------------
 def finish_request(request_id, answer=None, metadata=None, error=None, cancelled=False):
     """Finish a request once; obsolete and duplicate worker callbacks are ignored."""
     global current_request, report_original_draft, report_patient, report_snapshot
@@ -2878,6 +4146,7 @@ def finish_request(request_id, answer=None, metadata=None, error=None, cancelled
         report_meta_label.config(text="CANCELLED · No completed draft; review unavailable")
         answer_box.configure(state=tk.NORMAL)
         answer_box.insert(tk.END, "Request cancelled.")
+        # Prevent editing while the current operation requires a read-only report pane.
         answer_box.configure(state=tk.DISABLED)
     elif error is None:
         report_original_draft = str(answer or "")
@@ -2916,11 +4185,22 @@ def finish_request(request_id, answer=None, metadata=None, error=None, cancelled
                                  + " · No completed draft; review unavailable")
         answer_box.configure(state=tk.NORMAL)
         answer_box.insert(tk.END, f"Error: {error}")
+        # Prevent editing while the current operation requires a read-only report pane.
         answer_box.configure(state=tk.DISABLED)
     if not cancelled and error is None and voice_enabled:
         speak_response(answer)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: completion_summary
+# Purpose: Format actual Ollama completion fields without including generated text.
+# Parameters: metadata.
+#   metadata: non-content completion measurements/status.
+#
+# Example (illustrative; not executed):
+#   completion_summary(metadata) formats actual returned completion measurements for
+#   display without including report text.
+# -------------------------------------------------------------------------
 def completion_summary(metadata):
     """Format actual Ollama completion fields without including generated text."""
     parts = []
@@ -2942,41 +4222,78 @@ def completion_summary(metadata):
     return " · ".join(parts)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: update_elapsed
+# Purpose: Refresh elapsed time while the same request remains active.
+# Parameters: request_id.
+#   request_id: identifier used to reject stale callbacks.
+#
+# Example (illustrative; not executed):
+#   update_elapsed(active_id) refreshes elapsed time and reschedules itself only while
+#   that request remains active.
+# -------------------------------------------------------------------------
 def update_elapsed(request_id):
     """Refresh elapsed time while the same request remains active."""
     if request_is_current(request_id):
         elapsed = int(time.monotonic() - current_request.started_at)
         elapsed_label.config(text=f"Elapsed: {elapsed}s")
+        # Schedule later execution in the Tk event loop; this is not a blocking sleep.
         window.after(250, lambda rid=request_id: update_elapsed(rid))
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: cancel_request
+# Purpose: Stop accepting output immediately and close an established HTTP response.
+# Operation: Marks the local request cancelled and closes an existing HTTP response. This
+# prevents accepting further output locally; it does not guarantee the remote Ollama
+# computation has stopped.
+#
+# Example (illustrative; not executed):
+#   Press Cancel while generation is active; cancel_request() stops accepting local output
+#   and closes an established response when possible.
+# -------------------------------------------------------------------------
 def cancel_request():
     """Stop accepting output immediately and close an established HTTP response."""
     state = current_request
     if state is None or state.terminal:
         return
+    # Signal local cancellation so workers/results stop being accepted.
     state.cancel_event.set()
     with state.connection_lock:
         response = state.response
     if response is not None:
         try:
+            # Release the HTTP response/connection after completion or cancellation.
             response.close()
         except OSError:
             pass
     finish_request(state.snapshot.request_id, cancelled=True)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: close_window
+# Purpose: Cancel locally without joining workers or blocking the Tk event loop.
+# Operation: Checks unsaved edits first, then requests cancellation, stops thumbnail work,
+# asks the shared MCP client to close its servers, and destroys the Tk window. Does not
+# wait for worker threads or server-side inference to finish.
+#
+# Example (illustrative; not executed):
+#   Use the window close button; close_window() checks unsaved edits, requests worker/MCP
+#   shutdown and destroys the GUI.
+# -------------------------------------------------------------------------
 def close_window():
     """Cancel locally without joining workers or blocking the Tk event loop."""
     if report_has_unsaved_edits() and not offer_report_recovery():
         return
     state = current_request
     if state is not None and not state.terminal:
+        # Signal local cancellation so workers/results stop being accepted.
         state.cancel_event.set()
         with state.connection_lock:
             response = state.response
         if response is not None:
             try:
+                # Release the HTTP response/connection after completion or cancellation.
                 response.close()
             except OSError:
                 pass
@@ -2987,6 +4304,15 @@ def close_window():
     window.destroy()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: insert_highlighted_report
+# Purpose: Display the report and color medical-section names red.
+# Parameters: report, widget.
+#
+# Example (illustrative; not executed):
+#   insert_highlighted_report('X-RAY\nFindings...') displays the report and applies
+#   highlighting to recognized medical-section names.
+# -------------------------------------------------------------------------
 def insert_highlighted_report(report, widget=None):
     """Display the report and color medical-section names red."""
     widget = widget or answer_box
@@ -3004,6 +4330,20 @@ def insert_highlighted_report(report, widget=None):
     widget.insert(tk.END, report[position:])
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: run_request
+# Purpose: Run only the frozen request inputs and tag every UI callback with its ID.
+# Operation: Background generation worker. Uses the immutable RequestSnapshot rather than
+# live widget values. Checks model installation, performs generation, and queues
+# completion/error callbacks guarded by request ID so old results cannot overwrite a newer
+# patient/request.
+# Parameters: state.
+#   state: request or viewer state used by this function.
+#
+# Example (illustrative; not executed):
+#   The Send handler starts run_request(state) in a worker thread using the frozen
+#   selections, then posts success/error callbacks to Tk.
+# -------------------------------------------------------------------------
 def run_request(state):
     """Run only the frozen request inputs and tag every UI callback with its ID."""
     snapshot = state.snapshot
@@ -3011,18 +4351,21 @@ def run_request(state):
     try:
         set_request_stage(state, "Checking server and selected model")
         for path in snapshot.image_paths:
+            # Validate record containment and links before using a patient path.
             safe_path(path, snapshot.patient)
         # Give a useful message before trying generation with a missing model.
         models = list_models(snapshot.url)
         if state.cancel_event.is_set():
             return
         if snapshot.model not in models and f"{snapshot.model}:latest" not in models:
+            # Queue this result for the Tk main thread instead of touching widgets here.
             post_ui(lambda rid=request_id: set_readiness("READY", f"MISSING ({snapshot.model})")
                     if request_is_current(rid) else None)
             raise RuntimeError(
                 f"Model is not installed on the selected server ({snapshot.model}). "
                 "Check the model name or install it on that server."
             )
+        # Queue this result for the Tk main thread instead of touching widgets here.
         post_ui(lambda rid=request_id: set_readiness("READY", f"INSTALLED ({snapshot.model})")
                 if request_is_current(rid) else None)
         if state.cancel_event.is_set():
@@ -3031,6 +4374,7 @@ def run_request(state):
             snapshot.url, snapshot.model, snapshot.question,
             snapshot.image_paths, request_state=state,
         )
+        # Queue this result for the Tk main thread instead of touching widgets here.
         post_ui(lambda rid=request_id, value=result: finish_request(
             rid, answer=value.answer, metadata=value.metadata)
                 if request_is_current(rid) else None)
@@ -3041,12 +4385,27 @@ def run_request(state):
         if (message.startswith("HTTP error ") or message in (
                 "request timed out", "connection failed", "connection disconnected before completion",
                 "malformed response event", "server check failed")):
+            # Queue this result for the Tk main thread instead of touching widgets here.
             post_ui(lambda rid=request_id: set_readiness("OFFLINE", "UNKNOWN (server check failed)")
                     if request_is_current(rid) else None)
+        # Queue this result for the Tk main thread instead of touching widgets here.
         post_ui(lambda rid=request_id, detail=message: finish_request(rid, error=detail)
                 if request_is_current(rid) else None)
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: send_question
+# Purpose: Validate GUI values and send one question to the selected model.
+# Operation: Tk button handler. Validates patient, selected paths, prompt, model and URL;
+# captures selections into a RequestSnapshot; updates button states; launches run_request
+# in a daemon thread. Blood JSON is appended to the prompt and images are ordered X-ray
+# first, EKG second.
+# Shared state declared here: current_request.
+#
+# Example (illustrative; not executed):
+#   Select one X-ray, type a prompt, and press Send; send_question() captures the request,
+#   adjusts controls and starts the inference worker.
+# -------------------------------------------------------------------------
 def send_question():
     """Validate GUI values and send one question to the selected model."""
     global current_request
@@ -3061,8 +4420,10 @@ def send_question():
         return
     try:
         for path in tuple(p for group in selected_images for p in group):
+            # Validate record containment and links before using a patient path.
             safe_path(path, patient)
         for index in selected_blood_test_indices:
+            # Validate record containment and links before using a patient path.
             safe_path(blood_test_paths[index], patient)
     except (OSError, ValueError, RuntimeError) as error:
         show_status(f"Invalid selected record: {error}")
@@ -3113,6 +4474,7 @@ def send_question():
     except ValueError as error:
         show_status(str(error))
         return
+    # Freeze patient/model/prompt/selections before the background worker begins.
     snapshot = RequestSnapshot(
         request_id=uuid.uuid4().hex,
         patient=Path(patient),
@@ -3124,7 +4486,9 @@ def send_question():
         xray_count=xray_count,
         ekg_count=ekg_count,
     )
+    # Track timing, cancellation, response handle and terminal status for this request.
     state = RequestState(snapshot=snapshot)
+    # Publish the request identity so stale callbacks can be rejected.
     current_request = state
     patient_picker.config(state=tk.DISABLED)
     send_button.config(state=tk.DISABLED)
@@ -3132,6 +4496,7 @@ def send_question():
     retry_button.config(state=tk.DISABLED)
     clear_report_review()
     report_meta_label.config(text="IN PROGRESS · No completed draft; review unavailable")
+    # Prevent editing while the current operation requires a read-only report pane.
     answer_box.configure(state=tk.DISABLED)
     attachments = []
     if image_paths:
@@ -3146,10 +4511,20 @@ def send_question():
     # Pass the question and image snapshot together to the background worker.
     # run_request calls generate(), which builds and sends one HTTP POST.
     elapsed_label.config(text="Elapsed: 0s")
+    # Schedule later execution in the Tk event loop; this is not a blocking sleep.
     window.after(250, lambda rid=snapshot.request_id: update_elapsed(rid))
+    # Start background work; Tk widget changes must return through post_ui.
     threading.Thread(target=run_request, args=(state,), daemon=True).start()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: retry_request
+# Purpose: Explicitly start a fresh request from the current prompt and selections.
+#
+# Example (illustrative; not executed):
+#   After a failed request, retry_request() makes a fresh request using the currently
+#   displayed prompt and selections.
+# -------------------------------------------------------------------------
 def retry_request():
     """Explicitly start a fresh request from the current prompt and selections."""
     if current_request is not None:
@@ -3158,6 +4533,17 @@ def retry_request():
     send_question()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: refresh_models
+# Purpose: Read the model list from the selected local or remote Ollama server.
+# Operation: Runs the HTTP model lookup in a background worker and posts status updates to
+# Tk. The dropdown is kept to DEFAULT_MODELS in this version even though the server may
+# report other installed models.
+#
+# Example (illustrative; not executed):
+#   Press Check Connection; refresh_models() starts a background model-list check and
+#   updates readiness when it completes.
+# -------------------------------------------------------------------------
 def refresh_models():
     """Read the model list from the selected local or remote Ollama server."""
     try:
@@ -3169,9 +4555,30 @@ def refresh_models():
     set_readiness("CHECKING", "CHECKING")
     show_status("Checking Ollama...")
 
+    # -------------------------------------------------------------------------
+    # FUNCTION: worker
+    # Purpose: Background worker for refresh_models.
+    # Operation: Retrieves installed model names over HTTP; queues a success or failure
+    # callback for Tk to execute.
+    #
+    # Example (illustrative; not executed):
+    #   During refresh_models(), worker() fetches installed model names and schedules
+    #   complete() or failed() for the Tk thread.
+    # -------------------------------------------------------------------------
     def worker():
         try:
             models = list_models(url)
+            # -------------------------------------------------------------------------
+            # FUNCTION: complete
+            # Purpose: Apply a successful Ollama connection check to the GUI.
+            # Operation: Nested UI callback: restore the check button, update
+            # model/readiness indicators and show the connection result.
+            #
+            # Example (illustrative; not executed):
+            #   After a successful model-list check, complete() restores the check control
+            #   and applies captured readiness/model information on the UI thread.
+            #   GUI examples require the running application and existing widgets/state.
+            # -------------------------------------------------------------------------
             def complete():
                 refresh_button.config(state=tk.NORMAL)
                 model_picker.configure(values=DEFAULT_MODELS)
@@ -3185,18 +4592,58 @@ def refresh_models():
                     "Ollama server reachable. "
                     + (f"{len(models)} installed model(s) found." if models else "No models installed.")
                 )
+            # Queue this result for the Tk main thread instead of touching widgets here.
             post_ui(complete)
         except Exception as error:
             message = str(error) if isinstance(error, RuntimeError) else server_error_category(error)
+            # -------------------------------------------------------------------------
+            # FUNCTION: failed
+            # Purpose: Display a failed Ollama connection check in the GUI.
+            # Operation: Nested UI callback: restore the check button and mark
+            # connectivity/model readiness as unavailable without discarding patient
+            # records.
+            #
+            # Example (illustrative; not executed):
+            #   After a connection failure, failed() restores the check control and marks
+            #   readiness unavailable while keeping patient records accessible.
+            #   GUI examples require the running application and existing widgets/state.
+            # -------------------------------------------------------------------------
             def failed():
                 refresh_button.config(state=tk.NORMAL)
                 set_readiness("OFFLINE", "UNKNOWN (server check failed)")
                 show_status(f"Server check failed ({message}). Records remain available; use Check Connection to retry.")
+            # Queue this result for the Tk main thread instead of touching widgets here.
             post_ui(failed)
 
+    # Start background work; Tk widget changes must return through post_ui.
     threading.Thread(target=worker, daemon=True).start()
 
 
+# -------------------------------------------------------------------------
+# FUNCTION: main
+# Purpose: Validate startup data, then construct the preserved Tkinter interface.
+# Operation: Application entry point. Validates records, discovers patients, creates Tk
+# widgets/layout and binds callbacks. Schedules patient loading, queue draining and Ollama
+# readiness checks, then enters mainloop. Most widgets are shared globals used by
+# callbacks.
+# Shared state declared here: PATIENT_RECORDS_DIR, patients, window, ui_style, server_url,
+# model_name, server_entry, model_picker, refresh_button, patient_name, patient_picker,
+# active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name,
+# prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label,
+# voice_toggle_button, status_label, answer_box, original_box, report_notebook,
+# report_meta_label, report_provenance_label, report_version_label, report_review_var,
+# review_button, restore_original_button, export_report_button, save_quick_button,
+# saved_report_list, history_folder_label, history_status_label, selected_images,
+# default_button_color, galleries, gallery_count_labels, blood_test_panel,
+# blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices,
+# blood_test_view, blood_record_header_lines, blood_line_record_indices,
+# blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label,
+# diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label.
+#
+# Example (illustrative; not executed):
+#   Running this file directly invokes main(), builds the GUI, schedules startup work and
+#   enters Tk's event loop.
+# -------------------------------------------------------------------------
 def main():
     """Validate startup data, then construct the preserved Tkinter interface."""
     global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_picker, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label
@@ -3213,7 +4660,9 @@ def main():
     )
 
     # Build the Tkinter desktop interface on the main thread.
+    # Create the main application window on the UI thread.
     window = tk.Tk()
+    # Connect the window close button to controlled cancellation/cleanup.
     window.protocol("WM_DELETE_WINDOW", close_window)
     window.title("AI Clinical Assistant Center")
     window.configure(background=APP_BACKGROUND)
@@ -3858,6 +5307,18 @@ def main():
     # Explicit initial sash positions prevent the large blood-test text widget
     # from squeezing the X-ray and EKG previews into a narrow horizontal strip.
     # Users can still drag both sashes after startup.
+    # -------------------------------------------------------------------------
+    # FUNCTION: establish_workspace_proportions
+    # Purpose: Nested startup layout callback.
+    # Operation: Nested startup layout callback. After Tk has measured the window, adjusts
+    # pane dividers to the configured proportions. Ignores Tcl errors if the widgets are
+    # no longer available.
+    #
+    # Example (illustrative; not executed):
+    #   After the window is laid out, establish_workspace_proportions() positions pane
+    #   dividers using the measured widget dimensions.
+    #   GUI examples require the running application and existing widgets/state.
+    # -------------------------------------------------------------------------
     def establish_workspace_proportions():
         try:
             window.update_idletasks()
@@ -3870,6 +5331,7 @@ def main():
         except tk.TclError:
             pass
 
+    # Schedule later execution in the Tk event loop; this is not a blocking sleep.
     window.after(180, establish_workspace_proportions)
 
     # Select and load the first available patient as soon as the UI is ready.
@@ -3877,11 +5339,15 @@ def main():
         patient_picker.current(0)
 
     # Load records and check the server after the complete window is assembled.
+    # Schedule later execution in the Tk event loop; this is not a blocking sleep.
     window.after(50, drain_ui)
+    # Schedule later execution in the Tk event loop; this is not a blocking sleep.
     window.after(100, select_patient)
+    # Schedule later execution in the Tk event loop; this is not a blocking sleep.
     window.after(250, refresh_models)
     # The startup check reads /api/tags only; it never generates or sends records.
 
+    # Hand control to Tk: user actions and scheduled callbacks drive execution from here.
     window.mainloop()
 
 
