@@ -916,17 +916,20 @@ def choose_snapshot():
     dialog = tk.Toplevel(window)
     dialog.title("Choose patient date and time")
     dialog.transient(window)
-    fit_dialog_to_display(dialog, 0.30, 0.50, 440, 360)
+    # Match the reference picker: compact patient selector at the upper left,
+    # a tree occupying the expandable middle, and actions along the bottom.
+    fit_dialog_to_display(dialog, 0.30, 0.62, 560, 540)
     dialog.columnconfigure(0, weight=1)
     dialog.rowconfigure(1, weight=1)
-    ttk.Label(dialog, text="Select date & time", padding=10).grid(
-        row=0, column=0, sticky="w")
+    header = ttk.Frame(dialog, padding=(10, 8))
+    header.grid(row=0, column=0, columnspan=2, sticky="ew")
     patient_id_var = tk.StringVar(value=active_patient.name)
-    ttk.Label(dialog, text="Patient ID", style="Field.TLabel").grid(
-        row=0, column=1, padx=(8, 10), pady=8, sticky="e")
-    dialog_patient_picker = ttk.Combobox(dialog, textvariable=patient_id_var, values=tuple(patients),
-                                         state="readonly", width=18)
-    dialog_patient_picker.grid(row=0, column=2, padx=(0, 10), pady=8, sticky="e")
+    ttk.Label(header, text="Patient ID", style="Field.TLabel").grid(
+        row=0, column=0, padx=(0, 8), sticky="w")
+    dialog_patient_picker = ttk.Combobox(
+        header, textvariable=patient_id_var, values=tuple(patients),
+        state="readonly", width=18)
+    dialog_patient_picker.grid(row=0, column=1, sticky="w")
     tree = ttk.Treeview(dialog, show="tree", selectmode="browse")
     tree.grid(row=1, column=0, sticky="nsew", padx=(10, 0), pady=(0, 10))
     scrollbar = ttk.Scrollbar(dialog, orient=tk.VERTICAL, command=tree.yview)
@@ -993,8 +996,16 @@ def choose_snapshot():
 
     tree.bind("<Double-Button-1>", load_selected)
     dialog_patient_picker.bind("<<ComboboxSelected>>", change_dialog_patient)
-    ttk.Button(dialog, text="Load selected date & time", command=load_selected).grid(
-        row=2, column=0, columnspan=2, pady=(0, 10))
+    # Keep both actions right-aligned without narrowing the date/time tree.
+    actions = ttk.Frame(dialog, padding=(10, 2, 10, 10))
+    actions.grid(row=2, column=0, columnspan=2, sticky="ew")
+    actions.columnconfigure(0, weight=1)
+    ttk.Button(actions, text="Load selected date & time", command=load_selected).grid(
+        row=0, column=1, padx=(0, 10), ipady=4)
+    ttk.Button(actions, text="Close", command=dialog.destroy, width=10).grid(
+        row=0, column=2, ipady=4)
+    # Escape closes only this picker; no patient files or report state are changed.
+    dialog.bind("<Escape>", lambda _event: dialog.destroy())
 
 
 # -------------------------------------------------------------------------
@@ -5017,6 +5028,13 @@ def main():
             action_bar.columnconfigure(column, weight=1, uniform="action_buttons")
     else:
         voice_toggle_button.pack(side=tk.LEFT)
+    # Close uses the same handler as the title-bar X: offer to preserve edits,
+    # cancel active work locally, request MCP shutdown, and destroy the window.
+    close_button = ttk.Button(action_bar, text="Close", command=close_window)
+    if compact_layout:
+        close_button.grid(row=2, column=0, columnspan=3, padx=3, pady=2, sticky="ew")
+    else:
+        close_button.pack(side=tk.LEFT, padx=(8, 0))
     status_label = ttk.Label(
         qa_panel,
         text="Ready. Select a server and model.",

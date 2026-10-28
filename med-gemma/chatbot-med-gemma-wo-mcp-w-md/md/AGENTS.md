@@ -83,8 +83,9 @@ three modalities for the active patient. Never combine different times. Load
 the first available snapshot automatically when a patient is selected. Panel
 titles show the selected date and time only; never show a date range.
 The picker includes a Patient ID dropdown, a complete `Select date & time`
-heading, and no filesystem paths. Dates remain green; times use a contrasting
-purple in both the picker and modality headings.
+header with no extra instruction text, and no filesystem paths. Its bottom
+row includes `Load selected date & time` and `Close` buttons. Dates remain
+green; times use a contrasting purple in both the picker and modality headings.
 
 - Add support for optional `.env` key `PATIENT_RECORDS_DIR=patient_records`; if absent, use the `patient_records` folder beside the Python script. Relative paths are relative to the script directory.
 - Discover only immediate patient directories, excluding hidden/system folders. Allow ordinary folder names with spaces and letters. Do not infer patient identity from image names or dated folders.
@@ -183,3 +184,9 @@ python client_medgemma_patients.py
 For Ubuntu, use `python3 client_medgemma_patients.py` after installing Tkinter and the applicable Python dependencies. Voice support may be unavailable or platform-dependent.
 
 **Safety:** Use synthetic or appropriately de-identified data for development. MedGemma output is research assistance, not an independently validated diagnosis. Plain HTTP to remote Ollama is not encrypted; do not send identifiable clinical data over an unsecured connection.
+
+## Current picker controls
+
+The main AI Clinical Assistant controls include `Send to MedGemma`, Voice, and
+one visible `Close GUI` button. `Close GUI` uses the normal application
+shutdown handler.
