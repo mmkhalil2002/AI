@@ -19,8 +19,9 @@ class MCPRecords:
 
     Example: ``MCPRecords(root).read_record_bytes('P0001/xrays/chest.png')``.
     """
-    def __init__(self, records_root: Path):
+    def __init__(self, records_root: Path, python_dir: Path | None = None):
         self.root = Path(records_root).resolve()
+        self.python_dir = Path(python_dir or Path(__file__).parent).resolve()
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self.thread.start()
@@ -36,7 +37,7 @@ class MCPRecords:
         self.stack = AsyncExitStack()
         scripts = {"xrays": "mcp_xray_server.py", "ekgs": "mcp_ekg_server.py", "blood_tests": "mcp_blood_server.py"}
         for modality, script in scripts.items():
-            params = StdioServerParameters(command=sys.executable, args=[str(Path(__file__).with_name(script))],
+            params = StdioServerParameters(command=sys.executable, args=[str(self.python_dir / script)],
                                           env={**os.environ, "PATIENT_RECORDS_DIR": str(self.root)})
             read, write = await self.stack.enter_async_context(stdio_client(params))
             session = await self.stack.enter_async_context(ClientSession(read, write))
@@ -56,6 +57,17 @@ class MCPRecords:
         result = await self.sessions[modality].call_tool(name, arguments=arguments)
         text = "".join(block.text for block in result.content if hasattr(block, "text"))
         return json.loads(text)
+
+    def call(self, modality: str, name: str, arguments: dict) -> dict:
+        """Call one modality tool and return its decoded JSON response.
+
+        The full GUI uses this for safe record listing, while the typed read
+        helpers below retain their narrower image/blood return contracts.
+        """
+        if modality not in self.sessions:
+            raise ValueError(f"Unknown record modality: {modality}")
+        with self.lock:
+            return self._call(self._tool(modality, name, arguments))
 
     def list_records(self, relative_folder: str) -> list[str]:
         modality, _ = self.record_location(relative_folder)

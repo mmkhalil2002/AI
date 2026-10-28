@@ -1,71 +1,35 @@
-# Instructions for coding agents
+# Coding instructions: preserve the full AI Clinical Assistant Center GUI
 
-## Scope and structure
+## Authoritative implementation
 
-These instructions cover this MedGemma project. Preserve the existing `python/` and `config/` directories. The user-facing README describes the current implementation; inspect current source before modifying behavior.
+`python/client_medgemma_patients_mcp.py` is the working GUI and must be repaired in place. It is a full Tkinter application, not a prototype. Do not replace it with a short script, a generic dashboard, a filename list, or Text-widget image rendering.
 
-- Keep the GUI in `python/client_medgemma_patients_mcp.py`.
-- Keep MCP transport/lifecycle code in `python/mcp_client.py`.
-- Keep three separate servers in `python/mcp_xray_server.py`, `python/mcp_ekg_server.py`, and `python/mcp_blood_server.py`.
-- Keep setup, launcher and cleanup scripts in `config/`.
-- Do not introduce another GUI, additional orchestration modules, or a virtual environment without an explicit request.
-- Qwen is excluded from the current runtime. Keep inference directed to configured MedGemma through Ollama unless requested otherwise.
+The approved interface is a full-width `Patient Selection and Date Range` bar above a responsive two-column workspace: approximately 35% left for the assistant controls and response, 65% right for patient records. The right side simultaneously shows framed horizontal X-ray tiles, a wide EKG gallery, and selectable blood-test records. The `python/README` describes the same behavior.
 
-## Read before changing
+## Required functions and boundaries
 
-Read the affected files, their imports/callers, relevant `.env` key handling and README. Do not print `.env` values, patient contents, prompts or model responses in diagnostic output. Retain the extensive function-header descriptions, examples and inline comments; update examples when signatures or behavior change.
+Preserve the existing functions and call paths, including `patient_records_root`, `discover_patients`, `patient_snapshots`, `choose_snapshot`, `select_patient`, `select_snapshot`, `record_client`, `read_record_bytes`, `read_blood_record`, `patient_files`, `load_images`, `select_image`, `update_gallery_scrollbars`, `open_image_viewer`, `load_blood_tests`, `generate`, `run_request`, `send_question`, `finish_request`, and `close_window`.
 
-A documentation-only request must leave executable syntax unchanged. Verify this by comparing parsed Python syntax trees as well as compiling the result. Comments/examples must describe real behavior; label illustrative values and required GUI context.
+Keep `mcp_client.py` separate and imported through `from mcp_client import MCPRecords`. Keep the three read-only modality-server entry points separate. The GUI owns Tk presentation, navigation, selection, prompt construction, Ollama calls, report review, voice, and shutdown. MCP owns stdio lifecycle and record retrieval only.
 
-## Component boundaries
+## Layout and behavior
 
-The GUI owns patient/snapshot navigation, selection, display, direct Ollama requests, report review/export and voice. `record_client()` lazily creates/reuses `MCPRecords`. The GUI's `read_record_bytes()` and `read_blood_record()` wrappers delegate to that instance.
+- Top bar: Patient ID dropdown on the left; `Choose date & time`, loaded date/time, and active-patient label on the right.
+- Left: red/orange `AI Clinical Assistant Center` title; `Your Question`; multiline prompt; `Send to MedGemma`, `Voice: OFF`, and `Close`; concise status; large scrollable `AI Response` output.
+- Right: visible `XRAY`, `EKG/ECG`, and `BLOOD TEST` panels with actual snapshot date/time headings. Use pale borders/light surfaces, teal headings and date, purple time.
+- Retain horizontal and vertical gallery scrollbars, framed selectable X-ray tiles, wide readable EKGs, image viewer zoom/navigation, and Tk image references/caches.
+- Exclude `sources.csv` and unsupported files before tile construction. Never show loose metadata text in place of gallery tiles.
+- Blood tests require red titles and explicit selection markers, then aligned Test, Value, Unit, Reference range, and Flag results. Preserve existing normalization and flag rules.
+- `Choose date & time` opens the expandable snapshot dialog. Its Close closes only the dialog; main Close calls `close_window`.
 
-`MCPRecords` owns child-process stdio transports, the dedicated asyncio thread/loop, initialized sessions, synchronized tool requests and cleanup requests. Server selection comes from the modality path component. Preserve `xrays`, `ekgs`, and `blood_tests` as session keys.
+## Safety, paths, and requests
 
-The servers are read-only record providers. Each exposes `list_records(relative_folder)` and `read_record(relative_path)` through the official MCP SDK. Keep response contracts compatible: `paths` for listing, `base64` for images, `record` for parsed blood JSON. Return JSON text as expected by the current client decoder. Do not add model calls or file-write tools to the servers.
+Resolve `.env` and relative `PATIENT_RECORDS_DIR` beside the GUI. Honor OS environment precedence. Support direct modality folders, legacy `data/<modality>`, and dated snapshots. Pass the absolute root to child processes.
 
-## Paths and records
+Only explicitly selected records may be sent. Preserve selected X-rays before EKGs and submit original image bytes, never thumbnails. Blood inference must use clinical result content, not display-only metadata. Keep immutable request snapshots, request IDs, stale-result rejection, UI-thread Tk updates, bounded queues/caches, cancellation semantics, and MCP cleanup.
 
-- `PYTHON_DIR` is the resolved GUI-script directory, not the shell working directory.
-- Resolve relative `PATIENT_RECORDS_DIR` beside the GUI; honor environment-over-file precedence.
-- Pass the absolute root to subprocesses using `PATIENT_RECORDS_DIR`.
-- Preserve direct patient/modality directories, existing `data/<modality>` fallback behavior and date/time snapshots.
-- Do not invent patient mapping files or require a database.
-- Preserve path containment, hidden-path checks, wrong-modality rejection, supported-extension checks, link/junction restrictions and the 64 MiB server read limit.
-- Never broaden one record request to arbitrary files or overwrite patient data.
+Servers must preserve path confinement, hidden/link checks, modality checks, allowed extensions, and the 64 MiB limit. Their contracts are `list_records(relative_folder)` and `read_record(relative_path)` returning JSON fields `paths`, `base64`, or `record`.
 
-## GUI, requests and models
+## Validation
 
-Preserve the existing panels and selection behavior, patient/date-time picker, image viewer, prompt/report workspace and main Close button. Close must use `close_window`, including unsaved-edit handling and existing cleanup. Do not bypass it with an unrelated direct destroy callback for the main window.
-
-Keep Tk widget operations on the main thread. Background workers must use `post_ui`/queue delivery. Decode Pillow thumbnails off-thread and construct Tk images on-thread. Preserve bounded caches/queues and stale-thumbnail generation checks.
-
-Keep immutable request snapshots and request-ID guards so patient changes, cancellation and old callbacks cannot corrupt current output. Upload only explicit selections, using original image bytes; retain X-ray-before-EKG ordering and blood-record identity. Display resizing must not silently alter uploaded source data.
-
-Keep original AI reports separate from editable drafts. Invalidate local review acknowledgement after edits. Preserve safe export validation, HTML escaping, schema checks and per-file atomic writes outside patient records. Do not describe local acknowledgement as a signature.
-
-Keep cancellation semantics honest: local cancellation does not prove remote inference stopped. Do not display hidden reasoning fields as final report content. Preserve malformed/truncated-response checks and user-visible error categories.
-
-## Dependencies and configuration
-
-Use Python 3.10+ for the MCP application. Retain `mcp>=1.20,<2` unless deliberately migrating and validating both client and servers. Keep Pillow for images and optional pyttsx3 voice support. Do not install standard-library modules with pip.
-
-Keep the `.env` contract in sync with its actual allowlist and readers. `GENERATION_TIMEOUT` is the recognized inference-timeout key; do not document unused aliases as active settings. Remote/local Ollama comes from `OLLAMA_URL`; avoid hardcoded host addresses.
-
-Updated init calls `config/generate_requirements.py`; inspect that helper when modifying dependency generation. The root requirements manifest is installed, with the application copy under `python/`. Verify generated files contain real newline-separated requirement lines and are accepted by pip's requirement parser. Preserve additional existing dependencies. Do not claim arbitrary new imports are discovered by a fixed dependency list.
-
-Preserve no-venv installation behavior and explicit optional local-model prompts. Do not execute init/uninit or download models merely to document or inspect scripts. Do not remove Python, user packages, models, settings or patient files during cleanup. Keep confirmation for optional global Codex removal and `.venv` deletion.
-
-## Validation and delivery
-
-Use checks appropriate to the change:
-
-- Compile changed Python files. For comment-only edits, compare ASTs.
-- Check shell changes with `bash -n`; do not claim Windows execution without actually testing it.
-- For MCP changes, exercise real stdio sessions with temporary synthetic records: listing, image byte round-trip, blood JSON, traversal and wrong-modality rejection; request cleanup afterward.
-- For requirements changes, generate in a temporary `python/` + `config/` tree, verify preserved extra dependencies, repeatability and actual line contents.
-- For GUI layout changes, inspect a rendered window when available. Otherwise state that appearance is unverified. Preserve unrelated function behavior.
-- Avoid live patient data and remote inference in automated checks. Do not claim medical accuracy from transport tests.
-
-Keep changes scoped to the request. Update README with material behavior/setup changes. Report what changed, checks performed and relevant untested items. Deliver exact filenames and maintain the user's existing directory layout.
+Compile changed Python. With de-identified records, exercise at least two patients, snapshot switching, gallery selection, blood selection/details, image viewer, Voice fallback, Send error/success, stale callbacks, and Close cleanup. Confirm sources.csv is excluded and a populated window preserves the two-column gallery layout. Do not run installers, uninstallers, remote inference, or use real patient records solely for validation.
