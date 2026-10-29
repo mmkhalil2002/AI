@@ -33,6 +33,13 @@ THINK in .env controls whether Ollama enables model reasoning (false by
 default). Accepted values include true/false, yes/no, on/off, and 1/0.
 GENERATION_TIMEOUT in .env controls how many seconds the client waits for
 Ollama to finish one response (900 seconds by default).
+DISK selects the drive or absolute directory used by Data > Load, for example
+DISK=D:. Load searches that location for xray-data-MMDDYY (or
+x-ray-data-MMDDYY), ekg-data-MMDDYY, and bloodtest-data-MMDDYY folders. The
+date suffix is discovered automatically. Matching folders are copied into the
+local data location and the corresponding GUI area is refreshed. Data > Delete
+removes only matching local copies after confirmation; source-drive folders
+are never deleted.
 
 HOW THE REQUEST IS FORMED
 -------------------------
@@ -78,12 +85,13 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import messagebox, scrolledtext, ttk
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -162,7 +170,7 @@ def load_settings():
                 "XRAY_WIDTH", "XRAY_HEIGHT", "EKG_WIDTH", "EKG_HEIGHT",
                 "WINDOW_WIDTH", "WINDOW_HEIGHT", "NUM_PREDICT", "THINK",
                 "GENERATION_TIMEOUT", "TEMPERATURE", "REPEAT_PENALTY",
-                "REPEAT_LAST_N",
+                "REPEAT_LAST_N", "DISK", "PATIENT_RECORDS_DIR",
             ):
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                     value = value[1:-1]
@@ -171,6 +179,7 @@ def load_settings():
 
 
 settings_from_file = load_settings()
+DISK = os.environ.get("DISK", settings_from_file.get("DISK", "")).strip()
 DEFAULT_SERVER_URL = os.environ.get(
     "OLLAMA_URL", settings_from_file.get("OLLAMA_URL", "http://127.0.0.1:11434")
 )
@@ -185,6 +194,16 @@ image_dir_setting = os.environ.get("IMAGE_DIR", settings_from_file.get("IMAGE_DI
 IMAGE_DIR = Path(image_dir_setting).expanduser()
 if not IMAGE_DIR.is_absolute():
     IMAGE_DIR = Path(__file__).resolve().parent / IMAGE_DIR
+patient_records_dir_setting = os.environ.get(
+    "PATIENT_RECORDS_DIR", settings_from_file.get("PATIENT_RECORDS_DIR", "")
+).strip()
+PATIENT_RECORDS_DIR = (
+    Path(patient_records_dir_setting).expanduser()
+    if patient_records_dir_setting
+    else None
+)
+if PATIENT_RECORDS_DIR is not None and not PATIENT_RECORDS_DIR.is_absolute():
+    PATIENT_RECORDS_DIR = Path(__file__).resolve().parent / PATIENT_RECORDS_DIR
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
 # Cheerful clinical-dashboard palette.
 APP_BACKGROUND = "#eef6fb"
@@ -202,6 +221,19 @@ TILE_BACKGROUND = "#f5f9fc"
 DATASET_COLORS = ((PRIMARY_BLUE, SOFT_BLUE), (TEAL, SOFT_TEAL))
 GALLERY_NAMES = ("XRAY", "EKG/ECG")
 FOLDER_PREFIXES = ("xray-data", "ekg-data")
+# The Data menu accepts these source-folder spellings. Folder names end in a
+# six-digit MMDDYY date, for example D:\\xray-data-092926. The date is used to
+# identify valid folders but users do not have to enter or select it.
+DATASET_FOLDER_PREFIXES = {
+    "xray": ("xray-data", "x-ray-data"),
+    "ekg": ("ekg-data", "ekg", "ecg-data", "ecg"),
+    "blood": ("bloodtest-data", "blood-test-data"),
+}
+CANONICAL_DATASET_PREFIX = {
+    "xray": "xray-data",
+    "ekg": "ekg-data",
+    "blood": "bloodtest-data",
+}
 blood_test_dir_setting = os.environ.get(
     "BLOOD_TEST_DIR", settings_from_file.get("BLOOD_TEST_DIR", "")
 ).strip()
@@ -337,8 +369,117 @@ def encode_image(path):
     return base64.b64encode(image_bytes).decode("ascii")
 
 
+def patient_encounters():
+    """Return selectable encounters in patient/date/time record layout."""
+    if PATIENT_RECORDS_DIR is None or not PATIENT_RECORDS_DIR.is_dir():
+        return []
+
+    encounters = []
+    for patient_dir in PATIENT_RECORDS_DIR.iterdir():
+        if not patient_dir.is_dir() or patient_dir.name.startswith("."):
+            continue
+        for date_dir in patient_dir.iterdir():
+            if not date_dir.is_dir():
+                continue
+            try:
+                date_value = datetime.strptime(date_dir.name, "%Y-%m-%d")
+            except ValueError:
+                continue
+            for time_dir in date_dir.iterdir():
+                if not time_dir.is_dir():
+                    continue
+                try:
+                    time_value = datetime.strptime(time_dir.name, "%I-%M_%p")
+                except ValueError:
+                    continue
+                if any((time_dir / name).is_dir() for name in ("xrays", "ekgs", "blood_tests")):
+                    label = f"{patient_dir.name} — {date_dir.name} {time_dir.name.replace('_', ' ')}"
+                    encounters.append((date_value, time_value, patient_dir.name, label, time_dir))
+    return sorted(encounters, key=lambda item: (item[0], item[1], item[2]), reverse=True)
+
+
+def selected_encounter_path():
+    """Return the record folder selected by patient ID and date/time."""
+    if "encounter_paths" not in globals():
+        return None
+    return encounter_paths.get(patient_name.get(), {}).get(encounter_name.get())
+
+
+def reload_selected_encounter(_event=None):
+    """Refresh all modalities after a patient encounter is selected."""
+    dataset_overrides[:] = [None, None]
+    load_images()
+    load_blood_tests()
+
+
+def select_patient(_event=None):
+    """Clear the encounter when the selected patient changes."""
+    encounter_name.set("")
+    date_time_display.set("Choose date & time")
+    reload_selected_encounter()
+
+
+def choose_date_time():
+    """Open a date-grouped window of encounters for the selected patient."""
+    choices = encounter_paths.get(patient_name.get(), {})
+    if not choices:
+        messagebox.showinfo("Date & time", "No encounters are available for this patient.", parent=window)
+        return
+
+    picker_window = tk.Toplevel(window)
+    picker_window.title(f"Select date & time — {patient_name.get()}")
+    picker_window.transient(window)
+    picker_window.grab_set()
+    picker_window.resizable(False, False)
+    ttk.Label(picker_window, text=f"Encounters for {patient_name.get()}", style="Field.TLabel").pack(
+        anchor="w", padx=14, pady=(14, 6)
+    )
+    visit_tree = ttk.Treeview(picker_window, show="tree", height=min(12, len(choices) + len({label.split()[0] for label in choices})))
+    visit_tree.pack(fill=tk.BOTH, expand=True, padx=14)
+    item_to_visit = {}
+    dates = {}
+    for label in choices:
+        date_text, time_text = label.split(" ", 1)
+        date_item = dates.get(date_text)
+        if date_item is None:
+            date_item = visit_tree.insert("", tk.END, text=date_text, open=True)
+            dates[date_text] = date_item
+        time_item = visit_tree.insert(date_item, tk.END, text=time_text)
+        item_to_visit[time_item] = label
+        if label == encounter_name.get():
+            visit_tree.selection_set(time_item)
+            visit_tree.focus(time_item)
+
+    def confirm_selection(_event=None):
+        selected = visit_tree.selection()
+        if not selected or selected[0] not in item_to_visit:
+            return
+        encounter_name.set(item_to_visit[selected[0]])
+        date_time_display.set(encounter_name.get())
+        picker_window.destroy()
+        reload_selected_encounter()
+
+    controls = ttk.Frame(picker_window, style="App.TFrame")
+    controls.pack(fill=tk.X, padx=14, pady=12)
+    ttk.Button(controls, text="Select", command=confirm_selection, style="Accent.TButton").pack(side=tk.LEFT)
+    ttk.Button(controls, text="Cancel", command=picker_window.destroy, style="Secondary.TButton").pack(side=tk.LEFT, padx=(8, 0))
+    visit_tree.bind("<Double-Button-1>", confirm_selection)
+    picker_window.protocol("WM_DELETE_WINDOW", picker_window.destroy)
+    picker_window.focus_set()
+
+
+def exit_application():
+    """Close the client window."""
+    window.destroy()
+
+
 def image_folders():
-    """Find the newest xray-data-MMDDYY and ekg-data-MMDDYY folders."""
+    """Find image folders for the selected patient encounter or legacy data."""
+    encounter = selected_encounter_path() if PATIENT_RECORDS_DIR is not None else None
+    if encounter is not None:
+        return [encounter / "xrays", encounter / "ekgs"]
+
+    # Legacy flat datasets remain available when patient records are not set.
     script_dir = Path(__file__).resolve().parent
     candidates = [[], []]
     seen = set()
@@ -380,7 +521,12 @@ def friendly_folder_date(folder):
 
 
 def latest_blood_test_folder():
-    """Find the newest valid bloodtest-data-MMDDYY directory containing JSON."""
+    """Find blood tests for the selected patient encounter or legacy data."""
+    encounter = selected_encounter_path() if PATIENT_RECORDS_DIR is not None else None
+    if encounter is not None:
+        return encounter / "blood_tests"
+
+    # Legacy flat datasets remain available when patient records are not set.
     if BLOOD_TEST_DIR is not None:
         parents = (BLOOD_TEST_DIR,)
     else:
@@ -409,6 +555,182 @@ def latest_blood_test_folder():
     return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
+def configured_disk_root():
+    """Return the absolute drive/directory configured by DISK in .env."""
+    value = DISK.strip().strip("\"'")
+    if not value:
+        raise ValueError(
+            "DISK is not configured. Add a line such as DISK=D: to .env."
+        )
+    # On Windows, Path("D:") means the current folder on drive D rather than
+    # the drive root. Append a separator so DISK=D: scans D:\\ as intended.
+    if re.fullmatch(r"[A-Za-z]:", value):
+        value += "\\"
+    root = Path(value).expanduser()
+    if not root.is_absolute():
+        raise ValueError(f"DISK must be an absolute drive or directory: {value}")
+    if not root.is_dir():
+        raise ValueError(f"The configured DISK location is unavailable: {root}")
+    return root
+
+
+def dataset_date(folder_name, prefixes):
+    """Return a folder's MMDDYY date when its prefix and suffix are valid."""
+    lowered_name = folder_name.lower()
+    for prefix in prefixes:
+        marker = f"{prefix.lower()}-"
+        if not lowered_name.startswith(marker):
+            continue
+        suffix = folder_name[len(marker):]
+        try:
+            parsed = datetime.strptime(suffix, "%m%d%y")
+        except ValueError:
+            continue
+        if parsed.strftime("%m%d%y") == suffix:
+            return parsed
+    return None
+
+
+def local_dataset_parent(dataset_key):
+    """Choose the local destination parent for one imported dataset."""
+    if dataset_key == "blood" and BLOOD_TEST_DIR is not None:
+        return BLOOD_TEST_DIR
+    return IMAGE_DIR
+
+
+def matching_dataset_folders(parent, dataset_key):
+    """Find immediate dated dataset folders while ignoring their MMDDYY value."""
+    prefixes = DATASET_FOLDER_PREFIXES[dataset_key]
+    matches = []
+    if not parent.is_dir():
+        return matches
+    for folder in parent.iterdir():
+        if not folder.is_dir():
+            continue
+        folder_date = dataset_date(folder.name, prefixes)
+        if folder_date is not None:
+            matches.append((folder_date, folder))
+    return sorted(matches, key=lambda item: (item[0], item[1].name.lower()))
+
+
+def refresh_loaded_dataset(dataset_key):
+    """Refresh only the GUI area affected by a load or delete operation."""
+    if dataset_key == "xray":
+        dataset_overrides[0] = None
+        load_images()
+    elif dataset_key == "ekg":
+        dataset_overrides[1] = None
+        load_images()
+    else:
+        load_blood_tests()
+
+
+def load_dataset_from_disk(dataset_key, display_name):
+    """Copy matching dated folders from DISK into the local data directory."""
+    try:
+        source_root = configured_disk_root()
+        matches = matching_dataset_folders(source_root, dataset_key)
+        if not matches:
+            expected = " or ".join(
+                f"{prefix}-MMDDYY" for prefix in DATASET_FOLDER_PREFIXES[dataset_key]
+            )
+            raise ValueError(f"No {expected} folder was found in {source_root}.")
+    except (OSError, ValueError) as error:
+        messagebox.showerror(f"Load {display_name}", str(error), parent=window)
+        return
+
+    destination_parent = local_dataset_parent(dataset_key)
+    show_status(f"Loading {display_name} from {source_root}...")
+
+    def worker():
+        copied_files = 0
+        copied_folders = []
+        try:
+            destination_parent.mkdir(parents=True, exist_ok=True)
+            for folder_date, source_folder in matches:
+                # Normalize accepted source aliases so the existing gallery
+                # discovery always recognizes the copied local folder.
+                destination_name = (
+                    f"{CANONICAL_DATASET_PREFIX[dataset_key]}-"
+                    f"{folder_date.strftime('%m%d%y')}"
+                )
+                destination = destination_parent / destination_name
+                if source_folder.resolve() == destination.resolve():
+                    continue
+                shutil.copytree(
+                    source_folder,
+                    destination,
+                    dirs_exist_ok=True,
+                    copy_function=shutil.copy2,
+                )
+                copied_folders.append(destination.name)
+                copied_files += sum(1 for path in source_folder.rglob("*") if path.is_file())
+
+            def complete():
+                refresh_loaded_dataset(dataset_key)
+                show_status(
+                    f"Loaded {copied_files} {display_name} file(s) from "
+                    f"{len(copied_folders)} folder(s)."
+                )
+                messagebox.showinfo(
+                    f"Load {display_name}",
+                    f"Loaded {copied_files} file(s) into:\n{destination_parent}",
+                    parent=window,
+                )
+
+            window.after(0, complete)
+        except Exception as error:
+            message = str(error)
+            window.after(
+                0,
+                lambda: (
+                    show_status(f"Could not load {display_name}."),
+                    messagebox.showerror(
+                        f"Load {display_name}", message, parent=window
+                    ),
+                ),
+            )
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def delete_local_dataset(dataset_key, display_name):
+    """Delete imported matching folders locally; never touch the source DISK."""
+    destination_parent = local_dataset_parent(dataset_key)
+    matches = matching_dataset_folders(destination_parent, dataset_key)
+    if not matches:
+        messagebox.showinfo(
+            f"Delete {display_name}",
+            f"No imported {display_name} folders were found in:\n{destination_parent}",
+            parent=window,
+        )
+        return
+
+    folder_names = "\n".join(f"• {folder.name}" for _date, folder in matches)
+    confirmed = messagebox.askyesno(
+        f"Delete {display_name}",
+        f"Delete these local imported folders?\n\n{folder_names}\n\n"
+        f"Location: {destination_parent}\n\n"
+        "The original folders on DISK will not be changed.",
+        icon="warning",
+        parent=window,
+    )
+    if not confirmed:
+        return
+
+    try:
+        for _folder_date, folder in matches:
+            shutil.rmtree(folder)
+        refresh_loaded_dataset(dataset_key)
+        show_status(f"Deleted {len(matches)} local {display_name} folder(s).")
+    except OSError as error:
+        messagebox.showerror(
+            f"Delete {display_name}",
+            f"Could not delete the local data.\n\n{error}",
+            parent=window,
+        )
+
+
 def load_blood_tests():
     """Load one selectable list row per JSON blood-test record."""
     blood_test_view.config(state=tk.NORMAL)
@@ -418,11 +740,19 @@ def load_blood_tests():
     folder = latest_blood_test_folder()
     if folder is None:
         blood_test_panel.config(text="BLOOD TEST (missing)")
-        blood_test_view.insert(tk.END, "No bloodtest-data-MMDDYY directory found")
+        message = (
+            "Select a patient encounter with blood_tests data"
+            if PATIENT_RECORDS_DIR is not None
+            else "No bloodtest-data-MMDDYY directory found"
+        )
+        blood_test_view.insert(tk.END, message)
         blood_test_view.config(state=tk.DISABLED)
         return
 
-    blood_test_panel.config(text=f"BLOOD TEST — {friendly_folder_date(folder)}")
+    if PATIENT_RECORDS_DIR is not None:
+        blood_test_panel.config(text=f"BLOOD TEST — {encounter_name.get()}")
+    else:
+        blood_test_panel.config(text=f"BLOOD TEST — {friendly_folder_date(folder)}")
     errors = 0
     for path in sorted(folder.rglob("*.json"), key=lambda item: str(item).lower()):
         if path.name.lower() == "index.json":
@@ -478,18 +808,6 @@ def toggle_blood_test_record(event):
     return "break"
 
 
-def choose_dataset(column):
-    """Allow each image column to display an explicitly selected folder."""
-    # Windows' folder picker returns an empty string when the user cancels.
-    chosen = filedialog.askdirectory(
-        title=f"Choose {GALLERY_NAMES[column]} image folder",
-        initialdir=str(dataset_overrides[column] or IMAGE_DIR),
-    )
-    if chosen:
-        dataset_overrides[column] = Path(chosen)
-        load_images()
-
-
 def update_gallery_scrollbars(canvas, canvas_window, grid):
     """Keep the canvas viewport scrollable when image content is oversized."""
     grid.update_idletasks()
@@ -511,7 +829,8 @@ def load_images():
     thumbnails.clear()
     for selection in selected_images:
         selection.clear()
-    IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    if PATIENT_RECORDS_DIR is None:
+        IMAGE_DIR.mkdir(parents=True, exist_ok=True)
     folders = image_folders()
 
     try:
@@ -532,17 +851,21 @@ def load_images():
         # beside the script or inside IMAGE_DIR fill the remaining columns.
         folder = dataset_overrides[column] or folders[column]
         if folder is None:
-            expected = f"{FOLDER_PREFIXES[column]}-MMDDYY"
+            expected = (
+                ("xrays" if column == 0 else "ekgs")
+                if PATIENT_RECORDS_DIR is not None
+                else f"{FOLDER_PREFIXES[column]}-MMDDYY"
+            )
             gallery["title"].config(text=f"{GALLERY_NAMES[column]} (missing)")
-            ttk.Label(grid, text=f"No {expected} folder found. Create one beside this script or inside IMAGE_DIR, or choose a folder from the Images menu.", wraplength=500).grid(row=0, column=0, padx=5, pady=12)
+            ttk.Label(grid, text=f"No {expected} folder found.", wraplength=500).grid(row=0, column=0, padx=5, pady=12)
             continue
-        friendly_date = friendly_folder_date(folder)
+        friendly_date = encounter_name.get() if PATIENT_RECORDS_DIR is not None else friendly_folder_date(folder)
         gallery["title"].config(
             text=f"{GALLERY_NAMES[column]} — {friendly_date}"
         )
         paths = sorted((p for p in folder.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS), key=lambda p: str(p.relative_to(folder)).lower())
         if not paths:
-            ttk.Label(grid, text="No supported images in this folder. Select another folder from the Images menu.", wraplength=220).grid(row=0, column=0, padx=5, pady=12)
+            ttk.Label(grid, text="No supported images in this folder. Load another dataset from the Data menu.", wraplength=220).grid(row=0, column=0, padx=5, pady=12)
         if Image is None and paths:
             ttk.Label(grid, text="Install Pillow: py -m pip install pillow", wraplength=220).grid(row=0, column=0, padx=5, pady=12)
             continue
@@ -1053,36 +1376,53 @@ window.geometry(f"{visible_width}x{visible_height}")
 # The medical-data panels use 65% of the body width.
 gallery_viewport_width = max(105, round((visible_width - 45) * 65 / 100) - 24)
 
-settings = ttk.LabelFrame(
-    window, text="Connection & Model", style="Settings.TLabelframe"
-)
+settings = ttk.LabelFrame(window, text="Patient Record Selection", style="Settings.TLabelframe")
 settings.pack(fill=tk.X, padx=14, pady=(10, 5))
-settings.columnconfigure(1, weight=0)
-settings.columnconfigure(3, weight=0)
+# The server and model remain configured in .env; they are intentionally not
+# exposed in the patient-facing interface.
 server_url = tk.StringVar(value=DEFAULT_SERVER_URL)
 model_name = tk.StringVar(value=DEFAULT_MODEL)
-ttk.Label(settings, text="Server URL", style="Field.TLabel").grid(row=0, column=0, padx=(10, 5), pady=7, sticky="w")
-server_entry = ttk.Entry(
-    settings,
-    textvariable=server_url,
-    width=max(24, min(42, len(DEFAULT_SERVER_URL) + 2)),
-)
-server_entry.grid(row=0, column=1, padx=4, pady=3, sticky="w")
-ttk.Label(settings, text="Model", style="Field.TLabel").grid(row=0, column=2, padx=(14, 5), pady=7, sticky="w")
-model_picker = ttk.Combobox(
-    settings,
-    textvariable=model_name,
-    values=DEFAULT_MODELS,
-    width=max(16, min(28, len(DEFAULT_MODEL) + 2)),
-)
-model_picker.grid(row=0, column=3, padx=4, pady=3, sticky="w")
-refresh_button = ttk.Button(
-    settings,
-    text="Check Connection",
-    command=refresh_models,
-    style="Secondary.TButton",
-)
-refresh_button.grid(row=0, column=4, padx=(10, 8), pady=3)
+
+# Patient records use patient/date/time encounter folders. The patient ID is
+# chosen first; the second selector then shows only that patient's encounters.
+encounter_paths = {}
+patient_name = tk.StringVar()
+encounter_name = tk.StringVar()
+date_time_display = tk.StringVar(value="Choose date & time")
+if PATIENT_RECORDS_DIR is not None:
+    encounters = patient_encounters()
+    for _date, _time, patient_id, _label, path in encounters:
+        visit_label = f"{path.parent.name} {path.name.replace('_', ' ')}"
+        encounter_paths.setdefault(patient_id, {})[visit_label] = path
+    if encounters:
+        patient_name.set(encounters[0][2])
+    ttk.Label(settings, text="Patient ID", style="Field.TLabel").grid(
+        row=0, column=0, padx=(10, 5), pady=7, sticky="w"
+    )
+    patient_picker = ttk.Combobox(
+        settings,
+        textvariable=patient_name,
+        values=tuple(encounter_paths),
+        state="readonly" if encounters else "disabled",
+        width=16,
+    )
+    patient_picker.grid(row=0, column=1, padx=4, pady=3, sticky="w")
+    patient_picker.bind("<<ComboboxSelected>>", select_patient)
+    ttk.Label(settings, text="Date & time", style="Field.TLabel").grid(
+        row=0, column=2, padx=(14, 5), pady=7, sticky="w"
+    )
+    date_time_button = ttk.Button(
+        settings,
+        textvariable=date_time_display,
+        command=choose_date_time,
+        state=tk.NORMAL if encounters else tk.DISABLED,
+        style="Secondary.TButton",
+        width=28,
+    )
+    if encounters:
+        encounter_name.set(next(iter(encounter_paths[patient_name.get()])))
+        date_time_display.set(encounter_name.get())
+    date_time_button.grid(row=0, column=3, padx=4, pady=3, sticky="w")
 
 # Place text on the left and the image gallery beside it on the right.
 body = ttk.Frame(window, style="App.TFrame")
@@ -1132,9 +1472,15 @@ voice_toggle_button = ttk.Button(
     style="VoiceOff.TButton",
 )
 voice_toggle_button.pack(side=tk.LEFT)
+ttk.Button(
+    action_bar,
+    text="Exit",
+    command=exit_application,
+    style="Secondary.TButton",
+).pack(side=tk.LEFT, padx=(8, 0))
 status_label = ttk.Label(
     qa_panel,
-    text="Ready. Select a server and model.",
+    text="Ready. Select a patient record.",
     wraplength=240,
     style="Status.TLabel",
 )
@@ -1175,9 +1521,9 @@ sample_button = tk.Button(image_panel)
 default_button_color = sample_button.cget("background")
 sample_button.destroy()
 
-# Keep folder selection and refresh available without taking gallery space.
+# Keep data import and deletion available without taking gallery space.
 menu_bar = tk.Menu(window, background=CARD_BACKGROUND, foreground=TEXT_COLOR)
-images_menu = tk.Menu(
+data_menu = tk.Menu(
     menu_bar,
     tearoff=False,
     background=CARD_BACKGROUND,
@@ -1185,13 +1531,49 @@ images_menu = tk.Menu(
     activebackground=SOFT_BLUE,
     activeforeground=PRIMARY_BLUE_DARK,
 )
-images_menu.add_command(label="Choose X-Ray folder...", command=lambda: choose_dataset(0))
-images_menu.add_command(label="Choose EKG folder...", command=lambda: choose_dataset(1))
-images_menu.add_command(
-    label="Refresh images and blood tests",
-    command=lambda: (load_images(), load_blood_tests()),
+load_menu = tk.Menu(
+    data_menu,
+    tearoff=False,
+    background=CARD_BACKGROUND,
+    foreground=TEXT_COLOR,
+    activebackground=SOFT_TEAL,
+    activeforeground=TEXT_COLOR,
 )
-menu_bar.add_cascade(label="Images", menu=images_menu)
+load_menu.add_command(
+    label="X-Ray",
+    command=lambda: load_dataset_from_disk("xray", "X-Ray"),
+)
+load_menu.add_command(
+    label="EKG/ECG",
+    command=lambda: load_dataset_from_disk("ekg", "EKG/ECG"),
+)
+load_menu.add_command(
+    label="Blood Test",
+    command=lambda: load_dataset_from_disk("blood", "Blood Test"),
+)
+delete_menu = tk.Menu(
+    data_menu,
+    tearoff=False,
+    background=CARD_BACKGROUND,
+    foreground=TEXT_COLOR,
+    activebackground=SOFT_CORAL,
+    activeforeground=TEXT_COLOR,
+)
+delete_menu.add_command(
+    label="X-Ray",
+    command=lambda: delete_local_dataset("xray", "X-Ray"),
+)
+delete_menu.add_command(
+    label="EKG/ECG",
+    command=lambda: delete_local_dataset("ekg", "EKG/ECG"),
+)
+delete_menu.add_command(
+    label="Blood Test",
+    command=lambda: delete_local_dataset("blood", "Blood Test"),
+)
+data_menu.add_cascade(label="Load", menu=load_menu)
+data_menu.add_cascade(label="Delete", menu=delete_menu)
+menu_bar.add_cascade(label="Data", menu=data_menu)
 window.config(menu=menu_bar)
 
 galleries = []
@@ -1287,9 +1669,8 @@ blood_test_view.configure(
 
 thumbnails = []
 
-# Load images and check the server after the complete window is assembled.
+# Load the selected patient encounter after the complete window is assembled.
 window.after(100, load_images)
 window.after(150, load_blood_tests)
-window.after(300, refresh_models)
 
 window.mainloop()
