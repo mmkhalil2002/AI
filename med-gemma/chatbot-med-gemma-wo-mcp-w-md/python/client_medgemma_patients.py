@@ -577,14 +577,13 @@ def choose_snapshot():
     fit_dialog_to_display(dialog, 0.30, 0.50, 440, 360)
     dialog.columnconfigure(0, weight=1)
     dialog.rowconfigure(1, weight=1)
-    ttk.Label(dialog, text="Select date & time", padding=10).grid(
-        row=0, column=0, sticky="w")
     patient_id_var = tk.StringVar(value=active_patient.name)
-    ttk.Label(dialog, text="Patient ID", style="Field.TLabel").grid(
-        row=0, column=1, padx=(8, 10), pady=8, sticky="e")
-    dialog_patient_picker = ttk.Combobox(dialog, textvariable=patient_id_var, values=tuple(patients),
+    picker_header = ttk.Frame(dialog, padding=(10, 6))
+    picker_header.grid(row=0, column=0, columnspan=2, sticky="w")
+    ttk.Label(picker_header, text="Patient ID", style="Field.TLabel").pack(side=tk.LEFT, padx=(0, 4))
+    dialog_patient_picker = ttk.Combobox(picker_header, textvariable=patient_id_var, values=tuple(patients),
                                          state="readonly", width=18)
-    dialog_patient_picker.grid(row=0, column=2, padx=(0, 10), pady=8, sticky="e")
+    dialog_patient_picker.pack(side=tk.LEFT)
     tree = ttk.Treeview(dialog, show="tree", selectmode="browse")
     tree.grid(row=1, column=0, sticky="nsew", padx=(10, 0), pady=(0, 10))
     scrollbar = ttk.Scrollbar(dialog, orient=tk.VERTICAL, command=tree.yview)
@@ -622,8 +621,10 @@ def choose_snapshot():
 
     tree.bind("<Double-Button-1>", load_selected)
     dialog_patient_picker.bind("<<ComboboxSelected>>", change_dialog_patient)
-    ttk.Button(dialog, text="Load selected date & time", command=load_selected).grid(
-        row=2, column=0, columnspan=2, pady=(0, 10))
+    footer = ttk.Frame(dialog, padding=(10, 0, 10, 10))
+    footer.grid(row=2, column=0, columnspan=2, sticky="e")
+    ttk.Button(footer, text="Load selected date & time", command=load_selected).pack(side=tk.LEFT)
+    ttk.Button(footer, text="Close", command=dialog.destroy).pack(side=tk.LEFT, padx=(8, 0))
 
 
 def select_snapshot(path):
@@ -3542,6 +3543,11 @@ def main():
             action_bar.columnconfigure(column, weight=1, uniform="action_buttons")
     else:
         voice_toggle_button.pack(side=tk.LEFT)
+    close_gui_button = ttk.Button(action_bar, text="Close GUI", command=close_window)
+    if compact_layout:
+        close_gui_button.grid(row=2, column=0, columnspan=3, padx=3, pady=(5, 2), sticky="ew")
+    else:
+        close_gui_button.pack(side=tk.LEFT, padx=(8, 0))
     status_label = ttk.Label(
         qa_panel,
         text="Ready. Select a server and model.",

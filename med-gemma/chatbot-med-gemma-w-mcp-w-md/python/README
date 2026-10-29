@@ -1,0 +1,18 @@
+# AI Clinical Assistant Center
+
+This is the generated application README for the full Tkinter GUI in `client_medgemma_patients_mcp.py`. It matches the project documentation in `../md/README.md`.
+
+The application provides a two-column **AI Clinical Assistant Center**: patient/date-time selection above assistant controls and response on the left, with framed selectable X-ray tiles, readable EKG images, and selectable blood-test result tables on the right. It retrieves records through the separate local MCP client and submits only selected original records to MedGemma through the configured Ollama endpoint.
+
+## Run
+
+From the project root:
+
+```bat
+py -m pip install -r python\requirements.txt
+py python\client_medgemma_patients_mcp.py
+```
+
+Keep `.env` and `patient_records` beside this directory. Configure `OLLAMA_URL`, `MEDGEMMA_MODEL`, `PATIENT_RECORDS_DIR`, and optional display dimensions there. Patient folders support `xrays`, `ekgs`, and `blood_tests`, including dated snapshots and legacy `data/<modality>` folders.
+
+Use the in-app **Choose date & time** picker to load a snapshot. Only explicit selections are sent; X-rays are sent before EKGs. Generated reports require clinician review.

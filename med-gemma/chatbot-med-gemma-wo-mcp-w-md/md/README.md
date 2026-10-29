@@ -73,9 +73,10 @@ are not shown for this layout. When a patient is selected, the first available
 snapshot loads automatically. Panel labels show the selected date and time,
 not a date range.
 
-The picker includes a Patient ID dropdown and shows only dates and times—never
-filesystem paths. Dates use green text and times use a contrasting purple in
-both the picker and the modality headings.
+The picker includes a compact Patient ID dropdown header and shows only dates
+and times—never filesystem paths. Its bottom row provides `Load selected date
+& time` and `Close` buttons. Dates use green text and times use a contrasting
+purple in both the picker and the modality headings.
 
 ```text
 Project/
@@ -273,3 +274,9 @@ Use synthetic or de-identified test data. **MedGemma is a research/clinician-rev
 ## 11. Future extension: Qwen (not part of current build)
 
 If flexible doctor-directed multi-step decision-making is later required, add Qwen calls and a bounded, validated Python execution loop **inside the same application file**. Qwen can interpret the doctor's requested sequence, MedGemma can analyze medical content, and Python should enforce patient isolation, data-selection rules, and numeric comparisons. This future extension must not be assumed present in the current version.
+
+## Current main controls
+
+The main assistant area provides `Send to MedGemma`, Voice, and `Close GUI`.
+The Close GUI button safely shuts down the client through its normal window
+close handler.
