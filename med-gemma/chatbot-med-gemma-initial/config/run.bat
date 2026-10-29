@@ -7,7 +7,7 @@ if not exist "%PYTHON_DIR%\" (
   echo [ERROR] Python directory not found: "%PYTHON_DIR%"
   exit /b 1
 )
-set "MAIN_PY=%PYTHON_DIR%\client_medgemma_patients_mcp.py"
+set "MAIN_PY=%PYTHON_DIR%\client-med-gemma-2w-data.py"
 if not exist "%MAIN_PY%" (
   echo [ERROR] MedGemma application not found: "%MAIN_PY%"
   exit /b 1

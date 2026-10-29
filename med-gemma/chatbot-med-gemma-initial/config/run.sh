@@ -8,7 +8,7 @@ if [[ ! -d "$PYTHON_DIR" ]]; then
   echo "[ERROR] Python directory not found: $PYTHON_DIR" >&2
   exit 1
 fi
-MAIN_PY="$PYTHON_DIR/client_medgemma_patients_mcp.py"
+MAIN_PY="$PYTHON_DIR/client-med-gemma-2w-data.py"
 if [[ ! -f "$MAIN_PY" ]]; then
   echo "[ERROR] MedGemma application not found: $MAIN_PY" >&2
   exit 1
