@@ -24,11 +24,15 @@ Keep your existing .env beside the GUI. Set PATIENT_RECORDS_DIR=patient_records 
 
 Store each patient's files under:
 
-    patient_records/<PatientID>/xrays/
-    patient_records/<PatientID>/ekgs/
-    patient_records/<PatientID>/blood_tests/
+    patient_records/<PatientID>/<YYYY-MM-DD>/<time>/xrays/
+    patient_records/<PatientID>/<YYYY-MM-DD>/<time>/ekgs/
+    patient_records/<PatientID>/<YYYY-MM-DD>/<time>/blood_tests/
 
-X-ray and EKG folders contain supported image files; blood_tests contains JSON files. Existing GUI date/time snapshot layouts also remain supported.
+X-ray and EKG folders contain supported image files; blood_tests contains JSON files. Choose the patient date/time snapshot in the GUI before selecting records. The older direct patient-folder layout remains supported for compatibility.
+
+The MCP connection identifiers are configured in `.env`: `XRAY_SERVER_ID`,
+`EKG_SERVER_ID`, and `BLOODTEST_SERVER_ID`. They default to the current
+`xrays`, `ekgs`, and `blood_tests` values and do not change the folder names.
 
 ## Operation
 

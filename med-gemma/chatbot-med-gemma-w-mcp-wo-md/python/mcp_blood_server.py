@@ -12,7 +12,9 @@ ROOT = Path(os.environ.get('PATIENT_RECORDS_DIR', 'patient_records')).expanduser
 if not ROOT.is_absolute():
     ROOT = BASE / ROOT
 ROOT = ROOT.resolve()
-mcp = FastMCP('Patient ' + MODALITY)
+# The GUI supplies this identifier from BLOODTEST_SERVER_ID in .env when it
+# starts the child process. The folder modality remains fixed for access control.
+mcp = FastMCP(os.environ.get('MCP_SERVER_ID', 'blood_tests'))
 
 def confined(relative, file=False):
     rel = Path(relative)

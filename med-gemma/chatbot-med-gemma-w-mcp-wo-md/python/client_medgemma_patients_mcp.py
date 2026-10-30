@@ -14,7 +14,8 @@
 
 Configuration is read from .env beside this file. Optional setting:
 PATIENT_RECORDS_DIR=patient_records (relative to this script, or absolute).
-OLLAMA_URL and MEDGEMMA_MODEL retain the existing .env values.
+OLLAMA_URL, MEDGEMMA_MODEL, XRAY_SERVER_ID, EKG_SERVER_ID, and
+BLOODTEST_SERVER_ID retain the existing .env values.
 Select a patient, select records, type a question, and press Send.
 Original image bytes are uploaded; thumbnails remain local.
 AI-generated output requires clinician review.
@@ -131,6 +132,7 @@ def load_settings():
                 "WINDOW_WIDTH", "WINDOW_HEIGHT", "NUM_PREDICT", "THINK",
                 "GENERATION_TIMEOUT", "TEMPERATURE", "REPEAT_PENALTY",
                 "REPEAT_LAST_N", "DISK", "PATIENT_RECORDS_DIR",
+                "XRAY_SERVER_ID", "EKG_SERVER_ID", "BLOODTEST_SERVER_ID",
             ):
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                     value = value[1:-1]
@@ -140,6 +142,39 @@ def load_settings():
 
 # Read supported .env values once; setting helpers apply environment overrides later.
 settings_from_file = load_settings()
+
+
+# The record folders remain modality names (xrays, ekgs, blood_tests).  These
+# values are only the MCP connection identifiers, so deployments can rename
+# connections without changing the on-disk patient-record structure.
+DEFAULT_SERVER_IDS = {
+    "xrays": "xrays",
+    "ekgs": "ekgs",
+    "blood_tests": "blood_tests",
+}
+SERVER_ID_SETTINGS = {
+    "xrays": "XRAY_SERVER_ID",
+    "ekgs": "EKG_SERVER_ID",
+    "blood_tests": "BLOODTEST_SERVER_ID",
+}
+
+
+def configured_server_ids():
+    """Return unique MCP connection IDs, falling back for missing/empty values."""
+    server_ids = {}
+    for modality, setting in SERVER_ID_SETTINGS.items():
+        # An explicitly empty Windows environment variable must not suppress a
+        # valid .env/default value.  Likewise, a blank .env assignment means
+        # "use the default" rather than an invalid server configuration.
+        value = os.environ.get(setting) or settings_from_file.get(setting) or DEFAULT_SERVER_IDS[modality]
+        server_ids[modality] = value.strip() or DEFAULT_SERVER_IDS[modality]
+    if len(set(server_ids.values())) != len(server_ids):
+        raise RuntimeError(
+            "[ERROR] MCP server IDs must be non-empty and unique.\n"
+            "[ACTION] Set XRAY_SERVER_ID, EKG_SERVER_ID, and BLOODTEST_SERVER_ID in .env.\n"
+            "[STOP] Application terminated."
+        )
+    return server_ids
 
 
 
@@ -167,7 +202,8 @@ def record_client():
     with _mcp_start_lock:
         if _mcp_records is None:
             # Pass the absolute patient root and the directory containing the server scripts.
-            _mcp_records = MCPRecords(patient_records_root(), PYTHON_DIR)
+            _mcp_records = MCPRecords(
+                patient_records_root(), PYTHON_DIR, configured_server_ids())
     return _mcp_records
 
 # -------------------------------------------------------------------------
@@ -354,6 +390,36 @@ def discover_patients(root):
         except (OSError, ValueError, RuntimeError):
             continue
     return patients
+
+
+def patient_demographics(patient_id):
+    """Split a ``first-last-MMDDYY`` patient-folder name for the lookup form."""
+    parts = str(patient_id).rsplit("-", 2)
+    return tuple(parts) if len(parts) == 3 and all(parts) else (str(patient_id), "", "")
+
+
+def select_patient_by_demographics(event=None):
+    """Find and load a patient selected by first name, last name, and DOB."""
+    first = patient_first_name.get().strip()
+    last = patient_last_name.get().strip()
+    dob = patient_dob.get().strip()
+    if not first or not last or not dob:
+        show_status("Enter first name, last name, and DOB (MMDDYY).")
+        return "break" if event is not None else None
+    try:
+        datetime.strptime(dob, "%m%d%y")
+    except ValueError:
+        show_status("DOB must be a valid date in MMDDYY format.")
+        return "break" if event is not None else None
+    wanted = (first.casefold(), last.casefold(), dob)
+    for patient_id in patients:
+        candidate = patient_demographics(patient_id)
+        if (candidate[0].casefold(), candidate[1].casefold(), candidate[2]) == wanted:
+            patient_name.set(patient_id)
+            select_patient()
+            return "break" if event is not None else None
+    show_status("No patient matches that first name, last name, and DOB.")
+    return "break" if event is not None else None
 
 
 # -------------------------------------------------------------------------
@@ -923,13 +989,10 @@ def choose_snapshot():
     dialog.rowconfigure(1, weight=1)
     header = ttk.Frame(dialog, padding=(10, 8))
     header.grid(row=0, column=0, columnspan=2, sticky="ew")
-    patient_id_var = tk.StringVar(value=active_patient.name)
-    ttk.Label(header, text="Patient ID", style="Field.TLabel").grid(
+    ttk.Label(header, text="Patient", style="Field.TLabel").grid(
         row=0, column=0, padx=(0, 8), sticky="w")
-    dialog_patient_picker = ttk.Combobox(
-        header, textvariable=patient_id_var, values=tuple(patients),
-        state="readonly", width=18)
-    dialog_patient_picker.grid(row=0, column=1, sticky="w")
+    ttk.Label(header, text=active_patient.name, style="Status.TLabel").grid(
+        row=0, column=1, sticky="w")
     tree = ttk.Treeview(dialog, show="tree", selectmode="browse")
     tree.grid(row=1, column=0, sticky="nsew", padx=(10, 0), pady=(0, 10))
     scrollbar = ttk.Scrollbar(dialog, orient=tk.VERTICAL, command=tree.yview)
@@ -971,31 +1034,7 @@ def choose_snapshot():
         select_snapshot(path)
         dialog.destroy()
 
-    # -------------------------------------------------------------------------
-    # FUNCTION: change_dialog_patient
-    # Purpose: Nested callback for the snapshot dialog patient selector.
-    # Operation: Nested callback for the snapshot dialog patient selector. Closes the
-    # dialog, updates the main patient selector, clears/loads the patient context and
-    # schedules a fresh snapshot chooser.
-    # Parameters: _event.
-    #   _event: optional Tkinter event, unused by this callback.
-    #
-    # Example (illustrative; not executed):
-    #   Choose P0002 inside the snapshot dialog; change_dialog_patient() updates the main
-    #   patient selection and schedules its snapshot picker.
-    #   GUI examples require the running application and existing widgets/state.
-    # -------------------------------------------------------------------------
-    def change_dialog_patient(_event=None):
-        if patient_id_var.get() == patient_name.get():
-            return
-        dialog.destroy()
-        patient_name.set(patient_id_var.get())
-        select_patient()
-        # Run this callback after Tk finishes its currently pending UI work.
-        window.after_idle(choose_snapshot)
-
     tree.bind("<Double-Button-1>", load_selected)
-    dialog_patient_picker.bind("<<ComboboxSelected>>", change_dialog_patient)
     # Keep both actions right-aligned without narrowing the date/time tree.
     actions = ttk.Frame(dialog, padding=(10, 2, 10, 10))
     actions.grid(row=2, column=0, columnspan=2, sticky="ew")
@@ -1034,7 +1073,8 @@ def select_snapshot(path):
         return
     selected_snapshot_dir = path
     active_date_start = active_date_end = date_value[0]
-    snapshot_selection_label.config(text=f"Loaded: {path.parent.name} {path.name}")
+    snapshot_selection_label.config(
+        text=f"Selected patient: {active_patient.name} · {path.parent.name} {path.name}")
     clear_report_review()
     prompt_box.delete("1.0", tk.END)
     load_images()
@@ -1083,7 +1123,8 @@ def select_patient(event=None):
         load_images()
         load_blood_tests()
         if active_patient is not None:
-            snapshot_selection_label.config(text="Choose a date and time to load data.")
+            snapshot_selection_label.config(
+                text=f"Selected patient: {active_patient.name} · choose date & time")
     show_status(f"Patient: {patient_name.get()}" if active_patient else "No patient directories found")
     refresh_saved_report_history()
     update_selection_workspace()
@@ -4134,7 +4175,7 @@ def finish_request(request_id, answer=None, metadata=None, error=None, cancelled
     if active_patient is None or active_patient.resolve() != state.snapshot.patient.resolve():
         state.terminal = True
         current_request = None
-        patient_picker.config(state="readonly")
+        patient_picker.config(state=tk.NORMAL)
         send_button.config(state=tk.NORMAL)
         cancel_button.config(state=tk.DISABLED)
         retry_button.config(state=tk.DISABLED)
@@ -4143,7 +4184,7 @@ def finish_request(request_id, answer=None, metadata=None, error=None, cancelled
         return
     state.terminal = True
     current_request = None
-    patient_picker.config(state="readonly")
+    patient_picker.config(state=tk.NORMAL)
     send_button.config(state=tk.NORMAL)
     cancel_button.config(state=tk.DISABLED)
     retry_button.config(state=tk.NORMAL if error is not None and not cancelled else tk.DISABLED)
@@ -4657,7 +4698,7 @@ def refresh_models():
 # -------------------------------------------------------------------------
 def main():
     """Validate startup data, then construct the preserved Tkinter interface."""
-    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_picker, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label
+    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_first_name, patient_last_name, patient_dob, patient_picker, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label
     # Fatal data-root validation precedes construction of any Tk widget.
     try:
         PATIENT_RECORDS_DIR = patient_records_root()
@@ -4698,6 +4739,7 @@ def main():
         foreground=PRIMARY_BLUE_DARK,
         font=("Segoe UI", 11, "bold"),
     )
+    ui_style.configure("PatientBar.TFrame", background=CARD_BACKGROUND)
     ui_style.configure(
         "Assistant.TLabelframe",
         background=CARD_BACKGROUND,
@@ -4728,6 +4770,18 @@ def main():
         "Field.TLabel",
         background=CARD_BACKGROUND,
         foreground=TEXT_COLOR,
+        font=("Segoe UI", 10, "bold"),
+    )
+    ui_style.configure(
+        "ActivePatient.TLabel",
+        background=CARD_BACKGROUND,
+        foreground=PRIMARY_BLUE_DARK,
+        font=("Segoe UI", 10, "bold"),
+    )
+    ui_style.configure(
+        "SelectedPatient.TLabel",
+        background=CARD_BACKGROUND,
+        foreground=TEAL,
         font=("Segoe UI", 10, "bold"),
     )
     ui_style.configure(
@@ -4862,19 +4916,33 @@ def main():
                          padx=10, pady=(1, 5), sticky="w")
     settings.pack_forget()
 
-    patient_bar = ttk.LabelFrame(window, text="Patient Selection and Date Range", style="Settings.TLabelframe")
+    patient_bar = ttk.Frame(window, style="PatientBar.TFrame")
     patient_bar.pack(fill=tk.X, padx=14, pady=5)
     patient_name = tk.StringVar()
-    ttk.Label(patient_bar, text="Patient ID", style="Field.TLabel").grid(row=0, column=0, padx=(10, 4), pady=5)
-    patient_picker = ttk.Combobox(patient_bar, textvariable=patient_name,
-                                  values=tuple(patients), state="readonly", width=30)
-    patient_picker.grid(row=0, column=1, padx=6, pady=5, sticky="w")
-    patient_picker.bind("<<ComboboxSelected>>", select_patient)
-    active_label = ttk.Label(patient_bar, text="Active patient: none", style="Field.TLabel")
+    patient_first_name = tk.StringVar()
+    patient_last_name = tk.StringVar()
+    patient_dob = tk.StringVar()
+    ttk.Label(patient_bar, text="First name", style="Field.TLabel").grid(row=0, column=0, padx=(10, 4), pady=5)
+    first_name_entry = ttk.Entry(patient_bar, textvariable=patient_first_name, width=16)
+    first_name_entry.grid(row=0, column=1, padx=4, pady=5, sticky="w")
+    ttk.Label(patient_bar, text="Last name", style="Field.TLabel").grid(row=0, column=2, padx=(8, 4), pady=5)
+    last_name_entry = ttk.Entry(patient_bar, textvariable=patient_last_name, width=16)
+    last_name_entry.grid(row=0, column=3, padx=4, pady=5, sticky="w")
+    ttk.Label(patient_bar, text="DOB (MMDDYY)", style="Field.TLabel").grid(row=0, column=4, padx=(8, 4), pady=5)
+    dob_entry = ttk.Entry(patient_bar, textvariable=patient_dob, width=10)
+    dob_entry.grid(row=0, column=5, padx=4, pady=5, sticky="w")
+    patient_picker = ttk.Button(patient_bar, text="Search", command=select_patient_by_demographics,
+                                style="Secondary.TButton")
+    patient_picker.grid(row=0, column=6, padx=(6, 10), pady=5, sticky="w")
+    for entry in (first_name_entry, last_name_entry, dob_entry):
+        entry.bind("<Return>", select_patient_by_demographics)
+    patient_status = ttk.Frame(patient_bar, style="PatientBar.TFrame")
     if compact_layout:
-        active_label.grid(row=2, column=0, columnspan=2, padx=(10, 5), pady=5, sticky="w")
+        patient_status.grid(row=2, column=0, columnspan=7, padx=(10, 5), pady=5, sticky="w")
     else:
-        active_label.grid(row=0, column=4, padx=8, pady=5, sticky="w")
+        patient_status.grid(row=0, column=10, rowspan=2, padx=(8, 12), pady=5, sticky="e")
+    active_label = ttk.Label(patient_status, text="Active patient: none", style="ActivePatient.TLabel")
+    active_label.pack(anchor="w")
     demo_data = tk.BooleanVar(value=False)
     demo_toggle = ttk.Checkbutton(patient_bar, text="Demo data for this session", variable=demo_data,
                                   command=toggle_demo_data)
@@ -4904,25 +4972,28 @@ def main():
     remove_tray_button = ttk.Button(patient_bar, text="Remove selected", command=remove_tray_selection)
     if not streamlined_layout:
         remove_tray_button.grid(row=3 if compact_layout else 2, column=5, padx=(4, 10), pady=3, sticky="n")
-    patient_bar.columnconfigure(3, weight=0)
-    patient_bar.columnconfigure(4, weight=0)
-    patient_bar.columnconfigure(1, weight=1)
+    # Keep first name, last name, DOB, Search, and date/time selection together
+    # instead of allowing the first-name column to consume the spare width.
+    for column in range(10):
+        patient_bar.columnconfigure(column, weight=0)
+    patient_bar.columnconfigure(10, weight=1)
     tray_items = []
     tray_list.bind("<Return>", remove_tray_selection)
     tray_list.bind("<Delete>", remove_tray_selection)
 
-    date_filter_bar = ttk.Frame(patient_bar, style="App.TFrame")
-    date_filter_bar.grid(row=0 if not compact_layout else 1, column=2 if not compact_layout else 0,
-                         columnspan=3 if compact_layout else 2, padx=(8, 10), pady=5,
-                         sticky="e" if not compact_layout else "w")
+    date_filter_bar = ttk.Frame(patient_bar, style="PatientBar.TFrame")
+    # Keep date/time selection directly beside the patient search controls.
+    date_filter_bar.grid(row=0 if not compact_layout else 1, column=7 if not compact_layout else 0,
+                         columnspan=3 if compact_layout else 1, padx=(8, 10), pady=5,
+                         sticky="w")
     date_from_var = tk.StringVar(value="")
     date_to_var = tk.StringVar(value="")
     ttk.Button(date_filter_bar, text="Choose date & time", command=choose_snapshot,
                style="Secondary.TButton").pack(side=tk.LEFT, padx=(4, 8), pady=5)
     snapshot_selection_label = ttk.Label(
-        date_filter_bar, text="Choose a date and time to load data.", style="Status.TLabel"
+        patient_status, text="Selected patient: none", style="SelectedPatient.TLabel"
     )
-    snapshot_selection_label.pack(side=tk.LEFT, padx=(0, 4), pady=5)
+    snapshot_selection_label.pack(anchor="w")
     # Retained only for compatibility with old saved-session helper callbacks;
     # the visible workflow uses exactly one date/time picker.
     date_filter_status = snapshot_selection_label
@@ -5352,15 +5423,11 @@ def main():
     # Schedule later execution in the Tk event loop; this is not a blocking sleep.
     window.after(180, establish_workspace_proportions)
 
-    # Select and load the first available patient as soon as the UI is ready.
-    if patients:
-        patient_picker.current(0)
-
-    # Load records and check the server after the complete window is assembled.
+    # Keep the patient lookup fields empty until the clinician performs a search.
+    # Load background UI work and check the server after the complete window is assembled.
     # Schedule later execution in the Tk event loop; this is not a blocking sleep.
     window.after(50, drain_ui)
     # Schedule later execution in the Tk event loop; this is not a blocking sleep.
-    window.after(100, select_patient)
     # Schedule later execution in the Tk event loop; this is not a blocking sleep.
     window.after(250, refresh_models)
     # The startup check reads /api/tags only; it never generates or sends records.

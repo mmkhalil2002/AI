@@ -419,6 +419,47 @@ def select_patient(_event=None):
     reload_selected_encounter()
 
 
+def patient_search_key(patient_id):
+    """Return the first name, last name, and six-digit DoD encoded in an ID."""
+    first_name, separator, remainder = patient_id.partition("-")
+    last_name, separator, dod = remainder.rpartition("-")
+    if not separator or not first_name or not last_name or not dod:
+        return None
+    return first_name.casefold(), last_name.casefold(), dod
+
+
+def search_patient(_event=None):
+    """Select a patient from the three search fields, without a dropdown."""
+    first_name = patient_first_name.get().strip().casefold()
+    last_name = patient_last_name.get().strip().casefold()
+    dod = "".join(character for character in patient_dod.get() if character.isdigit())
+    if not first_name or not last_name or len(dod) != 6:
+        messagebox.showinfo(
+            "Patient search",
+            "Enter a first name, last name, and a six-digit DoD (MMDDYY).",
+            parent=window,
+        )
+        return
+
+    patient_id = patient_search_index.get((first_name, last_name, dod))
+    if patient_id is None:
+        patient_name.set("")
+        encounter_name.set("")
+        date_time_display.set("Choose date & time")
+        date_time_button.configure(state=tk.DISABLED)
+        messagebox.showinfo("Patient search", "No patient record matched that search.", parent=window)
+        return
+
+    patient_name.set(patient_id)
+    choices = encounter_paths[patient_id]
+    encounter_name.set(next(iter(choices)))
+    date_time_display.set(encounter_name.get())
+    date_time_button.configure(state=tk.NORMAL)
+    reload_selected_encounter()
+    if "status_label" in globals():
+        status_label.configure(text=f"Loaded record for {patient_id}.")
+
+
 def choose_date_time():
     """Open a date-grouped window of encounters for the selected patient."""
     choices = encounter_paths.get(patient_name.get(), {})
@@ -1383,10 +1424,13 @@ settings.pack(fill=tk.X, padx=14, pady=(10, 5))
 server_url = tk.StringVar(value=DEFAULT_SERVER_URL)
 model_name = tk.StringVar(value=DEFAULT_MODEL)
 
-# Patient records use patient/date/time encounter folders. The patient ID is
-# chosen first; the second selector then shows only that patient's encounters.
+# Patient records use patient/date/time encounter folders.  Patients are found
+# by their first name, last name, and six-digit DoD rather than a dropdown.
 encounter_paths = {}
 patient_name = tk.StringVar()
+patient_first_name = tk.StringVar()
+patient_last_name = tk.StringVar()
+patient_dod = tk.StringVar()
 encounter_name = tk.StringVar()
 date_time_display = tk.StringVar(value="Choose date & time")
 if PATIENT_RECORDS_DIR is not None:
@@ -1394,35 +1438,48 @@ if PATIENT_RECORDS_DIR is not None:
     for _date, _time, patient_id, _label, path in encounters:
         visit_label = f"{path.parent.name} {path.name.replace('_', ' ')}"
         encounter_paths.setdefault(patient_id, {})[visit_label] = path
-    if encounters:
-        patient_name.set(encounters[0][2])
-    ttk.Label(settings, text="Patient ID", style="Field.TLabel").grid(
+    patient_search_index = {
+        key: patient_id
+        for patient_id in encounter_paths
+        if (key := patient_search_key(patient_id)) is not None
+    }
+    ttk.Label(settings, text="First name", style="Field.TLabel").grid(
         row=0, column=0, padx=(10, 5), pady=7, sticky="w"
     )
-    patient_picker = ttk.Combobox(
+    first_name_entry = ttk.Entry(
         settings,
-        textvariable=patient_name,
-        values=tuple(encounter_paths),
-        state="readonly" if encounters else "disabled",
-        width=16,
+        textvariable=patient_first_name,
+        width=14,
     )
-    patient_picker.grid(row=0, column=1, padx=4, pady=3, sticky="w")
-    patient_picker.bind("<<ComboboxSelected>>", select_patient)
-    ttk.Label(settings, text="Date & time", style="Field.TLabel").grid(
+    first_name_entry.grid(row=0, column=1, padx=4, pady=3, sticky="w")
+    ttk.Label(settings, text="Last name", style="Field.TLabel").grid(
         row=0, column=2, padx=(14, 5), pady=7, sticky="w"
+    )
+    last_name_entry = ttk.Entry(settings, textvariable=patient_last_name, width=14)
+    last_name_entry.grid(row=0, column=3, padx=4, pady=3, sticky="w")
+    ttk.Label(settings, text="DoD (MMDDYY)", style="Field.TLabel").grid(
+        row=0, column=4, padx=(14, 5), pady=7, sticky="w"
+    )
+    dod_entry = ttk.Entry(settings, textvariable=patient_dod, width=10)
+    dod_entry.grid(row=0, column=5, padx=4, pady=3, sticky="w")
+    search_button = ttk.Button(
+        settings, text="Search", command=search_patient, style="Accent.TButton"
+    )
+    search_button.grid(row=0, column=6, padx=(10, 4), pady=3, sticky="w")
+    for entry in (first_name_entry, last_name_entry, dod_entry):
+        entry.bind("<Return>", search_patient)
+    ttk.Label(settings, text="Date & time", style="Field.TLabel").grid(
+        row=0, column=7, padx=(14, 5), pady=7, sticky="w"
     )
     date_time_button = ttk.Button(
         settings,
         textvariable=date_time_display,
         command=choose_date_time,
-        state=tk.NORMAL if encounters else tk.DISABLED,
+        state=tk.DISABLED,
         style="Secondary.TButton",
         width=28,
     )
-    if encounters:
-        encounter_name.set(next(iter(encounter_paths[patient_name.get()])))
-        date_time_display.set(encounter_name.get())
-    date_time_button.grid(row=0, column=3, padx=4, pady=3, sticky="w")
+    date_time_button.grid(row=0, column=8, padx=4, pady=3, sticky="w")
 
 # Place text on the left and the image gallery beside it on the right.
 body = ttk.Frame(window, style="App.TFrame")

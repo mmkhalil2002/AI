@@ -1,6 +1,6 @@
 """MCP transport and record access, independent of the GUI and Ollama.
 
-Create MCPRecords(records_root, server_directory); call read_record_bytes,
+Create MCPRecords(records_root, server_directory, server_ids); call read_record_bytes,
 read_blood_record, or call. Call close() when the GUI exits.
 """
 # =============================================================================
@@ -203,7 +203,7 @@ class MCPRecords:
     # Relative constructor paths resolve against the process working directory.
     # This constructor launches a daemon thread and returns without waiting for
     # initialization. The first call() waits for the ready event.
-    def __init__(self, records_root, server_directory=None):
+    def __init__(self, records_root, server_directory=None, server_ids=None):
         # Store an absolute normalized root used for path calculations and passed
         # to every server. resolve() alone does not verify that the root exists.
         self.records_root = Path(records_root).resolve()
@@ -212,6 +212,27 @@ class MCPRecords:
         self.server_directory = Path(server_directory or __file__).resolve()
         if server_directory is None:
             self.server_directory = self.server_directory.parent
+        # Keep record-folder names separate from MCP connection identifiers.
+        # The GUI loads these values from .env, but defaults retain compatibility
+        # for callers that construct this client directly.
+        defaults = {
+            'xrays': 'xrays',
+            'ekgs': 'ekgs',
+            'blood_tests': 'blood_tests',
+        }
+        if server_ids is not None and set(server_ids) - set(defaults):
+            raise ValueError('MCP server IDs may only be set for known modalities.')
+        supplied_ids = server_ids or {}
+        self.server_ids = {}
+        for modality, default in defaults.items():
+            value = supplied_ids.get(modality) or default
+            if not isinstance(value, str):
+                raise ValueError('MCP server IDs must be strings.')
+            # Direct callers get the same blank-means-default behavior as the
+            # GUI's .env configuration.
+            self.server_ids[modality] = value.strip() or default
+        if len(set(self.server_ids.values())) != len(self.server_ids):
+            raise ValueError('MCP server IDs must be non-empty and unique for each modality.')
         # Shared lifecycle state:
         # loop: asyncio event loop owned exclusively by the background thread.
         # ready: threading event notifying callers of success OR startup failure.
@@ -265,7 +286,11 @@ class MCPRecords:
                                      ('blood_tests', 'mcp_blood_server.py')]:
                 # Inherit the current environment, overriding only the records
                 # root so every child server uses the same absolute directory.
-                env = dict(os.environ, PATIENT_RECORDS_DIR=str(self.records_root))
+                env = dict(
+                    os.environ,
+                    PATIENT_RECORDS_DIR=str(self.records_root),
+                    MCP_SERVER_ID=self.server_ids[modality],
+                )
                 # Use the SAME Python interpreter as the GUI. Communication is
                 # through subprocess stdin/stdout; no listening TCP port is used.
                 # Absolute script paths allow launches from another directory.
@@ -278,7 +303,7 @@ class MCPRecords:
                 # initialization handshake before allowing tool calls.
                 session = await stack.enter_async_context(ClientSession(read, write))
                 await session.initialize()
-                self.sessions[modality] = session
+                self.sessions[self.server_ids[modality]] = session
             # Signal success only once ALL three sessions are initialized.
             # Keep their contexts open until close() sets stop_event.
             self.ready.set()
@@ -289,7 +314,7 @@ class MCPRecords:
     # forwarded to that server. An unknown modality raises KeyError.
     async def _call(self, modality, tool, arguments):
         async with self.lock:
-            result = await self.sessions[modality].call_tool(tool, arguments)
+            result = await self.sessions[self.server_ids[modality]].call_tool(tool, arguments)
             # These project servers return JSON in text content blocks. Ignore
             # other MCP content types; this is not a generic result decoder for
             # arbitrary third-party servers or structured-only responses.
