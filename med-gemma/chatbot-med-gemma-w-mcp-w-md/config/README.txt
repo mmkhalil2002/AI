@@ -38,6 +38,10 @@ Keep python/.env and its OLLAMA_URL and MEDGEMMA_MODEL settings. PATIENT_RECORDS
 
 Init does not start the application. Run launches the GUI in python/; its separate MCP client starts all three stdio servers when needed. Closing the GUI requests server shutdown.
 
+Markdown-driven GUI generation: `md/AGENTS.md` contains the canonical fenced Python source blocks as well as the behavioral contract. Run `py config\generate_gui_from_md.py` to regenerate `python/client_medgemma_patients_mcp.py` directly from that document.
+
+System generation: run `py config\generate_system_from_agents.py` to validate `md\AGENTS.md` and regenerate the GUI, MCP client, and all MCP server entry points directly from its canonical source blocks. No `.py.old` implementation templates are required.
+
 Windows uninit retains confirmation prompts and preserves installed Python packages, settings, source, requirements and patient files. It can optionally remove global Codex and a leftover .venv. No Ubuntu uninit was supplied or added.
 
 Validation: requirement generation and repeatability checked for this directory layout; shell syntax and ZIP integrity checked. Windows execution and actual installations were not tested here.

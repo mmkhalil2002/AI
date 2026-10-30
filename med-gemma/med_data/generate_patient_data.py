@@ -96,14 +96,29 @@ def output_root() -> Path:
 
 
 def prompt_patient_id() -> str:
-    """Prevent traversal and unsafe folder names while allowing ordinary IDs."""
+    """Collect patient identity fields and build ``firstname-lastname-MMDDYY``."""
     while True:
-        value = input("Patient ID: ").strip()
-        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _-]{0,79}", value) and value.upper() not in {
-            "CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))
-        } and value[-1] not in {" ", "."}:
-            return value
-        print("[ERROR] Use 1-80 letters, digits, spaces, underscores, or hyphens; start with a letter/digit.")
+        first_name = input("First name: ").strip()
+        if re.fullmatch(r"[A-Za-z][A-Za-z '-]{0,39}", first_name) and first_name[-1] not in {" ", "-", "'"}:
+            break
+        print("[ERROR] First name must be 1-40 letters and may include spaces, hyphens, or apostrophes.")
+
+    while True:
+        last_name = input("Last name: ").strip()
+        if re.fullmatch(r"[A-Za-z][A-Za-z '-]{0,39}", last_name) and last_name[-1] not in {" ", "-", "'"}:
+            break
+        print("[ERROR] Last name must be 1-40 letters and may include spaces, hyphens, or apostrophes.")
+
+    while True:
+        dob = input("Date of birth (MMDDYY): ").strip()
+        try:
+            # Parsing also rejects invalid values such as month 13 or day 32.
+            if not re.fullmatch(r"\d{6}", dob):
+                raise ValueError
+            datetime.strptime(dob, "%m%d%y")
+            return f"{first_name}-{last_name}-{dob}"
+        except ValueError:
+            print("[ERROR] Enter a valid six-digit date of birth in MMDDYY format, for example 042586.")
 
 
 def prompt_date() -> str:

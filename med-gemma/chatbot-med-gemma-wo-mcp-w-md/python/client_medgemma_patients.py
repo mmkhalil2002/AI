@@ -577,13 +577,9 @@ def choose_snapshot():
     fit_dialog_to_display(dialog, 0.30, 0.50, 440, 360)
     dialog.columnconfigure(0, weight=1)
     dialog.rowconfigure(1, weight=1)
-    patient_id_var = tk.StringVar(value=active_patient.name)
     picker_header = ttk.Frame(dialog, padding=(10, 6))
     picker_header.grid(row=0, column=0, columnspan=2, sticky="w")
-    ttk.Label(picker_header, text="Patient ID", style="Field.TLabel").pack(side=tk.LEFT, padx=(0, 4))
-    dialog_patient_picker = ttk.Combobox(picker_header, textvariable=patient_id_var, values=tuple(patients),
-                                         state="readonly", width=18)
-    dialog_patient_picker.pack(side=tk.LEFT)
+    ttk.Label(picker_header, text="Select date & time", style="Field.TLabel").pack(side=tk.LEFT)
     tree = ttk.Treeview(dialog, show="tree", selectmode="browse")
     tree.grid(row=1, column=0, sticky="nsew", padx=(10, 0), pady=(0, 10))
     scrollbar = ttk.Scrollbar(dialog, orient=tk.VERTICAL, command=tree.yview)
@@ -611,16 +607,7 @@ def choose_snapshot():
         select_snapshot(path)
         dialog.destroy()
 
-    def change_dialog_patient(_event=None):
-        if patient_id_var.get() == patient_name.get():
-            return
-        dialog.destroy()
-        patient_name.set(patient_id_var.get())
-        select_patient()
-        window.after_idle(choose_snapshot)
-
     tree.bind("<Double-Button-1>", load_selected)
-    dialog_patient_picker.bind("<<ComboboxSelected>>", change_dialog_patient)
     footer = ttk.Frame(dialog, padding=(10, 0, 10, 10))
     footer.grid(row=2, column=0, columnspan=2, sticky="e")
     ttk.Button(footer, text="Load selected date & time", command=load_selected).pack(side=tk.LEFT)
@@ -683,6 +670,42 @@ def select_patient(event=None):
     show_status(f"Patient: {patient_name.get()}" if active_patient else "No patient directories found")
     refresh_saved_report_history()
     update_selection_workspace()
+
+
+def search_patient():
+    """Find a patient folder from the three identity fields and load its newest data.
+
+    Patient folders use the supplied ``first-last-MMDDYY`` convention.  The
+    comparison is case-insensitive so entry capitalization does not matter,
+    but all three fields are required to avoid loading the wrong patient's
+    records.
+    """
+    first_name = first_name_var.get().strip()
+    last_name = last_name_var.get().strip()
+    dob = dob_var.get().strip()
+    if not first_name or not last_name or not dob:
+        messagebox.showerror("Patient search", "Enter first name, last name, and DOB (MMDDYY).", parent=window)
+        return
+    try:
+        parse_mmddyy_input(dob)
+    except ValueError as error:
+        messagebox.showerror("Patient search", str(error), parent=window)
+        return
+    folder_name = f"{first_name}-{last_name}-{dob}".casefold()
+    matched_name = next((name for name in patients if name.casefold() == folder_name), None)
+    if matched_name is None:
+        show_status("No patient records match the entered first name, last name, and DOB.")
+        messagebox.showinfo("Patient search", "No matching patient records were found.", parent=window)
+        return
+    patient_name.set(matched_name)
+    select_patient()
+
+
+def set_patient_search_enabled(enabled):
+    """Enable or lock the identity fields while a model request is active."""
+    state = tk.NORMAL if enabled else tk.DISABLED
+    for control in patient_search_controls:
+        control.config(state=state)
 
 
 def report_has_unsaved_edits():
@@ -2832,7 +2855,7 @@ def finish_request(request_id, answer=None, metadata=None, error=None, cancelled
     if active_patient is None or active_patient.resolve() != state.snapshot.patient.resolve():
         state.terminal = True
         current_request = None
-        patient_picker.config(state="readonly")
+        set_patient_search_enabled(True)
         send_button.config(state=tk.NORMAL)
         cancel_button.config(state=tk.DISABLED)
         retry_button.config(state=tk.DISABLED)
@@ -2841,7 +2864,7 @@ def finish_request(request_id, answer=None, metadata=None, error=None, cancelled
         return
     state.terminal = True
     current_request = None
-    patient_picker.config(state="readonly")
+    set_patient_search_enabled(True)
     send_button.config(state=tk.NORMAL)
     cancel_button.config(state=tk.DISABLED)
     retry_button.config(state=tk.NORMAL if error is not None and not cancelled else tk.DISABLED)
@@ -3101,7 +3124,7 @@ def send_question():
     )
     state = RequestState(snapshot=snapshot)
     current_request = state
-    patient_picker.config(state=tk.DISABLED)
+    set_patient_search_enabled(False)
     send_button.config(state=tk.DISABLED)
     cancel_button.config(state=tk.NORMAL)
     retry_button.config(state=tk.DISABLED)
@@ -3174,7 +3197,7 @@ def refresh_models():
 
 def main():
     """Validate startup data, then construct the preserved Tkinter interface."""
-    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_picker, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label
+    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, first_name_var, last_name_var, dob_var, patient_search_controls, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label
     # Fatal data-root validation precedes construction of any Tk widget.
     try:
         PATIENT_RECORDS_DIR = patient_records_root()
@@ -3377,19 +3400,31 @@ def main():
                          padx=10, pady=(1, 5), sticky="w")
     settings.pack_forget()
 
-    patient_bar = ttk.LabelFrame(window, text="Patient Selection and Date Range", style="Settings.TLabelframe")
+    patient_bar = ttk.LabelFrame(window, text="Patient Search and Date/Time", style="Settings.TLabelframe")
     patient_bar.pack(fill=tk.X, padx=14, pady=5)
     patient_name = tk.StringVar()
-    ttk.Label(patient_bar, text="Patient ID", style="Field.TLabel").grid(row=0, column=0, padx=(10, 4), pady=5)
-    patient_picker = ttk.Combobox(patient_bar, textvariable=patient_name,
-                                  values=tuple(patients), state="readonly", width=30)
-    patient_picker.grid(row=0, column=1, padx=6, pady=5, sticky="w")
-    patient_picker.bind("<<ComboboxSelected>>", select_patient)
+    first_name_var = tk.StringVar()
+    last_name_var = tk.StringVar()
+    dob_var = tk.StringVar()
+    ttk.Label(patient_bar, text="First name", style="Field.TLabel").grid(row=0, column=0, padx=(10, 4), pady=5)
+    first_name_entry = ttk.Entry(patient_bar, textvariable=first_name_var, width=16)
+    first_name_entry.grid(row=0, column=1, padx=(0, 6), pady=5, sticky="w")
+    ttk.Label(patient_bar, text="Last name", style="Field.TLabel").grid(row=0, column=2, padx=(2, 4), pady=5)
+    last_name_entry = ttk.Entry(patient_bar, textvariable=last_name_var, width=16)
+    last_name_entry.grid(row=0, column=3, padx=(0, 6), pady=5, sticky="w")
+    ttk.Label(patient_bar, text="DOB (MMDDYY)", style="Field.TLabel").grid(row=0, column=4, padx=(2, 4), pady=5)
+    dob_entry = ttk.Entry(patient_bar, textvariable=dob_var, width=10)
+    dob_entry.grid(row=0, column=5, padx=(0, 6), pady=5, sticky="w")
+    search_button = ttk.Button(patient_bar, text="Search", command=search_patient, style="Secondary.TButton")
+    search_button.grid(row=0, column=6, padx=(0, 8), pady=5, sticky="w")
+    patient_search_controls = (first_name_entry, last_name_entry, dob_entry, search_button)
+    for entry in (first_name_entry, last_name_entry, dob_entry):
+        entry.bind("<Return>", lambda _event: search_patient())
     active_label = ttk.Label(patient_bar, text="Active patient: none", style="Field.TLabel")
     if compact_layout:
-        active_label.grid(row=2, column=0, columnspan=2, padx=(10, 5), pady=5, sticky="w")
+        active_label.grid(row=2, column=0, columnspan=7, padx=(10, 5), pady=5, sticky="w")
     else:
-        active_label.grid(row=0, column=4, padx=8, pady=5, sticky="w")
+        active_label.grid(row=0, column=8, padx=8, pady=5, sticky="w")
     demo_data = tk.BooleanVar(value=False)
     demo_toggle = ttk.Checkbutton(patient_bar, text="Demo data for this session", variable=demo_data,
                                   command=toggle_demo_data)
@@ -3419,16 +3454,14 @@ def main():
     remove_tray_button = ttk.Button(patient_bar, text="Remove selected", command=remove_tray_selection)
     if not streamlined_layout:
         remove_tray_button.grid(row=3 if compact_layout else 2, column=5, padx=(4, 10), pady=3, sticky="n")
-    patient_bar.columnconfigure(3, weight=0)
-    patient_bar.columnconfigure(4, weight=0)
-    patient_bar.columnconfigure(1, weight=1)
+    patient_bar.columnconfigure(7, weight=1)
     tray_items = []
     tray_list.bind("<Return>", remove_tray_selection)
     tray_list.bind("<Delete>", remove_tray_selection)
 
     date_filter_bar = ttk.Frame(patient_bar, style="App.TFrame")
-    date_filter_bar.grid(row=0 if not compact_layout else 1, column=2 if not compact_layout else 0,
-                         columnspan=3 if compact_layout else 2, padx=(8, 10), pady=5,
+    date_filter_bar.grid(row=0 if not compact_layout else 1, column=7 if not compact_layout else 0,
+                         columnspan=7 if compact_layout else 1, padx=(8, 10), pady=5,
                          sticky="e" if not compact_layout else "w")
     date_from_var = tk.StringVar(value="")
     date_to_var = tk.StringVar(value="")
@@ -3852,13 +3885,9 @@ def main():
 
     window.after(180, establish_workspace_proportions)
 
-    # Select and load the first available patient as soon as the UI is ready.
-    if patients:
-        patient_picker.current(0)
-
-    # Load records and check the server after the complete window is assembled.
+    # Wait for an explicit identity search before reading any patient data.
+    # Load callbacks and check the server after the complete window is assembled.
     window.after(50, drain_ui)
-    window.after(100, select_patient)
     window.after(250, refresh_models)
     # The startup check reads /api/tags only; it never generates or sends records.
 

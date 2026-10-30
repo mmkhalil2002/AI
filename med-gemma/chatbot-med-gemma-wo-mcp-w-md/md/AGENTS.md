@@ -19,18 +19,19 @@
 
 ## 2. Required workflow
 
-1. **Select patient:** Add a patient drop-down near the top of the existing Tkinter GUI. On startup, scan the `patient_records` folder and populate the list with its immediate patient subdirectory names. Names can be `P0001`, `MohamedLjalil`, `Patient_A`, etc.; **do not require a `P####` pattern**.
-2. **Filter by date (optional):** Provide inclusive start and end date fields in `MMDDYY` format. Apply the range to X-ray, EKG, and blood-test panels for the selected patient. Read image dates from dated filenames or subfolder names, and blood-test dates from JSON date fields or dated filenames/subfolders. Blank bounds are open-ended; both blank shows all records. When a range is active, omit records with no recognizable date and show a clear empty-state message. Applying a range clears old selections and response context.
-3. **Load patient data:** When a patient is selected, clear all previous patient selections, galleries, blood-test records, and old response/context. Load that patient's X-ray images, EKG images, and blood-test JSON from `data/xrays/`, `data/ekgs/`, and `data/blood_tests/`. Display them in the existing X-ray, EKG, and blood-test panels. Keep the existing image thumbnail selection/deselection and blood-test row selection behavior.
+1. **Search for patient:** Replace every patient drop-down with three top-of-screen text fields: **First name**, **Last name**, and **DOB (MMDDYY)**, followed by **Search**. Patient folders use the exact convention `<first>-<last>-<MMDDYY>` (for example, `alice-john-121156`); matching is case-insensitive. Require all three values and validate DOB as a real six-digit `MMDDYY` date before loading data. Do not automatically load a patient at startup.
+2. **Choose a snapshot (optional):** After a successful search, provide one `Choose date & time` control. It lists only that patient's date folders and their time children. Selecting a time loads exactly that snapshot's X-ray, EKG, and blood-test data; do not merge records from different times.
+3. **Load patient data:** When Search finds a patient, clear all previous selections, galleries, blood-test records, and old response/context. For the date/time snapshot layout, automatically load the newest available snapshot's X-ray images, EKG images, and blood-test JSON. Display them in the existing panels. Keep image thumbnail selection/deselection and blood-test row selection behavior.
 4. **Doctor's request:** The doctor types a question in the existing prompt field. Preserve the existing Send button.
-5. **Send to MedGemma:** On Send, submit the doctor's request and **only the selected records belonging to the active patient and date range** directly to the configured MedGemma model on the Ollama server specified in `.env` (local or remote). Use the existing `/api/generate` request implementation and `.env` settings. Include selected blood-test values and reference ranges in the prompt. Send selected X-ray and EKG **original image bytes** encoded in base64; never send resized thumbnails. Keep network calls off the GUI thread.
+5. **Send to MedGemma:** On Send, submit the doctor's request and **only the selected records belonging to the active patient and selected date/time snapshot** directly to the configured MedGemma model on the Ollama server specified in `.env` (local or remote). Use the existing `/api/generate` request implementation and `.env` settings. Include selected blood-test values and reference ranges in the prompt. Send selected X-ray and EKG **original image bytes** encoded in base64; never send resized thumbnails. Keep network calls off the GUI thread.
 6. **Show answer:** Display MedGemma's answer in the existing AI Response panel, with existing status/error handling. Preserve optional voice playback if already working. Indicate that the output is AI-generated and requires clinician review.
 
 **Actions area:** Do not create an Actions section, label, frame, placeholder, or tab. The existing **Send to MedGemma** button must work independently.
 
 ## 3. Patient directory structure
 
-The patient directory name **is the patient ID**. Example:
+The patient directory name is the searchable identity key, in the form
+`<first-name>-<last-name>-<MMDDYY>`. Example: `alice-john-121156`.
 
 ```text
 Project/
@@ -82,13 +83,13 @@ folders are children. Selecting a time loads only that date/time folder's
 three modalities for the active patient. Never combine different times. Load
 the first available snapshot automatically when a patient is selected. Panel
 titles show the selected date and time only; never show a date range.
-The picker includes a Patient ID dropdown, a complete `Select date & time`
-header with no extra instruction text, and no filesystem paths. Its bottom
+The picker has a complete `Select date & time` header with no patient dropdown,
+extra instruction text, or filesystem paths. Its bottom
 row includes `Load selected date & time` and `Close` buttons. Dates remain
 green; times use a contrasting purple in both the picker and modality headings.
 
 - Add support for optional `.env` key `PATIENT_RECORDS_DIR=patient_records`; if absent, use the `patient_records` folder beside the Python script. Relative paths are relative to the script directory.
-- Discover only immediate patient directories, excluding hidden/system folders. Allow ordinary folder names with spaces and letters. Do not infer patient identity from image names or dated folders.
+- Discover only immediate patient directories, excluding hidden/system folders. Search only folders that exactly match the entered first name, last name, and DOB convention; do not infer identity from image names or dated folders.
 - Inside each patient's `data/` folder, display supported image formats in `xrays/` and `ekgs/`, and load `.json` files from `blood_tests/`. Support both the original `{"title": "...", "results": ...}` format and structured CBC-style JSON such as `{"panel": "CBC", "results": [{"test": "WBC", "value": 7.4, "unit": "10^3/uL"}]}`. Do not discard records simply because `title` is absent.
 - Missing or empty modality folders are allowed; display a clear message, not an exception. Report invalid images/JSON without crashing the GUI.
 - Do **not** create or require `patients.json`, `index.json`, `record.json`, patient metadata, or a database. Blood-test JSON files are the actual clinical-content inputs and must remain intact.
@@ -134,10 +135,10 @@ The original script sends one combined prompt and selected images directly to Me
 
 Reproduce the approved desktop layout, adapting the original Tkinter GUI rather than rebuilding its behavior:
 
-- **Top row only:** `Patient Selection and Date Range` with the patient ID dropdown followed immediately by `From`, `To`, `Apply Range`, and `Clear Range`, then the active-patient indicator, all on one physical line at ordinary desktop widths. Do not place the active-patient indicator between the menu and filters or split them into header bands. A two-row wrap is permitted only when the usable display width cannot fit the controls without clipping. Date fields accept **MMDDYY** (six digits) as specified above; if dates are displayed with slashes, convert them correctly to/from MMDDYY internally. Do not put connection/server URL, model name/selector, or Check Connection widgets in the visible GUI. Read connection and model from `.env` and preserve background readiness/error handling.
+- **Top row only:** `Patient Search and Date/Time` with First name, Last name, DOB (`MMDDYY`), and Search, followed by `Choose date & time` and the active-patient indicator. There is no patient dropdown or date-range control. At ordinary desktop widths, keep the controls on one physical line; a narrow-window fallback may wrap without clipping. Do not put connection/server URL, model name/selector, or Check Connection widgets in the visible GUI. Read connection and model from `.env` and preserve background readiness/error handling.
 - **Main area, left approximately 30–35%:** red `AI Clinical Assistant Center` heading; `Your Question` multiline input **blank on startup**, with no default prompt, instructions, or injected status text; `Send to MedGemma` and `Voice: OFF/ON` controls below; then a large **single** `AI Response` text area. No `Response` or `Original` tabs, no separate original/draft side-by-side panes, and **no Actions section whatsoever**. Keep clinician-review notice in a status/footer location outside the question input if needed.
 - **Main area, right approximately 65–70%:** three large panels **stacked vertically**, never side-by-side: `XRAY`, `EKG/ECG`, `BLOOD TEST`. Allocate roughly **35% / 35% / 30%** of right-side height; keep independent scrolling, record selection/deselection, and original-resolution sending. **Remove** the `Medical Image Datasets` heading to save vertical space.
-- Each modality panel title must show the **currently applied date range**, e.g. `XRAY (01/01/2026 - 12/31/2026)`, `EKG/ECG (...)`, `BLOOD TEST (...)`. With blank filters, show the modality's recognized minimum and maximum available dates; for an open-ended filter show the actual open-ended bound. If no record has a recognizable date, show `Undated records`; do not invent a range. Update headings when Apply/Clear is pressed or the patient changes.
+- Each modality panel title must show the loaded snapshot's date and time. Update headings when Search loads the newest snapshot or when the user selects another date/time.
 - **Do not display counts** such as `3 image(s)`, `0/3 selected`, `Blood 0/1 selected`, or any number of images/records in headings, captions, selection status, or elsewhere in the GUI. Selection state may be shown through highlighting/checkmarks without numerical counts.
 - Keep the X-ray gallery, EKG gallery, and blood-test results visible and spacious, with no unnecessary blank header bands. The Question area and AI Response should be usable at ordinary desktop window sizes.
 - Render blood-test headings and rows with a fixed-width font and fixed-width columns so test name, value, unit, reference range, and flag align vertically.
@@ -159,7 +160,7 @@ The values above are examples, not replacements for the user's current settings.
 
 - One new `.py` file only, with detailed function docstrings and useful inline comments.
 - Missing or inaccessible `python/patient_records/` produces a clear fatal startup error before the GUI opens; the application never creates the folder. Existing but empty patient records root is handled separately.
-- Patient selector lists both `MohamedLjalil` and `P0002` when those directories exist.
+- Searching `alice`, `john`, and `121156` loads only `alice-john-121156`; an unknown identity shows a clear no-match message.
 - Selecting each patient loads only their own X-rays, EKGs, and blood tests.
 - Switching patients clears all previous selections and the previous response.
 - EKG gallery correctly loads images from `patient_records/<patient_id>/data/ekgs/` (not from legacy `ekg-data-MMDDYY`).

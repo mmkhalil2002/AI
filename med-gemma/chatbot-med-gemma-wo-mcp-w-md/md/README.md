@@ -26,7 +26,7 @@ The original reference program and existing `.env` must remain unchanged.
 ```text
 Windows PC — client_medgemma_patients.py
 
-  Patient selector
+  First name + Last name + DOB search
         |
         v
   patient_records/<patient_id>/data/
@@ -55,7 +55,9 @@ All GUI, patient loading, and HTTP logic runs in the **same Python file** on the
 
 ## 3. Patient directory hierarchy
 
-Each immediate subdirectory of `patient_records/` is a patient ID. Modality files are stored under that patient's `data/` folder. Names can contain letters and numbers; they do not have to match `P0001`.
+Each immediate subdirectory of `patient_records/` identifies one patient. The
+search workflow uses the folder convention `<first>-<last>-<MMDDYY>`, for
+example `alice-john-121156`. Modality files are stored below that folder.
 
 ### Current date/time layout
 
@@ -66,14 +68,14 @@ read from `python/.env`:
 patient_records/<patient-id>/<date>/<time>/{xrays,ekgs,blood_tests}/
 ```
 
-The GUI exposes one **Choose date & time** control. Its single picker window
-lists dates for the selected patient and, under each date, its time folders.
+The GUI exposes one **Choose date & time** control after a successful patient
+search. Its single picker window lists dates for that patient and, under each date, its time folders.
 Selecting a time loads only that snapshot; separate From/To date-range fields
 are not shown for this layout. When a patient is selected, the first available
 snapshot loads automatically. Panel labels show the selected date and time,
 not a date range.
 
-The picker includes a compact Patient ID dropdown header and shows only dates
+The picker has a `Select date & time` header and shows only dates
 and times—never filesystem paths. Its bottom row provides `Load selected date
 & time` and `Close` buttons. Dates use green text and times use a contrasting
 purple in both the picker and the modality headings.
@@ -151,11 +153,11 @@ This behavior must be implemented in **the Python application**, not the launche
 ## 4. How to use the GUI
 
 1. Launch `client_medgemma_patients.py` with the command for your operating system in section 8. Server/model settings remain in `.env`; they are not shown as GUI fields. Connection errors appear as status/error messages.
-2. Select a patient ID from the dropdown. Check the active-patient name before choosing records. The application does not infer that a patient or filename is synthetic.
-3. Optionally enter start and end dates in `MMDDYY` format and click **Apply range**. Bounds are inclusive, and either bound may be left blank. Dates are read from image/file or folder names and blood-test JSON date fields. Undated records are excluded while a range is active; **Clear range** restores all records.
+2. Enter First name, Last name, and DOB in `MMDDYY` format, then click **Search**. The exact matching folder is loaded (case-insensitively); the newest date/time snapshot loads automatically.
+3. Use **Choose date & time** to select a different snapshot for the searched patient, if needed.
 4. Select only the X-ray, EKG, and blood-test records you want to include. Nothing is selected automatically. Selected items are highlighted or checked without displaying numerical counts. Keep image inspection and selection/deselection functionality.
 5. Type the doctor's request in the initially blank **Your Question** box. If no records are selected, the request is text-only.
-6. Click **Send**. The app snapshots the active patient, date range, and selected paths, checks the configured server/model, and sends one request in the background. **Cancel** immediately stops accepting the result locally and closes the response where possible; the Ollama server may continue its computation.
+6. Click **Send**. The app snapshots the active patient, date/time selection, and selected paths, checks the configured server/model, and sends one request in the background. **Cancel** immediately stops accepting the result locally and closes the response where possible; the Ollama server may continue its computation.
 7. Review the MedGemma answer in the single **AI Response** area. The GUI has no **Response** or **Original** tabs. Any internal original-response record needed for export/review may be retained without showing a second response pane.
 8. Use **Export TXT + HTML + JSON** to save deliberately to an existing folder outside `patient_records`. The versioned JSON bundle records both draft versions, completion/review state, model/time, and patient-relative references to inputs actually sent; it does not embed source images. Choose that folder under **Saved report history** to filter and reopen reports for the active patient. Reopening never sends a request.
 
@@ -167,10 +169,10 @@ The **Actions** section is removed entirely. The existing **Send to MedGemma** b
 
 The following overrides any legacy UI instructions elsewhere in this README while retaining the same single-file patient workflow:
 
-- **Top:** one compact `Patient Selection and Date Range` row containing the Patient ID dropdown followed immediately by From/To dates, Apply Range, Clear Range, then the active-patient indicator, all on the same physical line at ordinary desktop widths. Do not place the active-patient indicator between the menu and filters or split them into separate header rows. A second row is allowed only as a narrow-window fallback that prevents clipping. Input dates use `MMDDYY`; formatted display may show `MM/DD/YYYY` if conversion is correct. Do not display Server URL, Model, or Check Connection widgets. Ollama settings still come from `.env`.
+- **Top:** one compact `Patient Search and Date/Time` row with First name, Last name, DOB (`MMDDYY`), Search, `Choose date & time`, and the active-patient indicator. Remove every patient dropdown and all From/To, Apply Range, and Clear Range controls. Search validates the three fields and case-insensitively matches `<first>-<last>-<MMDDYY>` folders. Search automatically loads the newest snapshot; `Choose date & time` remains the manual snapshot picker. Do not display Server URL, Model, or Check Connection widgets. Ollama settings still come from `.env`.
 - **Left (~35% width):** `AI Clinical Assistant Center`; **blank** `Your Question` box on startup; `Send to MedGemma` and Voice toggle; one large `AI Response` box. **No Actions section** and **no Response/Original tabs**. No default question/prompt text.
 - **Right (~65% width):** **XRAY**, **EKG/ECG**, **BLOOD TEST** in three **vertically stacked** panels, approximately 35%/35%/30% of available height, with scrolling and click selection preserved. **No Medical Image Datasets heading**.
-- **Panel labels:** show the active date range in each panel title, e.g. `XRAY (01/01/2026 - 12/31/2026)`. If no range is applied, show that modality's recognized minimum-to-maximum available dates instead of `All dates`; if every record is undated, show `Undated records`. For one open bound, show only the applicable limit. The displayed date range must match the actual filtering.
+- **Panel labels:** show the selected snapshot date and time in each panel title. The three panels always describe exactly one snapshot.
 - **No image/record counts anywhere in the GUI**, including modality headings and selection status. Use visual selection indicators instead of `0/3 selected` or `3 image(s)`.
 - **Blood-test alignment:** render headings and rows in a fixed-width font with fixed-width columns so test name, value, unit, reference range, and flag align vertically.
 - Preserve patient isolation, date filtering, image/JSON loading, direct Ollama requests, original image bytes, optional voice, errors, and clinical review safeguards. Hide or omit any legacy report preset, input summary, original/draft tabs, or Actions placeholder that conflicts with this layout. Advanced export/history logic may remain if already implemented, but must not reintroduce removed GUI panels.
@@ -259,7 +261,7 @@ The existing Codex instructions in `AGENTS.md` describe the original one-file pa
 
 - Missing or inaccessible `python/patient_records/` produces a fatal startup error with the full path; no directory is created. Each patient's modalities are beneath `data/`.
 - The same check works when launched from `config/` or after moving the project.
-- Patient dropdown discovers both ordinary names and `P0002`-style IDs.
+- First-name, last-name, and DOB search loads only the exact matching patient folder; no patient data loads before a successful search.
 - Switching patients refreshes all three panels and clears prior selections and answers.
 - Images load from the active patient's `data/xrays/` and `data/ekgs/` folders.
 - Blood-test JSON loads even when it uses `panel` instead of `title`.
