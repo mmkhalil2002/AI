@@ -95,8 +95,8 @@ def output_root() -> Path:
     return directory
 
 
-def prompt_patient_id() -> str:
-    """Collect patient identity fields and build ``firstname-lastname-MMDDYY``."""
+def prompt_patient_id() -> tuple[str, str, str]:
+    """Collect patient identity fields and build ``firstname-lastname-MMDDYYYY``."""
     while True:
         first_name = input("First name: ").strip()
         if re.fullmatch(r"[A-Za-z][A-Za-z '-]{0,39}", first_name) and first_name[-1] not in {" ", "-", "'"}:
@@ -110,15 +110,15 @@ def prompt_patient_id() -> str:
         print("[ERROR] Last name must be 1-40 letters and may include spaces, hyphens, or apostrophes.")
 
     while True:
-        dob = input("Date of birth (MMDDYY): ").strip()
+        dob = input("Date of birth (MMDDYYYY): ").strip()
         try:
             # Parsing also rejects invalid values such as month 13 or day 32.
-            if not re.fullmatch(r"\d{6}", dob):
+            if not re.fullmatch(r"\d{8}", dob):
                 raise ValueError
-            datetime.strptime(dob, "%m%d%y")
-            return f"{first_name}-{last_name}-{dob}"
+            datetime.strptime(dob, "%m%d%Y")
+            return f"{first_name}-{last_name}-{dob}", f"{first_name} {last_name}", dob
         except ValueError:
-            print("[ERROR] Enter a valid six-digit date of birth in MMDDYY format, for example 042586.")
+            print("[ERROR] Enter a valid eight-digit date of birth in MMDDYYYY format, for example 04251986.")
 
 
 def prompt_date() -> str:
@@ -363,7 +363,7 @@ def main() -> int:
     print("\nMedGemma Patient Data Importer")
     print("Educational data is for software testing, not diagnosis.\n")
     root = output_root()
-    patient = prompt_patient_id()
+    patient, patient_name, dob_digits = prompt_patient_id()
     date = prompt_date()
     exam_time = prompt_exam_time()
     destination = root / "patient_records" / patient / date / exam_time
@@ -386,6 +386,14 @@ def main() -> int:
         counts = (prompt_count("X-ray"), prompt_count("EKG"), prompt_count("blood-test"))
         print("[INFO] X-ray and EKG examples come from Wikimedia Commons.")
         print("[INFO] Blood tests are SYNTHETIC educational JSON, not downloaded clinical records.")
+    date_of_birth = datetime.strptime(dob_digits, "%m%d%Y").strftime("%B %d, %Y")
+    exam_date = datetime.strptime(date, "%Y-%m-%d").strftime("%B %d, %Y")
+    exam_clock = datetime.strptime(exam_time, "%I-%M_%p").strftime("%I:%M %p")
+    print("\nPlease confirm these exam details:")
+    print(f"  Patient: {patient_name}")
+    print(f"  Date of birth: {date_of_birth}")
+    print(f"  Date of exam: {exam_date}")
+    print(f"  Time of exam: {exam_clock}")
     if input("Proceed? [y/N]: ").strip().lower() not in {"y", "yes"}:
         print("[INFO] Cancelled; no files created.")
         return 0

@@ -420,7 +420,7 @@ def select_patient(_event=None):
 
 
 def patient_search_key(patient_id):
-    """Return the first name, last name, and six-digit DoD encoded in an ID."""
+    """Return the first name, last name, and eight-digit DoD encoded in an ID."""
     first_name, separator, remainder = patient_id.partition("-")
     last_name, separator, dod = remainder.rpartition("-")
     if not separator or not first_name or not last_name or not dod:
@@ -433,10 +433,10 @@ def search_patient(_event=None):
     first_name = patient_first_name.get().strip().casefold()
     last_name = patient_last_name.get().strip().casefold()
     dod = "".join(character for character in patient_dod.get() if character.isdigit())
-    if not first_name or not last_name or len(dod) != 6:
+    if not first_name or not last_name or len(dod) != 8:
         messagebox.showinfo(
             "Patient search",
-            "Enter a first name, last name, and a six-digit DoD (MMDDYY).",
+            "Enter a first name, last name, and an eight-digit DoD (MMDDYYYY).",
             parent=window,
         )
         return
@@ -773,7 +773,7 @@ def delete_local_dataset(dataset_key, display_name):
 
 
 def load_blood_tests():
-    """Load one selectable list row per JSON blood-test record."""
+    """Load readable, selectable summaries of JSON blood-test records."""
     blood_test_view.config(state=tk.NORMAL)
     blood_test_view.delete("1.0", tk.END)
     blood_test_records.clear()
@@ -815,15 +815,46 @@ def load_blood_tests():
             record_index = len(blood_test_records)
             blood_test_records.append(record)
             line_tag = f"blood_record_{record_index}"
-            remaining_data = {key: value for key, value in record.items() if key != "title"}
-            blood_test_view.insert(tk.END, title.strip(), (line_tag, "blood_title"))
-            blood_test_view.insert(
-                tk.END,
-                " : "
-                + json.dumps(remaining_data, ensure_ascii=False, separators=(", ", ": "))
-                + "\n",
-                (line_tag,),
-            )
+            blood_test_view.insert(tk.END, title.strip() + "\n", (line_tag, "blood_title"))
+            results = record.get("results")
+            if isinstance(results, list) and results:
+                blood_test_view.insert(
+                    tk.END,
+                    f"  {'TEST':<24} {'RESULT':<18} {'REFERENCE RANGE':<20} FLAG\n",
+                    (line_tag, "blood_header"),
+                )
+                for result in results:
+                    if not isinstance(result, dict):
+                        blood_test_view.insert(tk.END, f"  {result}\n", (line_tag,))
+                        continue
+                    test = result.get("test", "Test")
+                    value = result.get("value")
+                    unit = result.get("unit")
+                    reading = " ".join(str(part) for part in (value, unit) if part not in (None, ""))
+                    reference = result.get("reference_range", "")
+                    flag = result.get("flag", "")
+                    blood_test_view.insert(
+                        tk.END,
+                        f"  {str(test):<24} {reading:<18} {str(reference):<20} {flag}\n",
+                        (line_tag,),
+                    )
+                    for key, item in result.items():
+                        if key not in {"test", "value", "unit", "reference_range", "flag"}:
+                            blood_test_view.insert(
+                                tk.END,
+                                f"    {key.replace('_', ' ').capitalize()}: {item}\n",
+                                (line_tag,),
+                            )
+            for key, value in record.items():
+                if key == "title" or key == "results":
+                    continue
+                label = key.replace("_", " ").capitalize()
+                if isinstance(value, bool):
+                    value = "Yes" if value else "No"
+                elif isinstance(value, (dict, list)):
+                    value = json.dumps(value, ensure_ascii=False, indent=2)
+                blood_test_view.insert(tk.END, f"  {label}: {value}\n", (line_tag,))
+            blood_test_view.insert(tk.END, "\n", (line_tag,))
 
     if not blood_test_records:
         blood_test_view.insert(tk.END, "No valid titled JSON records found")
@@ -833,9 +864,15 @@ def load_blood_tests():
 
 
 def toggle_blood_test_record(event):
-    """Select or deselect the complete blood-test record on the clicked line."""
-    line_number = int(blood_test_view.index(f"@{event.x},{event.y}").split(".")[0])
-    record_index = line_number - 1
+    """Select or deselect the blood-test record under the pointer."""
+    clicked_index = blood_test_view.index(f"@{event.x},{event.y}")
+    record_tag = next(
+        (tag for tag in blood_test_view.tag_names(clicked_index) if tag.startswith("blood_record_")),
+        None,
+    )
+    if record_tag is None:
+        return "break"
+    record_index = int(record_tag.rsplit("_", 1)[-1])
     if not 0 <= record_index < len(blood_test_records):
         return "break"
     line_tag = f"blood_record_{record_index}"
@@ -1425,7 +1462,7 @@ server_url = tk.StringVar(value=DEFAULT_SERVER_URL)
 model_name = tk.StringVar(value=DEFAULT_MODEL)
 
 # Patient records use patient/date/time encounter folders.  Patients are found
-# by their first name, last name, and six-digit DoD rather than a dropdown.
+# by their first name, last name, and eight-digit DoD rather than a dropdown.
 encounter_paths = {}
 patient_name = tk.StringVar()
 patient_first_name = tk.StringVar()
@@ -1457,10 +1494,10 @@ if PATIENT_RECORDS_DIR is not None:
     )
     last_name_entry = ttk.Entry(settings, textvariable=patient_last_name, width=14)
     last_name_entry.grid(row=0, column=3, padx=4, pady=3, sticky="w")
-    ttk.Label(settings, text="DoD (MMDDYY)", style="Field.TLabel").grid(
+    ttk.Label(settings, text="DoD (MMDDYYYY)", style="Field.TLabel").grid(
         row=0, column=4, padx=(14, 5), pady=7, sticky="w"
     )
-    dod_entry = ttk.Entry(settings, textvariable=patient_dod, width=10)
+    dod_entry = ttk.Entry(settings, textvariable=patient_dod, width=12)
     dod_entry.grid(row=0, column=5, padx=4, pady=3, sticky="w")
     search_button = ttk.Button(
         settings, text="Search", command=search_patient, style="Accent.TButton"
@@ -1519,7 +1556,7 @@ prompt_box.pack(fill=tk.X, padx=10)
 action_bar = ttk.Frame(qa_panel, style="App.TFrame")
 action_bar.pack(pady=10)
 send_button = ttk.Button(
-    action_bar, text="Send to MedGemma", command=send_question, style="Accent.TButton"
+    action_bar, text="Ask AI", command=send_question, style="Accent.TButton"
 )
 send_button.pack(side=tk.LEFT, padx=(0, 8))
 voice_toggle_button = ttk.Button(
@@ -1694,7 +1731,7 @@ selected_blood_test_indices = set()
 blood_test_view = tk.Text(
     blood_test_panel,
     wrap=tk.NONE,
-    font=("Segoe UI", 10),
+    font=("Consolas", 9),
     cursor="hand2",
     state=tk.DISABLED,
     background="#fffdfb",
@@ -1705,6 +1742,7 @@ blood_test_view = tk.Text(
     borderwidth=5,
 )
 blood_test_view.tag_configure("blood_title", foreground=CORAL, font=("Segoe UI", 10, "bold"))
+blood_test_view.tag_configure("blood_header", foreground=PRIMARY_BLUE, font=("Consolas", 9, "bold"))
 blood_test_view.bind("<Button-1>", toggle_blood_test_record)
 blood_test_view.grid(row=0, column=0, sticky="nsew", padx=(5, 0), pady=(5, 0))
 blood_test_scroll = ttk.Scrollbar(

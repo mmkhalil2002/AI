@@ -56,8 +56,8 @@ All GUI, patient loading, and HTTP logic runs in the **same Python file** on the
 ## 3. Patient directory hierarchy
 
 Each immediate subdirectory of `patient_records/` identifies one patient. The
-search workflow uses the folder convention `<first>-<last>-<MMDDYY>`, for
-example `alice-john-121156`. Modality files are stored below that folder.
+search workflow uses the folder convention `<first>-<last>-<MMDDYYYY>`, for
+example `alice-john-12121956`. Modality files are stored below that folder.
 
 ### Current date/time layout
 
@@ -153,24 +153,24 @@ This behavior must be implemented in **the Python application**, not the launche
 ## 4. How to use the GUI
 
 1. Launch `client_medgemma_patients.py` with the command for your operating system in section 8. Server/model settings remain in `.env`; they are not shown as GUI fields. Connection errors appear as status/error messages.
-2. Enter First name, Last name, and DOB in `MMDDYY` format, then click **Search**. The exact matching folder is loaded (case-insensitively); the newest date/time snapshot loads automatically.
+2. Enter First name, Last name, and DOB in `MMDDYYYY` format, then click **Search**. DOB must be a real calendar date with an eight-digit month/day/year value. The exact matching folder is loaded (case-insensitively); the newest date/time snapshot loads automatically.
 3. Use **Choose date & time** to select a different snapshot for the searched patient, if needed.
 4. Select only the X-ray, EKG, and blood-test records you want to include. Nothing is selected automatically. Selected items are highlighted or checked without displaying numerical counts. Keep image inspection and selection/deselection functionality.
 5. Type the doctor's request in the initially blank **Your Question** box. If no records are selected, the request is text-only.
-6. Click **Send**. The app snapshots the active patient, date/time selection, and selected paths, checks the configured server/model, and sends one request in the background. **Cancel** immediately stops accepting the result locally and closes the response where possible; the Ollama server may continue its computation.
+6. Click **Ask AI**. The app snapshots the active patient, date/time selection, and selected paths, checks the configured server/model, and sends one request in the background. **Cancel** immediately stops accepting the result locally and closes the response where possible; the Ollama server may continue its computation.
 7. Review the MedGemma answer in the single **AI Response** area. The GUI has no **Response** or **Original** tabs. Any internal original-response record needed for export/review may be retained without showing a second response pane.
 8. Use **Export TXT + HTML + JSON** to save deliberately to an existing folder outside `patient_records`. The versioned JSON bundle records both draft versions, completion/review state, model/time, and patient-relative references to inputs actually sent; it does not embed source images. Choose that folder under **Saved report history** to filter and reopen reports for the active patient. Reopening never sends a request.
 
 When switching patients, the application clears previous selections, prior response/context, and displayed records. It must also prevent an earlier in-flight response from appearing under a different patient.
 
-The **Actions** section is removed entirely. The existing **Send to MedGemma** button continues to function.
+The **Actions** section is removed entirely. The **Ask AI** button sends the request.
 
 ## 4A. Approved GUI layout (mandatory for regeneration)
 
 The following overrides any legacy UI instructions elsewhere in this README while retaining the same single-file patient workflow:
 
-- **Top:** one compact `Patient Search and Date/Time` row with First name, Last name, DOB (`MMDDYY`), Search, `Choose date & time`, and the active-patient indicator. Remove every patient dropdown and all From/To, Apply Range, and Clear Range controls. Search validates the three fields and case-insensitively matches `<first>-<last>-<MMDDYY>` folders. Search automatically loads the newest snapshot; `Choose date & time` remains the manual snapshot picker. Do not display Server URL, Model, or Check Connection widgets. Ollama settings still come from `.env`.
-- **Left (~35% width):** `AI Clinical Assistant Center`; **blank** `Your Question` box on startup; `Send to MedGemma` and Voice toggle; one large `AI Response` box. **No Actions section** and **no Response/Original tabs**. No default question/prompt text.
+- **Top:** one compact `Patient Search and Date/Time` row with First name, Last name, DOB (`MMDDYYYY`), Search, `Choose date & time`, and the active-patient indicator. Remove every patient dropdown and all From/To, Apply Range, and Clear Range controls. Search validates the three fields and case-insensitively matches `<first>-<last>-<MMDDYYYY>` folders. Search automatically loads the newest snapshot; `Choose date & time` remains the manual snapshot picker. Do not display Server URL, Model, or Check Connection widgets. Ollama settings still come from `.env`.
+- **Left (~35% width):** `AI Clinical Assistant Center`; **blank** `Your Question` box on startup; `Ask AI` and Voice toggle; one large `AI Response` box. **No Actions section** and **no Response/Original tabs**. No default question/prompt text.
 - **Right (~65% width):** **XRAY**, **EKG/ECG**, **BLOOD TEST** in three **vertically stacked** panels, approximately 35%/35%/30% of available height, with scrolling and click selection preserved. **No Medical Image Datasets heading**.
 - **Panel labels:** show the selected snapshot date and time in each panel title. The three panels always describe exactly one snapshot.
 - **No image/record counts anywhere in the GUI**, including modality headings and selection status. Use visual selection indicators instead of `0/3 selected` or `3 image(s)`.
@@ -279,6 +279,6 @@ If flexible doctor-directed multi-step decision-making is later required, add Qw
 
 ## Current main controls
 
-The main assistant area provides `Send to MedGemma`, Voice, and `Close GUI`.
+The main assistant area provides `Ask AI`, Voice, and `Close GUI`.
 The Close GUI button safely shuts down the client through its normal window
 close handler.

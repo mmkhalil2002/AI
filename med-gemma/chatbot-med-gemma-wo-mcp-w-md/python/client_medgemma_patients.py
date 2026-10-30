@@ -494,6 +494,17 @@ def parse_mmddyy_input(value):
         raise ValueError(f"{value} is not a valid MMDDYY calendar date.") from error
 
 
+def parse_dob_input(value):
+    """Validate a patient date of birth in the eight-digit MMDDYYYY format."""
+    value = value.strip()
+    if not re.fullmatch(r"\d{8}", value):
+        raise ValueError("Enter DOB as eight digits in MMDDYYYY format.")
+    try:
+        return datetime.strptime(value, "%m%d%Y").date()
+    except ValueError as error:
+        raise ValueError(f"{value} is not a valid MMDDYYYY calendar date.") from error
+
+
 def apply_date_range():
     """Apply inclusive date bounds and reload all three original record panels."""
     global active_date_start, active_date_end
@@ -675,7 +686,7 @@ def select_patient(event=None):
 def search_patient():
     """Find a patient folder from the three identity fields and load its newest data.
 
-    Patient folders use the supplied ``first-last-MMDDYY`` convention.  The
+    Patient folders use the supplied ``first-last-MMDDYYYY`` convention.  The
     comparison is case-insensitive so entry capitalization does not matter,
     but all three fields are required to avoid loading the wrong patient's
     records.
@@ -684,10 +695,10 @@ def search_patient():
     last_name = last_name_var.get().strip()
     dob = dob_var.get().strip()
     if not first_name or not last_name or not dob:
-        messagebox.showerror("Patient search", "Enter first name, last name, and DOB (MMDDYY).", parent=window)
+        messagebox.showerror("Patient search", "Enter first name, last name, and DOB (MMDDYYYY).", parent=window)
         return
     try:
-        parse_mmddyy_input(dob)
+        parse_dob_input(dob)
     except ValueError as error:
         messagebox.showerror("Patient search", str(error), parent=window)
         return
@@ -3412,8 +3423,8 @@ def main():
     ttk.Label(patient_bar, text="Last name", style="Field.TLabel").grid(row=0, column=2, padx=(2, 4), pady=5)
     last_name_entry = ttk.Entry(patient_bar, textvariable=last_name_var, width=16)
     last_name_entry.grid(row=0, column=3, padx=(0, 6), pady=5, sticky="w")
-    ttk.Label(patient_bar, text="DOB (MMDDYY)", style="Field.TLabel").grid(row=0, column=4, padx=(2, 4), pady=5)
-    dob_entry = ttk.Entry(patient_bar, textvariable=dob_var, width=10)
+    ttk.Label(patient_bar, text="DOB (MMDDYYYY)", style="Field.TLabel").grid(row=0, column=4, padx=(2, 4), pady=5)
+    dob_entry = ttk.Entry(patient_bar, textvariable=dob_var, width=12)
     dob_entry.grid(row=0, column=5, padx=(0, 6), pady=5, sticky="w")
     search_button = ttk.Button(patient_bar, text="Search", command=search_patient, style="Secondary.TButton")
     search_button.grid(row=0, column=6, padx=(0, 8), pady=5, sticky="w")
@@ -3537,7 +3548,7 @@ def main():
     action_bar = ttk.Frame(qa_panel, style="App.TFrame")
     action_bar.pack(pady=10)
     send_button = ttk.Button(
-        action_bar, text="Send to MedGemma", command=send_question, style="Accent.TButton"
+        action_bar, text="Ask AI", command=send_question, style="Accent.TButton"
     )
     if compact_layout:
         send_button.grid(row=0, column=0, padx=3, pady=2, sticky="ew")

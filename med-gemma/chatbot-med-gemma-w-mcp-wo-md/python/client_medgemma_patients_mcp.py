@@ -393,7 +393,7 @@ def discover_patients(root):
 
 
 def patient_demographics(patient_id):
-    """Split a ``first-last-MMDDYY`` patient-folder name for the lookup form."""
+    """Split a ``first-last-MMDDYYYY`` or legacy ``first-last-MMDDYY`` folder name."""
     parts = str(patient_id).rsplit("-", 2)
     return tuple(parts) if len(parts) == 3 and all(parts) else (str(patient_id), "", "")
 
@@ -404,21 +404,44 @@ def select_patient_by_demographics(event=None):
     last = patient_last_name.get().strip()
     dob = patient_dob.get().strip()
     if not first or not last or not dob:
-        show_status("Enter first name, last name, and DOB (MMDDYY).")
+        show_status("Enter first name, last name, and DOB (MMDDYYYY).")
+        messagebox.showerror(
+            "Patient search", "Enter first name, last name, and DOB (MMDDYYYY).", parent=window
+        )
         return "break" if event is not None else None
     try:
-        datetime.strptime(dob, "%m%d%y")
+        if len(dob) != 8 or not dob.isascii() or not dob.isdigit():
+            raise ValueError("DOB must contain eight digits.")
+        wanted_dob = datetime.strptime(dob, "%m%d%Y").date()
     except ValueError:
-        show_status("DOB must be a valid date in MMDDYY format.")
+        show_status("DOB must be a valid date in MMDDYYYY format.")
+        messagebox.showerror(
+            "Invalid date of birth", "Enter a valid DOB as MMDDYYYY (eight digits).", parent=window
+        )
         return "break" if event is not None else None
-    wanted = (first.casefold(), last.casefold(), dob)
     for patient_id in patients:
         candidate = patient_demographics(patient_id)
-        if (candidate[0].casefold(), candidate[1].casefold(), candidate[2]) == wanted:
+        candidate_dob = None
+        for date_format in ("%m%d%Y", "%m%d%y"):
+            try:
+                candidate_dob = datetime.strptime(candidate[2], date_format).date()
+                break
+            except ValueError:
+                continue
+        if candidate_dob is None:
+            continue
+        if (candidate[0].casefold(), candidate[1].casefold(), candidate_dob) == (
+            first.casefold(), last.casefold(), wanted_dob
+        ):
             patient_name.set(patient_id)
             select_patient()
             return "break" if event is not None else None
     show_status("No patient matches that first name, last name, and DOB.")
+    messagebox.showerror(
+        "Patient not found",
+        f"No patient matches {first} {last} with DOB {dob}.",
+        parent=window,
+    )
     return "break" if event is not None else None
 
 
@@ -4928,8 +4951,8 @@ def main():
     ttk.Label(patient_bar, text="Last name", style="Field.TLabel").grid(row=0, column=2, padx=(8, 4), pady=5)
     last_name_entry = ttk.Entry(patient_bar, textvariable=patient_last_name, width=16)
     last_name_entry.grid(row=0, column=3, padx=4, pady=5, sticky="w")
-    ttk.Label(patient_bar, text="DOB (MMDDYY)", style="Field.TLabel").grid(row=0, column=4, padx=(8, 4), pady=5)
-    dob_entry = ttk.Entry(patient_bar, textvariable=patient_dob, width=10)
+    ttk.Label(patient_bar, text="DOB (MMDDYYYY)", style="Field.TLabel").grid(row=0, column=4, padx=(8, 4), pady=5)
+    dob_entry = ttk.Entry(patient_bar, textvariable=patient_dob, width=12)
     dob_entry.grid(row=0, column=5, padx=4, pady=5, sticky="w")
     patient_picker = ttk.Button(patient_bar, text="Search", command=select_patient_by_demographics,
                                 style="Secondary.TButton")
@@ -5060,7 +5083,7 @@ def main():
     action_bar = ttk.Frame(qa_panel, style="App.TFrame")
     action_bar.pack(pady=10)
     send_button = ttk.Button(
-        action_bar, text="Send to MedGemma", command=send_question, style="Accent.TButton"
+        action_bar, text="Ask AI", command=send_question, style="Accent.TButton"
     )
     if compact_layout:
         send_button.grid(row=0, column=0, padx=3, pady=2, sticky="ew")

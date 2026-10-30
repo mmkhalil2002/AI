@@ -19,19 +19,19 @@
 
 ## 2. Required workflow
 
-1. **Search for patient:** Replace every patient drop-down with three top-of-screen text fields: **First name**, **Last name**, and **DOB (MMDDYY)**, followed by **Search**. Patient folders use the exact convention `<first>-<last>-<MMDDYY>` (for example, `alice-john-121156`); matching is case-insensitive. Require all three values and validate DOB as a real six-digit `MMDDYY` date before loading data. Do not automatically load a patient at startup.
+1. **Search for patient:** Replace every patient drop-down with three top-of-screen text fields: **First name**, **Last name**, and **DOB (MMDDYYYY)**, followed by **Search**. Patient folders use the exact convention `<first>-<last>-<MMDDYYYY>` (for example, `alice-john-12121956`); matching is case-insensitive. Require all three values and validate DOB as a real eight-digit `MMDDYYYY` date before loading data. Do not automatically load a patient at startup.
 2. **Choose a snapshot (optional):** After a successful search, provide one `Choose date & time` control. It lists only that patient's date folders and their time children. Selecting a time loads exactly that snapshot's X-ray, EKG, and blood-test data; do not merge records from different times.
 3. **Load patient data:** When Search finds a patient, clear all previous selections, galleries, blood-test records, and old response/context. For the date/time snapshot layout, automatically load the newest available snapshot's X-ray images, EKG images, and blood-test JSON. Display them in the existing panels. Keep image thumbnail selection/deselection and blood-test row selection behavior.
-4. **Doctor's request:** The doctor types a question in the existing prompt field. Preserve the existing Send button.
-5. **Send to MedGemma:** On Send, submit the doctor's request and **only the selected records belonging to the active patient and selected date/time snapshot** directly to the configured MedGemma model on the Ollama server specified in `.env` (local or remote). Use the existing `/api/generate` request implementation and `.env` settings. Include selected blood-test values and reference ranges in the prompt. Send selected X-ray and EKG **original image bytes** encoded in base64; never send resized thumbnails. Keep network calls off the GUI thread.
+4. **Doctor's request:** The doctor types a question in the existing prompt field. Preserve the **Ask AI** button.
+5. **Ask AI:** On click, submit the doctor's request and **only the selected records belonging to the active patient and selected date/time snapshot** directly to the configured MedGemma model on the Ollama server specified in `.env` (local or remote). Use the existing `/api/generate` request implementation and `.env` settings. Include selected blood-test values and reference ranges in the prompt. Send selected X-ray and EKG **original image bytes** encoded in base64; never send resized thumbnails. Keep network calls off the GUI thread.
 6. **Show answer:** Display MedGemma's answer in the existing AI Response panel, with existing status/error handling. Preserve optional voice playback if already working. Indicate that the output is AI-generated and requires clinician review.
 
-**Actions area:** Do not create an Actions section, label, frame, placeholder, or tab. The existing **Send to MedGemma** button must work independently.
+**Actions area:** Do not create an Actions section, label, frame, placeholder, or tab. The existing **Ask AI** button must work independently.
 
 ## 3. Patient directory structure
 
 The patient directory name is the searchable identity key, in the form
-`<first-name>-<last-name>-<MMDDYY>`. Example: `alice-john-121156`.
+`<first-name>-<last-name>-<MMDDYYYY>`. Example: `alice-john-12121956`.
 
 ```text
 Project/
@@ -135,8 +135,8 @@ The original script sends one combined prompt and selected images directly to Me
 
 Reproduce the approved desktop layout, adapting the original Tkinter GUI rather than rebuilding its behavior:
 
-- **Top row only:** `Patient Search and Date/Time` with First name, Last name, DOB (`MMDDYY`), and Search, followed by `Choose date & time` and the active-patient indicator. There is no patient dropdown or date-range control. At ordinary desktop widths, keep the controls on one physical line; a narrow-window fallback may wrap without clipping. Do not put connection/server URL, model name/selector, or Check Connection widgets in the visible GUI. Read connection and model from `.env` and preserve background readiness/error handling.
-- **Main area, left approximately 30–35%:** red `AI Clinical Assistant Center` heading; `Your Question` multiline input **blank on startup**, with no default prompt, instructions, or injected status text; `Send to MedGemma` and `Voice: OFF/ON` controls below; then a large **single** `AI Response` text area. No `Response` or `Original` tabs, no separate original/draft side-by-side panes, and **no Actions section whatsoever**. Keep clinician-review notice in a status/footer location outside the question input if needed.
+- **Top row only:** `Patient Search and Date/Time` with First name, Last name, DOB (`MMDDYYYY`), and Search, followed by `Choose date & time` and the active-patient indicator. There is no patient dropdown or date-range control. At ordinary desktop widths, keep the controls on one physical line; a narrow-window fallback may wrap without clipping. Do not put connection/server URL, model name/selector, or Check Connection widgets in the visible GUI. Read connection and model from `.env` and preserve background readiness/error handling.
+- **Main area, left approximately 30–35%:** red `AI Clinical Assistant Center` heading; `Your Question` multiline input **blank on startup**, with no default prompt, instructions, or injected status text; `Ask AI` and `Voice: OFF/ON` controls below; then a large **single** `AI Response` text area. No `Response` or `Original` tabs, no separate original/draft side-by-side panes, and **no Actions section whatsoever**. Keep clinician-review notice in a status/footer location outside the question input if needed.
 - **Main area, right approximately 65–70%:** three large panels **stacked vertically**, never side-by-side: `XRAY`, `EKG/ECG`, `BLOOD TEST`. Allocate roughly **35% / 35% / 30%** of right-side height; keep independent scrolling, record selection/deselection, and original-resolution sending. **Remove** the `Medical Image Datasets` heading to save vertical space.
 - Each modality panel title must show the loaded snapshot's date and time. Update headings when Search loads the newest snapshot or when the user selects another date/time.
 - **Do not display counts** such as `3 image(s)`, `0/3 selected`, `Blood 0/1 selected`, or any number of images/records in headings, captions, selection status, or elsewhere in the GUI. Selection state may be shown through highlighting/checkmarks without numerical counts.
@@ -188,6 +188,6 @@ For Ubuntu, use `python3 client_medgemma_patients.py` after installing Tkinter a
 
 ## Current picker controls
 
-The main AI Clinical Assistant controls include `Send to MedGemma`, Voice, and
+The main AI Clinical Assistant controls include `Ask AI`, Voice, and
 one visible `Close GUI` button. `Close GUI` uses the normal application
 shutdown handler.

@@ -161,14 +161,14 @@ This behavior must be implemented in **the Python application**, not the launche
 
 When switching patients, the application clears previous selections, prior response/context, and displayed records. It must also prevent an earlier in-flight response from appearing under a different patient.
 
-The **Actions** section is removed entirely. The existing **Send to MedGemma** button continues to function.
+The **Actions** section is removed entirely. The **Ask AI** button sends the request.
 
 ## 4A. Approved GUI layout (mandatory for regeneration)
 
 The following overrides any legacy UI instructions elsewhere in this README while retaining the same single-file patient workflow:
 
 - **Top:** one compact `Patient Selection and Date Range` row containing the Patient ID dropdown followed immediately by From/To dates, Apply Range, Clear Range, then the active-patient indicator, all on the same physical line at ordinary desktop widths. Do not place the active-patient indicator between the menu and filters or split them into separate header rows. A second row is allowed only as a narrow-window fallback that prevents clipping. Input dates use `MMDDYY`; formatted display may show `MM/DD/YYYY` if conversion is correct. Do not display Server URL, Model, or Check Connection widgets. Ollama settings still come from `.env`.
-- **Left (~35% width):** `AI Clinical Assistant Center`; **blank** `Your Question` box on startup; `Send to MedGemma` and Voice toggle; one large `AI Response` box. **No Actions section** and **no Response/Original tabs**. No default question/prompt text.
+- **Left (~35% width):** `AI Clinical Assistant Center`; **blank** `Your Question` box on startup; `Ask AI` and Voice toggle; one large `AI Response` box. **No Actions section** and **no Response/Original tabs**. No default question/prompt text.
 - **Right (~65% width):** **XRAY**, **EKG/ECG**, **BLOOD TEST** in three **vertically stacked** panels, approximately 35%/35%/30% of available height, with scrolling and click selection preserved. **No Medical Image Datasets heading**.
 - **Panel labels:** show the active date range in each panel title, e.g. `XRAY (01/01/2026 - 12/31/2026)`. If no range is applied, show that modality's recognized minimum-to-maximum available dates instead of `All dates`; if every record is undated, show `Undated records`. For one open bound, show only the applicable limit. The displayed date range must match the actual filtering.
 - **No image/record counts anywhere in the GUI**, including modality headings and selection status. Use visual selection indicators instead of `0/3 selected` or `3 image(s)`.
@@ -277,6 +277,6 @@ If flexible doctor-directed multi-step decision-making is later required, add Qw
 
 ## Current main controls
 
-The main assistant area provides `Send to MedGemma`, Voice, and `Close GUI`.
+The main assistant area provides `Ask AI`, Voice, and `Close GUI`.
 The Close GUI button safely shuts down the client through its normal window
 close handler.

@@ -4,13 +4,13 @@ This project is a Tkinter desktop application for reviewing selected patient X-r
 
 ## Interface
 
-The window has an unlabeled patient-search control bar above a responsive two-column workspace. The left side contains the red/orange **AI Clinical Assistant Center** heading, **Your Question** input, **Send to MedGemma**, **Voice: OFF**, **Close**, status, and scrollable **AI Response**. The right side has three simultaneous panels:
+The window has an unlabeled patient-search control bar above a responsive two-column workspace. The left side contains the red/orange **AI Clinical Assistant Center** heading, **Your Question** input, **Ask AI**, **Voice: OFF**, **Close**, status, and scrollable **AI Response**. The right side has three simultaneous panels:
 
 - **XRAY** — framed, selectable, horizontally arranged image tiles with scrollbars.
 - **EKG/ECG** — wide readable selectable images with scrolling.
 - **BLOOD TEST** — selectable records with red title/marker and Test, Value, Unit, Reference range, and Flag columns.
 
-The top bar searches patients by **First name**, **Last name**, and **DOB (MMDDYY)**. **Search** validates the values, loads the newest snapshot for a matching patient, and shows an error dialog when no match exists. **Choose date & time** then selects a different snapshot for that active patient. At the far right, a two-line active-patient block shows `Active patient` in teal and the selected name plus DOB in coral. Snapshot selection supports direct folders, dated snapshots, and legacy `data/<modality>` layouts.
+The top bar searches patients by **First name**, **Last name**, and **DOB (MMDDYYYY)**. **Search** validates the values, maps the four-digit year to the existing two-digit patient-folder suffix, loads the newest snapshot for a matching patient, and shows an error dialog when no match exists. **Choose date & time** then selects a different snapshot for that active patient. At the far right, a two-line active-patient block shows `Active patient` in teal and the selected name plus DOB in coral. Snapshot selection supports direct folders, dated snapshots, and legacy `data/<modality>` layouts.
 
 ## Components
 

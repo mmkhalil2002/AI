@@ -1085,7 +1085,7 @@ def select_patient(event=None):
 
 
 def search_patient(_event=None):
-    """Search patient records by first name, last name, and DOB (MMDDYY)."""
+    """Search patient records by first name, last name, and DOB (MMDDYYYY)."""
     if current_request is not None:
         return
     first_name = patient_first_name.get().strip()
@@ -1097,14 +1097,18 @@ def search_patient(_event=None):
         messagebox.showerror("Patient search", "Enter a valid first name and last name.", parent=window)
         return
     try:
-        if not re.fullmatch(r"\d{6}", dob):
+        if not re.fullmatch(r"\d{8}", dob):
             raise ValueError
-        datetime.strptime(dob, "%m%d%y")
+        datetime.strptime(dob, "%m%d%Y")
     except ValueError:
-        messagebox.showerror("Patient search", "Enter date of birth as MMDDYY, for example 042586.", parent=window)
+        messagebox.showerror("Patient search", "Enter date of birth as MMDDYYYY, for example 04251986.", parent=window)
         return
-    requested_id = f"{first_name}-{last_name}-{dob}".casefold()
-    matched_id = next((name for name in patients if name.casefold() == requested_id), None)
+    # Patient folders may retain MMDDYY or include the full MMDDYYYY birth date.
+    requested_ids = {
+        f"{first_name}-{last_name}-{dob}".casefold(),
+        f"{first_name}-{last_name}-{dob[:4]}{dob[-2:]}".casefold(),
+    }
+    matched_id = next((name for name in patients if name.casefold() in requested_ids), None)
     if matched_id is None:
         messagebox.showerror(
             "Patient not found",
@@ -4924,7 +4928,7 @@ def main():
     ttk.Label(patient_bar, text="Last name", style="Field.TLabel").grid(row=0, column=2, padx=(0, 4), pady=5)
     patient_last_entry = ttk.Entry(patient_bar, textvariable=patient_last_name, width=16)
     patient_last_entry.grid(row=0, column=3, padx=(0, 8), pady=5, sticky="w")
-    ttk.Label(patient_bar, text="DOB (MMDDYY)", style="Field.TLabel").grid(row=0, column=4, padx=(0, 4), pady=5)
+    ttk.Label(patient_bar, text="DOB (MMDDYYYY)", style="Field.TLabel").grid(row=0, column=4, padx=(0, 4), pady=5)
     patient_dob_entry = ttk.Entry(patient_bar, textvariable=patient_dob, width=10)
     patient_dob_entry.grid(row=0, column=5, padx=(0, 8), pady=5, sticky="w")
     patient_search_button = ttk.Button(patient_bar, text="Search", command=search_patient, style="Secondary.TButton")
@@ -5042,7 +5046,7 @@ def main():
     action_bar = ttk.Frame(qa_panel, style="App.TFrame")
     action_bar.pack(pady=10)
     send_button = ttk.Button(
-        action_bar, text="Send to MedGemma", command=send_question, style="Accent.TButton"
+        action_bar, text="Ask AI", command=send_question, style="Accent.TButton"
     )
     if compact_layout:
         send_button.grid(row=0, column=0, padx=3, pady=2, sticky="ew")
