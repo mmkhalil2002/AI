@@ -67,3 +67,7 @@ Use the explicit named launcher from `config/` (`run.bat` on Windows or `bash ru
 At normal desktop width, the Patient ID menu and date-range controls (`From`, `To`, Apply Range, Clear Range) must be rendered in one shared top row. A wrap to a second row is permitted only for a display too narrow to render that strip without clipping. This is a visual-layout requirement and should be checked after every GUI launch.
 
 The filters must appear immediately after the Patient ID menu, before the active-patient indicator. Blood-test table headings and values must use a fixed-width font and fixed-width columns; visual inspection must confirm vertical column alignment.
+
+## X-ray zoom dimensions update (2026-10-31)
+
+The X-ray zoom viewer displays oriented image dimensions in pixels as `widthxheight` beside the filename in the window title and as `Image size: widthxheight px` beneath the image canvas. Each separate window is capped at 1400 × 900; larger images stay at natural pixel dimensions and use scrollbars. Only the blue **Zoom in** toggle state opens selected-X-ray windows. The updated app was launched, but the selected-image zoom window was not visually exercised in this update.

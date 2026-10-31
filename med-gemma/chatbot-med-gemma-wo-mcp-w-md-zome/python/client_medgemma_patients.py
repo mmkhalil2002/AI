@@ -2261,11 +2261,11 @@ def open_xray_zoom_viewer(path):
         return
 
     viewer = tk.Toplevel(window)
-    viewer.title(f"X-ray — {path.name}")
+    viewer.title(f"X-ray — {path.name} — {source.width}x{source.height}")
     # Cap each viewer at 1400x900 while retaining a natural-size image canvas.
     # Oversized images remain at 1:1 and are reachable through the scrollbars.
     viewer.geometry(
-        f"{min(source.width + 24, 1400)}x{min(source.height + 58, 900)}"
+        f"{min(max(source.width + 24, 220), 1400)}x{min(source.height + 84, 900)}"
     )
     viewer.maxsize(1400, 900)
     viewer.minsize(240, 180)
@@ -2278,9 +2278,17 @@ def open_xray_zoom_viewer(path):
     canvas.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
     canvas.create_image(0, 0, anchor="nw", image=photo)
     canvas.configure(scrollregion=(0, 0, source.width, source.height))
+    size_label = ttk.Label(
+        viewer,
+        text=f"Image size: {source.width}x{source.height} px",
+        anchor="w",
+    )
+    size_label.grid(row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=(3, 6))
     viewer.rowconfigure(0, weight=1)
     viewer.columnconfigure(0, weight=1)
-    xray_zoom_viewers[path] = {"window": viewer, "photo": photo, "source": source}
+    xray_zoom_viewers[path] = {
+        "window": viewer, "photo": photo, "source": source, "size_label": size_label,
+    }
     viewer.protocol("WM_DELETE_WINDOW", lambda p=path: close_xray_zoom_viewer(p))
 
 
