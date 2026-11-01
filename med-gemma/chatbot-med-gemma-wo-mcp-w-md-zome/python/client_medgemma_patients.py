@@ -1373,7 +1373,7 @@ def apply_report_preset(event=None):
 def update_selection_workspace():
     """Refresh visible patient/modality counts and the removable selection tray."""
     if active_patient is None:
-        active_label.config(text="Active patient: none")
+        active_label.config(text="None")
         totals = (0, 0, 0)
     else:
         totals = (
@@ -1381,7 +1381,7 @@ def update_selection_workspace():
             len(patient_files("ekgs", IMAGE_EXTENSIONS)[0]),
             len(blood_test_records),
         )
-        active_label.config(text=f"Active patient: {patient_name.get()}")
+        active_label.config(text=patient_name.get())
     counts = (
         f"X-ray {len(selected_images[0])}/{totals[0]} selected",
         f"EKG {len(selected_images[1])}/{totals[1]} selected",
@@ -3542,18 +3542,25 @@ def main():
     dob_entry.grid(row=0, column=5, padx=(0, 6), pady=5, sticky="w")
     search_button = ttk.Button(patient_bar, text="Search", command=search_patient, style="Secondary.TButton")
     search_button.grid(row=0, column=6, padx=(0, 8), pady=5, sticky="w")
+    zoom_controls = ttk.Frame(patient_bar, style="App.TFrame")
+    zoom_controls.grid(row=0, column=7, padx=(0, 8), pady=5, sticky="w")
     xray_zoom_button = ttk.Button(
-        patient_bar, text="Zoom out", command=toggle_xray_zoom, style="ZoomOff.TButton"
+        zoom_controls, text="Zoom out", command=toggle_xray_zoom, style="ZoomOff.TButton"
     )
-    xray_zoom_button.grid(row=0, column=7, padx=(0, 8), pady=5, sticky="w")
+    xray_zoom_button.pack(side=tk.LEFT, padx=(0, 6))
     patient_search_controls = (first_name_entry, last_name_entry, dob_entry, search_button, xray_zoom_button)
     for entry in (first_name_entry, last_name_entry, dob_entry):
         entry.bind("<Return>", lambda _event: search_patient())
-    active_label = ttk.Label(patient_bar, text="Active patient: none", style="Field.TLabel")
+    active_patient_display = ttk.Frame(patient_bar, style="App.TFrame")
+    ttk.Label(active_patient_display, text="Active patient", foreground=TEAL,
+              background=APP_BACKGROUND, font=("Segoe UI", 10, "bold")).pack(anchor="w")
+    active_label = ttk.Label(active_patient_display, text="None", foreground="#6a1b9a",
+                             background=APP_BACKGROUND, font=("Segoe UI", 10, "bold"))
+    active_label.pack(anchor="w")
     if compact_layout:
-        active_label.grid(row=2, column=0, columnspan=7, padx=(10, 5), pady=5, sticky="w")
+        active_patient_display.grid(row=2, column=0, columnspan=7, padx=(10, 5), pady=5, sticky="w")
     else:
-        active_label.grid(row=0, column=10, padx=8, pady=5, sticky="w")
+        active_patient_display.grid(row=0, column=10, padx=8, pady=5, sticky="w")
     demo_data = tk.BooleanVar(value=False)
     demo_toggle = ttk.Checkbutton(patient_bar, text="Demo data for this session", variable=demo_data,
                                   command=toggle_demo_data)
@@ -3599,7 +3606,6 @@ def main():
     snapshot_selection_label = ttk.Label(
         date_filter_bar, text="Choose a date and time to load data.", style="Status.TLabel"
     )
-    snapshot_selection_label.pack(side=tk.LEFT, padx=(0, 4), pady=5)
     # Retained only for compatibility with old saved-session helper callbacks;
     # the visible workflow uses exactly one date/time picker.
     date_filter_status = snapshot_selection_label
@@ -3844,11 +3850,7 @@ def main():
             widget.pack_forget()
             widget.grid_remove()
 
-    image_panel = ttk.Frame(body, style="App.TFrame")
-    data_panes.add(image_panel, weight=70)
-    image_panel.rowconfigure(0, weight=1, uniform="image_rows")
-    image_panel.rowconfigure(2, weight=1, uniform="image_rows")
-    image_panel.columnconfigure(0, weight=1)
+    image_panel = data_panes
     selected_images = [{}, {}]  # Blue first, then orange; each keeps click order.
     sample_button = tk.Button(image_panel)
     default_button_color = sample_button.cget("background")
@@ -3872,12 +3874,7 @@ def main():
             labelwidget=heading,
             style="Gallery.TLabelframe",
         )
-        pane.grid(
-            row=gallery_index * 2,
-            column=0,
-            sticky="nsew",
-            pady=(0, 3) if gallery_index == 0 else (3, 0),
-        )
+        data_panes.add(pane, weight=1)
         pane.columnconfigure(0, weight=1)
         pane.rowconfigure(1, weight=1)
         pane.rowconfigure(2, weight=0)
@@ -3926,7 +3923,7 @@ def main():
         )
 
     # Keep the selectable Blood Test Data list below the image galleries.
-    blood_heading = tk.Frame(body, background=APP_BACKGROUND)
+    blood_heading = tk.Frame(data_panes, background=APP_BACKGROUND)
     blood_heading_name = tk.Label(blood_heading, text="BLOOD TEST", background=APP_BACKGROUND,
                                   foreground=TEAL, font=("Segoe UI", 12, "bold"))
     blood_heading_date = tk.Label(blood_heading, text="", background=APP_BACKGROUND,
@@ -3937,12 +3934,12 @@ def main():
     blood_heading_date.pack(side=tk.LEFT)
     blood_heading_time.pack(side=tk.LEFT)
     blood_test_panel = ttk.LabelFrame(
-        body, labelwidget=blood_heading, style="Gallery.TLabelframe",
+        data_panes, labelwidget=blood_heading, style="Gallery.TLabelframe",
     )
     blood_test_panel.heading_name = blood_heading_name
     blood_test_panel.heading_date = blood_heading_date
     blood_test_panel.heading_time = blood_heading_time
-    data_panes.add(blood_test_panel, weight=30)
+    data_panes.add(blood_test_panel, weight=1)
     blood_test_panel.rowconfigure(1, weight=1)
     blood_test_panel.columnconfigure(0, weight=1)
     blood_controls = ttk.Frame(blood_test_panel, style="App.TFrame")
@@ -3997,18 +3994,58 @@ def main():
         xscrollcommand=blood_test_hscroll.set,
     )
 
-    # Explicit initial sash positions prevent the large blood-test text widget
-    # from squeezing the X-ray and EKG previews into a narrow horizontal strip.
-    # Users can still drag both sashes after startup.
+    record_panels = [gallery["title"] for gallery in galleries] + [blood_test_panel]
+    panel_visibility = [tk.BooleanVar(value=True) for _ in record_panels]
+
+    def equalize_record_panels(event=None):
+        count = len(data_panes.panes())
+        height = data_panes.winfo_height()
+        for index in range(count - 1):
+            data_panes.sashpos(index, round(height * (index + 1) / count))
+
+    def update_record_panel_visibility():
+        for pane in data_panes.panes():
+            data_panes.forget(pane)
+        for panel, visible in zip(record_panels, panel_visibility):
+            if visible.get():
+                data_panes.add(panel, weight=1)
+        for button, label, visible in zip(panel_toggle_buttons, panel_labels, panel_visibility):
+            button.configure(text=f"{label} {'On' if visible.get() else 'Off'}")
+        window.after_idle(equalize_record_panels)
+
+    ui_style.configure(
+        "RecordToggle.Toolbutton", foreground="white", padding=(10, 6),
+        font=("Segoe UI", 10, "bold"),
+    )
+    ui_style.map(
+        "RecordToggle.Toolbutton",
+        background=[
+            ("selected", "active", "#166534"),
+            ("selected", "#15803d"),
+            ("active", "#991b1b"),
+            ("!selected", "#b91c1c"),
+        ],
+        foreground=[("selected", "white"), ("!selected", "white")],
+    )
+    panel_labels = ("X-ray", "EKG", "Blood Test")
+    panel_toggle_buttons = []
+    for label, visible in zip(panel_labels, panel_visibility):
+        button = ttk.Checkbutton(
+            zoom_controls, text=f"{label} On", variable=visible,
+            command=update_record_panel_visibility, style="RecordToggle.Toolbutton",
+        )
+        button.pack(side=tk.LEFT, padx=(0, 6))
+        panel_toggle_buttons.append(button)
+    data_panes.bind("<Configure>", equalize_record_panels)
+
+    # Set the question/data split and divide visible record panels equally.
     def establish_workspace_proportions():
         try:
             window.update_idletasks()
             width = body.winfo_width()
-            height = data_panes.winfo_height()
             if width > 500:
                 body.sashpos(0, int(width * 0.35))
-            if height > 250:
-                data_panes.sashpos(0, int(height * 0.70))
+            equalize_record_panels()
         except tk.TclError:
             pass
 
