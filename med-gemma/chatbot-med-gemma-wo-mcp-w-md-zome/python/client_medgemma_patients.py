@@ -380,6 +380,7 @@ active_date_start = None
 active_date_end = None
 selected_snapshot_dir = None
 image_viewer = None
+image_diagnoses = {}
 # Separate native-size windows shown for selected X-rays while zoom mode is on.
 xray_zoom_enabled = False
 xray_zoom_viewers = {}
@@ -432,6 +433,8 @@ class RequestSnapshot:
     blood_paths: tuple = ()
     xray_count: int = 0
     ekg_count: int = 0
+    user_question: str = ""
+    blood_json: str = ""
 
 
 @dataclass
@@ -1372,6 +1375,7 @@ def apply_report_preset(event=None):
 
 def update_selection_workspace():
     """Refresh visible patient/modality counts and the removable selection tray."""
+    sync_xray_zoom_viewers()
     if active_patient is None:
         active_label.config(text="None")
         totals = (0, 0, 0)
@@ -1879,8 +1883,7 @@ def select_image(path, button, tile, column):
         button.config(relief=tk.SUNKEN, background=fill)
         tile.config(background=border)
         status.config(text="Selected")
-    if column == 0:
-        sync_xray_zoom_viewers()
+    sync_xray_zoom_viewers()
     update_selection_workspace()
 
 
@@ -2006,6 +2009,7 @@ def toggle_blood_test_index(record_index):
     )
     blood_test_view.tag_configure(line_tag, foreground=TEXT_COLOR)
     blood_test_view.tag_raise("blood_title")
+    sync_xray_zoom_viewers()
     update_selection_workspace()
     return "break"
 
@@ -2243,12 +2247,89 @@ def close_xray_zoom_viewer(path):
         pass
 
 
+def create_image_diagnosis_panel(parent):
+    panel = ttk.Frame(parent)
+    text = scrolledtext.ScrolledText(
+        panel, height=6, wrap=tk.WORD, font=("Segoe UI", 11),
+        background="#fffdfb", foreground="#17222d", padx=10, pady=8,
+    )
+    text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+    text.configure(state=tk.DISABLED)
+    return panel, text
+
+
+def refresh_image_diagnosis(state, path):
+    widget = state.get("diagnosis")
+    if widget is None:
+        return
+    widget.configure(state=tk.NORMAL)
+    widget.delete("1.0", tk.END)
+    widget.insert(tk.END, image_diagnoses.get(
+        Path(path).resolve(), "No response received for this image yet."))
+    widget.configure(state=tk.DISABLED)
+
+
+def receive_image_diagnosis(request_id, path, answer):
+    if not request_is_current(request_id):
+        return
+    image_diagnoses[Path(path).resolve()] = answer
+    for viewer_path, viewer_state in xray_zoom_viewers.items():
+        if Path(viewer_path).resolve() == Path(path).resolve():
+            refresh_image_diagnosis(viewer_state, viewer_path)
+    if image_viewer is not None and Path(image_viewer["path"]).resolve() == Path(path).resolve():
+        refresh_image_diagnosis(image_viewer, path)
+
+
 def open_xray_zoom_viewer(path):
     """Show one selected X-ray in a separate window at its natural pixel size."""
     from PIL import Image, ImageOps, ImageTk
 
     path = Path(path)
     if active_patient is None or path in xray_zoom_viewers:
+        return
+    modality = "EKG" if "ekgs" in path.parts else "Blood Test" if "blood_tests" in path.parts else "X-ray"
+    if path.suffix.lower() == ".json":
+        try:
+            safe_path(path, active_patient)
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            show_status("Could not open selected blood-test record.")
+            return
+        viewer = tk.Toplevel(window)
+        viewer.title(f"Blood Test - {path.stem}")
+        viewer.geometry("800x650")
+        tk.Label(viewer, text=f"Blood Test: {path.stem}", font=("Segoe UI", 18, "bold"),
+                 foreground="white", background="#164e63", padx=12, pady=10).pack(fill=tk.X)
+        diagnosis_panel, diagnosis = create_image_diagnosis_panel(viewer)
+        diagnosis_panel.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=8)
+        record_view = scrolledtext.ScrolledText(
+            viewer, wrap=tk.WORD, font=("Segoe UI", 15),
+            background="#fffdfb", foreground="#17222d", padx=16, pady=12,
+            spacing1=3, spacing3=5,
+        )
+        record_view.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        record_view.tag_configure("record_heading", font=("Segoe UI", 18, "bold"), foreground="#164e63")
+        record_view.tag_configure("test_heading", font=("Segoe UI", 16, "bold"), foreground="#164e63")
+        record_view.tag_configure("abnormal", foreground="#b91c1c", font=("Segoe UI", 15, "bold"))
+        records = data if isinstance(data, list) else [data]
+        for record in records:
+            record_view.insert(tk.END, lab_record_title(record, path) + "\n", "record_heading")
+            if isinstance(record, dict):
+                for key, value in record.items():
+                    if key not in ("results", "title", "panel"):
+                        label = str(key).replace("_", " ").capitalize()
+                        record_view.insert(tk.END, f"{label}: {_display_scalar(value)}\n")
+            record_view.insert(tk.END, "\n")
+            for test, value, unit, reference, flag in lab_view_rows(record):
+                record_view.insert(tk.END, test + "\n", "test_heading")
+                result_text = value + (f" {unit}" if unit != "Unknown" else "")
+                record_view.insert(tk.END, f"Result: {result_text}\n")
+                record_view.insert(tk.END, f"Reference range: {reference}\n")
+                record_view.insert(tk.END, f"Status: {flag}\n\n", "abnormal" if flag in ("High", "Low") else ())
+        record_view.configure(state=tk.DISABLED)
+        xray_zoom_viewers[path] = {"window": viewer, "diagnosis": diagnosis}
+        refresh_image_diagnosis(xray_zoom_viewers[path], path)
+        viewer.protocol("WM_DELETE_WINDOW", lambda p=path: close_xray_zoom_viewer(p))
         return
     try:
         safe_path(path, active_patient)
@@ -2262,6 +2343,7 @@ def open_xray_zoom_viewer(path):
 
     viewer = tk.Toplevel(window)
     viewer.title(f"X-ray — {path.name} — {source.width}x{source.height}")
+    viewer.title(f"{modality} - {path.stem} - {source.width}x{source.height}")
     # Cap each viewer at 1400x900 while retaining a natural-size image canvas.
     # Oversized images remain at 1:1 and are reachable through the scrollbars.
     viewer.geometry(
@@ -2269,38 +2351,44 @@ def open_xray_zoom_viewer(path):
     )
     viewer.maxsize(1400, 900)
     viewer.minsize(240, 180)
+    tk.Label(
+        viewer, text=f"{modality}: {path.stem}", font=("Segoe UI", 18, "bold"),
+        foreground="#ffffff", background="#164e63", anchor="w", padx=12, pady=10,
+        wraplength=1300,
+    ).grid(row=0, column=0, columnspan=2, sticky="ew")
     canvas = tk.Canvas(viewer, background="#17222d", highlightthickness=0)
-    canvas.grid(row=0, column=0, sticky="nsew")
+    canvas.grid(row=1, column=0, sticky="nsew")
     yscroll = ttk.Scrollbar(viewer, orient=tk.VERTICAL, command=canvas.yview)
-    yscroll.grid(row=0, column=1, sticky="ns")
+    yscroll.grid(row=1, column=1, sticky="ns")
     xscroll = ttk.Scrollbar(viewer, orient=tk.HORIZONTAL, command=canvas.xview)
-    xscroll.grid(row=1, column=0, sticky="ew")
+    xscroll.grid(row=2, column=0, sticky="ew")
     canvas.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
     canvas.create_image(0, 0, anchor="nw", image=photo)
     canvas.configure(scrollregion=(0, 0, source.width, source.height))
-    size_label = ttk.Label(
-        viewer,
-        text=f"Image size: {source.width}x{source.height} px",
-        anchor="w",
-    )
-    size_label.grid(row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=(3, 6))
-    viewer.rowconfigure(0, weight=1)
+    diagnosis_panel, diagnosis = create_image_diagnosis_panel(viewer)
+    diagnosis_panel.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=8, pady=(0, 8))
+    viewer.rowconfigure(1, weight=1)
     viewer.columnconfigure(0, weight=1)
     xray_zoom_viewers[path] = {
-        "window": viewer, "photo": photo, "source": source, "size_label": size_label,
+        "window": viewer, "photo": photo, "source": source,
+        "diagnosis": diagnosis,
     }
+    refresh_image_diagnosis(xray_zoom_viewers[path], path)
     viewer.protocol("WM_DELETE_WINDOW", lambda p=path: close_xray_zoom_viewer(p))
 
 
 def sync_xray_zoom_viewers():
     """Match open native-size X-ray windows to the current X-ray selection."""
-    selected = set(selected_images[0]) if xray_zoom_enabled else set()
+    selected = set()
+    if xray_zoom_enabled:
+        selected.update(path for group in selected_images for path in group)
+        selected.update(blood_test_paths[index] for index in selected_blood_test_indices)
     for path in tuple(xray_zoom_viewers):
         if path not in selected:
             close_xray_zoom_viewer(path)
     if not xray_zoom_enabled:
         return
-    for path in selected_images[0]:
+    for path in selected:
         if path not in xray_zoom_viewers:
             open_xray_zoom_viewer(path)
 
@@ -2376,6 +2464,7 @@ def show_viewer_record(state, index):
     modality, path = state["records"][index]
     state["index"] = index  # Keep navigation moving past unreadable files.
     state["path"] = path
+    refresh_image_diagnosis(state, path)
     try:
         safe_path(path, state["patient"])
         with Image.open(path) as opened:
@@ -2448,8 +2537,11 @@ def open_image_viewer(path):
     ttk.Button(toolbar, text="−", command=lambda: zoom_viewer(1 / 1.25)).pack(side=tk.LEFT, padx=2)
     ttk.Button(toolbar, text="+", command=lambda: zoom_viewer(1.25)).pack(side=tk.LEFT, padx=2)
     ttk.Button(toolbar, text="Reset", command=reset_viewer).pack(side=tk.LEFT, padx=2)
-    status = ttk.Label(viewer, text="", anchor="w")
+    status = ttk.Label(viewer, text="", anchor="w", font=("Segoe UI", 16, "bold"),
+                       foreground="#ffffff", background="#164e63", padding=(10, 8))
     status.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 6))
+    diagnosis_panel, diagnosis = create_image_diagnosis_panel(viewer)
+    diagnosis_panel.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 6))
     canvas_frame = ttk.Frame(viewer)
     canvas_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 6))
     canvas = tk.Canvas(canvas_frame, background="#17222d", highlightthickness=0, takefocus=True)
@@ -2465,7 +2557,7 @@ def open_image_viewer(path):
         "window": viewer, "canvas": canvas, "title": title, "status": status,
         "records": records, "index": match, "patient": active_patient,
         "source": None, "photo": None, "path": path, "zoom": 1.0,
-        "fit_scale": 1.0,
+        "fit_scale": 1.0, "diagnosis": diagnosis,
     }
     image_viewer = state
     show_viewer_record(state, match)
@@ -2747,7 +2839,7 @@ def _post_generate(url, payload, request_state, stream):
     return response
 
 
-def generate(url, model, question, image_paths=(), request_state=None, stream=True):
+def generate(url, model, question, image_paths=(), request_state=None, stream=True, input_scope=None):
     """POST selected full-resolution images and return final text plus metadata."""
     # Form a Python dictionary that will become the HTTP request's JSON body.
     # "question" contains the user's trimmed question and any selected
@@ -2780,6 +2872,15 @@ def generate(url, model, question, image_paths=(), request_state=None, stream=Tr
             "repeat_last_n": REPEAT_LAST_N,
         },
     }
+    if input_scope:
+        payload["system"] = (
+            "Return only the final report, without internal reasoning. "
+            f"Analyze only the supplied {input_scope}. This is an independent request. "
+            "Do not compare with or refer to other images or records. "
+            "Give clear Findings and Limitations sections. Use only supplied evidence, "
+            "state uncertainty, and do not invent findings, diagnoses, or citations. "
+            "Unsupported conclusions require clinician review."
+        )
     capabilities = model_capabilities(url, model)
     # Only send a thinking control when /api/show explicitly advertises support.
     # Older/unknown servers get the normal request without this optional field.
@@ -3092,6 +3193,28 @@ def close_window():
     window.destroy()
 
 
+def associate_report_image_names(report, snapshot):
+    """Label modality sections with the frozen request's image names."""
+    names = {
+        "xray": ", ".join(Path(path).stem for path in snapshot.image_paths[:snapshot.xray_count]),
+        "ekg": ", ".join(Path(path).stem for path in snapshot.image_paths[
+            snapshot.xray_count:snapshot.xray_count + snapshot.ekg_count]),
+    }
+    pattern = re.compile(
+        r"^(?P<prefix>[ \t]*(?:#{1,6}[ \t]+)?(?:\*\*)?)"
+        r"(?P<label>x[\s-]?ray|ecg\s*/\s*ekg|ekg\s*/\s*ecg|ekg|ecg)"
+        r"(?P<suffix>(?:\*\*)?[ \t]*:?[ \t]*)$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    def add_names(match):
+        key = "xray" if match.group("label").lower().startswith("x") else "ekg"
+        return (f"{match.group('prefix')}{match.group('label')} ({names[key]})"
+                f"{match.group('suffix')}" if names[key] else match.group(0))
+
+    return pattern.sub(add_names, report)
+
+
 def insert_highlighted_report(report, widget=None):
     """Display the report and color medical-section names red."""
     widget = widget or answer_box
@@ -3107,6 +3230,50 @@ def insert_highlighted_report(report, widget=None):
         widget.insert(tk.END, match.group(0), ("report_medical_heading",))
         position = match.end()
     widget.insert(tk.END, report[position:])
+
+
+def generate_separate_reports(snapshot, state):
+    """Send one image per independent call, then blood results separately."""
+    sections = []
+    completions = []
+    question = snapshot.user_question or snapshot.question
+    jobs = []
+    for index, path in enumerate(snapshot.image_paths):
+        modality = "X-RAY" if index < snapshot.xray_count else "ECG/EKG"
+        jobs.append((
+            f"{modality} - {Path(path).stem}",
+            f"{question}\n\nThe only attached image is one {modality} image. "
+            "Report findings for this image alone.",
+            (path,), f"{modality} image", path,
+        ))
+    if snapshot.blood_json:
+        records_by_path = {}
+        for path, record in zip(snapshot.blood_paths, json.loads(snapshot.blood_json)):
+            records_by_path.setdefault(path, []).append(record)
+        for path, records in records_by_path.items():
+            jobs.append((f"BLOOD TEST - {Path(path).stem}", question + "\n\nBlood test data (JSON):\n"
+                         + json.dumps(records, ensure_ascii=False), (), "blood-test data", path))
+    if not jobs:
+        return generate(snapshot.url, snapshot.model, snapshot.question, request_state=state)
+    for index, (heading, prompt, paths, scope, record_path) in enumerate(jobs, 1):
+        if state.cancel_event.is_set():
+            return None
+        set_request_stage(state, f"Analyzing input {index} of {len(jobs)}")
+        result = generate(snapshot.url, snapshot.model, prompt, paths,
+                          request_state=state, input_scope=scope)
+        if state.cancel_event.is_set():
+            return None
+        sections.append(f"{heading}\n{'=' * 36}\n{result.answer.strip()}")
+        post_ui(lambda rid=snapshot.request_id, path=record_path, answer=result.answer:
+                receive_image_diagnosis(rid, path, answer))
+        completions.append(result.metadata)
+    metadata = {"done_reason": "stop"}
+    for key in ("total_duration", "load_duration", "prompt_eval_count",
+                "prompt_eval_duration", "eval_count", "eval_duration"):
+        values = [item[key] for item in completions if isinstance(item.get(key), (int, float))]
+        if values:
+            metadata[key] = sum(values)
+    return GenerationResult("\n\n".join(sections), metadata)
 
 
 def run_request(state):
@@ -3132,10 +3299,9 @@ def run_request(state):
                 if request_is_current(rid) else None)
         if state.cancel_event.is_set():
             return
-        result = generate(
-            snapshot.url, snapshot.model, snapshot.question,
-            snapshot.image_paths, request_state=state,
-        )
+        result = generate_separate_reports(snapshot, state)
+        if result is None or state.cancel_event.is_set():
+            return
         post_ui(lambda rid=request_id, value=result: finish_request(
             rid, answer=value.answer, metadata=value.metadata)
                 if request_is_current(rid) else None)
@@ -3228,9 +3394,16 @@ def send_question():
         blood_paths=tuple(Path(path) for path in selected_blood_paths),
         xray_count=xray_count,
         ekg_count=ekg_count,
+        user_question=user_question,
+        blood_json=json.dumps(selected_blood_tests, ensure_ascii=False) if selected_blood_tests else "",
     )
     state = RequestState(snapshot=snapshot)
     current_request = state
+    image_diagnoses.clear()
+    for viewer_path, viewer_state in xray_zoom_viewers.items():
+        refresh_image_diagnosis(viewer_state, viewer_path)
+    if image_viewer is not None:
+        refresh_image_diagnosis(image_viewer, image_viewer["path"])
     set_patient_search_enabled(False)
     send_button.config(state=tk.DISABLED)
     cancel_button.config(state=tk.NORMAL)

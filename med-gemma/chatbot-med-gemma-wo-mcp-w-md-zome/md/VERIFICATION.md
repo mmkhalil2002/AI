@@ -1,3 +1,27 @@
+﻿# Current implementation verification: 2026-11-01
+
+The current behavior is documented in README.md and AGENTS.md. The records and checks below the historical heading describe earlier versions and do not establish verification of the current layout or per-image request behavior.
+
+## Checks performed during the current changes
+
+- Python AST syntax checks passed after the independent-request, diagnosis-panel, shared zoom, and formatted blood-test viewer changes.
+- `git diff --check` passed for the code changes.
+- A temporary isolated mock check exercised two images and blood data: it confirmed one image per call, no blood data in image prompts, a separate blood call, filename-stem headings, aggregate completion counts, and cancellation before calls begin. This check preceded the later change to group blood requests by source JSON file; that grouping has syntax validation but has not been rerun through the mock.
+- The desktop app was launched repeatedly using the installed Python 3.12 interpreter. Process launch alone does not establish visual correctness or successful model generation.
+
+## Remaining checks
+
+- Visually check green/red toggle states, all panel visibility combinations, active patient colors, and common display sizes.
+- Verify zoom windows for X-rays, EKGs, and formatted blood JSON, including deselection, disabling zoom, and patient changes.
+- Verify that arriving responses populate only matching source paths, remain available when opening a viewer after completion, and switch correctly during detail navigation.
+- Verify the compact unlabeled response panel, absent duplicate image-size label, and larger formatted blood-test text.
+- Rerun independent-request mocks with multiple selected blood source files and multiple records from one file; check cancellation during a later call and aggregate failure behavior.
+- No new live model analysis or clinical-accuracy evaluation was performed for these changes. No source patient records or .env settings were modified.
+
+# Historical verification record
+
+The following is retained as a record of prior checks. Older layouts, combined image payloads, patient dropdowns, and date-range controls described here are not the current specification.
+
 # Integrated release verification
 
 ## Project layout
@@ -31,7 +55,7 @@ The T13 run used temporary synthetic records for two ordinary patient names. It 
 - Compared SHA-256 hashes of every synthetic source image and JSON file before and after the workflow; all were unchanged.
 - Parser fixtures covered reasoning markers split across response events, separate `thinking` content, valid completion metadata, truncated stream, and malformed JSON event.
 - Generator fixtures confirmed equal seed and inventory produce equal assignments; `--dry-run` left its destination absent and source-file hashes unchanged.
-- The two-image-per-patient synthetic GUI fixture reported first visible gallery content in approximately 0.10–0.13 seconds in this run. This is a small-fixture observation, not a large-gallery or cross-machine performance benchmark.
+- The two-image-per-patient synthetic GUI fixture reported first visible gallery content in approximately 0.10â€“0.13 seconds in this run. This is a small-fixture observation, not a large-gallery or cross-machine performance benchmark.
 
 ## Earlier recorded checks retained
 
@@ -70,4 +94,4 @@ The filters must appear immediately after the Patient ID menu, before the active
 
 ## X-ray zoom dimensions update (2026-10-31)
 
-The X-ray zoom viewer displays oriented image dimensions in pixels as `widthxheight` beside the filename in the window title and as `Image size: widthxheight px` beneath the image canvas. Each separate window is capped at 1400 × 900; larger images stay at natural pixel dimensions and use scrollbars. Only the blue **Zoom in** toggle state opens selected-X-ray windows. The updated app was launched, but the selected-image zoom window was not visually exercised in this update.
+The X-ray zoom viewer displays oriented image dimensions in pixels as `widthxheight` beside the filename in the window title and as `Image size: widthxheight px` beneath the image canvas. Each separate window is capped at 1400 Ã— 900; larger images stay at natural pixel dimensions and use scrollbars. Only the blue **Zoom in** toggle state opens selected-X-ray windows. The updated app was launched, but the selected-image zoom window was not visually exercised in this update.
