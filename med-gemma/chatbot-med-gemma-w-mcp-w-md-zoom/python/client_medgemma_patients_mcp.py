@@ -3304,6 +3304,8 @@ def close_image_viewer():
     global image_viewer
     state = image_viewer
     image_viewer = None
+    if "zoom_button" in globals():
+        zoom_button.configure(text="Zoom in", style="ToggleOff.TButton")
     if state is not None:
         try:
             state["window"].destroy()
@@ -3330,7 +3332,7 @@ def open_modality_window(modality, key):
         return
     title = ("X-ray", "EKG", "Blood test")[modality]
     viewer = tk.Toplevel(window)
-    record_name = blood_test_paths[key].name if modality == 2 else Path(key).name
+    record_name = blood_test_paths[key].stem if modality == 2 else Path(key).stem
     viewer.title(f"{title} review — {record_name}")
     fit_dialog_to_display(viewer, 0.62, 0.70, 520, 420)
     viewer.minsize(420, 300)
@@ -3340,7 +3342,7 @@ def open_modality_window(modality, key):
             index = int(key)
             record = blood_test_records[index]
             path = blood_test_paths[index]
-            viewer.title(f"Blood test review — {path.name}")
+            viewer.title(f"Blood test review — {path.stem}")
             content = scrolledtext.ScrolledText(viewer, wrap=tk.WORD, font=("Consolas", 11))
             content.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
             content.insert(tk.END, lab_record_title(record, path) + "\n\n", "title")
@@ -3421,7 +3423,10 @@ def toggle_modality_windows(modality):
 
 
 def zoom_selected_image():
-    """Open the pan-and-zoom viewer for the first selected image."""
+    """Toggle the zoom window for the first selected image."""
+    if image_viewer is not None:
+        close_image_viewer()
+        return
     for selection in selected_images:
         if selection:
             open_image_viewer(next(iter(selection)))
@@ -3490,6 +3495,8 @@ def render_viewer_image(state, center=True):
         return
     fit = viewer_fit_scale(source.size, viewport)
     state["fit_scale"] = fit
+    if state.get("original_size"):
+        state["zoom"] = 1.0 / fit
     size = viewer_render_size(source.size, viewport, state["zoom"])
     picture = source.resize(size, Image.Resampling.LANCZOS)
     state["photo"] = ImageTk.PhotoImage(picture, master=canvas)
@@ -3502,7 +3509,7 @@ def render_viewer_image(state, center=True):
         canvas.xview_moveto(0.5)
         canvas.yview_moveto(0.5)
     state["status"].config(
-        text=f"{state['path'].name}  |  {source.width} × {source.height}  |  {state['zoom']:.0%} of fit"
+        text=f"{state['path'].stem}  |  {source.width} × {source.height}  |  {state.get('zoom_status', 'Fit')} | {state['zoom']:.0%} of fit"
     )
 
 
@@ -3544,7 +3551,7 @@ def show_viewer_record(state, index):
         canvas.configure(scrollregion=canvas.bbox("all") or (0, 0, 1, 1))
         state["source"] = None
         state["photo"] = None
-        state["title"].config(text=f"BLOOD TEST â€” {path.name}")
+        state["title"].config(text=f"BLOOD TEST â€” {path.stem}")
         state["status"].config(text=f"Selected blood test {record_index + 1} of {len(blood_test_records)}")
         refresh_viewer_item_response(state)
         return
@@ -3560,12 +3567,14 @@ def show_viewer_record(state, index):
         state["source"] = None
         state["photo"] = None
         state["canvas"].delete("all")
-        state["title"].config(text=f"{modality.upper()} — {path.name} (unavailable)")
+        state["title"].config(text=f"{modality.upper()} — {path.stem} (unavailable)")
         state["status"].config(text=f"Could not open image for inspection ({type(error).__name__}).")
         return
     state["source"] = source
+    state["original_size"] = False
     state["zoom"] = 1.0
-    state["title"].config(text=f"{modality.upper()} — {path.name}")
+    state["zoom_status"] = "Fit"
+    state["title"].config(text=f"{modality.upper()} — {path.stem}")
     render_viewer_image(state)
     refresh_viewer_item_response(state)
 
@@ -3601,21 +3610,30 @@ def zoom_viewer(multiplier):
     if image_viewer is None:
         return
     state = image_viewer
+    state["original_size"] = False
+    state["zoom_status"] = "Zoom in" if multiplier > 1 else "Zoom out"
     state["zoom"] = min(8.0, max(0.1, state["zoom"] * multiplier))
     render_viewer_image(state)
 
 
 # -------------------------------------------------------------------------
-# FUNCTION: reset_viewer
-# Purpose: Return the current image to the full-view fit and centered position.
-#
-# Example (illustrative; not executed):
-#   After zooming/panning, reset_viewer() returns the current image to centered fit view.
+# FUNCTION: fit_viewer / reset_viewer
+# Fit shows the whole image; Reset shows original pixel dimensions.
 # -------------------------------------------------------------------------
-def reset_viewer():
-    """Return the current image to the full-view fit and centered position."""
+def fit_viewer():
+    """Fit the complete image in the viewport and center it."""
     if image_viewer is not None:
+        image_viewer["original_size"] = False
         image_viewer["zoom"] = 1.0
+        image_viewer["zoom_status"] = "Fit"
+        render_viewer_image(image_viewer)
+
+
+def reset_viewer():
+    """Show the image at original pixel dimensions and center it."""
+    if image_viewer is not None and image_viewer.get("source") is not None:
+        image_viewer["original_size"] = True
+        image_viewer["zoom_status"] = "Original size (100%)"
         render_viewer_image(image_viewer)
 
 
@@ -3651,7 +3669,7 @@ def open_image_viewer(path):
     viewer.title("Image detail viewer")
     fit_dialog_to_display(viewer, 0.78, 0.80, 640, 480)
     viewer.minsize(420, 320)
-    viewer.transient(window)
+    viewer.resizable(True, True)
     viewer.protocol("WM_DELETE_WINDOW", close_image_viewer)
     toolbar = ttk.Frame(viewer)
     toolbar.pack(fill=tk.X, padx=8, pady=6)
@@ -3659,7 +3677,7 @@ def open_image_viewer(path):
     title.pack(side=tk.LEFT, padx=(0, 12))
     ttk.Button(toolbar, text="Previous  ‹", command=lambda: navigate_viewer(-1)).pack(side=tk.LEFT, padx=2)
     ttk.Button(toolbar, text="Next  ›", command=lambda: navigate_viewer(1)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(toolbar, text="Fit", command=reset_viewer).pack(side=tk.LEFT, padx=(10, 2))
+    ttk.Button(toolbar, text="Fit", command=fit_viewer).pack(side=tk.LEFT, padx=(10, 2))
     ttk.Button(toolbar, text="−", command=lambda: zoom_viewer(1 / 1.25)).pack(side=tk.LEFT, padx=2)
     ttk.Button(toolbar, text="+", command=lambda: zoom_viewer(1.25)).pack(side=tk.LEFT, padx=2)
     ttk.Button(toolbar, text="Reset", command=reset_viewer).pack(side=tk.LEFT, padx=2)
@@ -3691,6 +3709,7 @@ def open_image_viewer(path):
         "fit_scale": 1.0,
     }
     image_viewer = state
+    zoom_button.configure(text="Zoom out", style="ToggleOn.TButton")
     show_viewer_record(state, match)
     canvas.bind("<Configure>", lambda _event: render_viewer_image(state), add="+")
     canvas.bind("<ButtonPress-1>", lambda event: canvas.scan_mark(event.x, event.y))
@@ -4613,6 +4632,27 @@ def insert_highlighted_report(report, widget=None):
 #   The Send handler starts run_request(state) in a worker thread using the frozen
 #   selections, then posts success/error callbacks to Tk.
 # -------------------------------------------------------------------------
+def format_record_response(label, answer):
+    """Keep one record heading, omitting repeated model headings and dividers."""
+    lines = answer.strip().splitlines()
+    modality = label.split(":", 1)[0]
+    aliases = {
+        "XRAY": ("XRAY", "X-RAY", "X RAY"),
+        "EKG": ("EKG", "ECG", "EKG/ECG", "ECG/EKG"),
+        "BLOOD TEST": ("BLOOD TEST", "BLOOD TESTS"),
+    }.get(modality, (modality,))
+    while lines:
+        heading = lines[0].strip().strip("#*_` ").rstrip(":").strip()
+        upper = heading.upper()
+        if (not heading or re.fullmatch(r"[=\-─_]{3,}", heading)
+                or upper == label.upper()
+                or any(upper == alias or upper.startswith(alias + ":") for alias in aliases)):
+            lines.pop(0)
+        else:
+            break
+    return f"{label}\n" + "\n".join(lines).strip()
+
+
 def run_request(state):
     """Run only the frozen request inputs and tag every UI callback with its ID."""
     snapshot = state.snapshot
@@ -4650,7 +4690,7 @@ def run_request(state):
                     snapshot.url, snapshot.model, question, image_paths, request_state=state,
                 )
                 post_ui(lambda rid=request_id, key=report_key, answer=result.answer: register_item_report(rid, key, answer))
-                reports.append(f"{label}\n{'=' * len(label)}\n{result.answer}")
+                reports.append(format_record_response(label, result.answer))
             result = GenerationResult(answer="\n\n".join(reports), metadata=metadata)
         else:
             result = generate(
@@ -5098,6 +5138,12 @@ def main():
         font=("Segoe UI", 10, "bold"),
     )
     ui_style.map("VoiceOff.TButton", background=[("active", "#c7d4dc")])
+    ui_style.map(
+        "TCheckbutton",
+        background=[("selected", "#008577"), ("!selected", "#d9e2e8")],
+        foreground=[("selected", "white"), ("!selected", TEXT_COLOR)],
+        indicatorcolor=[("selected", "#008577"), ("!selected", "white")],
+    )
     ui_style.configure("TEntry", fieldbackground="white", foreground=TEXT_COLOR, padding=5)
     ui_style.configure("TCombobox", fieldbackground="white", foreground=TEXT_COLOR, padding=4)
     ui_style.configure("TScrollbar", background=SOFT_BLUE, troughcolor="#e8f1f7")
@@ -5204,8 +5250,8 @@ def main():
     patient_dob_entry.bind("<Return>", search_patient)
     ttk.Button(patient_bar, text="Choose date & time", command=choose_snapshot,
                style="Secondary.TButton").grid(row=0, column=7, padx=(0, 8), pady=5, sticky="w")
-    zoom_button = ttk.Button(patient_bar, text="Zoom", command=zoom_selected_image,
-                             style="Secondary.TButton")
+    zoom_button = ttk.Button(patient_bar, text="Zoom in", command=zoom_selected_image,
+                             style="ToggleOff.TButton")
     zoom_button.grid(row=0, column=8, padx=(0, 8), pady=5, sticky="w")
     modality_window_buttons = []
     for modality, label in enumerate(("X-ray", "EKG", "Blood Test")):
