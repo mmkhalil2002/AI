@@ -654,6 +654,7 @@ active_date_start = None
 active_date_end = None
 selected_snapshot_dir = None
 image_viewer = None
+item_reports = {}
 # Visibility state for the X-ray, EKG, and blood-test workspace panels.
 modality_window_enabled = [True, True, True]
 modality_windows = [{}, {}, {}]
@@ -3242,6 +3243,34 @@ def current_viewer_records():
     return records
 
 
+def viewer_report_key(path, blood_index=None):
+    """Return a stable per-record key shared by request and zoom-viewer state."""
+    suffix = "" if blood_index is None else f"#{blood_index}"
+    return f"{Path(path).resolve()}{suffix}"
+
+
+def refresh_viewer_item_response(state=None):
+    """Show the current record's independently generated AI report in the viewer."""
+    state = state or image_viewer
+    if state is None or "response" not in state:
+        return
+    response = state["response"]
+    response.configure(state=tk.NORMAL)
+    response.delete("1.0", tk.END)
+    response.insert(tk.END, item_reports.get(
+        state.get("report_key"), "AI response for this selected record will appear here."
+    ))
+    response.configure(state=tk.DISABLED)
+
+
+def register_item_report(request_id, report_key, answer):
+    """Store one completed per-record report and refresh an open matching viewer."""
+    if not request_is_current(request_id):
+        return
+    item_reports[report_key] = answer
+    refresh_viewer_item_response()
+
+
 def sync_viewer_selected_records():
     """Refresh an open viewer so Next/Previous includes new selected records."""
     if image_viewer is None:
@@ -3501,6 +3530,7 @@ def show_viewer_record(state, index):
     state["path"] = path
     if modality == "blood_tests":
         record_index = record_entry[2]
+        state["report_key"] = viewer_report_key(path, record_index)
         record = blood_test_records[record_index]
         lines = [lab_record_title(record, path), ""]
         lines.extend(
@@ -3516,7 +3546,9 @@ def show_viewer_record(state, index):
         state["photo"] = None
         state["title"].config(text=f"BLOOD TEST â€” {path.name}")
         state["status"].config(text=f"Selected blood test {record_index + 1} of {len(blood_test_records)}")
+        refresh_viewer_item_response(state)
         return
+    state["report_key"] = viewer_report_key(path)
     try:
         # Validate record containment and links before using a patient path.
         safe_path(path, state["patient"])
@@ -3535,6 +3567,7 @@ def show_viewer_record(state, index):
     state["zoom"] = 1.0
     state["title"].config(text=f"{modality.upper()} — {path.name}")
     render_viewer_image(state)
+    refresh_viewer_item_response(state)
 
 
 # -------------------------------------------------------------------------
@@ -3632,6 +3665,14 @@ def open_image_viewer(path):
     ttk.Button(toolbar, text="Reset", command=reset_viewer).pack(side=tk.LEFT, padx=2)
     status = ttk.Label(viewer, text="", anchor="w")
     status.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 6))
+    ttk.Label(viewer, text="AI response for selected record", style="Field.TLabel").pack(
+        side=tk.BOTTOM, fill=tk.X, padx=8, pady=(4, 0)
+    )
+    response = scrolledtext.ScrolledText(
+        viewer, height=4, wrap=tk.WORD, font=("Segoe UI", 10),
+        background="#fffdfb", foreground=TEXT_COLOR, state=tk.DISABLED,
+    )
+    response.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 4))
     canvas_frame = ttk.Frame(viewer)
     canvas_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 6))
     canvas = tk.Canvas(canvas_frame, background="#17222d", highlightthickness=0, takefocus=True)
@@ -3644,7 +3685,7 @@ def open_image_viewer(path):
     canvas_frame.rowconfigure(0, weight=1)
     canvas_frame.columnconfigure(0, weight=1)
     state = {
-        "window": viewer, "canvas": canvas, "title": title, "status": status,
+        "window": viewer, "canvas": canvas, "title": title, "status": status, "response": response,
         "records": records, "index": match, "patient": active_patient,
         "source": None, "photo": None, "path": path, "zoom": 1.0,
         "fit_scale": 1.0,
@@ -4601,13 +4642,14 @@ def run_request(state):
         if snapshot.separate_items:
             reports = []
             metadata = {"separate_reports": len(snapshot.separate_items)}
-            for number, (label, question, image_paths) in enumerate(snapshot.separate_items, start=1):
+            for number, (label, question, image_paths, report_key) in enumerate(snapshot.separate_items, start=1):
                 if state.cancel_event.is_set():
                     return
                 set_request_stage(state, f"Generating report {number} of {len(snapshot.separate_items)}: {label}")
                 result = generate(
                     snapshot.url, snapshot.model, question, image_paths, request_state=state,
                 )
+                post_ui(lambda rid=request_id, key=report_key, answer=result.answer: register_item_report(rid, key, answer))
                 reports.append(f"{label}\n{'=' * len(label)}\n{result.answer}")
             result = GenerationResult(answer="\n\n".join(reports), metadata=metadata)
         else:
@@ -4649,7 +4691,7 @@ def run_request(state):
 # -------------------------------------------------------------------------
 def send_question():
     """Validate GUI values and send one question to the selected model."""
-    global current_request
+    global current_request, item_reports
     if current_request is not None:
         return
     patient = active_patient
@@ -4714,13 +4756,13 @@ def send_question():
             user_question, preset, xray_paths=(path,)
         )
         item_question += "\n\nReturn ONLY the X-RAY section for this one record. Do not display ECG/EKG or BLOOD TEST headings, placeholders, or empty sections."
-        separate_items.append((f"XRAY: {Path(path).stem}", item_question, item_images))
+        separate_items.append((f"XRAY: {Path(path).stem}", item_question, item_images, viewer_report_key(path)))
     for path in selected_images[1]:
         item_question, _, item_images = build_report_request(
             user_question, preset, ekg_paths=(path,)
         )
         item_question += "\n\nReturn ONLY the ECG/EKG section for this one record. Do not display X-RAY or BLOOD TEST headings, placeholders, or empty sections."
-        separate_items.append((f"EKG: {Path(path).stem}", item_question, item_images))
+        separate_items.append((f"EKG: {Path(path).stem}", item_question, item_images, viewer_report_key(path)))
     for index in sorted(selected_blood_test_indices):
         if index >= len(blood_test_paths) or index >= len(blood_test_records):
             continue
@@ -4729,7 +4771,7 @@ def send_question():
             user_question, preset, blood_tests=((path, blood_test_records[index]),)
         )
         item_question += "\n\nReturn ONLY the BLOOD TEST section for this one record. Do not display X-RAY or ECG/EKG headings, placeholders, or empty sections."
-        separate_items.append((f"BLOOD TEST: {Path(path).stem}", item_question, item_images))
+        separate_items.append((f"BLOOD TEST: {Path(path).stem}", item_question, item_images, viewer_report_key(path, index)))
     xray_count = len(selected_images[0])
     ekg_count = len(selected_images[1])
     model = model_name.get().strip()
@@ -4755,6 +4797,7 @@ def send_question():
     )
     # Track timing, cancellation, response handle and terminal status for this request.
     state = RequestState(snapshot=snapshot)
+    item_reports = {}
     # Publish the request identity so stale callbacks can be rejected.
     current_request = state
     set_patient_search_enabled(False)
