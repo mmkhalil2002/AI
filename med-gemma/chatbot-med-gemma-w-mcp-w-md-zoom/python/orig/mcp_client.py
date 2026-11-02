@@ -1,0 +1,123 @@
+"""Synchronous facade over the three local stdio MCP record servers."""
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import os
+import sys
+import threading
+from contextlib import AsyncExitStack
+from pathlib import Path
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+
+class MCPRecords:
+    """Start the read-only servers once and serialize record-tool requests.
+
+    Example: ``MCPRecords(root).read_record_bytes('P0001/xrays/chest.png')``.
+    """
+    def __init__(self, records_root: Path, python_dir: Path | None = None,
+                 server_ids: dict[str, str] | None = None):
+        self.root = Path(records_root).resolve()
+        self.python_dir = Path(python_dir or Path(__file__).parent).resolve()
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+        self.sessions: dict[str, ClientSession] = {}
+        self.server_ids = self._server_ids(server_ids)
+        self.stack: AsyncExitStack | None = None
+        self.lock = threading.Lock()
+        self._call(self._start())
+
+    @staticmethod
+    def _server_ids(overrides: dict[str, str] | None = None) -> dict[str, str]:
+        """Return configured local-server identifiers, with safe defaults."""
+        defaults = {
+            "xrays": "xrays",
+            "ekgs": "ekgs",
+            "blood_tests": "blood_tests",
+        }
+        keys = {
+            "xrays": "XRAY_SERVER_ID",
+            "ekgs": "EKG_SERVER_ID",
+            "blood_tests": "BLOODTEST_SERVER_ID",
+        }
+        overrides = overrides or {}
+        values = {
+            modality: str(overrides.get(modality, os.environ.get(key, defaults[modality]))).strip()
+            for modality, key in keys.items()
+        }
+        if not all(values.values()) or len(set(values.values())) != len(values):
+            raise ValueError("MCP server IDs must be non-empty and unique")
+        return values
+
+    def _call(self, awaitable):
+        return asyncio.run_coroutine_threadsafe(awaitable, self.loop).result(timeout=60)
+
+    async def _start(self):
+        self.stack = AsyncExitStack()
+        scripts = {"xrays": "mcp_xray_server.py", "ekgs": "mcp_ekg_server.py", "blood_tests": "mcp_blood_server.py"}
+        for modality, script in scripts.items():
+            params = StdioServerParameters(command=sys.executable, args=[str(self.python_dir / script)],
+                                          env={**os.environ, "PATIENT_RECORDS_DIR": str(self.root)})
+            read, write = await self.stack.enter_async_context(stdio_client(params))
+            session = await self.stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+            self.sessions[self.server_ids[modality]] = session
+
+    @staticmethod
+    def record_location(path: str | Path) -> tuple[str, str]:
+        """Return the modality and normalized root-relative record path."""
+        parts = Path(path).as_posix().split("/")
+        for modality in ("xrays", "ekgs", "blood_tests"):
+            if modality in parts:
+                return modality, "/".join(parts)
+        raise ValueError("Record path has no recognized modality")
+
+    async def _tool(self, modality: str, name: str, arguments: dict) -> dict:
+        result = await self.sessions[self.server_ids[modality]].call_tool(name, arguments=arguments)
+        text = "".join(block.text for block in result.content if hasattr(block, "text"))
+        return json.loads(text)
+
+    def call(self, modality: str, name: str, arguments: dict) -> dict:
+        """Call one modality tool and return its decoded JSON response.
+
+        The full GUI uses this for safe record listing, while the typed read
+        helpers below retain their narrower image/blood return contracts.
+        """
+        if modality not in self.server_ids:
+            raise ValueError(f"Unknown record modality: {modality}")
+        with self.lock:
+            return self._call(self._tool(modality, name, arguments))
+
+    def list_records(self, relative_folder: str) -> list[str]:
+        modality, _ = self.record_location(relative_folder)
+        with self.lock:
+            return self._call(self._tool(modality, "list_records", {"relative_folder": relative_folder}))["paths"]
+
+    def read_record_bytes(self, relative_path: str) -> bytes:
+        modality, _ = self.record_location(relative_path)
+        if modality == "blood_tests":
+            raise ValueError("Use read_blood_record for blood-test JSON")
+        with self.lock:
+            payload = self._call(self._tool(modality, "read_record", {"relative_path": relative_path}))
+        return base64.b64decode(payload["base64"], validate=True)
+
+    def read_blood_record(self, relative_path: str):
+        modality, _ = self.record_location(relative_path)
+        if modality != "blood_tests":
+            raise ValueError("Expected a blood_tests record")
+        with self.lock:
+            return self._call(self._tool(modality, "read_record", {"relative_path": relative_path}))["record"]
+
+    def close(self):
+        if self.stack:
+            try:
+                self._call(self.stack.aclose())
+            finally:
+                self.stack = None
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(timeout=2)
