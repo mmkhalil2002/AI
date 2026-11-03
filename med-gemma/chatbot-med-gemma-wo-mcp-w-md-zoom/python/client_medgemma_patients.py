@@ -383,6 +383,7 @@ image_viewer = None
 image_diagnoses = {}
 # Separate native-size windows shown for selected X-rays while zoom mode is on.
 xray_zoom_enabled = False
+xray_zoom_mode = "split"
 xray_zoom_viewers = {}
 ui_callbacks = queue.Queue()
 # Thumbnail work is streamed through bounded queues. The decoder keeps only one
@@ -2236,6 +2237,14 @@ def close_image_viewer():
             pass
 
 
+def selected_zoom_image_records():
+    """Return selected image records in their visible gallery order."""
+    records = []
+    for modality, selection in zip(("xrays", "ekgs"), selected_images):
+        records.extend((modality, path) for path in selection)
+    return records
+
+
 def close_xray_zoom_viewer(path):
     """Destroy one selected-X-ray window and release its Tk image reference."""
     state = xray_zoom_viewers.pop(Path(path), None)
@@ -2356,25 +2365,71 @@ def open_xray_zoom_viewer(path):
         foreground="#ffffff", background="#164e63", anchor="w", padx=12, pady=10,
         wraplength=1300,
     ).grid(row=0, column=0, columnspan=2, sticky="ew")
+    toolbar = ttk.Frame(viewer)
+    toolbar.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=(6, 2))
     canvas = tk.Canvas(viewer, background="#17222d", highlightthickness=0)
-    canvas.grid(row=1, column=0, sticky="nsew")
+    canvas.grid(row=2, column=0, sticky="nsew")
     yscroll = ttk.Scrollbar(viewer, orient=tk.VERTICAL, command=canvas.yview)
-    yscroll.grid(row=1, column=1, sticky="ns")
+    yscroll.grid(row=2, column=1, sticky="ns")
     xscroll = ttk.Scrollbar(viewer, orient=tk.HORIZONTAL, command=canvas.xview)
-    xscroll.grid(row=2, column=0, sticky="ew")
+    xscroll.grid(row=3, column=0, sticky="ew")
     canvas.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
     canvas.create_image(0, 0, anchor="nw", image=photo)
     canvas.configure(scrollregion=(0, 0, source.width, source.height))
     diagnosis_panel, diagnosis = create_image_diagnosis_panel(viewer)
-    diagnosis_panel.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=8, pady=(0, 8))
-    viewer.rowconfigure(1, weight=1)
+    diagnosis_panel.grid(row=5, column=0, columnspan=2, sticky="nsew", padx=8, pady=(0, 8))
+    viewer.rowconfigure(2, weight=1)
     viewer.columnconfigure(0, weight=1)
-    xray_zoom_viewers[path] = {
+    state = xray_zoom_viewers[path] = {
         "window": viewer, "photo": photo, "source": source,
-        "diagnosis": diagnosis,
+        "diagnosis": diagnosis, "canvas": canvas, "zoom": 1.0,
     }
-    refresh_image_diagnosis(xray_zoom_viewers[path], path)
+    ttk.Button(toolbar, text="Fit", command=lambda s=state: fit_split_viewer(s)).pack(side=tk.LEFT, padx=(0, 2))
+    ttk.Button(toolbar, text="−", command=lambda s=state: zoom_split_viewer(s, 1 / 1.25)).pack(side=tk.LEFT, padx=2)
+    ttk.Button(toolbar, text="+", command=lambda s=state: zoom_split_viewer(s, 1.25)).pack(side=tk.LEFT, padx=2)
+    ttk.Button(toolbar, text="Reset", command=lambda s=state: reset_split_viewer(s)).pack(side=tk.LEFT, padx=2)
+    refresh_image_diagnosis(state, path)
     viewer.protocol("WM_DELETE_WINDOW", lambda p=path: close_xray_zoom_viewer(p))
+
+
+def render_split_viewer(state, center=True):
+    """Render one split zoom image using its own fit-relative scale."""
+    if not state["window"].winfo_exists():
+        return
+    from PIL import Image, ImageTk
+
+    canvas = state["canvas"]
+    canvas.update_idletasks()
+    viewport = (max(1, canvas.winfo_width()), max(1, canvas.winfo_height()))
+    size = viewer_render_size(state["source"].size, viewport, state["zoom"])
+    picture = state["source"].resize(size, Image.Resampling.LANCZOS)
+    state["photo"] = ImageTk.PhotoImage(picture, master=canvas)
+    canvas.delete("all")
+    canvas.create_image(0, 0, anchor="nw", image=state["photo"])
+    canvas.configure(scrollregion=(0, 0, size[0], size[1]))
+    if center:
+        canvas.xview_moveto(0.5)
+        canvas.yview_moveto(0.5)
+
+
+def zoom_split_viewer(state, multiplier):
+    state["zoom"] = min(8.0, max(0.1, state["zoom"] * multiplier))
+    render_split_viewer(state)
+
+
+def reset_split_viewer(state):
+    """Restore a split image to its original one-pixel-per-screen-pixel size."""
+    canvas = state["canvas"]
+    canvas.update_idletasks()
+    fit = viewer_fit_scale(state["source"].size, (max(1, canvas.winfo_width()), max(1, canvas.winfo_height())))
+    state["zoom"] = 1.0 / max(fit, 0.0001)
+    render_split_viewer(state)
+
+
+def fit_split_viewer(state):
+    """Scale a split image so its complete bounds fit in the viewport."""
+    state["zoom"] = 1.0
+    render_split_viewer(state)
 
 
 def sync_xray_zoom_viewers():
@@ -2383,6 +2438,21 @@ def sync_xray_zoom_viewers():
     if xray_zoom_enabled:
         selected.update(path for group in selected_images for path in group)
         selected.update(blood_test_paths[index] for index in selected_blood_test_indices)
+    if xray_zoom_mode == "merge":
+        for path in tuple(xray_zoom_viewers):
+            close_xray_zoom_viewer(path)
+        records = selected_zoom_image_records() if xray_zoom_enabled else []
+        if records:
+            paths = [path for _, path in records]
+            if image_viewer is None or not image_viewer.get("zoom_managed") or image_viewer.get("records") != records:
+                open_image_viewer(paths[0], records=records, zoom_managed=True)
+        elif image_viewer is not None and image_viewer.get("zoom_managed"):
+            close_image_viewer()
+        # Blood-test records retain their formatted per-record viewer because
+        # they are not image pages and have no image zoom operation.
+        selected = {blood_test_paths[index] for index in selected_blood_test_indices} if xray_zoom_enabled else set()
+    elif image_viewer is not None and image_viewer.get("zoom_managed"):
+        close_image_viewer()
     for path in tuple(xray_zoom_viewers):
         if path not in selected:
             close_xray_zoom_viewer(path)
@@ -2402,6 +2472,15 @@ def toggle_xray_zoom():
         style="ZoomOn.TButton" if xray_zoom_enabled else "ZoomOff.TButton",
     )
     sync_xray_zoom_viewers()
+
+
+def toggle_xray_zoom_mode():
+    """Switch active zoom windows between one shared viewer and separate viewers."""
+    global xray_zoom_mode
+    xray_zoom_mode = "merge" if xray_zoom_mode == "split" else "split"
+    xray_zoom_mode_button.config(text="Merge" if xray_zoom_mode == "merge" else "Split")
+    if xray_zoom_enabled:
+        sync_xray_zoom_viewers()
 
 
 def viewer_fit_scale(source_size, viewport_size):
@@ -2499,14 +2578,27 @@ def zoom_viewer(multiplier):
 
 
 def reset_viewer():
-    """Return the current image to the full-view fit and centered position."""
-    if image_viewer is not None:
+    """Restore the current image to its original 100% pixel size."""
+    if image_viewer is not None and image_viewer.get("source") is not None:
+        canvas = image_viewer["canvas"]
+        canvas.update_idletasks()
+        fit = viewer_fit_scale(
+            image_viewer["source"].size,
+            (max(1, canvas.winfo_width()), max(1, canvas.winfo_height())),
+        )
+        image_viewer["zoom"] = 1.0 / max(fit, 0.0001)
+        render_viewer_image(image_viewer)
+
+
+def fit_viewer():
+    """Scale the current image so all of it fits within the viewer."""
+    if image_viewer is not None and image_viewer.get("source") is not None:
         image_viewer["zoom"] = 1.0
         render_viewer_image(image_viewer)
 
 
-def open_image_viewer(path):
-    """Open a separate, nonselecting detail viewer for an active-patient image."""
+def open_image_viewer(path, records=None, zoom_managed=False):
+    """Open a detail viewer, optionally limited to the current zoom selection."""
     global image_viewer
     if active_patient is None:
         return
@@ -2515,7 +2607,7 @@ def open_image_viewer(path):
     except (OSError, ValueError):
         show_status("This image is no longer available for the active patient.")
         return
-    records = current_viewer_records()
+    records = current_viewer_records() if records is None else records
     match = next((index for index, (_, record_path) in enumerate(records) if record_path == path), None)
     if match is None:
         show_status("This image is no longer available for the active patient.")
@@ -2533,7 +2625,7 @@ def open_image_viewer(path):
     title.pack(side=tk.LEFT, padx=(0, 12))
     ttk.Button(toolbar, text="Previous  ‹", command=lambda: navigate_viewer(-1)).pack(side=tk.LEFT, padx=2)
     ttk.Button(toolbar, text="Next  ›", command=lambda: navigate_viewer(1)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(toolbar, text="Fit", command=reset_viewer).pack(side=tk.LEFT, padx=(10, 2))
+    ttk.Button(toolbar, text="Fit", command=fit_viewer).pack(side=tk.LEFT, padx=(10, 2))
     ttk.Button(toolbar, text="−", command=lambda: zoom_viewer(1 / 1.25)).pack(side=tk.LEFT, padx=2)
     ttk.Button(toolbar, text="+", command=lambda: zoom_viewer(1.25)).pack(side=tk.LEFT, padx=2)
     ttk.Button(toolbar, text="Reset", command=reset_viewer).pack(side=tk.LEFT, padx=2)
@@ -2557,7 +2649,7 @@ def open_image_viewer(path):
         "window": viewer, "canvas": canvas, "title": title, "status": status,
         "records": records, "index": match, "patient": active_patient,
         "source": None, "photo": None, "path": path, "zoom": 1.0,
-        "fit_scale": 1.0, "diagnosis": diagnosis,
+        "fit_scale": 1.0, "diagnosis": diagnosis, "zoom_managed": zoom_managed,
     }
     image_viewer = state
     show_viewer_record(state, match)
@@ -3477,7 +3569,7 @@ def refresh_models():
 
 def main():
     """Validate startup data, then construct the preserved Tkinter interface."""
-    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, first_name_var, last_name_var, dob_var, patient_search_controls, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label, xray_zoom_button
+    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, first_name_var, last_name_var, dob_var, patient_search_controls, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label, xray_zoom_button, xray_zoom_mode_button
     # Fatal data-root validation precedes construction of any Tk widget.
     try:
         PATIENT_RECORDS_DIR = patient_records_root()
@@ -3715,12 +3807,20 @@ def main():
     dob_entry.grid(row=0, column=5, padx=(0, 6), pady=5, sticky="w")
     search_button = ttk.Button(patient_bar, text="Search", command=search_patient, style="Secondary.TButton")
     search_button.grid(row=0, column=6, padx=(0, 8), pady=5, sticky="w")
+    choose_date_button = ttk.Button(
+        patient_bar, text="Date & Time", command=choose_snapshot, style="Secondary.TButton"
+    )
+    choose_date_button.grid(row=0, column=7, padx=(0, 8), pady=5, sticky="w")
     zoom_controls = ttk.Frame(patient_bar, style="App.TFrame")
-    zoom_controls.grid(row=0, column=7, padx=(0, 8), pady=5, sticky="w")
+    zoom_controls.grid(row=0, column=8, padx=(0, 8), pady=5, sticky="w")
     xray_zoom_button = ttk.Button(
         zoom_controls, text="Zoom out", command=toggle_xray_zoom, style="ZoomOff.TButton"
     )
     xray_zoom_button.pack(side=tk.LEFT, padx=(0, 6))
+    xray_zoom_mode_button = ttk.Button(
+        zoom_controls, text="Split", command=toggle_xray_zoom_mode, style="ZoomOff.TButton"
+    )
+    xray_zoom_mode_button.pack(side=tk.LEFT)
     patient_search_controls = (first_name_entry, last_name_entry, dob_entry, search_button, xray_zoom_button)
     for entry in (first_name_entry, last_name_entry, dob_entry):
         entry.bind("<Return>", lambda _event: search_patient())
@@ -3774,11 +3874,11 @@ def main():
                          sticky="e" if not compact_layout else "w")
     date_from_var = tk.StringVar(value="")
     date_to_var = tk.StringVar(value="")
-    ttk.Button(date_filter_bar, text="Choose date & time", command=choose_snapshot,
-               style="Secondary.TButton").pack(side=tk.LEFT, padx=(4, 8), pady=5)
     snapshot_selection_label = ttk.Label(
         date_filter_bar, text="Choose a date and time to load data.", style="Status.TLabel"
     )
+    # Keep this compatibility status widget unplaced.  The Date & Time button
+    # opens the picker directly; a header message here can overlap its controls.
     # Retained only for compatibility with old saved-session helper callbacks;
     # the visible workflow uses exactly one date/time picker.
     date_filter_status = snapshot_selection_label

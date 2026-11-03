@@ -10,7 +10,9 @@ The window has an unlabeled patient-search control bar above a responsive two-co
 - **EKG/ECG** — wide readable selectable images with scrolling.
 - **BLOOD TEST** — selectable records with red title/marker and Test, Value, Unit, Reference range, and Flag columns.
 
-The top bar searches patients by **First name**, **Last name**, and **DOB (MMDDYYYY)**. **Search** validates the values, maps the four-digit year to the existing two-digit patient-folder suffix, loads the newest snapshot for a matching patient, and shows an error dialog when no match exists. **Choose date & time** then selects a different snapshot for that active patient. At the far right, a two-line active-patient block shows `Active patient` in teal and the selected name plus DOB in coral. Snapshot selection supports direct folders, dated snapshots, and legacy `data/<modality>` layouts.
+The top bar searches patients by **First name**, **Last name**, and **DOB (MMDDYYYY)**. **Search** validates the values, maps the four-digit year to the existing two-digit patient-folder suffix, loads the newest snapshot for a matching patient, and shows an error dialog when no match exists. **Date & time** then selects a different snapshot for that active patient. At the far right, a two-line active-patient block shows `Active patient` in teal and the selected name plus DOB in coral. Snapshot selection supports direct folders, dated snapshots, and legacy `data/<modality>` layouts.
+
+Selected X-ray and EKG records can be inspected with **Zoom**. In **Merge** mode, all selected images share one viewer with **Previous**, **Next**, **+**, **−**, **Fit**, and **Reset**. In **Split** mode, each selected image opens in its own viewer with **+**, **−**, **Fit**, and **Reset**. **Fit** shows the whole image in the window; **Reset** returns it to 100% pixel size.
 
 ## Components
 

@@ -14,11 +14,11 @@ Resolve the script directory with `Path(__file__).resolve().parent`. Read `.env`
 
 Use the existing Ollama configuration and standard-library HTTP implementation. Preserve Python 3.9+, Tkinter, Pillow image previews, optional pyttsx3, background work, cancellation, completion validation, final-answer filtering, and error handling. Never perform HTTP or heavy image work on the Tk event thread.
 
-Search by First name, Last name, and validated eight-digit `MMDDYYYY` DOB, matching `<first>-<last>-<MMDDYYYY>` folders case-insensitively. Do not load a patient at startup. Support `<patient>/<date>/<time>/{xrays,ekgs,blood_tests}/` plus the legacy `<patient>/data/` layout. Load the newest snapshot after search. Choose date & time loads one snapshot without merging different times. The picker shows dates and time children, with Load selected date & time and Close controls. Preserve source path confinement, patient isolation, and frozen request inputs. Prevent patient switching in flight or discard stale results.
+Search by First name, Last name, and validated eight-digit `MMDDYYYY` DOB, matching `<first>-<last>-<MMDDYYYY>` folders case-insensitively. Do not load a patient at startup. Support `<patient>/<date>/<time>/{xrays,ekgs,blood_tests}/` plus the legacy `<patient>/data/` layout. Load the newest snapshot after search. The Date & Time button loads one snapshot without merging different times. The picker shows dates and time children, with Load selected date & time and Close controls. Preserve source path confinement, patient isolation, and frozen request inputs. Prevent patient switching in flight or discard stale results.
 
 ## Current interface
 
-- Top: patient search, Zoom, X-ray On/Off, EKG On/Off, Blood Test On/Off, Choose date & time, and active patient. Window toggles sit beside Zoom, are green On and red Off, and preserve selections when hidden. Active patient uses a teal heading and purple details on two lines. Hide the redundant Loaded label.
+- Top: patient search, Date & Time immediately after Search, Zoom, Split/Merge, X-ray On/Off, EKG On/Off, Blood Test On/Off, and active patient. Window toggles sit beside Zoom, are green On and red Off, and preserve selections when hidden. Active patient uses a teal heading and purple details on two lines. Keep the compatibility date/time status label hidden so it cannot overlap header controls.
 - Left: AI Clinical Assistant Center, a blank question input, Ask AI, Voice, Close GUI, and one AI Response area. No Actions, visible model/server controls, or visible original/draft tabs. Existing advanced review/export/history helpers may remain hidden.
 - Right: selected visible XRAY, EKG/ECG, and BLOOD TEST panels stack vertically and divide the available records area equally. One fills the area; two get half each; three get one-third each. All can be hidden. Keep independent scrolling and selection. Modality headings show the loaded snapshot date and time, not date ranges.
 - Main blood-test rows remain aligned in a fixed-width font. Preserve title-less structured CBC and mapping-style JSON support. The current blood-test loader reads JSON, not scanned lab images.
@@ -33,7 +33,7 @@ Publish individual responses to matching zoom windows on the Tk thread as they c
 
 ## Zoom and response panels
 
-Zoom starts disabled with the label Zoom out. Enabling changes it to blue Zoom in. Apply the same selection-window lifecycle to X-rays, EKGs, and blood-test JSON records: open selected sources, close deselected sources, and close selection windows when zoom is disabled or the patient changes.
+Zoom starts disabled with the label Zoom out. Enabling changes it to blue Zoom in. Split opens each selected image in its own window with +, −, Fit, and Reset; Merge uses one selected-image window with Previous, Next, +, −, Fit, and Reset. Fit shows the complete image and Reset restores 100% pixel size. Apply the same selection-window lifecycle to X-rays, EKGs, and blood-test JSON records: open selected sources, close deselected sources, and close selection windows when zoom is disabled or the patient changes.
 
 Image windows display natural-size images with scrollbars and a maximum 1400 by 900 window. Keep dimensions in the title, with no duplicate middle image-size label. Use a large 18 pt bold white filename heading on dark teal. Preserve the separate detail viewer's fit/zoom/navigation behavior.
 

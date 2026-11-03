@@ -654,6 +654,10 @@ active_date_start = None
 active_date_end = None
 selected_snapshot_dir = None
 image_viewer = None
+# The merged viewer is stored above.  Split mode keeps one independent state per
+# selected image so its zoom controls never affect another record.
+split_image_viewers = {}
+zoom_view_mode = "merge"
 item_reports = {}
 # Visibility state for the X-ray, EKG, and blood-test workspace panels.
 modality_window_enabled = [True, True, True]
@@ -1065,7 +1069,7 @@ def select_patient(event=None):
         if not offer_report_recovery():
             patient_name.set(active_patient.name if active_patient else "")
             return
-    close_image_viewer()  # Never leave one patient's image visible after rebinding.
+    close_all_image_viewers()  # Never leave one patient's image visible after rebinding.
     stop_voice()
     active_patient = next_patient
     selected_snapshot_dir = None
@@ -3251,16 +3255,17 @@ def viewer_report_key(path, blood_index=None):
 
 def refresh_viewer_item_response(state=None):
     """Show the current record's independently generated AI report in the viewer."""
-    state = state or image_viewer
-    if state is None or "response" not in state:
-        return
-    response = state["response"]
-    response.configure(state=tk.NORMAL)
-    response.delete("1.0", tk.END)
-    response.insert(tk.END, item_reports.get(
-        state.get("report_key"), "AI response for this selected record will appear here."
-    ))
-    response.configure(state=tk.DISABLED)
+    states = (state,) if state is not None else (image_viewer, *split_image_viewers.values())
+    for current in states:
+        if current is None or "response" not in current:
+            continue
+        response = current["response"]
+        response.configure(state=tk.NORMAL)
+        response.delete("1.0", tk.END)
+        response.insert(tk.END, item_reports.get(
+            current.get("report_key"), "AI response for this selected record will appear here."
+        ))
+        response.configure(state=tk.DISABLED)
 
 
 def register_item_report(request_id, report_key, answer):
@@ -3273,21 +3278,30 @@ def register_item_report(request_id, report_key, answer):
 
 def sync_viewer_selected_records():
     """Refresh an open viewer so Next/Previous includes new selected records."""
-    if image_viewer is None:
-        return
     records = current_viewer_records()
-    if not records:
-        close_image_viewer()
-        return
-    state = image_viewer
-    state["records"] = records
-    current_index = next(
-        (index for index, record in enumerate(records) if record[1] == state["path"]), None
-    )
-    if current_index is None:
-        show_viewer_record(state, 0)
-    else:
-        state["index"] = current_index
+    if image_viewer is not None:
+        if not records:
+            close_image_viewer()
+        else:
+            state = image_viewer
+            state["records"] = records
+            current_index = next(
+                (index for index, record in enumerate(records) if record[1] == state["path"]), None
+            )
+            if current_index is None:
+                show_viewer_record(state, 0)
+            else:
+                state["index"] = current_index
+    # In Split mode, a deselected image must no longer remain open. Newly
+    # selected images are opened immediately while Zoom is active.
+    if split_image_viewers:
+        selected_paths = {path for selection in selected_images for path in selection}
+        for path in tuple(split_image_viewers):
+            if path not in selected_paths:
+                close_split_image_viewer(path)
+        for path in selected_paths:
+            if path not in split_image_viewers:
+                open_image_viewer(path, split=True)
 
 
 # -------------------------------------------------------------------------
@@ -3305,12 +3319,33 @@ def close_image_viewer():
     state = image_viewer
     image_viewer = None
     if "zoom_button" in globals():
-        zoom_button.configure(text="Zoom in", style="ToggleOff.TButton")
+        zoom_button.configure(text="Zoom out", style="ToggleOff.TButton")
     if state is not None:
         try:
             state["window"].destroy()
         except tk.TclError:
             pass
+    if "zoom_button" in globals() and split_image_viewers:
+        zoom_button.configure(text="Zoom out", style="ToggleOn.TButton")
+
+
+def close_split_image_viewer(path):
+    """Close one Split-mode image window without changing its selection."""
+    state = split_image_viewers.pop(Path(path), None)
+    if state is not None:
+        try:
+            state["window"].destroy()
+        except tk.TclError:
+            pass
+    if "zoom_button" in globals() and image_viewer is None and not split_image_viewers:
+        zoom_button.configure(text="Zoom out", style="ToggleOff.TButton")
+
+
+def close_all_image_viewers():
+    """Close the merged viewer and every Split-mode viewer."""
+    close_image_viewer()
+    for path in tuple(split_image_viewers):
+        close_split_image_viewer(path)
 
 
 # -------------------------------------------------------------------------
@@ -3423,15 +3458,41 @@ def toggle_modality_windows(modality):
 
 
 def zoom_selected_image():
-    """Toggle the zoom window for the first selected image."""
-    if image_viewer is not None:
-        close_image_viewer()
+    """Open selected images in the configured merged or Split zoom view."""
+    selected_paths = [path for selection in selected_images for path in selection]
+    if image_viewer is not None or split_image_viewers:
+        close_all_image_viewers()
         return
-    for selection in selected_images:
-        if selection:
-            open_image_viewer(next(iter(selection)))
+    if zoom_view_mode == "split":
+        for path in selected_paths:
+            open_image_viewer(path, split=True)
+        if selected_paths:
             return
+    elif selected_paths:
+        open_image_viewer(selected_paths[0])
+        return
     show_status("Select an X-ray or EKG image, then choose Zoom.")
+
+
+def toggle_zoom_view_mode():
+    """Switch Zoom between one navigable window and independent item windows."""
+    global zoom_view_mode
+    zoom_was_open = image_viewer is not None or bool(split_image_viewers)
+    close_all_image_viewers()
+    zoom_view_mode = "split" if zoom_view_mode == "merge" else "merge"
+    zoom_mode_button.configure(
+        text="Split" if zoom_view_mode == "split" else "Merge",
+        style="ToggleOn.TButton" if zoom_view_mode == "split" else "ToggleOff.TButton",
+    )
+    show_status(
+        "Zoom mode: Split — each selected image opens in its own window."
+        if zoom_view_mode == "split"
+        else "Zoom mode: Merge — selected images share one navigable window."
+    )
+    # Switching modes while Zoom is open is an immediate view transition:
+    # Split opens one window for every selected image; Merge reunites them.
+    if zoom_was_open:
+        zoom_selected_image()
 
 
 # -------------------------------------------------------------------------
@@ -3483,7 +3544,7 @@ def viewer_render_size(source_size, viewport_size, zoom=1.0, max_dimension=12000
 # -------------------------------------------------------------------------
 def render_viewer_image(state, center=True):
     """Render a transformed display copy; never write it back to the source."""
-    if image_viewer is not state or not state["window"].winfo_exists():
+    if not state["window"].winfo_exists():
         return
     from PIL import Image, ImageTk
 
@@ -3527,8 +3588,11 @@ def show_viewer_record(state, index):
     """Load one record belonging to the patient's viewer snapshot."""
     from PIL import Image, ImageOps
 
-    if image_viewer is not state or state["patient"] != active_patient:
-        close_image_viewer()
+    if state["patient"] != active_patient:
+        if state.get("split"):
+            close_split_image_viewer(state["path"])
+        else:
+            close_image_viewer()
         return
     index %= len(state["records"])
     record_entry = state["records"][index]
@@ -3605,11 +3669,11 @@ def navigate_viewer(delta):
 #   zoom_viewer(1.25) increases the current viewer zoom relative to its previous value,
 #   subject to the limits in the function.
 # -------------------------------------------------------------------------
-def zoom_viewer(multiplier):
+def zoom_viewer(multiplier, state=None):
     """Zoom relative to fit while keeping the current image available to pan."""
-    if image_viewer is None:
+    state = state or image_viewer
+    if state is None:
         return
-    state = image_viewer
     state["original_size"] = False
     state["zoom_status"] = "Zoom in" if multiplier > 1 else "Zoom out"
     state["zoom"] = min(8.0, max(0.1, state["zoom"] * multiplier))
@@ -3620,21 +3684,23 @@ def zoom_viewer(multiplier):
 # FUNCTION: fit_viewer / reset_viewer
 # Fit shows the whole image; Reset shows original pixel dimensions.
 # -------------------------------------------------------------------------
-def fit_viewer():
+def fit_viewer(state=None):
     """Fit the complete image in the viewport and center it."""
-    if image_viewer is not None:
-        image_viewer["original_size"] = False
-        image_viewer["zoom"] = 1.0
-        image_viewer["zoom_status"] = "Fit"
-        render_viewer_image(image_viewer)
+    state = state or image_viewer
+    if state is not None:
+        state["original_size"] = False
+        state["zoom"] = 1.0
+        state["zoom_status"] = "Fit"
+        render_viewer_image(state)
 
 
-def reset_viewer():
+def reset_viewer(state=None):
     """Show the image at original pixel dimensions and center it."""
-    if image_viewer is not None and image_viewer.get("source") is not None:
-        image_viewer["original_size"] = True
-        image_viewer["zoom_status"] = "Original size (100%)"
-        render_viewer_image(image_viewer)
+    state = state or image_viewer
+    if state is not None and state.get("source") is not None:
+        state["original_size"] = True
+        state["zoom_status"] = "Original size (100%)"
+        render_viewer_image(state)
 
 
 # -------------------------------------------------------------------------
@@ -3648,8 +3714,8 @@ def reset_viewer():
 #   open_image_viewer(chest_path) opens the detail viewer for a safe active-patient image
 #   without toggling its gallery selection.
 # -------------------------------------------------------------------------
-def open_image_viewer(path):
-    """Open a separate, nonselecting detail viewer for an active-patient image."""
+def open_image_viewer(path, split=False):
+    """Open a merged viewer or an independent Split-mode viewer for an image."""
     global image_viewer
     if active_patient is None:
         return
@@ -3664,13 +3730,19 @@ def open_image_viewer(path):
     if match is None:
         show_status("This image is no longer available for the active patient.")
         return
-    close_image_viewer()
+    if split:
+        if Path(path) in split_image_viewers:
+            return
+        records = [record for record in records if record[1] == path]
+        match = 0
+    else:
+        close_image_viewer()
     viewer = tk.Toplevel(window)
-    viewer.title("Image detail viewer")
+    viewer.title("Image detail viewer" if not split else f"Image zoom — {Path(path).stem}")
     fit_dialog_to_display(viewer, 0.78, 0.80, 640, 480)
     viewer.minsize(420, 320)
     viewer.resizable(True, True)
-    viewer.protocol("WM_DELETE_WINDOW", close_image_viewer)
+    viewer.protocol("WM_DELETE_WINDOW", (lambda p=path: close_split_image_viewer(p)) if split else close_image_viewer)
     toolbar = ttk.Frame(viewer)
     toolbar.pack(fill=tk.X, padx=8, pady=6)
     title = ttk.Label(toolbar, text="", style="Field.TLabel")
@@ -3708,8 +3780,20 @@ def open_image_viewer(path):
         "source": None, "photo": None, "path": path, "zoom": 1.0,
         "fit_scale": 1.0,
     }
-    image_viewer = state
-    zoom_button.configure(text="Zoom out", style="ToggleOn.TButton")
+    state["split"] = split
+    if split:
+        split_image_viewers[Path(path)] = state
+        # A Split window deliberately exposes only its own zoom controls.
+        controls = toolbar.winfo_children()
+        for control in controls[1:3]:
+            control.pack_forget()
+        controls[3].configure(command=lambda s=state: fit_viewer(s))
+        controls[4].configure(command=lambda s=state: zoom_viewer(1 / 1.25, s))
+        controls[5].configure(command=lambda s=state: zoom_viewer(1.25, s))
+        controls[6].configure(command=lambda s=state: reset_viewer(s))
+    else:
+        image_viewer = state
+    zoom_button.configure(text="Zoom in", style="ToggleOn.TButton")
     show_viewer_record(state, match)
     canvas.bind("<Configure>", lambda _event: render_viewer_image(state), add="+")
     canvas.bind("<ButtonPress-1>", lambda event: canvas.scan_mark(event.x, event.y))
@@ -3723,6 +3807,12 @@ def open_image_viewer(path):
     viewer.bind("<minus>", lambda _event: zoom_viewer(1 / 1.25))
     viewer.bind("<0>", lambda _event: reset_viewer())
     viewer.bind("<Escape>", lambda _event: close_image_viewer())
+    if split:
+        viewer.bind("<plus>", lambda _event, s=state: zoom_viewer(1.25, s))
+        viewer.bind("<equal>", lambda _event, s=state: zoom_viewer(1.25, s))
+        viewer.bind("<minus>", lambda _event, s=state: zoom_viewer(1 / 1.25, s))
+        viewer.bind("<0>", lambda _event, s=state: reset_viewer(s))
+        viewer.bind("<Escape>", lambda _event, p=path: close_split_image_viewer(p))
     canvas.focus_set()
 
 
@@ -4587,6 +4677,7 @@ def close_window():
     for modality in range(3):
         for key in tuple(modality_windows[modality]):
             close_modality_window(modality, key)
+    close_all_image_viewers()
     if _mcp_records is not None:
         _mcp_records.close()
     window.destroy()
@@ -4996,7 +5087,7 @@ def refresh_models():
 # -------------------------------------------------------------------------
 def main():
     """Validate startup data, then construct the preserved Tkinter interface."""
-    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_first_name, patient_last_name, patient_dob, patient_first_entry, patient_last_entry, patient_dob_entry, patient_search_button, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, image_panel, data_panes, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label, modality_window_buttons, zoom_button
+    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_first_name, patient_last_name, patient_dob, patient_first_entry, patient_last_entry, patient_dob_entry, patient_search_button, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, image_panel, data_panes, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label, modality_window_buttons, zoom_button, zoom_mode_button
     # Fatal data-root validation precedes construction of any Tk widget.
     try:
         PATIENT_RECORDS_DIR = patient_records_root()
@@ -5245,24 +5336,28 @@ def main():
     ttk.Label(patient_bar, text="DOB (MMDDYYYY)", style="Field.TLabel").grid(row=0, column=4, padx=(0, 4), pady=5)
     patient_dob_entry = ttk.Entry(patient_bar, textvariable=patient_dob, width=10)
     patient_dob_entry.grid(row=0, column=5, padx=(0, 8), pady=5, sticky="w")
-    patient_search_button = ttk.Button(patient_bar, text="Search", command=search_patient, style="Secondary.TButton")
+    patient_search_button = ttk.Button(patient_bar, text="Search", width=8, command=search_patient, style="Secondary.TButton")
     patient_search_button.grid(row=0, column=6, padx=(0, 8), pady=5, sticky="w")
     patient_dob_entry.bind("<Return>", search_patient)
-    ttk.Button(patient_bar, text="Choose date & time", command=choose_snapshot,
+    ttk.Button(patient_bar, text="Date & time", width=12, command=choose_snapshot,
                style="Secondary.TButton").grid(row=0, column=7, padx=(0, 8), pady=5, sticky="w")
-    zoom_button = ttk.Button(patient_bar, text="Zoom in", command=zoom_selected_image,
+    zoom_button = ttk.Button(patient_bar, text="Zoom out", width=10, command=zoom_selected_image,
                              style="ToggleOff.TButton")
     zoom_button.grid(row=0, column=8, padx=(0, 8), pady=5, sticky="w")
+    zoom_mode_button = ttk.Button(
+        patient_bar, text="Merge", width=8, command=toggle_zoom_view_mode, style="ToggleOff.TButton"
+    )
+    zoom_mode_button.grid(row=0, column=9, padx=(0, 8), pady=5, sticky="w")
     modality_window_buttons = []
-    for modality, label in enumerate(("X-ray", "EKG", "Blood Test")):
+    for modality, (label, width) in enumerate((("X-ray", 10), ("EKG", 9), ("Blood Test", 15))):
         button = ttk.Button(
-            patient_bar, text=f"{label}: ON",
+            patient_bar, text=f"{label}: ON", width=width,
             command=lambda m=modality: toggle_modality_windows(m), style="ToggleOn.TButton",
         )
-        button.grid(row=0, column=9 + modality, padx=(0, 5), pady=5, sticky="w")
+        button.grid(row=0, column=10 + modality, padx=(0, 5), pady=5, sticky="w")
         modality_window_buttons.append(button)
     active_patient_block = ttk.Frame(patient_bar, style="ActivePatient.TFrame")
-    active_patient_block.grid(row=0, column=12, padx=(0, 10), pady=4, sticky="e")
+    active_patient_block.grid(row=0, column=13, padx=(0, 10), pady=4, sticky="e")
     ttk.Label(active_patient_block, text="Active patient", style="ActivePatientHeader.TLabel").pack(anchor="e")
     active_label = ttk.Label(active_patient_block, text="No patient selected", style="ActivePatientValue.TLabel")
     active_label.pack(anchor="e")
@@ -5293,7 +5388,7 @@ def main():
     remove_tray_button = ttk.Button(patient_bar, text="Remove selected", command=remove_tray_selection)
     if not streamlined_layout:
         remove_tray_button.grid(row=4, column=6, padx=(4, 10), pady=3, sticky="n")
-    patient_bar.columnconfigure(12, weight=1)
+    patient_bar.columnconfigure(13, weight=1)
     tray_items = []
     tray_list.bind("<Return>", remove_tray_selection)
     tray_list.bind("<Delete>", remove_tray_selection)

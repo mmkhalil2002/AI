@@ -39,7 +39,7 @@ The legacy `<patient>/data/{xrays,ekgs,blood_tests}/` layout is also supported. 
 ## Patient and panel controls
 
 1. Enter First name, Last name, and a real eight-digit DOB (`MMDDYYYY`), then click Search. Folder matching is case-insensitive. No patient is loaded at startup.
-2. The newest available snapshot loads after a successful search. Use Choose date & time to load another snapshot; records from different snapshots are not merged. Dates and times appear in the modality headings. The redundant Loaded label is hidden.
+2. The newest available snapshot loads after a successful search. Use the Date & Time button, immediately after Search, to load another snapshot; records from different snapshots are not merged. Dates and times appear in the modality headings. The redundant date/time status label is hidden so it cannot cover header controls.
 3. The active patient display uses two lines: a teal heading and purple patient details.
 4. Beside Zoom, use X-ray On/Off, EKG On/Off, and Blood Test On/Off to show or hide panels. On is green; Off is red. All start On. Hiding preserves contents and selections.
 5. Visible panels stack vertically and share the records area equally: one fills it, two split it in half, and three each receive one-third. All panels can be hidden.
@@ -60,7 +60,7 @@ Only selected active-patient records are sent. Patient changes are prevented dur
 
 ## Zoom windows
 
-The initial Zoom out label means separate selection windows are disabled. Clicking it changes the button to blue Zoom in and enables them. Selected X-ray and EKG images then open in separate windows; selected blood-test JSON files open in enlarged record windows. Deselecting closes the matching window, and disabling zoom closes these selection windows.
+The initial Zoom out label means selection windows are disabled. Clicking it changes the button to blue Zoom in and enables them. Use the adjacent Split/Merge button to choose the layout: Split gives every selected image its own window; Merge puts all selected X-ray and EKG images into one window with Previous, Next, +, −, Fit, and Reset. Previous and Next move through the selected images; +/− change the current image scale; Fit shows the complete image; Reset restores its original 100% pixel size. Split image windows provide +, −, Fit, and Reset independently. Selected blood-test JSON files continue to open in their readable record windows. Deselecting closes the matching window, and disabling zoom closes selection windows.
 
 Image windows show a large bold white filename label on dark teal. Dimensions remain in the window title; the duplicate size label in the middle has been removed. Images remain at natural pixel size with scrollbars, and image windows are capped at 1400 by 900 pixels. A separate detail viewer also supports fit, zoom, and previous/next navigation.
 
