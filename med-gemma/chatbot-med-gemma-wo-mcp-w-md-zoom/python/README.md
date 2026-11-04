@@ -1,4 +1,4 @@
-﻿# MedGemma patient GUI
+# MedGemma patient GUI
 
 The application is `python/client_medgemma_patients.py`, a single-file Tkinter client that sends selected records directly to the Ollama server configured in `python/.env`. No Qwen, MCP, agents, database, or additional application modules are used.
 
@@ -29,47 +29,60 @@ patient_records/
   <first>-<last>-<MMDDYYYY>/
     <date>/
       <time>/
-        xrays/        # supported image files
+        xrays/        # X-ray image files
+        ct_scan/      # CT scan image files
         ekgs/         # supported image files
         blood_tests/  # JSON lab records
 ```
 
-The legacy `<patient>/data/{xrays,ekgs,blood_tests}/` layout is also supported. Images support PNG, JPEG, BMP, GIF, WebP, and TIFF. Blood tests support structured results lists and mapping-style results, with either a title or panel name. Blood tests currently load JSON records, not scanned lab images.
+The legacy `<patient>/data/{xrays,ct_scan,ekgs,blood_tests}/` layout is also supported. Images support PNG, JPEG, BMP, GIF, WebP, and TIFF. Blood tests support structured results lists and mapping-style results, with either a title or panel name. Blood tests currently load JSON records, not scanned lab images.
 
-## Patient and panel controls
+## Patient and display controls
 
-1. Enter First name, Last name, and a real eight-digit DOB (`MMDDYYYY`), then click Search. Folder matching is case-insensitive. No patient is loaded at startup.
-2. The newest available snapshot loads after a successful search. Use the Date & Time button, immediately after Search, to load another snapshot; records from different snapshots are not merged. Dates and times appear in the modality headings. The redundant date/time status label is hidden so it cannot cover header controls.
-3. The active patient display uses two lines: a teal heading and purple patient details.
-4. Beside Zoom, use X-ray On/Off, EKG On/Off, and Blood Test On/Off to show or hide panels. On is green; Off is red. All start On. Hiding preserves contents and selections.
-5. Visible panels stack vertically and share the records area equally: one fills it, two split it in half, and three each receive one-third. All panels can be hidden.
+1. Enter First name, Last name, and an eight-digit DOB (`MMDDYYYY`), then select **Search**. The newest snapshot loads; **Date & Time** immediately after Search lets you choose one other snapshot. Do not merge records across different times.
+2. The **left** side retains the AI Clinical Assistant Center, blank question input, Ask AI, Voice, Close GUI, and one AI Response panel. The left question and response column initially occupies **25%** of the workspace width; the **right medical-record display occupies 75%**. The divider remains draggable.
+3. The **Display** dropdown has four independent ON/OFF toggles: **X-ray**, **CT Scan**, **EKG/ECG**, and **Blood Test**. All are initially ON. The record display uses a **2-by-2 grid**: **X-ray | CT Scan** in the top row and **EKG/ECG | Blood Test** in the bottom row. Both rows have equal height and both columns have equal width. Hiding a panel preserves its grid position, loaded data, and selections; the remaining panels stay in their assigned cells. Zero enabled shows an empty records area.
+4. Each panel scrolls independently, supports selecting/deselecting individual items, and shows the active snapshot date and time. The active patient uses a teal heading and purple details. Blood-test table rows remain aligned in fixed-width columns.
+5. The **Zoom** dropdown contains five independent ON/OFF toggles. See below. **Split/Merge applies only to Selection Zoom.**
 
-The left assistant area contains a blank question input, Ask AI, Voice, Close GUI, and one visible AI Response area. Server/model controls, Actions, and separate original/draft tabs are hidden in the streamlined layout. Export, review, and history helpers remain in the source but their controls are hidden in this layout.
+## CT scan support
+
+Use the exact folder name **`ct_scan`** under each patient snapshot, or under the legacy `data/` folder. The CT section loads supported raster images and preserves the original image bytes for MedGemma requests. CT scans belong to the same active patient and snapshot as the other records; a missing CT folder is allowed. DICOM support is not assumed unless explicitly implemented.
 
 ## Independent responses
 
 Select records, enter a question, then click Ask AI. The app freezes the selected patient, paths, question, and blood data before background work begins.
 
-- Each selected image is sent in its own independent `/api/generate` request with exactly one original image, its modality, and the doctor's question. Thumbnails are never uploaded. Image calls contain no blood-test data or other selected images.
+- Each selected X-ray, CT scan, or EKG image is sent in its own independent `/api/generate` request with exactly one original image, its modality, and the doctor's question. Thumbnails are never uploaded. Image calls contain no blood-test data or other selected images.
 - Selected blood records are grouped by source JSON file and each file is analyzed separately, without image attachments.
-- Calls run sequentially. Responses appear in separate sections such as `X-RAY - image-name`, `ECG/EKG - image-name`, and `BLOOD TEST - record-name`, without filename extensions. Each response requests Findings and Limitations.
+- Calls run sequentially. Responses appear in separate sections such as `X-RAY - image-name`, `CT SCAN - image-name`, `ECG/EKG - image-name`, and `BLOOD TEST - record-name`, without filename extensions. Each response requests Findings and Limitations.
 - Each completed image or blood response updates its matching open zoom window as it arrives. The main combined report is finalized after all calls succeed. If a later call fails or is cancelled, earlier responses may remain in zoom windows, but no completed aggregate report is created.
 - Cancel stops accepting results and closes the active connection where possible. It cannot guarantee that Ollama stops computing. Remaining calls are not started after cancellation. Retry uses the current prompt and selections.
 
 Only selected active-patient records are sent. Patient changes are prevented during a request and obsolete callbacks are ignored. Source image and JSON files are not modified.
 
-## Zoom windows
+## Zoom dropdown and viewer windows
 
-The initial Zoom out label means selection windows are disabled. Clicking it changes the button to blue Zoom in and enables them. Use the adjacent Split/Merge button to choose the layout: Split gives every selected image its own window; Merge puts all selected X-ray and EKG images into one window with Previous, Next, +, −, Fit, and Reset. Previous and Next move through the selected images; +/− change the current image scale; Fit shows the complete image; Reset restores its original 100% pixel size. Split image windows provide +, −, Fit, and Reset independently. Selected blood-test JSON files continue to open in their readable record windows. Deselecting closes the matching window, and disabling zoom closes selection windows.
+All five Zoom options begin OFF and act as independent ON/OFF toggles. Closing a modality-specific viewer turns its option OFF. Switching patients or snapshots closes stale viewers.
 
-Image windows show a large bold white filename label on dark teal. Dimensions remain in the window title; the duplicate size label in the middle has been removed. Images remain at natural pixel size with scrollbars, and image windows are capped at 1400 by 900 pixels. A separate detail viewer also supports fit, zoom, and previous/next navigation.
+| Zoom option | Viewer behavior |
+|---|---|
+| **1. Selection Zoom** | Existing selected-record zoom only; **Split** opens separate windows for selected items and **Merge** navigates selected images in one viewer; selected blood files retain separate formatted windows. Deselection closes its matching Split window. |
+| **2. X-ray Zoom** | One separate viewer for **all loaded X-ray images** of the active patient/snapshot, even if unselected. |
+| **3. CT Scan Zoom** | One separate viewer for **all loaded CT images/slices** of the active patient/snapshot, even if unselected. |
+| **4. EKG/ECG Zoom** | One separate viewer for **all loaded EKG images** of the active patient/snapshot, even if unselected. |
+| **5. Blood Test Zoom** | One separate formatted viewer for **all loaded blood-test records** of the active patient/snapshot, even if unselected. |
 
-Blood-test windows format each test into readable sections with result, unit, reference range, and status, plus record metadata. Text is 15 pt, test headings 16 pt, and record headings 18 pt. High/Low status is red. The source JSON remains unchanged.
+The four modality-specific viewers each provide **Previous**, **Next**, **+**, **−**, **Fit**, and **Reset**. Previous/Next navigate records within that modality only. Image viewers start at original pixel size, support scrollbars, use Fit to display the whole current image, and use Reset to restore 100% scale. Blood Test Zoom displays formatted results, units, ranges, and statuses; +/− adjust text size, Fit makes the record readable within available width, and Reset restores default fonts. **Split/Merge does not affect modality-specific viewers.**
 
-A compact, scrollable response panel sits at the bottom of each viewer. It has no Diagnosis heading, uses an approximately six-line height, and shows only the matching record's response. A window opened after completion also shows the cached response. Navigating the detail viewer changes the response to match the displayed image. Starting a new request clears previous cached responses and displays a waiting message.
+Image viewers retain the filename heading, image dimensions in the window title, and a maximum initial size of 1400 × 900. Blood test viewers use readable formatted sections (15 pt body, 16 pt test headings, 18 pt record headings, explicit High/Low in red). Each viewer has a scrollable approximately six-line AI response area showing only the currently displayed record's response, with no Diagnosis label. Responses follow the record during Previous/Next navigation and are cleared when a new request begins.
 
 ## Errors and verification
 
 Missing models, unavailable Ollama, invalid files, timeouts, and incomplete output are reported through existing status/error handling. Model and endpoint settings come from `.env`; no server is silently substituted. Full-resolution analysis and sequential requests may take time.
 
 See `md/VERIFICATION.md` for current checks and historical results. Syntax and mocked checks do not establish clinical accuracy. AI output requires clinician review.
+
+## Implementation status and Codex handoff
+
+The current Python source includes CT support, the 2-by-2 record grid, Display and Zoom menus, and the initial 25%/75% workspace split. Synthetic GUI checks passed for grid positions, Display combinations, and independent modality viewers. User-reported crashes remain unresolved; startup checks did not reproduce them. Full visual review and live record generation remain unverified. See the new verification entry separately from historical results. Update the single Python application in place, preserve existing behavior, do not modify patient data or `.env`, and record new tests honestly. The accompanying `AGENTS.md` is the consolidated implementation specification.

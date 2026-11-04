@@ -95,3 +95,16 @@ The filters must appear immediately after the Patient ID menu, before the active
 ## X-ray zoom dimensions update (2026-10-31)
 
 The X-ray zoom viewer displays oriented image dimensions in pixels as `widthxheight` beside the filename in the window title and as `Image size: widthxheight px` beneath the image canvas. Each separate window is capped at 1400 Ã— 900; larger images stay at natural pixel dimensions and use scrollbars. Only the blue **Zoom in** toggle state opens selected-X-ray windows. The updated app was launched, but the selected-image zoom window was not visually exercised in this update.
+
+## Current layout and software checks - 2026-11-03
+
+This entry describes the current changes separately from historical results above.
+
+- The record display is now a 2-by-2 grid: X-ray and CT Scan on the top row; EKG/ECG and Blood Test on the bottom row. Hidden panels preserve their assigned grid cells and selections.
+- The question/response column starts at 25% of workspace width and the records display at 75%; the divider remains draggable.
+- Passed synthetic Tkinter checks for all 16 Display combinations, fixed grid positions, equal row heights and column widths, four simultaneous independent modality viewers, asynchronous image decoding, and toggle cleanup.
+- Passed mocked independent image jobs including CT, blood-data isolation, cancellation before remaining jobs, and stale request response rejection. These checked job construction; no live Ollama image requests were made.
+- Fixed the missing CT thumbnail size configuration and ignored thumbnail results for destroyed widgets. These changes do not establish the cause of the user-reported crashes.
+- The width adjustment passed a Python syntax check. The updated application launched and stayed running without a startup error in the captured output.
+- User-reported crashes remain unresolved. Full screenshot-based visual review, every viewer navigation/zoom combination, live generation, and clinical accuracy remain unverified. Selection Merge continues to use separate formatted windows for blood records.
+- Markdown files were edited directly; no `.diff` files were created.

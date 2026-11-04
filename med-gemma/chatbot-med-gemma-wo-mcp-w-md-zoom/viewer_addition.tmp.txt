@@ -1,0 +1,180 @@
+
+modality_viewers = {}
+zoom_vars = {}
+
+
+def toggle_zoom_option(key):
+    if key == "selection":
+        toggle_xray_zoom()
+        return
+    close_modality_viewer(key, reset=False)
+    if zoom_vars[key].get():
+        open_modality_viewer(key)
+
+
+def close_modality_viewer(key, reset=True):
+    state = modality_viewers.pop(key, None)
+    if state:
+        state["window"].destroy()
+    if reset and key in zoom_vars:
+        zoom_vars[key].set(False)
+
+
+def close_all_zoom_windows():
+    global xray_zoom_enabled
+    xray_zoom_enabled = False
+    for variable in zoom_vars.values():
+        variable.set(False)
+    close_image_viewer()
+    for path in tuple(xray_zoom_viewers):
+        close_xray_zoom_viewer(path)
+    for key in tuple(modality_viewers):
+        close_modality_viewer(key)
+
+
+def open_modality_viewer(key):
+    """An independent snapshot-bound viewer; image decoding runs off the Tk thread."""
+    paths = (list(dict.fromkeys(blood_test_paths)) if key == "blood_tests" else
+             patient_files(key, IMAGE_EXTENSIONS)[0]) if active_patient else []
+    viewer = tk.Toplevel(window)
+    viewer.geometry("1000x800")
+    viewer.maxsize(1400, 900)
+    heading = tk.Label(viewer, background="#164e63", foreground="white",
+                       font=("Segoe UI", 18, "bold"), anchor="w", padx=12, pady=10)
+    heading.pack(fill=tk.X)
+    toolbar = ttk.Frame(viewer)
+    toolbar.pack(fill=tk.X)
+    response_panel, response = create_image_diagnosis_panel(viewer)
+    response_panel.pack(side=tk.BOTTOM, fill=tk.X)
+    content = ttk.Frame(viewer)
+    content.pack(fill=tk.BOTH, expand=True)
+    state = {"window": viewer, "diagnosis": response, "index": 0, "path": None,
+             "scale": 1.0, "generation": 0, "patient": active_patient,
+             "snapshot": selected_snapshot_dir}
+    modality_viewers[key] = state
+    if key == "blood_tests":
+        body = scrolledtext.ScrolledText(content, wrap=tk.WORD, padx=16, pady=12)
+        body.pack(fill=tk.BOTH, expand=True)
+        state["body"] = body
+    else:
+        canvas = tk.Canvas(content, background="#17222d", highlightthickness=0)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        ys = ttk.Scrollbar(content, orient=tk.VERTICAL, command=canvas.yview)
+        xs = ttk.Scrollbar(content, orient=tk.HORIZONTAL, command=canvas.xview)
+        ys.grid(row=0, column=1, sticky="ns")
+        xs.grid(row=1, column=0, sticky="ew")
+        canvas.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
+        content.rowconfigure(0, weight=1)
+        content.columnconfigure(0, weight=1)
+        state["canvas"] = canvas
+
+    def current():
+        return (modality_viewers.get(key) is state and state["patient"] == active_patient
+                and state["snapshot"] == selected_snapshot_dir)
+
+    def draw():
+        if not current():
+            return
+        scale = state["scale"]
+        if key == "blood_tests":
+            body.configure(font=("Segoe UI", round(15 * scale)))
+            for tag, size in (("heading", 18), ("test", 16), ("abnormal", 15)):
+                body.tag_configure(tag, font=("Segoe UI", round(size * scale), "bold"),
+                                   foreground="#b91c1c" if tag == "abnormal" else "#164e63")
+        elif state.get("source") is not None:
+            source = state["source"]
+            state["generation"] += 1
+            generation = state["generation"]
+            def resize():
+                from PIL import Image, ImageTk
+                try:
+                    size = tuple(max(1, min(12000, round(n * scale))) for n in source.size)
+                    picture = source.resize(size, Image.Resampling.LANCZOS)
+                    def publish():
+                        if not current() or generation != state["generation"]:
+                            return
+                        state["photo"] = ImageTk.PhotoImage(picture, master=canvas)
+                        canvas.delete("all")
+                        canvas.create_image(0, 0, image=state["photo"], anchor="nw")
+                        canvas.configure(scrollregion=(0, 0, *size))
+                    post_ui(publish)
+                except (OSError, ValueError) as error:
+                    post_ui(lambda message=str(error): show_status(message))
+            threading.Thread(target=resize, daemon=True).start()
+
+    def show(delta=0):
+        if not paths:
+            heading.configure(text="No records loaded for this modality")
+            viewer.title(key.replace("_", " "))
+            return
+        state["index"] = (state["index"] + delta) % len(paths)
+        path = Path(paths[state["index"]])
+        state["path"] = path
+        state["scale"] = 1.0
+        state["generation"] += 1
+        generation = state["generation"]
+        heading.configure(text=path.stem)
+        refresh_image_diagnosis(state, path)
+        viewer.title(f"{key} - {path.stem}")
+        if key == "blood_tests":
+            body.configure(state=tk.NORMAL)
+            body.delete("1.0", tk.END)
+            for record, source_path in zip(blood_test_records, blood_test_paths):
+                if Path(source_path) != path:
+                    continue
+                body.insert(tk.END, lab_record_title(record, path) + "\n", "heading")
+                if isinstance(record, dict):
+                    for field, value in record.items():
+                        if field not in ("results", "title", "panel"):
+                            body.insert(tk.END, f"{field}: {_display_scalar(value)}\n")
+                for test, value, unit, reference, flag in lab_view_rows(record):
+                    body.insert(tk.END, test + "\n", "test")
+                    body.insert(tk.END, f"Result: {value} {unit}\nReference range: {reference}\n")
+                    body.insert(tk.END, f"Status: {flag}\n\n", "abnormal" if flag in ("High", "Low") else ())
+            body.configure(state=tk.DISABLED)
+            draw()
+            return
+        state["source"] = None
+        canvas.delete("all")
+        def decode():
+            from PIL import Image, ImageOps
+            try:
+                safe_path(path, state["patient"])
+                with Image.open(path) as opened:
+                    source = ImageOps.exif_transpose(opened).convert("RGB")
+                    source.load()
+                def publish():
+                    if current() and state["generation"] == generation:
+                        state["source"] = source
+                        viewer.title(f"{key} - {path.stem} - {source.width}x{source.height}")
+                        draw()
+                post_ui(publish)
+            except (OSError, ValueError) as error:
+                def unavailable(message=str(error)):
+                    if current() and state["generation"] == generation:
+                        heading.configure(text=f"{path.stem}: unavailable ({message})")
+                post_ui(unavailable)
+        threading.Thread(target=decode, daemon=True).start()
+
+    def scale_by(multiplier):
+        state["scale"] = max(0.4, min(8.0, state["scale"] * multiplier))
+        draw()
+
+    def fit():
+        if key == "blood_tests":
+            state["scale"] = max(0.7, min(1.3, body.winfo_width() / 850))
+        elif state.get("source"):
+            state["scale"] = viewer_fit_scale(state["source"].size,
+                                               (canvas.winfo_width(), canvas.winfo_height()))
+        draw()
+
+    def reset():
+        state["scale"] = 1.0
+        draw()
+
+    for label, command in (("Previous", lambda: show(-1)), ("Next", lambda: show(1)),
+                           ("+", lambda: scale_by(1.25)), ("-", lambda: scale_by(0.8)),
+                           ("Fit", fit), ("Reset", reset)):
+        ttk.Button(toolbar, text=label, command=command).pack(side=tk.LEFT, padx=3, pady=4)
+    viewer.protocol("WM_DELETE_WINDOW", lambda: close_modality_viewer(key))
+    show()
