@@ -2719,12 +2719,11 @@ def load_images():
 
     for column, gallery in enumerate(galleries):
         grid = gallery["grid"]
-        # Give each active image column equal width. The EKG gallery has only
-        # one active column, so each EKG image is centered in its own row.
+        # X-ray and CT scan thumbnails use two columns; EKGs stay in one.
         for grid_column in range(3):
             grid.columnconfigure(
                 grid_column,
-                weight=1 if (column == 0 or grid_column == 0) else 0,
+                weight=1 if (column != 1 and grid_column < 2) or grid_column == 0 else 0,
             )
         modality = ("xrays", "ekgs", "ct_scan")[column]
         paths, message = patient_files(modality, IMAGE_EXTENSIONS)
@@ -2738,10 +2737,8 @@ def load_images():
         displayed = len(paths)
         for index, path in enumerate(paths):
             tile = tk.Frame(grid, background=TILE_BACKGROUND, padx=5, pady=5)
-            # X-Ray uses three images per row. EKG uses a vertical list with
-            # exactly one image per row. Horizontal scrolling handles wide
-            # originals when a configured dimension is zero.
-            columns_per_row = 1 if column == 1 else 3
+            # X-ray and CT scan use two images per row. EKG uses one per row.
+            columns_per_row = 1 if column == 1 else 2
             tile.grid(
                 row=index // columns_per_row,
                 column=index % columns_per_row,
@@ -3339,20 +3336,23 @@ def associate_report_image_names(report, snapshot):
 
 
 def insert_highlighted_report(report, widget=None):
-    """Display the report and color medical-section names red."""
+    """Display the report with modality section names in bold red."""
     widget = widget or answer_box
-    # Match common spellings regardless of capitalization:
-    # X-ray/Xray/X ray, EKG, ECG, and Blood Test/Blood-Test.
-    pattern = re.compile(
-        r"\b(?:x[\s-]?ray|ecg\s*/\s*ekg|ekg\s*/\s*ecg|ekg|ecg|blood[\s-]?test)\b",
-        flags=re.IGNORECASE,
+    heading_pattern = re.compile(
+        r"^[ \t]*(?:#{1,6}[ \t]+)?(?:\*\*)?"
+        r"(?:X[\s_-]?RAY|CT[\s_-]?SCAN|C[\s_-]?SCAN|"
+        r"ECG[ \t]*/[ \t]*EKG|EKG[ \t]*/[ \t]*ECG|ECG|EKG|"
+        r"BLOOD[\s_-]?TEST)"
+        r"(?:\*\*)?(?:[ \t]*[-:][ \t]*.+)?[ \t]*$",
+        re.IGNORECASE,
     )
-    position = 0
-    for match in pattern.finditer(report):
-        widget.insert(tk.END, report[position:match.start()])
-        widget.insert(tk.END, match.group(0), ("report_medical_heading",))
-        position = match.end()
-    widget.insert(tk.END, report[position:])
+    for line in report.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        if heading_pattern.fullmatch(content):
+            widget.insert(tk.END, content, ("report_medical_heading",))
+            widget.insert(tk.END, line[len(content):])
+        else:
+            widget.insert(tk.END, line)
 
 
 def generate_separate_reports(snapshot, state):
@@ -3387,7 +3387,7 @@ def generate_separate_reports(snapshot, state):
                           request_state=state, input_scope=scope)
         if state.cancel_event.is_set():
             return None
-        sections.append(f"{heading}\n{'=' * 36}\n{result.answer.strip()}")
+        sections.append(f"{heading}\n{result.answer.strip()}")
         post_ui(lambda rid=snapshot.request_id, path=record_path, answer=result.answer:
                 receive_image_diagnosis(rid, path, answer))
         completions.append(result.metadata)
