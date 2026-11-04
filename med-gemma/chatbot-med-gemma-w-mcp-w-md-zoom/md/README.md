@@ -1,6 +1,6 @@
 # AI Clinical Assistant Center with MCP patient records
 
-This project is a Tkinter desktop application for reviewing selected patient X-rays, EKGs, and blood-test JSON records and submitting selected evidence plus a clinician question to MedGemma through Ollama. The main implementation is `python/client_medgemma_patients_mcp.py`; it is a full existing GUI and must be preserved rather than replaced with a simplified prototype. Qwen is excluded.
+This project is a Tkinter desktop application for reviewing selected patient X-rays, CT scans, EKGs, and blood-test JSON records and submitting selected evidence plus a clinician question to MedGemma through Ollama. The main implementation is `python/client_medgemma_patients_mcp.py`; it is a full existing GUI and must be preserved rather than replaced with a simplified prototype. Qwen is excluded.
 
 ## Interface
 

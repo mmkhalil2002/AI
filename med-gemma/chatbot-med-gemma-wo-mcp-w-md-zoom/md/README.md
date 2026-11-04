@@ -39,11 +39,11 @@ The legacy `<patient>/data/{xrays,ct_scan,ekgs,blood_tests}/` layout is also sup
 
 ## Patient and display controls
 
-1. Enter First name, Last name, and an eight-digit DOB (`MMDDYYYY`), then select **Search**. The newest snapshot loads; **Date & Time** immediately after Search lets you choose one other snapshot. Do not merge records across different times.
+1. Enter First name, Last name, and an eight-digit DOB (`MMDDYYYY`), then select **Search**. The newest snapshot loads; **Date & Time** immediately after Search lets you choose one other snapshot. Do not merge records across different times. The search area has no Patient Date and Time heading.
 2. The **left** side retains the AI Clinical Assistant Center, blank question input, Ask AI, Voice, Close GUI, and one AI Response panel. The left question and response column initially occupies **25%** of the workspace width; the **right medical-record display occupies 75%**. The divider remains draggable.
-3. The **Display** dropdown has four independent ON/OFF toggles: **X-ray**, **CT Scan**, **EKG/ECG**, and **Blood Test**. All are initially ON. The record display uses a **2-by-2 grid**: **X-ray | CT Scan** in the top row and **EKG/ECG | Blood Test** in the bottom row. Both rows have equal height and both columns have equal width. Hiding a panel preserves its grid position, loaded data, and selections; the remaining panels stay in their assigned cells. Zero enabled shows an empty records area.
+3. Nine independent toggle buttons appear beneath the Search row, with extra spacing between the Selection, modality-Zoom, and Display clusters but without group labels. **Zoom Select Out/In** and Merge/Split appear together; the other four Zoom toggles appear next; then the four Display toggles (**X-ray**, **CT Scan**, **EKG/ECG**, and **Blood Test**). The Zoom Select and modality controls initially read **Out**; after activation, they read **In**. Zoom Select and default Merge are orange initially and dark blue when active. The modality controls use yellow while inactive and purple while active. The four Display toggles are initially ON, show **ON** in green, and show **OFF** in brown. With all panels on, the record display uses a **2-by-2 grid**: **X-ray | CT Scan** in the top row and **EKG/ECG | Blood Test** in the bottom row. When a panel is switched off, the remaining visible panels stack vertically and divide the complete records area equally: three panels each use one-third of the height, two each use one-half of the height, and one uses the full area. Hiding a panel preserves its loaded data and selections. Zero enabled shows an empty records area.
 4. Each panel scrolls independently, supports selecting/deselecting individual items, and shows the active snapshot date and time. The active patient uses a teal heading and purple details. Blood-test table rows remain aligned in fixed-width columns.
-5. The **Zoom** dropdown contains five independent ON/OFF toggles. See below. **Split/Merge applies only to Selection Zoom.**
+5. The five **Zoom** toggles report ON/OFF state. **Merge/Split applies only to Selection Zoom** and defaults to Merge.
 
 ## CT scan support
 
@@ -61,7 +61,7 @@ Select records, enter a question, then click Ask AI. The app freezes the selecte
 
 Only selected active-patient records are sent. Patient changes are prevented during a request and obsolete callbacks are ignored. Source image and JSON files are not modified.
 
-## Zoom dropdown and viewer windows
+## Zoom toggles and viewer windows
 
 All five Zoom options begin OFF and act as independent ON/OFF toggles. Closing a modality-specific viewer turns its option OFF. Switching patients or snapshots closes stale viewers.
 
@@ -73,7 +73,7 @@ All five Zoom options begin OFF and act as independent ON/OFF toggles. Closing a
 | **4. EKG/ECG Zoom** | One separate viewer for **all loaded EKG images** of the active patient/snapshot, even if unselected. |
 | **5. Blood Test Zoom** | One separate formatted viewer for **all loaded blood-test records** of the active patient/snapshot, even if unselected. |
 
-The four modality-specific viewers each provide **Previous**, **Next**, **+**, **−**, **Fit**, and **Reset**. Previous/Next navigate records within that modality only. Image viewers start at original pixel size, support scrollbars, use Fit to display the whole current image, and use Reset to restore 100% scale. Blood Test Zoom displays formatted results, units, ranges, and statuses; +/− adjust text size, Fit makes the record readable within available width, and Reset restores default fonts. **Split/Merge does not affect modality-specific viewers.**
+The four modality-specific viewers each provide **Previous**, **Next**, **+**, **−**, **Fit**, and **Actual Size** for images. Previous/Next navigate records within that modality only. Image viewers start at original pixel size, support scrollbars, use Fit to display the whole current image, and use Actual Size to restore 100% scale; the shared image viewer also states the current actual-size percentage. Blood Test Zoom displays formatted results, units, ranges, and statuses; +/− adjust text size, Fit makes the record readable within available width, and Reset restores default fonts. **Split/Merge does not affect modality-specific viewers.**
 
 Image viewers retain the filename heading, image dimensions in the window title, and a maximum initial size of 1400 × 900. Blood test viewers use readable formatted sections (15 pt body, 16 pt test headings, 18 pt record headings, explicit High/Low in red). Each viewer has a scrollable approximately six-line AI response area showing only the currently displayed record's response, with no Diagnosis label. Responses follow the record during Previous/Next navigation and are cleared when a new request begins.
 
@@ -85,4 +85,4 @@ See `md/VERIFICATION.md` for current checks and historical results. Syntax and m
 
 ## Implementation status and Codex handoff
 
-The current Python source includes CT support, the 2-by-2 record grid, Display and Zoom menus, and the initial 25%/75% workspace split. Synthetic GUI checks passed for grid positions, Display combinations, and independent modality viewers. User-reported crashes remain unresolved; startup checks did not reproduce them. Full visual review and live record generation remain unverified. See the new verification entry separately from historical results. Update the single Python application in place, preserve existing behavior, do not modify patient data or `.env`, and record new tests honestly. The accompanying `AGENTS.md` is the consolidated implementation specification.
+The current Python source includes CT support, a responsive record grid, Display and Zoom menus, and the initial 25%/75% workspace split. Synthetic GUI checks passed for earlier Display combinations and independent modality viewers. User-reported crashes remain unresolved; startup checks did not reproduce them. Full visual review and live record generation remain unverified. See the new verification entry separately from historical results. Update the single Python application in place, preserve existing behavior, do not modify patient data or `.env`, and record new tests honestly. The accompanying `AGENTS.md` is the consolidated implementation specification.

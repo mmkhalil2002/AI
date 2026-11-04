@@ -2,7 +2,8 @@
 """Interactive MedGemma patient-date data importer (Windows / Ubuntu).
 
 Uses BASE_INPUT_DIR and BASE_OUTPUT_DIR from .env beside this script.
-Creates BASE_OUTPUT_DIR/patient_records/PATIENT_ID/YYYY-MM-DD/HH-MM_AM/{xrays,ekgs,blood_tests}.
+Creates BASE_OUTPUT_DIR/patient_records/PATIENT_ID/YYYY-MM-DD/HH-MM_AM/
+{xrays,ct_scan,ekgs,blood_tests}.
 Only standard-library modules are required. Educational images come from
 Wikimedia Commons; blood test records are synthetic educational examples.
 """
@@ -205,9 +206,10 @@ def unique_path(directory: Path, name: str) -> Path:
 
 
 def import_external(source: Path, destination: Path) -> dict[str, int]:
-    """Copy files from source/{xray,ekg,blood test} without deleting originals."""
+    """Copy files from modality subfolders without deleting originals."""
     folders = {
         "xrays": ("xrays", "xray", "x-ray"),
+        "ct_scan": ("ct_scan", "ct_scans", "ct scan", "ct scans", "ct", "catscan"),
         "ekgs": ("ekgs", "ekg", "ecg"),
         "blood_tests": ("blood_tests", "blood test", "blood tests", "blood_test", "bloodtest"),
     }
@@ -270,7 +272,12 @@ def internet_images(kind: str, count: int, target: Path) -> int:
     """Download up to count public Wikimedia medical illustration images."""
     if count == 0:
         return 0
-    search = '"chest x-ray" pneumonia' if kind == "xrays" else '"electrocardiogram" myocardial infarction'
+    searches = {
+        "xrays": '"chest x-ray" pneumonia',
+        "ct_scan": '"CT scan" pneumonia',
+        "ekgs": '"electrocardiogram" myocardial infarction',
+    }
+    search = searches[kind]
     saved, offset, attribution = 0, 0, []
     hashes = known_digests(target, EXTENSIONS)
     seen = set()
@@ -381,10 +388,10 @@ def main() -> int:
         source = Path(entered).expanduser() if entered else default_source
         if not source.is_dir():
             raise FileNotFoundError(f"External directory not found: {source}")
-        print("Expected subfolders: xray/, ekg/, blood test/ (plural names also supported).")
+        print("Expected subfolders: xray/, ct scan/, ekg/, blood test/ (plural names also supported).")
     else:
-        counts = (prompt_count("X-ray"), prompt_count("EKG"), prompt_count("blood-test"))
-        print("[INFO] X-ray and EKG examples come from Wikimedia Commons.")
+        counts = (prompt_count("X-ray"), prompt_count("CT scan"), prompt_count("EKG"), prompt_count("blood-test"))
+        print("[INFO] X-ray, CT, and EKG examples come from Wikimedia Commons.")
         print("[INFO] Blood tests are SYNTHETIC educational JSON, not downloaded clinical records.")
     date_of_birth = datetime.strptime(dob_digits, "%m%d%Y").strftime("%B %d, %Y")
     exam_date = datetime.strptime(date, "%Y-%m-%d").strftime("%B %d, %Y")
@@ -399,14 +406,15 @@ def main() -> int:
         return 0
     if destination.exists() and any(destination.iterdir()):
         print("[INFO] Patient/date/time already exists; merging only new files (SHA-256 duplicate check).")
-    for folder in ("xrays", "ekgs", "blood_tests"):
+    for folder in ("xrays", "ct_scan", "ekgs", "blood_tests"):
         (destination / folder).mkdir(parents=True, exist_ok=True)
     if choice == "1":
         results = import_external(source, destination)
     else:
-        xray, ekg, blood = counts
+        xray, ct_scan, ekg, blood = counts
         results = {
             "xrays": internet_images("xrays", xray, destination / "xrays"),
+            "ct_scan": internet_images("ct_scan", ct_scan, destination / "ct_scan"),
             "ekgs": internet_images("ekgs", ekg, destination / "ekgs"),
             "blood_tests": educational_blood(blood, destination / "blood_tests"),
         }

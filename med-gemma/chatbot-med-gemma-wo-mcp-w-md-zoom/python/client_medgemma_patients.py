@@ -327,12 +327,20 @@ def patient_files(modality, extensions):
     """
     if active_patient is None:
         return [], "Select a patient to load records."
+    # ``ct_scan`` is the documented directory name.  Earlier bundled record
+    # sets used the plural spelling, so accept it as a read-only compatibility
+    # alias rather than making a valid CT snapshot appear to have no data.
+    folder_names = ("ct_scan", "ct_scans") if modality == "ct_scan" else (modality,)
     if selected_snapshot_dir is None and patient_snapshots(active_patient):
         return [], "Choose a date and time to load this patient's data."
     if selected_snapshot_dir is not None:
         try:
             safe_path(selected_snapshot_dir, active_patient)
-            folder = selected_snapshot_dir / modality
+            folder = next(
+                (selected_snapshot_dir / name for name in folder_names
+                 if (selected_snapshot_dir / name).is_dir()),
+                selected_snapshot_dir / folder_names[0],
+            )
             safe_path(folder, active_patient)
         except (OSError, ValueError):
             return [], "Selected date/time data is no longer available."
@@ -342,9 +350,12 @@ def patient_files(modality, extensions):
         # A selected snapshot is deliberately confined to one date/time folder.
         pass
     else:
-        preferred_folder = active_patient / "data" / modality
-        legacy_folder = active_patient / modality
-        folder = preferred_folder if preferred_folder.is_dir() else legacy_folder
+        preferred_folders = tuple(active_patient / "data" / name for name in folder_names)
+        legacy_folders = tuple(active_patient / name for name in folder_names)
+        folder = next(
+            (path for path in preferred_folders if path.is_dir()),
+            next((path for path in legacy_folders if path.is_dir()), preferred_folders[0]),
+        )
     try:
         # Do not merge layouts: if a patient has the documented folder it is
         # authoritative.  Falling back only when it is missing avoids showing
@@ -383,7 +394,8 @@ image_viewer = None
 image_diagnoses = {}
 # Separate native-size windows shown for selected X-rays while zoom mode is on.
 xray_zoom_enabled = False
-xray_zoom_mode = "split"
+xray_zoom_mode = "merge"
+xray_zoom_mode_var = None
 xray_zoom_viewers = {}
 ui_callbacks = queue.Queue()
 # Thumbnail work is streamed through bounded queues. The decoder keeps only one
@@ -570,7 +582,7 @@ def patient_snapshots(patient):
                 if not time_dir.is_dir() or time_dir.name.startswith("."):
                     continue
                 safe_path(time_dir, patient)
-                if any((time_dir / modality).is_dir() for modality in ("xrays", "ekgs", "ct_scan", "blood_tests")):
+                if any((time_dir / modality).is_dir() for modality in ("xrays", "ekgs", "ct_scan", "ct_scans", "blood_tests")):
                     snapshots.append((date_dir.name, time_dir.name, time_dir.resolve()))
     except (OSError, ValueError):
         return []
@@ -2311,7 +2323,7 @@ def open_xray_zoom_viewer(path):
     path = Path(path)
     if active_patient is None or path in xray_zoom_viewers:
         return
-    modality = "EKG" if "ekgs" in path.parts else "Blood Test" if "blood_tests" in path.parts else "CT Scan" if "ct_scan" in path.parts else "X-ray"
+    modality = "EKG" if "ekgs" in path.parts else "Blood Test" if "blood_tests" in path.parts else "CT Scan" if {"ct_scan", "ct_scans"}.intersection(path.parts) else "X-ray"
     if path.suffix.lower() == ".json":
         try:
             safe_path(path, active_patient)
@@ -2402,7 +2414,7 @@ def open_xray_zoom_viewer(path):
     ttk.Button(toolbar, text="Fit", command=lambda s=state: fit_split_viewer(s)).pack(side=tk.LEFT, padx=(0, 2))
     ttk.Button(toolbar, text="−", command=lambda s=state: zoom_split_viewer(s, 1 / 1.25)).pack(side=tk.LEFT, padx=2)
     ttk.Button(toolbar, text="+", command=lambda s=state: zoom_split_viewer(s, 1.25)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(toolbar, text="Reset", command=lambda s=state: reset_split_viewer(s)).pack(side=tk.LEFT, padx=2)
+    ttk.Button(toolbar, text="Actual Size", command=lambda s=state: reset_split_viewer(s)).pack(side=tk.LEFT, padx=2)
     refresh_image_diagnosis(state, path)
     viewer.protocol("WM_DELETE_WINDOW", lambda p=path: user_close_selection(p))
 
@@ -2489,8 +2501,7 @@ def toggle_xray_zoom():
 def toggle_xray_zoom_mode():
     """Switch active zoom windows between one shared viewer and separate viewers."""
     global xray_zoom_mode
-    xray_zoom_mode = "merge" if xray_zoom_mode == "split" else "split"
-    xray_zoom_mode_button.config(text="Merge" if xray_zoom_mode == "merge" else "Split")
+    xray_zoom_mode = "split" if xray_zoom_mode_var.get() else "merge"
     if xray_zoom_enabled:
         sync_xray_zoom_viewers()
 
@@ -2539,8 +2550,10 @@ def render_viewer_image(state, center=True):
     if center:
         canvas.xview_moveto(0.5)
         canvas.yview_moveto(0.5)
+    actual_scale = size[0] / max(1, source.width)
+    scale_label = "Actual size (100%)" if abs(actual_scale - 1.0) < 0.005 else f"{actual_scale:.0%} actual size"
     state["status"].config(
-        text=f"{state['path'].name}  |  {source.width} × {source.height}  |  {state['zoom']:.0%} of fit"
+        text=f"{state['path'].name}  |  {source.width} × {source.height}  |  {scale_label}"
     )
 
 
@@ -2644,7 +2657,7 @@ def open_image_viewer(path, records=None, zoom_managed=False):
     ttk.Button(toolbar, text="Fit", command=fit_viewer).pack(side=tk.LEFT, padx=(10, 2))
     ttk.Button(toolbar, text="−", command=lambda: zoom_viewer(1 / 1.25)).pack(side=tk.LEFT, padx=2)
     ttk.Button(toolbar, text="+", command=lambda: zoom_viewer(1.25)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(toolbar, text="Reset", command=reset_viewer).pack(side=tk.LEFT, padx=2)
+    ttk.Button(toolbar, text="Actual Size", command=reset_viewer).pack(side=tk.LEFT, padx=2)
     status = ttk.Label(viewer, text="", anchor="w", font=("Segoe UI", 16, "bold"),
                        foreground="#ffffff", background="#164e63", padding=(10, 8))
     status.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 6))
@@ -3465,15 +3478,22 @@ def send_question():
         )
     xray_count = len(selected_images[0])
     ekg_count = len(selected_images[1])
+    ct_count = len(selected_images[2])
+    snapshot_date_time = active_date_range_label()
     question += (
+        "\n\nRecord date and time:\n"
+        f"- All selected records, including CT scans, are from {snapshot_date_time}.\n"
         "\n\nImage input identification:\n"
         f"- The first {xray_count} image(s) are X-ray images.\n"
         f"- The next {ekg_count} image(s) are ECG/EKG images.\n"
+        f"- The final {ct_count} image(s) are CT scan images.\n"
         "\nRequired final report format:\n"
         "X-RAY\n"
         "[X-ray findings, or No data provided]\n\n"
         "ECG/EKG\n"
         "[ECG/EKG findings, or No data provided]\n\n"
+        "CT SCAN\n"
+        "[CT scan findings, or No data provided]\n\n"
         "BLOOD TEST\n"
         "[Blood-test findings, or No data provided]\n"
         "Keep these as three separate sections and do not combine them."
@@ -3592,7 +3612,7 @@ def refresh_models():
 
 def main():
     """Validate startup data, then construct the preserved Tkinter interface."""
-    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, first_name_var, last_name_var, dob_var, patient_search_controls, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label, xray_zoom_button, xray_zoom_mode_button
+    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, first_name_var, last_name_var, dob_var, patient_search_controls, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label, xray_zoom_button, xray_zoom_mode_button, xray_zoom_mode_var
     # Fatal data-root validation precedes construction of any Tk widget.
     try:
         PATIENT_RECORDS_DIR = patient_records_root()
@@ -3710,6 +3730,42 @@ def main():
     )
     ui_style.map("ZoomOn.TButton", background=[("active", PRIMARY_BLUE_DARK)])
     ui_style.configure(
+        "ZoomToggle.TCheckbutton", background="#eaf3f8", foreground="#335d78",
+        borderwidth=0, padding=(9, 6), font=("Segoe UI", 9, "bold"),
+    )
+    ui_style.map(
+        "ZoomToggle.TCheckbutton",
+        background=[("selected", "#a9d1e6"), ("active", "#d6eaf4")],
+        foreground=[("selected", "#173f58"), ("!selected", "#587184")],
+    )
+    ui_style.configure(
+        "SelectionToggle.TCheckbutton", background="#a8521e", foreground="white",
+        borderwidth=0, padding=(9, 6), font=("Segoe UI", 9, "bold"),
+    )
+    ui_style.map(
+        "SelectionToggle.TCheckbutton",
+        background=[("selected", "#174f78"), ("active", "#bf6530")],
+        foreground=[("selected", "white"), ("!selected", "white")],
+    )
+    ui_style.configure(
+        "ModalityZoom.TCheckbutton", background="#efd66f", foreground="#493b11",
+        borderwidth=0, padding=(9, 6), font=("Segoe UI", 9, "bold"),
+    )
+    ui_style.map(
+        "ModalityZoom.TCheckbutton",
+        background=[("selected", "#62457f"), ("active", "#f4e49b")],
+        foreground=[("selected", "white"), ("!selected", "#493b11")],
+    )
+    ui_style.configure(
+        "DisplayToggle.TCheckbutton", background="#8a5a44", foreground="white",
+        borderwidth=0, padding=(9, 6), font=("Segoe UI", 9, "bold"),
+    )
+    ui_style.map(
+        "DisplayToggle.TCheckbutton",
+        background=[("selected", "#28734f"), ("active", "#a66e53")],
+        foreground=[("selected", "white"), ("!selected", "white")],
+    )
+    ui_style.configure(
         "VoiceOn.TButton",
         background=TEAL,
         foreground="white",
@@ -3813,7 +3869,7 @@ def main():
                          padx=10, pady=(1, 5), sticky="w")
     settings.pack_forget()
 
-    patient_bar = ttk.LabelFrame(window, text="Patient Search and Date/Time", style="Settings.TLabelframe")
+    patient_bar = ttk.Frame(window, style="App.TFrame")
     patient_bar.pack(fill=tk.X, padx=14, pady=5)
     patient_name = tk.StringVar()
     first_name_var = tk.StringVar()
@@ -3835,21 +3891,53 @@ def main():
     )
     choose_date_button.grid(row=0, column=7, padx=(0, 8), pady=5, sticky="w")
     zoom_controls = ttk.Frame(patient_bar, style="App.TFrame")
-    zoom_controls.grid(row=0, column=8, padx=(0, 8), pady=5, sticky="w")
-    global zoom_vars, zoom_menu
+    zoom_controls.grid(row=1, column=0, columnspan=11, padx=(10, 8), pady=(0, 5), sticky="w")
+    selection_controls = ttk.Frame(zoom_controls, style="App.TFrame")
+    selection_controls.pack(side=tk.LEFT, padx=(0, 36))
+    modality_zoom_controls = ttk.Frame(zoom_controls, style="App.TFrame")
+    modality_zoom_controls.pack(side=tk.LEFT, padx=(0, 36))
+    display_controls = ttk.Frame(zoom_controls, style="App.TFrame")
+    display_controls.pack(side=tk.LEFT)
+    global zoom_vars
     zoom_vars = {key: tk.BooleanVar(value=False) for key in
                  ("selection", "xrays", "ct_scan", "ekgs", "blood_tests")}
-    xray_zoom_button = ttk.Menubutton(zoom_controls, text="Zoom")
-    zoom_menu = tk.Menu(xray_zoom_button, tearoff=False)
-    xray_zoom_button.configure(menu=zoom_menu)
-    for key, label in zip(zoom_vars, ("Selection Zoom", "X-ray Zoom", "CT Scan Zoom", "EKG/ECG Zoom", "Blood Test Zoom")):
-        zoom_menu.add_checkbutton(label=label, variable=zoom_vars[key],
-                                  command=lambda k=key: toggle_zoom_option(k))
-    xray_zoom_button.pack(side=tk.LEFT, padx=(0, 6))
-    xray_zoom_mode_button = ttk.Button(
-        zoom_controls, text="Split", command=toggle_xray_zoom_mode, style="ZoomOff.TButton"
+    zoom_labels = {
+        "selection": "Zoom",
+        "xrays": "X-ray",
+        "ct_scan": "CT Scan",
+        "ekgs": "EKG/ECG",
+        "blood_tests": "Blood Test",
+    }
+    zoom_buttons = {}
+    def add_zoom_button(key, parent):
+        style = "SelectionToggle.TCheckbutton" if key == "selection" else "ModalityZoom.TCheckbutton"
+        button = ttk.Checkbutton(parent, variable=zoom_vars[key], style=style,
+                                 command=lambda k=key: toggle_zoom_option(k))
+        button.pack(side=tk.LEFT, padx=(4, 2), pady=3)
+        def refresh(*_args, target=button, name=zoom_labels[key], variable=zoom_vars[key], zoom_key=key):
+            if zoom_key == "selection":
+                target.config(text="Zoom Select In" if variable.get() else "Zoom Select Out")
+            else:
+                target.config(text=f"Zoom {name} {'In' if variable.get() else 'Out'}")
+        zoom_vars[key].trace_add("write", refresh)
+        refresh()
+        zoom_buttons[key] = button
+        return button
+    xray_zoom_button = add_zoom_button("selection", selection_controls)
+    for key in ("xrays", "ct_scan", "ekgs", "blood_tests"):
+        add_zoom_button(key, modality_zoom_controls)
+    xray_zoom_mode_var = tk.BooleanVar(value=False)
+    xray_zoom_mode_button = ttk.Checkbutton(
+        selection_controls, variable=xray_zoom_mode_var, command=toggle_xray_zoom_mode,
+        style="SelectionToggle.TCheckbutton",
     )
-    xray_zoom_mode_button.pack(side=tk.LEFT)
+    def refresh_zoom_mode(*_args):
+        xray_zoom_mode_button.config(
+            text="Split" if xray_zoom_mode_var.get() else "Merge"
+        )
+    xray_zoom_mode_var.trace_add("write", refresh_zoom_mode)
+    refresh_zoom_mode()
+    xray_zoom_mode_button.pack(side=tk.LEFT, padx=(2, 4), pady=3)
     patient_search_controls = (first_name_entry, last_name_entry, dob_entry, search_button, xray_zoom_button)
     for entry in (first_name_entry, last_name_entry, dob_entry):
         entry.bind("<Return>", lambda _event: search_patient())
@@ -3898,9 +3986,6 @@ def main():
     tray_list.bind("<Delete>", remove_tray_selection)
 
     date_filter_bar = ttk.Frame(patient_bar, style="App.TFrame")
-    date_filter_bar.grid(row=0 if not compact_layout else 1, column=9 if not compact_layout else 0,
-                         columnspan=7 if compact_layout else 1, padx=(8, 10), pady=5,
-                         sticky="e" if not compact_layout else "w")
     date_from_var = tk.StringVar(value="")
     date_to_var = tk.StringVar(value="")
     snapshot_selection_label = ttk.Label(
@@ -4300,45 +4385,44 @@ def main():
     panel_visibility = [tk.BooleanVar(value=True) for _ in record_panels]
 
     def equalize_record_panels(event=None):
-        # Grid weights keep both rows and columns equal on window resize.
-        for index in range(2):
+        """Give every currently displayed record panel the same grid share."""
+        visible_count = sum(visible.get() for visible in panel_visibility)
+        columns = 2 if visible_count == 4 else (1 if visible_count else 0)
+        rows = 2 if visible_count == 4 else visible_count
+        # Reset the possible grid tracks first, so a hidden panel cannot leave
+        # an unused weighted row or column behind.
+        for index in range(4):
+            data_panes.rowconfigure(index, weight=0, uniform="")
+            data_panes.columnconfigure(index, weight=0, uniform="")
+        for index in range(rows):
             data_panes.rowconfigure(index, weight=1, uniform="record_rows")
+        for index in range(columns):
             data_panes.columnconfigure(index, weight=1, uniform="record_columns")
 
     def update_record_panel_visibility():
-        # Preserve modality positions when an individual panel is hidden.
-        for index, (panel, visible) in enumerate(zip(record_panels, panel_visibility)):
-            if visible.get():
-                panel.grid(row=index // 2, column=index % 2, sticky="nsew", padx=3, pady=3)
-            else:
-                panel.grid_remove()
-        for index, (label, visible) in enumerate(zip(panel_labels, panel_visibility)):
-            display_menu.entryconfigure(index, label=f"{label}: {'ON' if visible.get() else 'OFF'}",
-                                        foreground="#15803d" if visible.get() else "#b91c1c")
+        # Reflow visible panels: four retain the 2-by-2 layout; fewer panels
+        # stack vertically and divide the full display height evenly.
+        visible_panels = [panel for panel, visible in zip(record_panels, panel_visibility)
+                          if visible.get()]
+        columns = 2 if len(visible_panels) == 4 else (1 if visible_panels else 0)
+        for panel in record_panels:
+            panel.grid_remove()
+        if columns:
+            for index, panel in enumerate(visible_panels):
+                panel.grid(row=index // columns, column=index % columns,
+                           sticky="nsew", padx=3, pady=3)
         window.after_idle(equalize_record_panels)
 
-    ui_style.configure(
-        "RecordToggle.Toolbutton", foreground="white", padding=(10, 6),
-        font=("Segoe UI", 10, "bold"),
-    )
-    ui_style.map(
-        "RecordToggle.Toolbutton",
-        background=[
-            ("selected", "active", "#166534"),
-            ("selected", "#15803d"),
-            ("active", "#991b1b"),
-            ("!selected", "#b91c1c"),
-        ],
-        foreground=[("selected", "white"), ("!selected", "white")],
-    )
     panel_labels = ("X-ray", "CT Scan", "EKG/ECG", "Blood Test")
-    display_button = ttk.Menubutton(zoom_controls, text="Display")
-    display_menu = tk.Menu(display_button, tearoff=False)
-    display_button.configure(menu=display_menu)
-    display_button.pack(side=tk.LEFT, padx=6)
     for label, visible in zip(panel_labels, panel_visibility):
-        display_menu.add_checkbutton(label=label, variable=visible,
-                                     command=update_record_panel_visibility)
+        button = ttk.Checkbutton(display_controls, variable=visible,
+                                 command=update_record_panel_visibility,
+                                 style="DisplayToggle.TCheckbutton")
+        button.pack(side=tk.LEFT, padx=(4, 2), pady=3)
+        def refresh(*_args, target=button, name=label, variable=visible):
+            target.config(text=f"{name}: {'ON' if variable.get() else 'OFF'}")
+        visible.trace_add("write", refresh)
+        refresh()
     update_record_panel_visibility()
     data_panes.bind("<Configure>", equalize_record_panels)
 
@@ -4553,9 +4637,10 @@ def open_modality_viewer(key):
         state["scale"] = 1.0
         draw()
 
+    reset_label = "Reset" if key == "blood_tests" else "Actual Size"
     for label, command in (("Previous", lambda: show(-1)), ("Next", lambda: show(1)),
                            ("+", lambda: scale_by(1.25)), ("-", lambda: scale_by(0.8)),
-                           ("Fit", fit), ("Reset", reset)):
+                           ("Fit", fit), (reset_label, reset)):
         ttk.Button(toolbar, text=label, command=command).pack(side=tk.LEFT, padx=3, pady=4)
     viewer.protocol("WM_DELETE_WINDOW", lambda: close_modality_viewer(key))
     show()

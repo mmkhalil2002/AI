@@ -4,6 +4,16 @@ The current behavior is documented in README.md and AGENTS.md. The records and c
 
 ## Checks performed during the current changes
 
+- The Patient Search and Date/Time frame label was removed. The former Zoom and Display dropdowns were replaced with five Zoom and four Display toggle buttons beneath the search row. A live visual layout check remains outstanding.
+- The controls are grouped as Selection, Modality Zoom, and Display. Toggle labels now state ON/OFF, with softer contrasting colors for the selected and unselected states. A live color/interaction check remains outstanding.
+- The visible group labels were removed. Selection Zoom and the Merge/Split toggle are adjacent; Merge now defaults ON. Their OFF color is soft orange and their ON color is sky blue. A live visual check remains outstanding.
+- Selection Zoom now reads Zoom In while inactive and Zoom Out while active. It and Merge/Split use dark orange while inactive and dark blue while active. A live visual check remains outstanding.
+- Zoom In and default Merge are orange. X-ray, CT Scan, EKG/ECG, and Blood Test controls now read Zoom [modality] In/Out, with yellow inactive and purple active states. A live visual check remains outstanding.
+- All zoom controls now initially read Zoom Out, and the unlabelled control clusters have increased spacing. A live visual check remains outstanding.
+- The first control is now named Zoom Select, and the spacing between control clusters was increased again. A live visual check remains outstanding.
+- Zoom Select now explicitly reads Zoom Select Out while inactive and Zoom Select In while active. A live visual check remains outstanding.
+- Display toggles now use green for ON and brown for OFF. A live visual check remains outstanding.
+- The record-panel reflow now allocates equal grid space to all panels that remain visible after a Display toggle: 2-by-2 for four panels; otherwise, one vertical column with one-third height each for three panels, one-half height each for two panels, and the full display for one panel. `git diff --check` was run. A live visual resize/toggle check remains outstanding.
 - Python AST syntax checks passed after the independent-request, diagnosis-panel, shared zoom, and formatted blood-test viewer changes.
 - `git diff --check` passed for the code changes.
 - A temporary isolated mock check exercised two images and blood data: it confirmed one image per call, no blood data in image prompts, a separate blood call, filename-stem headings, aggregate completion counts, and cancellation before calls begin. This check preceded the later change to group blood requests by source JSON file; that grouping has syntax validation but has not been rerun through the mock.

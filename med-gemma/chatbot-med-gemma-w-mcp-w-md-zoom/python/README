@@ -2,7 +2,7 @@
 
 This is the generated application README for the full Tkinter GUI in `client_medgemma_patients_mcp.py`. It matches the project documentation in `../md/README.md`.
 
-The application provides a two-column **AI Clinical Assistant Center**: patient/date-time selection above assistant controls and response on the left, with framed selectable X-ray tiles, readable EKG images, and selectable blood-test result tables on the right. It retrieves records through the separate local MCP client and submits only selected original records to MedGemma through the configured Ollama endpoint.
+The application provides a two-column **AI Clinical Assistant Center**: patient/date-time selection above assistant controls and response on the left, with framed selectable X-ray, CT scan, and EKG images plus blood-test result tables on the right. It retrieves records through the separate local MCP client and submits only selected original records to MedGemma through the configured Ollama endpoint.
 
 ## Run
 
@@ -13,8 +13,8 @@ py -m pip install -r python\requirements.txt
 py python\client_medgemma_patients_mcp.py
 ```
 
-Keep `.env` and `patient_records` beside this directory. Configure `OLLAMA_URL`, `MEDGEMMA_MODEL`, `PATIENT_RECORDS_DIR`, and optional display dimensions there. The local MCP server IDs default to `XRAY_SERVER_ID=xrays`, `EKG_SERVER_ID=ekgs`, and `BLOODTEST_SERVER_ID=blood_tests`. Patient folders support `xrays`, `ekgs`, and `blood_tests`, including dated snapshots and legacy `data/<modality>` folders.
+Keep `.env` and `patient_records` beside this directory. Configure `OLLAMA_URL`, `MEDGEMMA_MODEL`, `PATIENT_RECORDS_DIR`, and optional display dimensions there. The local MCP server IDs default to `XRAY_SERVER_ID=xrays`, `CT_SCAN_SERVER_ID=ct_scan`, `EKG_SERVER_ID=ekgs`, and `BLOODTEST_SERVER_ID=blood_tests`. Patient folders support `xrays`, `ct_scan`, `ekgs`, and `blood_tests`, including dated snapshots and legacy `data/<modality>` folders.
 
-Search in the app with the patient's first name, last name, and eight-digit DOB (`MMDDYYYY`). Search validates the full date and maps the four-digit year to the existing two-digit patient-folder suffix. A successful search loads the newest snapshot; a missing patient displays an error. The far-right active-patient block shows `Active patient` in teal, with the selected name and DOB below in coral. Use the in-app **Date & time** picker to load another snapshot for that patient. The **Ask AI** button submits the selected evidence and question. Only explicit selections are sent; X-rays are sent before EKGs. Generated reports require clinician review.
+Search in the app with the patient's first name, last name, and eight-digit DOB (`MMDDYYYY`). Search validates the full date and maps the four-digit year to the existing two-digit patient-folder suffix. A successful search loads the newest snapshot; a missing patient displays an error. The far-right active-patient block shows `Active patient` in teal, with the selected name and DOB below in coral. Use the in-app **Date & time** picker to load another snapshot for that patient. The **Ask AI** button submits the selected evidence and question. Only explicit selections are sent; X-rays, CT scans, and EKGs retain that order. Generated reports require clinician review.
 
 Use **Zoom** to inspect selected X-ray or EKG images. **Merge** mode shares one viewer, with Previous, Next, +, −, Fit, and Reset. **Split** mode opens one viewer per selected image, with +, −, Fit, and Reset. Fit displays the whole image within its viewer; Reset restores its original 100% pixel size.

@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / "md" / "AGENTS.md"
 GENERATED = tuple(ROOT / "python" / name for name in (
     "client_medgemma_patients_mcp.py", "mcp_client.py", "mcp_record_server.py",
-    "mcp_xray_server.py", "mcp_ekg_server.py", "mcp_blood_server.py",
+    "mcp_xray_server.py", "mcp_ct_scan_server.py", "mcp_ekg_server.py", "mcp_blood_server.py",
 ))
 REQUIRED_RULES = ("Authoritative implementation", "Keep `mcp_client.py` separate", "Top bar: First name", "Servers must preserve path confinement")
 SOURCE_START = "<!-- GENERATED-PYTHON-SOURCES: START -->"

@@ -4,19 +4,19 @@
 
 `python/client_medgemma_patients_mcp.py` is the working GUI and must be repaired in place. It is a full Tkinter application, not a prototype. Do not replace it with a short script, a generic dashboard, a filename list, or Text-widget image rendering.
 
-The approved interface is a full-width unlabeled patient-search bar above a responsive two-column workspace: approximately 35% left for the assistant controls and response, 65% right for patient records. The right side simultaneously shows framed horizontal X-ray tiles, a wide EKG gallery, and selectable blood-test records. The `python/README` describes the same behavior.
+The approved interface is a full-width unlabeled patient-search bar above a responsive two-column workspace: approximately 35% left for the assistant controls and response, 65% right for patient records. The right side shows framed X-ray, CT scan, and EKG galleries plus selectable blood-test records. CT uses the exact `ct_scan` folder name and the same supported raster formats as X-rays; a missing CT folder is allowed. The `python/README` describes the same behavior.
 
 ## Required functions and boundaries
 
 Preserve the existing functions and call paths, including `patient_records_root`, `discover_patients`, `patient_snapshots`, `choose_snapshot`, `select_patient`, `select_snapshot`, `record_client`, `read_record_bytes`, `read_blood_record`, `patient_files`, `load_images`, `select_image`, `update_gallery_scrollbars`, `open_image_viewer`, `load_blood_tests`, `generate`, `run_request`, `send_question`, `finish_request`, and `close_window`.
 
-Keep `mcp_client.py` separate and imported through `from mcp_client import MCPRecords`. Keep the three read-only modality-server entry points separate. The GUI owns Tk presentation, navigation, selection, prompt construction, Ollama calls, report review, voice, and shutdown. MCP owns stdio lifecycle and record retrieval only.
+Keep `mcp_client.py` separate and imported through `from mcp_client import MCPRecords`. Keep the four read-only modality-server entry points separate. The GUI owns Tk presentation, navigation, selection, prompt construction, Ollama calls, report review, voice, and shutdown. MCP owns stdio lifecycle and record retrieval only.
 
 ## Layout and behavior
 
 - Top bar: First name, last name, and DOB (`MMDDYYYY`) fields plus `Search`; a successful search loads the newest patient snapshot, while an invalid or missing patient shows an error dialog. Existing patient folders use two-digit years, so search maps the entered four-digit year to the matching `YY` folder suffix. `Date & time` follows the search controls. At the far-right edge, a two-line block displays `Active patient` in teal above the selected name and DOB in coral.
 - Left: red/orange `AI Clinical Assistant Center` title; `Your Question`; multiline prompt; `Ask AI`, `Voice: OFF`, and `Close`; concise status; large scrollable `AI Response` output.
-- Right: visible `XRAY`, `EKG/ECG`, and `BLOOD TEST` panels with actual snapshot date/time headings. Use pale borders/light surfaces, teal headings and date, purple time.
+- Right: visible `XRAY`, `CT SCAN`, `EKG/ECG`, and `BLOOD TEST` panels with actual snapshot date/time headings. Use pale borders/light surfaces, teal headings and date, purple time.
 - Retain horizontal and vertical gallery scrollbars, framed selectable X-ray tiles, wide readable EKGs, and Tk image references/caches. Zoom starts in its `Zoom out` state. `Merge` shares one selected-image viewer with Previous, Next, +, −, Fit, and Reset; `Split` opens a separate viewer for each selected X-ray/EKG image with +, −, Fit, and Reset only. Fit shows the whole image; Reset restores original 100% pixel size.
 - Exclude `sources.csv` and unsupported files before tile construction. Never show loose metadata text in place of gallery tiles.
 - Blood tests require red titles and explicit selection markers, then aligned Test, Value, Unit, Reference range, and Flag results. Preserve existing normalization and flag rules.
@@ -26,7 +26,7 @@ Keep `mcp_client.py` separate and imported through `from mcp_client import MCPRe
 
 Resolve `.env` and relative `PATIENT_RECORDS_DIR` beside the GUI. Honor OS environment precedence. Support direct modality folders, legacy `data/<modality>`, and dated snapshots. Pass the absolute root to child processes.
 
-Only explicitly selected records may be sent. Preserve selected X-rays before EKGs and submit original image bytes, never thumbnails. Blood inference must use clinical result content, not display-only metadata. Keep immutable request snapshots, request IDs, stale-result rejection, UI-thread Tk updates, bounded queues/caches, cancellation semantics, and MCP cleanup.
+Only explicitly selected records may be sent. Preserve selected X-rays, CT scans, then EKGs and submit original image bytes, never thumbnails. Blood inference must use clinical result content, not display-only metadata. Keep immutable request snapshots, request IDs, stale-result rejection, UI-thread Tk updates, bounded queues/caches, cancellation semantics, and MCP cleanup.
 
 Servers must preserve path confinement, hidden/link checks, modality checks, allowed extensions, and the 64 MiB limit. Their contracts are `list_records(relative_folder)` and `read_record(relative_path)` returning JSON fields `paths`, `base64`, or `record`.
 
@@ -176,11 +176,11 @@ def load_settings():
             key, value = key.strip(), value.strip()
             if key in (
                 "OLLAMA_URL", "MEDGEMMA_MODEL", "IMAGE_DIR", "BLOOD_TEST_DIR",
-                "XRAY_WIDTH", "XRAY_HEIGHT", "EKG_WIDTH", "EKG_HEIGHT",
+                "XRAY_WIDTH", "XRAY_HEIGHT", "CT_SCAN_WIDTH", "CT_SCAN_HEIGHT", "EKG_WIDTH", "EKG_HEIGHT",
                 "WINDOW_WIDTH", "WINDOW_HEIGHT", "NUM_PREDICT", "THINK",
                 "GENERATION_TIMEOUT", "TEMPERATURE", "REPEAT_PENALTY",
                 "REPEAT_LAST_N", "DISK", "PATIENT_RECORDS_DIR",
-                "XRAY_SERVER_ID", "EKG_SERVER_ID", "BLOODTEST_SERVER_ID",
+                "XRAY_SERVER_ID", "CT_SCAN_SERVER_ID", "EKG_SERVER_ID", "BLOODTEST_SERVER_ID",
             ):
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                     value = value[1:-1]
@@ -223,6 +223,9 @@ def record_client():
                 server_ids={
                     "xrays": os.environ.get(
                         "XRAY_SERVER_ID", settings_from_file.get("XRAY_SERVER_ID", "xrays")
+                    ),
+                    "ct_scan": os.environ.get(
+                        "CT_SCAN_SERVER_ID", settings_from_file.get("CT_SCAN_SERVER_ID", "ct_scan")
                     ),
                     "ekgs": os.environ.get(
                         "EKG_SERVER_ID", settings_from_file.get("EKG_SERVER_ID", "ekgs")
@@ -694,14 +697,18 @@ active_date_start = None
 active_date_end = None
 selected_snapshot_dir = None
 image_viewer = None
+# Each modality zoom owns a separate viewer so clinician can compare modalities.
+modality_zoom_viewers = {}
 # The merged viewer is stored above.  Split mode keeps one independent state per
 # selected image so its zoom controls never affect another record.
 split_image_viewers = {}
 zoom_view_mode = "merge"
 item_reports = {}
-# Visibility state for the X-ray, EKG, and blood-test workspace panels.
-modality_window_enabled = [True, True, True]
-modality_windows = [{}, {}, {}]
+# Visibility state for the X-ray, CT, EKG, and blood-test workspace panels.
+modality_window_enabled = [True, True, True, True]
+modality_windows = [{}, {}, {}, {}]
+modality_zoom_active = [False, False, False, False]
+MODALITY_LABELS = ("X-ray", "CT Scan", "EKG", "Blood Test")
 ui_callbacks = queue.Queue()
 # Thumbnail work is streamed through bounded queues. The decoder keeps only one
 # source image open; Tk PhotoImage instances are created and cached on the UI thread.
@@ -717,7 +724,7 @@ thumbnail_cache = OrderedDict()
 thumbnail_pending = set()
 thumbnail_worker_thread = None
 thumbnail_generation = 0
-thumbnail_items = [[], []]
+thumbnail_items = [[], [], []]
 thumbnail_started_at = 0.0
 thumbnail_first_paint = None
 thumbnail_decoded_count = 0
@@ -754,6 +761,7 @@ class RequestSnapshot:
     image_paths: tuple
     blood_paths: tuple = ()
     xray_count: int = 0
+    ct_count: int = 0
     ekg_count: int = 0
     separate_items: tuple = ()
 
@@ -844,7 +852,7 @@ def drain_ui():
     except queue.Empty:
         pass
     drain_thumbnail_results(limit=3)
-    for column in range(2):
+    for column in range(len(galleries)):
         request_visible_thumbnails(column)
     # Schedule later execution in the Tk event loop; this is not a blocking sleep.
     window.after(35, drain_ui)
@@ -959,7 +967,7 @@ def patient_snapshots(patient):
                     continue
                 # Validate record containment and links before using a patient path.
                 safe_path(time_dir, patient)
-                if any((time_dir / modality).is_dir() for modality in ("xrays", "ekgs", "blood_tests")):
+                if any((time_dir / modality).is_dir() for modality in ("xrays", "ct_scan", "ekgs", "blood_tests")):
                     snapshots.append((date_dir.name, time_dir.name, time_dir.resolve()))
     except (OSError, ValueError, RuntimeError):
         return []
@@ -1216,10 +1224,12 @@ def report_input_references(snapshot):
     # Image paths are snapshotted in upload order; classify them by the original
     # selection boundary recorded when the request was submitted.
     xray_count = snapshot.xray_count
+    ct_count = snapshot.ct_count
     ekg_count = snapshot.ekg_count
     grouped = (
         ("X-ray", snapshot.image_paths[:xray_count]),
-        ("EKG", snapshot.image_paths[xray_count:xray_count + ekg_count]),
+        ("CT scan", snapshot.image_paths[xray_count:xray_count + ct_count]),
+        ("EKG", snapshot.image_paths[xray_count + ct_count:xray_count + ct_count + ekg_count]),
         ("Blood test", snapshot.blood_paths),
     )
     lines = []
@@ -1248,7 +1258,7 @@ def report_input_references(snapshot):
 def report_input_reference_data(snapshot):
     """Return actual request files as patient-relative references for export."""
     if snapshot is None:
-        return {"xray": [], "ekg": [], "blood_test": []}
+        return {"xray": [], "ct_scan": [], "ekg": [], "blood_test": []}
     patient = Path(snapshot.patient).resolve()
 
     # -------------------------------------------------------------------------
@@ -1274,10 +1284,12 @@ def report_input_reference_data(snapshot):
 
     images = tuple(snapshot.image_paths)
     xray_count = snapshot.xray_count
+    ct_count = snapshot.ct_count
     ekg_count = snapshot.ekg_count
     return {
         "xray": relative_refs(images[:xray_count]),
-        "ekg": relative_refs(images[xray_count:xray_count + ekg_count]),
+        "ct_scan": relative_refs(images[xray_count:xray_count + ct_count]),
+        "ekg": relative_refs(images[xray_count + ct_count:xray_count + ct_count + ekg_count]),
         "blood_test": relative_refs(snapshot.blood_paths),
     }
 
@@ -2074,10 +2086,11 @@ def update_selection_workspace():
     """Refresh visible patient/modality counts and the removable selection tray."""
     if active_patient is None:
         active_label.config(text="No patient selected")
-        totals = (0, 0, 0)
+        totals = (0, 0, 0, 0)
     else:
         totals = (
             len(patient_files("xrays", IMAGE_EXTENSIONS)[0]),
+            len(patient_files("ct_scan", IMAGE_EXTENSIONS)[0]),
             len(patient_files("ekgs", IMAGE_EXTENSIONS)[0]),
             len(blood_test_records),
         )
@@ -2087,26 +2100,28 @@ def update_selection_workspace():
         )
     counts = (
         f"X-ray {len(selected_images[0])}/{totals[0]} selected",
-        f"EKG {len(selected_images[1])}/{totals[1]} selected",
-        f"Blood {len(selected_blood_test_indices)}/{totals[2]} selected",
+        f"CT {len(selected_images[1])}/{totals[1]} selected",
+        f"EKG {len(selected_images[2])}/{totals[2]} selected",
+        f"Blood {len(selected_blood_test_indices)}/{totals[3]} selected",
     )
     counts_label.config(text="   |   ".join(counts))
     selected_xrays = tuple(selected_images[0])
-    selected_ekgs = tuple(selected_images[1])
+    selected_cts = tuple(selected_images[1])
+    selected_ekgs = tuple(selected_images[2])
     selected_blood_paths = tuple(
         blood_test_paths[index] for index in sorted(selected_blood_test_indices)
         if index < len(blood_test_paths)
     )
     context_label.config(text=build_input_context_summary(
-        active_patient, selected_xrays, selected_ekgs, selected_blood_paths
+        active_patient, selected_xrays, selected_cts, selected_ekgs, selected_blood_paths
     ))
-    for label, text in zip(gallery_count_labels, counts[:2]):
+    for label, text in zip(gallery_count_labels, counts[:3]):
         label.config(text=text)
-    blood_count_label.config(text=counts[2])
+    blood_count_label.config(text=counts[3])
     tray_list.delete(0, tk.END)
     tray_items.clear()
-    if selected_images[0] or selected_images[1] or selected_blood_test_indices:
-        for column, modality in ((0, "X-ray"), (1, "EKG")):
+    if any(selected_images) or selected_blood_test_indices:
+        for column, modality in ((0, "X-ray"), (1, "CT scan"), (2, "EKG")):
             for path in selected_images[column]:
                 tray_items.append(("image", column, path))
                 tray_list.insert(tk.END, f"{modality}: {path.name}")
@@ -2166,10 +2181,10 @@ def set_modality_selection(modality, selected):
     """Select or clear only one modality for the active patient."""
     if active_patient is None:
         return
-    if modality in (0, 1):
+    if modality in (0, 1, 2):
         selection = selected_images[modality]
         if selected:
-            paths, _ = patient_files(("xrays", "ekgs")[modality], IMAGE_EXTENSIONS)
+            paths, _ = patient_files(("xrays", "ct_scan", "ekgs")[modality], IMAGE_EXTENSIONS)
             for path in paths:
                 for gallery in galleries:
                     for tile in gallery["grid"].winfo_children():
@@ -2452,8 +2467,8 @@ SOFT_BLUE = "#d9efff"
 SOFT_TEAL = "#d8f5ef"
 SOFT_CORAL = "#ffe2dd"
 TILE_BACKGROUND = "#f5f9fc"
-DATASET_COLORS = ((PRIMARY_BLUE, SOFT_BLUE), (TEAL, SOFT_TEAL))
-GALLERY_NAMES = ("XRAY", "EKG/ECG")
+DATASET_COLORS = ((PRIMARY_BLUE, SOFT_BLUE), ("#6a1b9a", "#eee0ff"), (TEAL, SOFT_TEAL))
+GALLERY_NAMES = ("XRAY", "CT SCAN", "EKG/ECG")
 REPORT_PRESETS = {
     "Draft report": (
         "Draft a concise report from only the records explicitly selected below. "
@@ -2483,7 +2498,7 @@ SERVER_CHECK_TIMEOUT = 15
 #   build_report_request('Summarize findings', preset, xray_paths=(chest_path,)) builds
 #   the grounded prompt/input summary using the supplied preset and selected image.
 # -------------------------------------------------------------------------
-def build_report_request(user_text, preset, xray_paths=(), ekg_paths=(), blood_tests=()):
+def build_report_request(user_text, preset, xray_paths=(), ct_paths=(), ekg_paths=(), blood_tests=()):
     """Build one grounded request plus a human-readable summary of exact inputs.
 
     The caller passes only the user's current explicit selections. Image ordering
@@ -2491,16 +2506,17 @@ def build_report_request(user_text, preset, xray_paths=(), ekg_paths=(), blood_t
     ECG/EKG images in click order. Blood entries are (source path, parsed JSON).
     """
     xray_paths = tuple(Path(path) for path in xray_paths)
+    ct_paths = tuple(Path(path) for path in ct_paths)
     ekg_paths = tuple(Path(path) for path in ekg_paths)
     blood_tests = tuple((Path(path), record) for path, record in blood_tests)
-    image_paths = xray_paths + ekg_paths
+    image_paths = xray_paths + ct_paths + ekg_paths
     image_manifest = []
-    for modality, paths in (("X-RAY", xray_paths), ("ECG/EKG", ekg_paths)):
+    for modality, paths in (("X-RAY", xray_paths), ("CT SCAN", ct_paths), ("ECG/EKG", ekg_paths)):
         for path in paths:
             image_manifest.append(f"{len(image_manifest) + 1}. {modality} image: {path.name}")
 
     modality_summary = []
-    for modality, paths in (("X-RAY", xray_paths), ("ECG/EKG", ekg_paths)):
+    for modality, paths in (("X-RAY", xray_paths), ("CT SCAN", ct_paths), ("ECG/EKG", ekg_paths)):
         names = ", ".join(path.name for path in paths)
         modality_summary.append(
             f"{modality}: {len(paths)} selected" + (f" ({names})" if names else "")
@@ -2532,14 +2548,19 @@ def build_report_request(user_text, preset, xray_paths=(), ekg_paths=(), blood_t
                 ensure_ascii=False,
             ),
         ))
-    else:
-        sections.append("BLOOD TEST input: No data provided; no blood-test record is attached.")
+    report_sections = []
+    if xray_paths:
+        report_sections.append("X-RAY\n[Evidence-based findings]")
+    if ct_paths:
+        report_sections.append("CT SCAN\n[Evidence-based findings]")
+    if ekg_paths:
+        report_sections.append("ECG/EKG\n[Evidence-based findings]")
+    if blood_tests:
+        report_sections.append("BLOOD TEST\n[Evidence-based findings]")
     sections.extend((
-        "Required final report format; keep the three sections separate:",
-        "X-RAY\n[Evidence-based findings, or No data provided]",
-        "ECG/EKG\n[Evidence-based findings, or No data provided]",
-        "BLOOD TEST\n[Evidence-based findings, or No data provided]",
-        "Do not present a missing modality as a finding. Distinguish supplied evidence "
+        "Required final report format; include ONLY these supplied sections:",
+        "\n\n".join(report_sections) if report_sections else "Answer the doctor's question from text only.",
+        "Distinguish supplied evidence "
         "from uncertainty. If a requested conclusion is unsupported or cannot be "
         "verified from these inputs, mark it 'Needs clinician review: not verifiable "
         "from supplied inputs.' Do not invent citations or numerical confidence.",
@@ -2557,12 +2578,13 @@ def build_report_request(user_text, preset, xray_paths=(), ekg_paths=(), blood_t
 #   build_input_context_summary(patient, xray_paths=(chest_path,), ekg_paths=(),
 #   blood_paths=()) summarizes this one-image selection for the GUI.
 # -------------------------------------------------------------------------
-def build_input_context_summary(patient, xray_paths=(), ekg_paths=(), blood_paths=()):
+def build_input_context_summary(patient, xray_paths=(), ct_paths=(), ekg_paths=(), blood_paths=()):
     """Summarize the active patient and exact explicit selections for the UI."""
     if patient is None:
         return "Inputs to send: no active patient."
     groups = (
         ("X-RAY", tuple(Path(path) for path in xray_paths)),
+        ("CT SCAN", tuple(Path(path) for path in ct_paths)),
         ("ECG/EKG", tuple(Path(path) for path in ekg_paths)),
         ("BLOOD TEST", tuple(Path(path) for path in blood_paths)),
     )
@@ -2692,6 +2714,7 @@ def image_dimension(name):
 
 GALLERY_SIZES = (
     (image_dimension("XRAY_WIDTH"), image_dimension("XRAY_HEIGHT")),
+    (image_dimension("CT_SCAN_WIDTH"), image_dimension("CT_SCAN_HEIGHT")),
     (image_dimension("EKG_WIDTH"), image_dimension("EKG_HEIGHT")),
 )
 
@@ -2819,7 +2842,7 @@ def load_blood_tests():
     blood_record_header_lines.clear()
     blood_line_record_indices.clear()
     selected_blood_test_indices.clear()
-    sync_modality_windows(2)
+    sync_modality_windows(3)
     paths, message = patient_files("blood_tests", {".json"})
     errors = []
     for path in paths:
@@ -2968,7 +2991,7 @@ def toggle_blood_test_index(record_index):
     blood_test_view.tag_configure(line_tag, foreground=TEXT_COLOR)
     blood_test_view.tag_raise("blood_title")
     update_selection_workspace()
-    sync_modality_windows(2)
+    sync_modality_windows(3)
     sync_viewer_selected_records()
     return "break"
 
@@ -3074,15 +3097,14 @@ def decode_gallery_thumbnail(request):
             # let a display setting turn a gallery thumbnail into a huge bitmap.
             scale = min(1.0, THUMBNAIL_MAX_DIMENSION / max(width, height, 1))
             target_size = (max(1, round(width * scale)), max(1, round(height * scale)))
-            if column == 1:
-                picture = source.resize(target_size, Image.Resampling.LANCZOS)
-            else:
-                picture = ImageOps.pad(
-                    source,
-                    target_size,
-                    method=Image.Resampling.LANCZOS,
-                    color="white",
-                )
+            # Pad preserves each source image's aspect ratio. In particular,
+            # CT slices must never be stretched to the gallery rectangle.
+            picture = ImageOps.pad(
+                source,
+                target_size,
+                method=Image.Resampling.LANCZOS,
+                color="white",
+            )
             picture.load()
         return generation, column, item, picture, None
     except Exception as error:
@@ -3278,7 +3300,8 @@ def invalidate_thumbnail_work():
 def current_viewer_records():
     """Return only explicitly selected records in X-ray, EKG, blood-test order."""
     records = [("xrays", path) for path in selected_images[0]]
-    records.extend(("ekgs", path) for path in selected_images[1])
+    records.extend(("ct_scan", path) for path in selected_images[1])
+    records.extend(("ekgs", path) for path in selected_images[2])
     records.extend(
         ("blood_tests", blood_test_paths[index], index)
         for index in sorted(selected_blood_test_indices)
@@ -3358,8 +3381,17 @@ def close_image_viewer():
     global image_viewer
     state = image_viewer
     image_viewer = None
+    modality = state.get("modality_zoom") if state is not None else None
+    if modality is not None:
+        modality_zoom_active[modality] = False
+        if "modality_zoom_buttons" in globals():
+            modality_zoom_buttons[modality].configure(
+                text=f"Zoom {MODALITY_LABELS[modality]} out",
+            )
+            modality_zoom_vars[modality].set(False)
     if "zoom_button" in globals():
-        zoom_button.configure(text="Zoom out", style="ToggleOff.TButton")
+        zoom_button.configure(text="Zoom out")
+        selection_zoom_var.set(False)
     if state is not None:
         try:
             state["window"].destroy()
@@ -3367,6 +3399,20 @@ def close_image_viewer():
             pass
     if "zoom_button" in globals() and split_image_viewers:
         zoom_button.configure(text="Zoom out", style="ToggleOn.TButton")
+
+
+def close_modality_zoom_viewer(modality):
+    """Close only one modality's independent all-records zoom viewer."""
+    state = modality_zoom_viewers.pop(modality, None)
+    modality_zoom_active[modality] = False
+    if "modality_zoom_buttons" in globals():
+        modality_zoom_buttons[modality].configure(text=f"Zoom {MODALITY_LABELS[modality]} out")
+        modality_zoom_vars[modality].set(False)
+    if state is not None:
+        try:
+            state["window"].destroy()
+        except tk.TclError:
+            pass
 
 
 def close_split_image_viewer(path):
@@ -3386,6 +3432,8 @@ def close_all_image_viewers():
     close_image_viewer()
     for path in tuple(split_image_viewers):
         close_split_image_viewer(path)
+    for modality in tuple(modality_zoom_viewers):
+        close_modality_zoom_viewer(modality)
 
 
 # -------------------------------------------------------------------------
@@ -3405,15 +3453,15 @@ def open_modality_window(modality, key):
     """Open an original selected image or blood record in its own review window."""
     if active_patient is None or key in modality_windows[modality]:
         return
-    title = ("X-ray", "EKG", "Blood test")[modality]
+    title = ("X-ray", "CT scan", "EKG", "Blood test")[modality]
     viewer = tk.Toplevel(window)
-    record_name = blood_test_paths[key].stem if modality == 2 else Path(key).stem
+    record_name = blood_test_paths[key].stem if modality == 3 else Path(key).stem
     viewer.title(f"{title} review — {record_name}")
     fit_dialog_to_display(viewer, 0.62, 0.70, 520, 420)
     viewer.minsize(420, 300)
     viewer.transient(window)
     try:
-        if modality == 2:
+        if modality == 3:
             index = int(key)
             record = blood_test_records[index]
             path = blood_test_paths[index]
@@ -3459,10 +3507,10 @@ def sync_modality_windows(modality=None):
     return
     # The former detached-window behavior is intentionally disabled.  The
     # controls now show or hide the three workspace panels directly.
-    modalities = range(3) if modality is None else (modality,)
+    modalities = range(4) if modality is None else (modality,)
     for current in modalities:
         selected = (
-            set(selected_images[current]) if current in (0, 1)
+            set(selected_images[current]) if current in (0, 1, 2)
             else set(selected_blood_test_indices)
         ) if modality_window_enabled[current] else set()
         for key in tuple(modality_windows[current]):
@@ -3476,25 +3524,34 @@ def sync_modality_windows(modality=None):
 def toggle_modality_windows(modality):
     """Show or hide one clinical-record panel using the shared grid layout."""
     modality_window_enabled[modality] = not modality_window_enabled[modality]
-    labels = ("X-ray", "EKG", "Blood Test")
+    labels = MODALITY_LABELS
     button = modality_window_buttons[modality]
     is_on = modality_window_enabled[modality]
-    button.config(
-        text=f"{labels[modality]}: {'ON' if is_on else 'OFF'}",
-        style="ToggleOn.TButton" if is_on else "ToggleOff.TButton",
-    )
-    panels = (galleries[0]["title"], galleries[1]["title"], blood_test_panel)
-    for row in (0, 1, 2):
+    button.config(text=f"{labels[modality]}: {'ON' if is_on else 'OFF'}")
+    panels = (galleries[0]["title"], galleries[1]["title"], galleries[2]["title"], blood_test_panel)
+    # Clear every slot that a prior three-panel layout could have occupied;
+    # otherwise row 2 retains one-third of the height after switching to two.
+    for row in range(4):
         image_panel.rowconfigure(row, weight=0, minsize=0, uniform="")
-    visible_slot = 0
+    for column in range(4):
+        image_panel.columnconfigure(column, weight=0, minsize=0, uniform="")
+    visible = [index for index, enabled in enumerate(modality_window_enabled) if enabled]
+    visible_count = len(visible)
     for panel_index, panel in enumerate(panels):
-        if modality_window_enabled[panel_index]:
-            row = visible_slot
-            panel.grid(row=row, column=0, sticky="nsew", pady=(0, 3) if visible_slot == 0 else (3, 0))
-            image_panel.rowconfigure(row, weight=1, uniform="visible_record_panels")
-            visible_slot += 1
-        else:
+        if panel_index not in visible:
             panel.grid_remove()
+            continue
+        if visible_count == 4:
+            # All four modalities retain their fixed 2-by-2 positions.
+            row, column = divmod(panel_index, 2)
+        else:
+            # With one, two, or three displayed panels, use one full-width
+            # column. Equal row weights give 1/3 height for three panels and
+            # 1/2 height for two panels (or the full height for one panel).
+            row, column = visible.index(panel_index), 0
+        panel.grid(row=row, column=column, sticky="nsew", padx=3, pady=3)
+        image_panel.rowconfigure(row, weight=1, uniform="visible_record_panels")
+        image_panel.columnconfigure(column, weight=1, uniform="visible_record_columns")
 
 
 def zoom_selected_image():
@@ -3511,19 +3568,21 @@ def zoom_selected_image():
     elif selected_paths:
         open_image_viewer(selected_paths[0])
         return
-    show_status("Select an X-ray or EKG image, then choose Zoom.")
+    if "selection_zoom_var" in globals():
+        selection_zoom_var.set(False)
+    show_status("Select an X-ray, CT scan, or EKG image, then choose Zoom.")
 
 
-def toggle_zoom_view_mode():
+def toggle_zoom_view_mode(mode=None):
     """Switch Zoom between one navigable window and independent item windows."""
     global zoom_view_mode
     zoom_was_open = image_viewer is not None or bool(split_image_viewers)
     close_all_image_viewers()
-    zoom_view_mode = "split" if zoom_view_mode == "merge" else "merge"
-    zoom_mode_button.configure(
-        text="Split" if zoom_view_mode == "split" else "Merge",
-        style="ToggleOn.TButton" if zoom_view_mode == "split" else "ToggleOff.TButton",
+    zoom_view_mode = mode if mode in ("merge", "split") else (
+        "split" if zoom_view_mode == "merge" else "merge"
     )
+    if "zoom_mode_var" in globals():
+        zoom_mode_var.set(zoom_view_mode)
     show_status(
         "Zoom mode: Split — each selected image opens in its own window."
         if zoom_view_mode == "split"
@@ -3533,6 +3592,12 @@ def toggle_zoom_view_mode():
     # Split opens one window for every selected image; Merge reunites them.
     if zoom_was_open:
         zoom_selected_image()
+
+
+def set_zoom_view_mode(mode):
+    """Select Merge or Split from the radio controls beneath Search."""
+    if mode != zoom_view_mode:
+        toggle_zoom_view_mode(mode)
 
 
 # -------------------------------------------------------------------------
@@ -3631,6 +3696,8 @@ def show_viewer_record(state, index):
     if state["patient"] != active_patient:
         if state.get("split"):
             close_split_image_viewer(state["path"])
+        elif state.get("modality_zoom") is not None:
+            close_modality_zoom_viewer(state["modality_zoom"])
         else:
             close_image_viewer()
         return
@@ -3693,10 +3760,11 @@ def show_viewer_record(state, index):
 #   navigate_viewer(1) moves to the next viewer image; navigate_viewer(-1) moves to the
 #   previous one without changing selections.
 # -------------------------------------------------------------------------
-def navigate_viewer(delta):
+def navigate_viewer(delta, state=None):
     """Move to the previous or next image without changing its selection."""
-    if image_viewer is not None:
-        show_viewer_record(image_viewer, image_viewer["index"] + delta)
+    state = state or image_viewer
+    if state is not None:
+        show_viewer_record(state, state["index"] + delta)
 
 
 # -------------------------------------------------------------------------
@@ -3754,7 +3822,7 @@ def reset_viewer(state=None):
 #   open_image_viewer(chest_path) opens the detail viewer for a safe active-patient image
 #   without toggling its gallery selection.
 # -------------------------------------------------------------------------
-def open_image_viewer(path, split=False):
+def open_image_viewer(path, split=False, records_override=None, modality_zoom=None):
     """Open a merged viewer or an independent Split-mode viewer for an image."""
     global image_viewer
     if active_patient is None:
@@ -3765,7 +3833,7 @@ def open_image_viewer(path, split=False):
     except (OSError, ValueError, RuntimeError):
         show_status("This image is no longer available for the active patient.")
         return
-    records = current_viewer_records()
+    records = list(records_override) if records_override is not None else current_viewer_records()
     match = next((index for index, record in enumerate(records) if record[1] == path), None)
     if match is None:
         show_status("This image is no longer available for the active patient.")
@@ -3775,14 +3843,19 @@ def open_image_viewer(path, split=False):
             return
         records = [record for record in records if record[1] == path]
         match = 0
-    else:
+    elif modality_zoom is None:
         close_image_viewer()
     viewer = tk.Toplevel(window)
     viewer.title("Image detail viewer" if not split else f"Image zoom — {Path(path).stem}")
     fit_dialog_to_display(viewer, 0.78, 0.80, 640, 480)
     viewer.minsize(420, 320)
     viewer.resizable(True, True)
-    viewer.protocol("WM_DELETE_WINDOW", (lambda p=path: close_split_image_viewer(p)) if split else close_image_viewer)
+    if split:
+        viewer.protocol("WM_DELETE_WINDOW", lambda p=path: close_split_image_viewer(p))
+    elif modality_zoom is not None:
+        viewer.protocol("WM_DELETE_WINDOW", lambda m=modality_zoom: close_modality_zoom_viewer(m))
+    else:
+        viewer.protocol("WM_DELETE_WINDOW", close_image_viewer)
     toolbar = ttk.Frame(viewer)
     toolbar.pack(fill=tk.X, padx=8, pady=6)
     title = ttk.Label(toolbar, text="", style="Field.TLabel")
@@ -3819,6 +3892,7 @@ def open_image_viewer(path, split=False):
         "records": records, "index": match, "patient": active_patient,
         "source": None, "photo": None, "path": path, "zoom": 1.0,
         "fit_scale": 1.0,
+        "modality_zoom": modality_zoom,
     }
     state["split"] = split
     if split:
@@ -3827,6 +3901,15 @@ def open_image_viewer(path, split=False):
         controls = toolbar.winfo_children()
         for control in controls[1:3]:
             control.pack_forget()
+        controls[3].configure(command=lambda s=state: fit_viewer(s))
+        controls[4].configure(command=lambda s=state: zoom_viewer(1 / 1.25, s))
+        controls[5].configure(command=lambda s=state: zoom_viewer(1.25, s))
+        controls[6].configure(command=lambda s=state: reset_viewer(s))
+    elif modality_zoom is not None:
+        modality_zoom_viewers[modality_zoom] = state
+        controls = toolbar.winfo_children()
+        controls[1].configure(command=lambda s=state: navigate_viewer(-1, s))
+        controls[2].configure(command=lambda s=state: navigate_viewer(1, s))
         controls[3].configure(command=lambda s=state: fit_viewer(s))
         controls[4].configure(command=lambda s=state: zoom_viewer(1 / 1.25, s))
         controls[5].configure(command=lambda s=state: zoom_viewer(1.25, s))
@@ -3853,7 +3936,41 @@ def open_image_viewer(path, split=False):
         viewer.bind("<minus>", lambda _event, s=state: zoom_viewer(1 / 1.25, s))
         viewer.bind("<0>", lambda _event, s=state: reset_viewer(s))
         viewer.bind("<Escape>", lambda _event, p=path: close_split_image_viewer(p))
+    elif modality_zoom is not None:
+        viewer.bind("<Left>", lambda _event, s=state: navigate_viewer(-1, s))
+        viewer.bind("<Right>", lambda _event, s=state: navigate_viewer(1, s))
+        viewer.bind("<Prior>", lambda _event, s=state: navigate_viewer(-1, s))
+        viewer.bind("<Next>", lambda _event, s=state: navigate_viewer(1, s))
+        viewer.bind("<plus>", lambda _event, s=state: zoom_viewer(1.25, s))
+        viewer.bind("<equal>", lambda _event, s=state: zoom_viewer(1.25, s))
+        viewer.bind("<minus>", lambda _event, s=state: zoom_viewer(1 / 1.25, s))
+        viewer.bind("<0>", lambda _event, s=state: reset_viewer(s))
+        viewer.bind("<Escape>", lambda _event, m=modality_zoom: close_modality_zoom_viewer(m))
     canvas.focus_set()
+
+
+def toggle_modality_zoom(modality):
+    """Open or close a viewer for all loaded records of one modality."""
+    labels = ("X-ray", "CT Scan", "EKG", "Blood Test")
+    if modality_zoom_active[modality]:
+        close_modality_zoom_viewer(modality)
+        return
+    if active_patient is None:
+        show_status("Select a patient first.")
+        return
+    if modality == 3:
+        records = [("blood_tests", path, index) for index, path in enumerate(blood_test_paths)]
+    else:
+        folder = ("xrays", "ct_scan", "ekgs")[modality]
+        paths, _message = patient_files(folder, IMAGE_EXTENSIONS)
+        records = [(folder, path) for path in paths]
+    if not records:
+        modality_zoom_vars[modality].set(False)
+        show_status(f"No {labels[modality].lower()} records are loaded for this snapshot.")
+        return
+    modality_zoom_active[modality] = True
+    modality_zoom_buttons[modality].configure(text=f"Zoom {labels[modality]} in")
+    open_image_viewer(records[0][1], records_override=records, modality_zoom=modality)
 
 
 # -------------------------------------------------------------------------
@@ -3873,7 +3990,7 @@ def load_images():
     thumbnail_started_at = time.perf_counter()
     thumbnail_first_paint = None
     thumbnail_decoded_count = 0
-    thumbnail_items = [[], []]
+    thumbnail_items = [[], [], []]
     for gallery in galleries:
         for widget in gallery["grid"].winfo_children():
             widget.destroy()
@@ -3895,7 +4012,7 @@ def load_images():
                 grid_column,
                 weight=1 if (column == 0 or grid_column == 0) else 0,
             )
-        modality = ("xrays", "ekgs")[column]
+        modality = ("xrays", "ct_scan", "ekgs")[column]
         paths, message = patient_files(modality, IMAGE_EXTENSIONS)
         set_snapshot_heading(gallery["heading_name"], gallery["heading_date"],
                              gallery["heading_time"], GALLERY_NAMES[column])
@@ -3910,7 +4027,7 @@ def load_images():
             # X-Ray uses three images per row. EKG uses a vertical list with
             # exactly one image per row. Horizontal scrolling handles wide
             # originals when a configured dimension is zero.
-            columns_per_row = 1 if column == 1 else 3
+            columns_per_row = 1 if column == 2 else 2
             tile.grid(
                 row=index // columns_per_row,
                 column=index % columns_per_row,
@@ -3964,7 +4081,7 @@ def load_images():
             "<Configure>", lambda _event, c=column: request_visible_thumbnails(c), add="+"
         )
     ensure_thumbnail_worker()
-    for column in range(2):
+    for column in range(len(galleries)):
         request_visible_thumbnails(column)
 
 
@@ -4246,16 +4363,12 @@ def generate(url, model, question, image_paths=(), request_state=None, stream=Tr
         "system": (
             "Return only the final report. Do not reveal reasoning, analysis steps, "
             "internal thoughts, planning, or hidden instructions. Do not repeat "
-            "findings or sentences; mention each finding only once. Organize the "
-            "report into three separate sections with these exact plain-text headings: "
-            "X-RAY, ECG/EKG, and BLOOD TEST. Never combine information from different "
-            "sections. Use only the explicitly selected inputs and their manifest. "
+            "findings or sentences; mention each finding only once. Use ONLY the "
+            "section headings explicitly requested in the prompt, and never add an "
+            "empty or unrelated modality. Use only the selected input and its manifest. "
             "Separate supplied evidence from uncertainty, do not infer a diagnosis, "
-            "and do not claim more than the inputs support. If a section has no "
-            "supplied data, write 'No data provided' under that section. Mark a "
-            "If the prompt explicitly requests a report for one modality only, return "
-            "only that populated modality and omit all other headings and empty sections. "
-            "requested conclusion that is unsupported or unverifiable as 'Needs "
+            "and do not claim more than the inputs support. Mark a requested conclusion "
+            "that is unsupported or unverifiable as 'Needs "
             "clinician review: not verifiable from supplied inputs.' Do not invent "
             "citations or numerical confidence."
         ),
@@ -4714,7 +4827,7 @@ def close_window():
                 pass
         state.terminal = True
     thumbnail_worker_shutdown.set()
-    for modality in range(3):
+    for modality in range(4):
         for key in tuple(modality_windows[modality]):
             close_modality_window(modality, key)
     close_all_image_viewers()
@@ -4896,19 +5009,23 @@ def send_question():
             + json.dumps(selected_blood_tests, indent=2, ensure_ascii=False)
         )
     xray_count = len(selected_images[0])
-    ekg_count = len(selected_images[1])
+    ct_count = len(selected_images[1])
+    ekg_count = len(selected_images[2])
     question += (
         "\n\nImage input identification:\n"
         f"- The first {xray_count} image(s) are X-ray images.\n"
-        f"- The next {ekg_count} image(s) are ECG/EKG images.\n"
+        f"- The next {ct_count} image(s) are CT scan images.\n"
+        f"- The final {ekg_count} image(s) are ECG/EKG images.\n"
         "\nRequired final report format:\n"
         "X-RAY\n"
         "[X-ray findings, or No data provided]\n\n"
+        "CT SCAN\n"
+        "[CT scan findings, or No data provided]\n\n"
         "ECG/EKG\n"
         "[ECG/EKG findings, or No data provided]\n\n"
         "BLOOD TEST\n"
         "[Blood-test findings, or No data provided]\n"
-        "Keep these as three separate sections and do not combine them."
+        "Keep these as four separate sections and do not combine them."
     )
     # Capture blue-column images followed by orange-column images. Click order
     # within each dataset is retained. Later clicks cannot change this request.
@@ -4930,6 +5047,12 @@ def send_question():
         separate_items.append((f"XRAY: {Path(path).stem}", item_question, item_images, viewer_report_key(path)))
     for path in selected_images[1]:
         item_question, _, item_images = build_report_request(
+            user_question, preset, ct_paths=(path,)
+        )
+        item_question += "\n\nReturn ONLY the CT SCAN section for this one record. Do not display X-RAY, ECG/EKG, or BLOOD TEST headings, placeholders, or empty sections."
+        separate_items.append((f"CT SCAN: {Path(path).stem}", item_question, item_images, viewer_report_key(path)))
+    for path in selected_images[2]:
+        item_question, _, item_images = build_report_request(
             user_question, preset, ekg_paths=(path,)
         )
         item_question += "\n\nReturn ONLY the ECG/EKG section for this one record. Do not display X-RAY or BLOOD TEST headings, placeholders, or empty sections."
@@ -4944,7 +5067,8 @@ def send_question():
         item_question += "\n\nReturn ONLY the BLOOD TEST section for this one record. Do not display X-RAY or ECG/EKG headings, placeholders, or empty sections."
         separate_items.append((f"BLOOD TEST: {Path(path).stem}", item_question, item_images, viewer_report_key(path, index)))
     xray_count = len(selected_images[0])
-    ekg_count = len(selected_images[1])
+    ct_count = len(selected_images[1])
+    ekg_count = len(selected_images[2])
     model = model_name.get().strip()
     try:
         url = base_url(server_url.get())
@@ -4963,6 +5087,7 @@ def send_question():
         image_paths=tuple(Path(path) for path in image_paths),
         blood_paths=tuple(Path(path) for path in selected_blood_paths),
         xray_count=xray_count,
+        ct_count=ct_count,
         ekg_count=ekg_count,
         separate_items=tuple(separate_items),
     )
@@ -5127,7 +5252,7 @@ def refresh_models():
 # -------------------------------------------------------------------------
 def main():
     """Validate startup data, then construct the preserved Tkinter interface."""
-    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_first_name, patient_last_name, patient_dob, patient_first_entry, patient_last_entry, patient_dob_entry, patient_search_button, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, image_panel, data_panes, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label, modality_window_buttons, zoom_button, zoom_mode_button
+    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_first_name, patient_last_name, patient_dob, patient_first_entry, patient_last_entry, patient_dob_entry, patient_search_button, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, image_panel, data_panes, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label, modality_window_buttons, modality_display_vars, modality_zoom_buttons, modality_zoom_vars, selection_zoom_var, zoom_button, zoom_mode_button, zoom_mode_var
     # Fatal data-root validation precedes construction of any Tk widget.
     try:
         PATIENT_RECORDS_DIR = patient_records_root()
@@ -5381,23 +5506,49 @@ def main():
     patient_dob_entry.bind("<Return>", search_patient)
     ttk.Button(patient_bar, text="Date & time", width=12, command=choose_snapshot,
                style="Secondary.TButton").grid(row=0, column=7, padx=(0, 8), pady=5, sticky="w")
-    zoom_button = ttk.Button(patient_bar, text="Zoom out", width=10, command=zoom_selected_image,
-                             style="ToggleOff.TButton")
-    zoom_button.grid(row=0, column=8, padx=(0, 8), pady=5, sticky="w")
-    zoom_mode_button = ttk.Button(
-        patient_bar, text="Merge", width=8, command=toggle_zoom_view_mode, style="ToggleOff.TButton"
+    toggle_bar = ttk.Frame(patient_bar, style="App.TFrame")
+    toggle_bar.grid(row=1, column=0, columnspan=14, padx=10, pady=(0, 5), sticky="w")
+    selection_toggle_group = ttk.Frame(toggle_bar, style="App.TFrame")
+    selection_toggle_group.pack(side=tk.LEFT, padx=(0, 32))
+    modality_zoom_group = ttk.Frame(toggle_bar, style="App.TFrame")
+    modality_zoom_group.pack(side=tk.LEFT, padx=(0, 32))
+    modality_display_group = ttk.Frame(toggle_bar, style="App.TFrame")
+    modality_display_group.pack(side=tk.LEFT)
+    selection_zoom_var = tk.BooleanVar(value=False)
+    zoom_button = ttk.Checkbutton(selection_toggle_group, text="Zoom out", width=10,
+                                  variable=selection_zoom_var, command=zoom_selected_image)
+    zoom_button.pack(side=tk.LEFT, padx=(0, 3))
+    zoom_mode_var = tk.StringVar(value="merge")
+    zoom_mode_button = ttk.Radiobutton(
+        selection_toggle_group, text="Merge", width=8, variable=zoom_mode_var, value="merge",
+        command=lambda: set_zoom_view_mode("merge")
     )
-    zoom_mode_button.grid(row=0, column=9, padx=(0, 8), pady=5, sticky="w")
-    modality_window_buttons = []
-    for modality, (label, width) in enumerate((("X-ray", 10), ("EKG", 9), ("Blood Test", 15))):
-        button = ttk.Button(
-            patient_bar, text=f"{label}: ON", width=width,
-            command=lambda m=modality: toggle_modality_windows(m), style="ToggleOn.TButton",
+    zoom_mode_button.pack(side=tk.LEFT)
+    modality_zoom_buttons = []
+    modality_zoom_vars = []
+    for modality, label in enumerate(("X-ray", "CT Scan", "EKG", "Blood Test")):
+        toggle_var = tk.BooleanVar(value=False)
+        button = ttk.Checkbutton(
+            modality_zoom_group, text=f"Zoom {label} out",
+            variable=toggle_var, command=lambda m=modality: toggle_modality_zoom(m),
         )
-        button.grid(row=0, column=10 + modality, padx=(0, 5), pady=5, sticky="w")
+        button.pack(side=tk.LEFT, padx=(0, 3))
+        modality_zoom_buttons.append(button)
+        modality_zoom_vars.append(toggle_var)
+    modality_window_buttons = []
+    modality_display_vars = []
+    for modality, label in enumerate(("X-ray", "CT Scan", "EKG", "Blood Test")):
+        toggle_var = tk.BooleanVar(value=True)
+        button = ttk.Checkbutton(
+            modality_display_group, text=f"{label}: ON",
+            variable=toggle_var, command=lambda m=modality: toggle_modality_windows(m),
+        )
+        # Display controls follow the complete zoom cluster on the one toggle row.
+        button.pack(side=tk.LEFT, padx=(0, 3))
         modality_window_buttons.append(button)
+        modality_display_vars.append(toggle_var)
     active_patient_block = ttk.Frame(patient_bar, style="ActivePatient.TFrame")
-    active_patient_block.grid(row=0, column=13, padx=(0, 10), pady=4, sticky="e")
+    active_patient_block.grid(row=0, column=14, padx=(0, 10), pady=4, sticky="e")
     ttk.Label(active_patient_block, text="Active patient", style="ActivePatientHeader.TLabel").pack(anchor="e")
     active_label = ttk.Label(active_patient_block, text="No patient selected", style="ActivePatientValue.TLabel")
     active_label.pack(anchor="e")
@@ -5412,7 +5563,7 @@ def main():
     if not streamlined_layout:
         demo_status.grid(row=2, column=3, columnspan=3,
                          padx=(0, 10), pady=5, sticky="w")
-    counts_label = ttk.Label(patient_bar, text="X-ray 0/0 selected   |   EKG 0/0 selected   |   Blood 0/0 selected",
+    counts_label = ttk.Label(patient_bar, text="X-ray 0/0 selected   |   CT 0/0 selected   |   EKG 0/0 selected   |   Blood 0/0 selected",
                              style="Status.TLabel")
     if not streamlined_layout:
         counts_label.grid(row=3, column=0, columnspan=8,
@@ -5428,7 +5579,7 @@ def main():
     remove_tray_button = ttk.Button(patient_bar, text="Remove selected", command=remove_tray_selection)
     if not streamlined_layout:
         remove_tray_button.grid(row=4, column=6, padx=(4, 10), pady=3, sticky="n")
-    patient_bar.columnconfigure(13, weight=1)
+    patient_bar.columnconfigure(14, weight=1)
     tray_items = []
     tray_list.bind("<Return>", remove_tray_selection)
     tray_list.bind("<Delete>", remove_tray_selection)
@@ -5456,8 +5607,8 @@ def main():
         labelanchor="n",
         style="Assistant.TLabelframe",
     )
-    body.add(qa_panel, weight=35)
-    body.add(data_panes, weight=65)
+    body.add(qa_panel, weight=25)
+    body.add(data_panes, weight=75)
     ttk.Label(qa_panel, text="Your Question", style="Field.TLabel").pack(anchor="w", padx=10, pady=(10, 5))
     preset_row = ttk.Frame(qa_panel, style="App.TFrame")
     preset_row.pack(fill=tk.X, padx=10, pady=(0, 4))
@@ -5690,16 +5841,16 @@ def main():
     data_panes.add(image_panel, weight=100)
     image_panel.rowconfigure(0, weight=1, uniform="visible_record_panels")
     image_panel.rowconfigure(1, weight=1, uniform="visible_record_panels")
-    image_panel.rowconfigure(2, weight=1, uniform="visible_record_panels")
-    image_panel.columnconfigure(0, weight=1)
-    selected_images = [{}, {}]  # Blue first, then orange; each keeps click order.
+    image_panel.columnconfigure(0, weight=1, uniform="visible_record_columns")
+    image_panel.columnconfigure(1, weight=1, uniform="visible_record_columns")
+    selected_images = [{}, {}, {}]  # X-ray, CT, EKG; each keeps click order.
     sample_button = tk.Button(image_panel)
     default_button_color = sample_button.cget("background")
     sample_button.destroy()
 
     galleries = []
     gallery_count_labels = []
-    for gallery_index in range(2):
+    for gallery_index in range(3):
         heading = tk.Frame(image_panel, background=APP_BACKGROUND)
         heading_name = tk.Label(heading, text=GALLERY_NAMES[gallery_index], background=APP_BACKGROUND,
                                 foreground=TEAL, font=("Segoe UI", 12, "bold"))
@@ -5715,12 +5866,8 @@ def main():
             labelwidget=heading,
             style="Gallery.TLabelframe",
         )
-        pane.grid(
-            row=gallery_index,
-            column=0,
-            sticky="nsew",
-            pady=(0, 3) if gallery_index == 0 else (3, 0),
-        )
+        pane.grid(row=0 if gallery_index < 2 else 1, column=gallery_index if gallery_index < 2 else 0,
+                  sticky="nsew", padx=3, pady=3)
         pane.columnconfigure(0, weight=1)
         pane.rowconfigure(1, weight=1)
         pane.rowconfigure(2, weight=0)
@@ -5786,14 +5933,14 @@ def main():
     blood_test_panel.heading_name = blood_heading_name
     blood_test_panel.heading_date = blood_heading_date
     blood_test_panel.heading_time = blood_heading_time
-    blood_test_panel.grid(row=2, column=0, sticky="nsew", pady=(3, 0))
+    blood_test_panel.grid(row=1, column=1, sticky="nsew", padx=3, pady=3)
     blood_test_panel.rowconfigure(1, weight=1)
     blood_test_panel.columnconfigure(0, weight=1)
     blood_controls = ttk.Frame(blood_test_panel, style="App.TFrame")
     blood_controls.grid(row=0, column=0, columnspan=2, sticky="ew", padx=5, pady=(4, 0))
     if not streamlined_layout:
-        ttk.Button(blood_controls, text="Select all", command=lambda: set_modality_selection(2, True)).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(blood_controls, text="Clear", command=lambda: set_modality_selection(2, False)).pack(side=tk.LEFT)
+        ttk.Button(blood_controls, text="Select all", command=lambda: set_modality_selection(3, True)).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(blood_controls, text="Clear", command=lambda: set_modality_selection(3, False)).pack(side=tk.LEFT)
         ttk.Button(blood_controls, text="Details", command=show_blood_details).pack(side=tk.LEFT, padx=(5, 0))
     blood_count_label = ttk.Label(blood_controls, text="0/0 selected", style="Status.TLabel")
     if not streamlined_layout:
@@ -5862,7 +6009,7 @@ def main():
             width = body.winfo_width()
             height = data_panes.winfo_height()
             if width > 500:
-                body.sashpos(0, int(width * 0.35))
+                body.sashpos(0, int(width * 0.25))
             if height > 250:
                 data_panes.sashpos(0, int(height * 0.70))
         except tk.TclError:
@@ -5932,11 +6079,13 @@ class MCPRecords:
         """Return configured local-server identifiers, with safe defaults."""
         defaults = {
             "xrays": "xrays",
+            "ct_scan": "ct_scan",
             "ekgs": "ekgs",
             "blood_tests": "blood_tests",
         }
         keys = {
             "xrays": "XRAY_SERVER_ID",
+            "ct_scan": "CT_SCAN_SERVER_ID",
             "ekgs": "EKG_SERVER_ID",
             "blood_tests": "BLOODTEST_SERVER_ID",
         }
@@ -5954,7 +6103,7 @@ class MCPRecords:
 
     async def _start(self):
         self.stack = AsyncExitStack()
-        scripts = {"xrays": "mcp_xray_server.py", "ekgs": "mcp_ekg_server.py", "blood_tests": "mcp_blood_server.py"}
+        scripts = {"xrays": "mcp_xray_server.py", "ct_scan": "mcp_ct_scan_server.py", "ekgs": "mcp_ekg_server.py", "blood_tests": "mcp_blood_server.py"}
         for modality, script in scripts.items():
             params = StdioServerParameters(command=sys.executable, args=[str(self.python_dir / script)],
                                           env={**os.environ, "PATIENT_RECORDS_DIR": str(self.root)})
@@ -5967,7 +6116,7 @@ class MCPRecords:
     def record_location(path: str | Path) -> tuple[str, str]:
         """Return the modality and normalized root-relative record path."""
         parts = Path(path).as_posix().split("/")
-        for modality in ("xrays", "ekgs", "blood_tests"):
+        for modality in ("xrays", "ct_scan", "ekgs", "blood_tests"):
             if modality in parts:
                 return modality, "/".join(parts)
         raise ValueError("Record path has no recognized modality")
@@ -6094,6 +6243,17 @@ from mcp_record_server import make_server
 
 if __name__ == "__main__":
     make_server("xrays").run()
+```
+
+### `python/mcp_ct_scan_server.py`
+```python
+"""Read-only MCP server for CT scan image records."""
+
+from mcp_record_server import make_server
+
+
+if __name__ == "__main__":
+    make_server("ct_scan").run()
 ```
 
 ### `python/mcp_ekg_server.py`

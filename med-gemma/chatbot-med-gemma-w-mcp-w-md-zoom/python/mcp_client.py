@@ -42,11 +42,13 @@ class MCPRecords:
         """Return configured local-server identifiers, with safe defaults."""
         defaults = {
             "xrays": "xrays",
+            "ct_scan": "ct_scan",
             "ekgs": "ekgs",
             "blood_tests": "blood_tests",
         }
         keys = {
             "xrays": "XRAY_SERVER_ID",
+            "ct_scan": "CT_SCAN_SERVER_ID",
             "ekgs": "EKG_SERVER_ID",
             "blood_tests": "BLOODTEST_SERVER_ID",
         }
@@ -64,7 +66,7 @@ class MCPRecords:
 
     async def _start(self):
         self.stack = AsyncExitStack()
-        scripts = {"xrays": "mcp_xray_server.py", "ekgs": "mcp_ekg_server.py", "blood_tests": "mcp_blood_server.py"}
+        scripts = {"xrays": "mcp_xray_server.py", "ct_scan": "mcp_ct_scan_server.py", "ekgs": "mcp_ekg_server.py", "blood_tests": "mcp_blood_server.py"}
         for modality, script in scripts.items():
             params = StdioServerParameters(command=sys.executable, args=[str(self.python_dir / script)],
                                           env={**os.environ, "PATIENT_RECORDS_DIR": str(self.root)})
@@ -77,7 +79,7 @@ class MCPRecords:
     def record_location(path: str | Path) -> tuple[str, str]:
         """Return the modality and normalized root-relative record path."""
         parts = Path(path).as_posix().split("/")
-        for modality in ("xrays", "ekgs", "blood_tests"):
+        for modality in ("xrays", "ct_scan", "ekgs", "blood_tests"):
             if modality in parts:
                 return modality, "/".join(parts)
         raise ValueError("Record path has no recognized modality")
