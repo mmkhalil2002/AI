@@ -4,6 +4,8 @@ The current behavior is documented in README.md and AGENTS.md. The records and c
 
 ## Checks performed during the current changes
 
+- X-ray and CT Scan gallery tiles now reflow to two per row when all four record panels are visible, and four per row when one to three panels are visible. This preserves existing image selections and data; syntax and change-review checks were run, while live Display-toggle visual verification remains outstanding.
+- Zoom viewers now ignore the title-bar Close (X) action. Their lifecycle remains controlled by the matching Zoom toggle, selection changes, or patient/snapshot changes. Syntax and change-review checks were run; a live title-bar interaction check remains outstanding.
 - The Patient Search and Date/Time frame label was removed. The former Zoom and Display dropdowns were replaced with five Zoom and four Display toggle buttons beneath the search row. A live visual layout check remains outstanding.
 - The controls are grouped as Selection, Modality Zoom, and Display. Toggle labels now state ON/OFF, with softer contrasting colors for the selected and unselected states. A live color/interaction check remains outstanding.
 - The visible group labels were removed. Selection Zoom and the Merge/Split toggle are adjacent; Merge now defaults ON. Their OFF color is soft orange and their ON color is sky blue. A live visual check remains outstanding.

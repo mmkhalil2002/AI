@@ -417,6 +417,7 @@ thumbnail_started_at = 0.0
 thumbnail_first_paint = None
 thumbnail_decoded_count = 0
 thumbnail_worker_shutdown = threading.Event()
+record_panel_visibility = []
 current_request = None
 save_quick_button = None
 report_original_draft = None
@@ -2280,6 +2281,15 @@ def close_xray_zoom_viewer(path):
         pass
 
 
+def disable_zoom_window_close(viewer):
+    """Ignore the title-bar Close (X) action for a zoom viewer.
+
+    Zoom-window lifetime is controlled by its matching toggle, selection, or
+    patient/snapshot change so the viewer and toggle state cannot diverge.
+    """
+    viewer.protocol("WM_DELETE_WINDOW", lambda: None)
+
+
 def create_image_diagnosis_panel(parent):
     panel = ttk.Frame(parent)
     text = scrolledtext.ScrolledText(
@@ -2365,7 +2375,7 @@ def open_xray_zoom_viewer(path):
         record_view.configure(state=tk.DISABLED)
         xray_zoom_viewers[path] = {"window": viewer, "diagnosis": diagnosis}
         refresh_image_diagnosis(xray_zoom_viewers[path], path)
-        viewer.protocol("WM_DELETE_WINDOW", lambda p=path: user_close_selection(p))
+        disable_zoom_window_close(viewer)
         return
     try:
         safe_path(path, active_patient)
@@ -2416,7 +2426,7 @@ def open_xray_zoom_viewer(path):
     ttk.Button(toolbar, text="+", command=lambda s=state: zoom_split_viewer(s, 1.25)).pack(side=tk.LEFT, padx=2)
     ttk.Button(toolbar, text="Actual Size", command=lambda s=state: reset_split_viewer(s)).pack(side=tk.LEFT, padx=2)
     refresh_image_diagnosis(state, path)
-    viewer.protocol("WM_DELETE_WINDOW", lambda p=path: user_close_selection(p))
+    disable_zoom_window_close(viewer)
 
 
 def render_split_viewer(state, center=True):
@@ -2647,7 +2657,7 @@ def open_image_viewer(path, records=None, zoom_managed=False):
     fit_dialog_to_display(viewer, 0.78, 0.80, 640, 480)
     viewer.minsize(420, 320)
     viewer.transient(window)
-    viewer.protocol("WM_DELETE_WINDOW", user_close_merged_selection)
+    disable_zoom_window_close(viewer)
     toolbar = ttk.Frame(viewer)
     toolbar.pack(fill=tk.X, padx=8, pady=6)
     title = ttk.Label(toolbar, text="", style="Field.TLabel")
@@ -2697,6 +2707,44 @@ def open_image_viewer(path, records=None, zoom_managed=False):
     canvas.focus_set()
 
 
+def visible_record_panel_count():
+    """Return the number of record panels currently displayed."""
+    return sum(variable.get() for variable in record_panel_visibility)
+
+
+def image_gallery_columns_per_row(column):
+    """Use compact tiles only while the full four-panel display is visible."""
+    if column == 1:  # EKG remains one image per row.
+        return 1
+    return 2 if visible_record_panel_count() == 4 else 4
+
+
+def configure_image_gallery_columns(column):
+    """Reflow an image gallery without changing its selections or data."""
+    grid = galleries[column]["grid"]
+    columns_per_row = image_gallery_columns_per_row(column)
+    for grid_column in range(4):
+        grid.columnconfigure(
+            grid_column,
+            weight=1 if grid_column < columns_per_row else 0,
+        )
+    for item in thumbnail_items[column]:
+        index = item["index"]
+        item["tile"].grid_configure(
+            row=index // columns_per_row,
+            column=index % columns_per_row,
+        )
+    update_gallery_scrollbars(
+        galleries[column]["canvas"], galleries[column]["canvas_window"], grid
+    )
+
+
+def reflow_image_galleries():
+    """Apply the current record-panel layout to loaded image thumbnails."""
+    for column in range(3):
+        configure_image_gallery_columns(column)
+
+
 def load_images():
     """Build lightweight tiles, then decode visible thumbnails asynchronously."""
     global thumbnail_items, thumbnail_started_at, thumbnail_first_paint, thumbnail_decoded_count
@@ -2719,12 +2767,11 @@ def load_images():
 
     for column, gallery in enumerate(galleries):
         grid = gallery["grid"]
-        # X-ray and CT scan thumbnails use two columns; EKGs stay in one.
-        for grid_column in range(3):
-            grid.columnconfigure(
-                grid_column,
-                weight=1 if (column != 1 and grid_column < 2) or grid_column == 0 else 0,
-            )
+        columns_per_row = image_gallery_columns_per_row(column)
+        # With all four panels visible, X-ray and CT use two columns. With
+        # one to three panels visible, they use four; EKG always uses one.
+        for grid_column in range(4):
+            grid.columnconfigure(grid_column, weight=1 if grid_column < columns_per_row else 0)
         modality = ("xrays", "ekgs", "ct_scan")[column]
         paths, message = patient_files(modality, IMAGE_EXTENSIONS)
         set_snapshot_heading(gallery["heading_name"], gallery["heading_date"],
@@ -2737,8 +2784,6 @@ def load_images():
         displayed = len(paths)
         for index, path in enumerate(paths):
             tile = tk.Frame(grid, background=TILE_BACKGROUND, padx=5, pady=5)
-            # X-ray and CT scan use two images per row. EKG uses one per row.
-            columns_per_row = 1 if column == 1 else 2
             tile.grid(
                 row=index // columns_per_row,
                 column=index % columns_per_row,
@@ -3612,7 +3657,7 @@ def refresh_models():
 
 def main():
     """Validate startup data, then construct the preserved Tkinter interface."""
-    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, first_name_var, last_name_var, dob_var, patient_search_controls, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label, xray_zoom_button, xray_zoom_mode_button, xray_zoom_mode_var
+    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, first_name_var, last_name_var, dob_var, patient_search_controls, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label, xray_zoom_button, xray_zoom_mode_button, xray_zoom_mode_var, record_panel_visibility
     # Fatal data-root validation precedes construction of any Tk widget.
     try:
         PATIENT_RECORDS_DIR = patient_records_root()
@@ -4382,11 +4427,11 @@ def main():
     )
 
     record_panels = [galleries[i]["title"] for i in (0, 2, 1)] + [blood_test_panel]
-    panel_visibility = [tk.BooleanVar(value=True) for _ in record_panels]
+    record_panel_visibility = [tk.BooleanVar(value=True) for _ in record_panels]
 
     def equalize_record_panels(event=None):
         """Give every currently displayed record panel the same grid share."""
-        visible_count = sum(visible.get() for visible in panel_visibility)
+        visible_count = visible_record_panel_count()
         columns = 2 if visible_count == 4 else (1 if visible_count else 0)
         rows = 2 if visible_count == 4 else visible_count
         # Reset the possible grid tracks first, so a hidden panel cannot leave
@@ -4402,7 +4447,7 @@ def main():
     def update_record_panel_visibility():
         # Reflow visible panels: four retain the 2-by-2 layout; fewer panels
         # stack vertically and divide the full display height evenly.
-        visible_panels = [panel for panel, visible in zip(record_panels, panel_visibility)
+        visible_panels = [panel for panel, visible in zip(record_panels, record_panel_visibility)
                           if visible.get()]
         columns = 2 if len(visible_panels) == 4 else (1 if visible_panels else 0)
         for panel in record_panels:
@@ -4411,10 +4456,11 @@ def main():
             for index, panel in enumerate(visible_panels):
                 panel.grid(row=index // columns, column=index % columns,
                            sticky="nsew", padx=3, pady=3)
+        reflow_image_galleries()
         window.after_idle(equalize_record_panels)
 
     panel_labels = ("X-ray", "CT Scan", "EKG/ECG", "Blood Test")
-    for label, visible in zip(panel_labels, panel_visibility):
+    for label, visible in zip(panel_labels, record_panel_visibility):
         button = ttk.Checkbutton(display_controls, variable=visible,
                                  command=update_record_panel_visibility,
                                  style="DisplayToggle.TCheckbutton")
@@ -4642,7 +4688,7 @@ def open_modality_viewer(key):
                            ("+", lambda: scale_by(1.25)), ("-", lambda: scale_by(0.8)),
                            ("Fit", fit), (reset_label, reset)):
         ttk.Button(toolbar, text=label, command=command).pack(side=tk.LEFT, padx=3, pady=4)
-    viewer.protocol("WM_DELETE_WINDOW", lambda: close_modality_viewer(key))
+    disable_zoom_window_close(viewer)
     show()
 
 

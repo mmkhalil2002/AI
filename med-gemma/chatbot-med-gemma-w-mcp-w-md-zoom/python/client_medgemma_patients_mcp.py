@@ -3358,7 +3358,7 @@ def close_image_viewer():
         except tk.TclError:
             pass
     if "zoom_button" in globals() and split_image_viewers:
-        zoom_button.configure(text="Zoom out", style="ToggleOn.TButton")
+        zoom_button.configure(text="Zoom out", style="SelectionToggle.TCheckbutton")
 
 
 def close_modality_zoom_viewer(modality):
@@ -3384,7 +3384,7 @@ def close_split_image_viewer(path):
         except tk.TclError:
             pass
     if "zoom_button" in globals() and image_viewer is None and not split_image_viewers:
-        zoom_button.configure(text="Zoom out", style="ToggleOff.TButton")
+        zoom_button.configure(text="Zoom out", style="SelectionToggle.TCheckbutton")
 
 
 def close_all_image_viewers():
@@ -3512,6 +3512,33 @@ def toggle_modality_windows(modality):
         panel.grid(row=row, column=column, sticky="nsew", padx=3, pady=3)
         image_panel.rowconfigure(row, weight=1, uniform="visible_record_panels")
         image_panel.columnconfigure(column, weight=1, uniform="visible_record_columns")
+    reflow_image_galleries()
+
+
+def gallery_columns_per_row(gallery_index):
+    """Return the thumbnail columns appropriate for the current panel layout."""
+    if gallery_index == 2:  # EKG remains a single, readable vertical list.
+        return 1
+    # With fewer than all four clinical views on screen, X-ray and CT gain the
+    # full workspace width and can show four images across.
+    return 4 if sum(modality_window_enabled) <= 3 else 2
+
+
+def reflow_image_galleries():
+    """Reposition existing image tiles after the visible-panel layout changes."""
+    if not galleries:
+        return
+    for gallery_index, gallery in enumerate(galleries):
+        columns_per_row = gallery_columns_per_row(gallery_index)
+        grid = gallery["grid"]
+        for grid_column in range(4):
+            grid.columnconfigure(grid_column, weight=1 if grid_column < columns_per_row else 0)
+        for item in thumbnail_items[gallery_index]:
+            item["tile"].grid_configure(
+                row=item["index"] // columns_per_row,
+                column=item["index"] % columns_per_row,
+            )
+        update_gallery_scrollbars(gallery["canvas"], gallery["canvas_window"], grid)
 
 
 def zoom_selected_image():
@@ -3810,12 +3837,9 @@ def open_image_viewer(path, split=False, records_override=None, modality_zoom=No
     fit_dialog_to_display(viewer, 0.78, 0.80, 640, 480)
     viewer.minsize(420, 320)
     viewer.resizable(True, True)
-    if split:
-        viewer.protocol("WM_DELETE_WINDOW", lambda p=path: close_split_image_viewer(p))
-    elif modality_zoom is not None:
-        viewer.protocol("WM_DELETE_WINDOW", lambda m=modality_zoom: close_modality_zoom_viewer(m))
-    else:
-        viewer.protocol("WM_DELETE_WINDOW", close_image_viewer)
+    # The title-bar X must not close a zoom viewer.  Its state is owned by the
+    # Zoom controls, which remain the single explicit way to close it.
+    viewer.protocol("WM_DELETE_WINDOW", lambda: None)
     toolbar = ttk.Frame(viewer)
     toolbar.pack(fill=tk.X, padx=8, pady=6)
     title = ttk.Label(toolbar, text="", style="Field.TLabel")
@@ -3876,7 +3900,7 @@ def open_image_viewer(path, split=False, records_override=None, modality_zoom=No
         controls[6].configure(command=lambda s=state: reset_viewer(s))
     else:
         image_viewer = state
-    zoom_button.configure(text="Zoom in", style="ToggleOn.TButton")
+    zoom_button.configure(text="Zoom in", style="SelectionToggle.TCheckbutton")
     show_viewer_record(state, match)
     canvas.bind("<Configure>", lambda _event: render_viewer_image(state), add="+")
     canvas.bind("<ButtonPress-1>", lambda event: canvas.scan_mark(event.x, event.y))
@@ -3965,13 +3989,10 @@ def load_images():
 
     for column, gallery in enumerate(galleries):
         grid = gallery["grid"]
-        # Give each active image column equal width. The EKG gallery has only
-        # one active column, so each EKG image is centered in its own row.
-        for grid_column in range(3):
-            grid.columnconfigure(
-                grid_column,
-                weight=1 if (column == 0 or grid_column == 0) else 0,
-            )
+        columns_per_row = gallery_columns_per_row(column)
+        # Give active image columns equal width. EKG remains a single column.
+        for grid_column in range(4):
+            grid.columnconfigure(grid_column, weight=1 if grid_column < columns_per_row else 0)
         modality = ("xrays", "ct_scan", "ekgs")[column]
         paths, message = patient_files(modality, IMAGE_EXTENSIONS)
         set_snapshot_heading(gallery["heading_name"], gallery["heading_date"],
@@ -3984,10 +4005,6 @@ def load_images():
         displayed = len(paths)
         for index, path in enumerate(paths):
             tile = tk.Frame(grid, background=TILE_BACKGROUND, padx=5, pady=5)
-            # X-Ray uses three images per row. EKG uses a vertical list with
-            # exactly one image per row. Horizontal scrolling handles wide
-            # originals when a configured dimension is zero.
-            columns_per_row = 1 if column == 2 else 2
             tile.grid(
                 row=index // columns_per_row,
                 column=index % columns_per_row,
@@ -5336,6 +5353,48 @@ def main():
         borderwidth=0, padding=(10, 6), font=("Segoe UI", 9, "bold"),
     )
     ui_style.map("ToggleOff.TButton", background=[("active", "#90a4ae")])
+    # Keep the three related toggle groups visually distinct.  The last group
+    # starts enabled, so its green state represents ON and orange represents OFF.
+    ui_style.configure(
+        "SelectionToggle.TCheckbutton", background="#8b5a2b", foreground="white",
+        padding=(8, 5), font=("Segoe UI", 9, "bold"),
+    )
+    ui_style.map(
+        "SelectionToggle.TCheckbutton",
+        background=[("selected", "#b8860b"), ("!selected", "#8b5a2b")],
+        foreground=[("selected", "white"), ("!selected", "white")],
+        indicatorcolor=[("selected", "#b8860b"), ("!selected", "#8b5a2b")],
+    )
+    ui_style.configure(
+        "SelectionToggle.TRadiobutton", background="#8b5a2b", foreground="white",
+        padding=(8, 5), font=("Segoe UI", 9, "bold"),
+    )
+    ui_style.map(
+        "SelectionToggle.TRadiobutton",
+        background=[("selected", "#b8860b"), ("!selected", "#8b5a2b")],
+        foreground=[("selected", "white"), ("!selected", "white")],
+        indicatorcolor=[("selected", "#b8860b"), ("!selected", "#8b5a2b")],
+    )
+    ui_style.configure(
+        "ModalityZoom.TCheckbutton", background="#1976d2", foreground="white",
+        padding=(8, 5), font=("Segoe UI", 9, "bold"),
+    )
+    ui_style.map(
+        "ModalityZoom.TCheckbutton",
+        background=[("selected", "#ef6c00"), ("!selected", "#1976d2")],
+        foreground=[("selected", "white"), ("!selected", "white")],
+        indicatorcolor=[("selected", "#ef6c00"), ("!selected", "#1976d2")],
+    )
+    ui_style.configure(
+        "ModalityDisplay.TCheckbutton", background="#2e7d32", foreground="white",
+        padding=(8, 5), font=("Segoe UI", 9, "bold"),
+    )
+    ui_style.map(
+        "ModalityDisplay.TCheckbutton",
+        background=[("selected", "#2e7d32"), ("!selected", "#ef6c00")],
+        foreground=[("selected", "white"), ("!selected", "white")],
+        indicatorcolor=[("selected", "#2e7d32"), ("!selected", "#ef6c00")],
+    )
     ui_style.configure(
         "VoiceOn.TButton",
         background=TEAL,
@@ -5476,12 +5535,13 @@ def main():
     modality_display_group.pack(side=tk.LEFT)
     selection_zoom_var = tk.BooleanVar(value=False)
     zoom_button = ttk.Checkbutton(selection_toggle_group, text="Zoom out", width=10,
-                                  variable=selection_zoom_var, command=zoom_selected_image)
+                                  variable=selection_zoom_var, command=zoom_selected_image,
+                                  style="SelectionToggle.TCheckbutton")
     zoom_button.pack(side=tk.LEFT, padx=(0, 3))
     zoom_mode_var = tk.StringVar(value="merge")
     zoom_mode_button = ttk.Radiobutton(
         selection_toggle_group, text="Merge", width=8, variable=zoom_mode_var, value="merge",
-        command=lambda: set_zoom_view_mode("merge")
+        command=lambda: set_zoom_view_mode("merge"), style="SelectionToggle.TRadiobutton"
     )
     zoom_mode_button.pack(side=tk.LEFT)
     modality_zoom_buttons = []
@@ -5491,6 +5551,7 @@ def main():
         button = ttk.Checkbutton(
             modality_zoom_group, text=f"Zoom {label} out",
             variable=toggle_var, command=lambda m=modality: toggle_modality_zoom(m),
+            style="ModalityZoom.TCheckbutton",
         )
         button.pack(side=tk.LEFT, padx=(0, 3))
         modality_zoom_buttons.append(button)
@@ -5502,6 +5563,7 @@ def main():
         button = ttk.Checkbutton(
             modality_display_group, text=f"{label}: ON",
             variable=toggle_var, command=lambda m=modality: toggle_modality_windows(m),
+            style="ModalityDisplay.TCheckbutton",
         )
         # Display controls follow the complete zoom cluster on the one toggle row.
         button.pack(side=tk.LEFT, padx=(0, 3))

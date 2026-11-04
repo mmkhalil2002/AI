@@ -1,18 +1,19 @@
 # AI Clinical Assistant Center with MCP patient records
 
-This project is a Tkinter desktop application for reviewing selected patient X-rays, CT scans, EKGs, and blood-test JSON records and submitting selected evidence plus a clinician question to MedGemma through Ollama. The main implementation is `python/client_medgemma_patients_mcp.py`; it is a full existing GUI and must be preserved rather than replaced with a simplified prototype. Qwen is excluded.
+This Tkinter desktop application reviews selected patient X-rays, CT scans, EKGs, and blood-test JSON records, then submits only that selected evidence and a clinician question to MedGemma through Ollama. Its main implementation is `python/client_medgemma_patients_mcp.py`; preserve the full GUI rather than replacing it with a simplified prototype. Qwen is excluded.
 
 ## Interface
 
-The window has an unlabeled patient-search control bar above a responsive two-column workspace. The left side contains the red/orange **AI Clinical Assistant Center** heading, **Your Question** input, **Ask AI**, **Voice: OFF**, **Close**, status, and scrollable **AI Response**. The right side has three simultaneous panels:
+The window has an unlabeled patient-search control bar above a responsive two-column workspace. The left side contains the red/orange **AI Clinical Assistant Center** heading, **Your Question** input, **Ask AI**, **Voice: OFF**, **Close**, status, and scrollable **AI Response**. The right side has four simultaneous panels:
 
-- **XRAY** — framed, selectable, horizontally arranged image tiles with scrollbars.
-- **EKG/ECG** — wide readable selectable images with scrolling.
+- **XRAY** — framed, selectable image tiles with horizontal and vertical scrollbars.
+- **CT SCAN** — framed, selectable CT image tiles with the same supported image formats as X-rays.
+- **EKG/ECG** — wide, readable selectable images with scrolling.
 - **BLOOD TEST** — selectable records with red title/marker and Test, Value, Unit, Reference range, and Flag columns.
 
 The top bar searches patients by **First name**, **Last name**, and **DOB (MMDDYYYY)**. **Search** validates the values, maps the four-digit year to the existing two-digit patient-folder suffix, loads the newest snapshot for a matching patient, and shows an error dialog when no match exists. **Date & time** then selects a different snapshot for that active patient. At the far right, a two-line active-patient block shows `Active patient` in teal and the selected name plus DOB in coral. Snapshot selection supports direct folders, dated snapshots, and legacy `data/<modality>` layouts.
 
-Selected X-ray and EKG records can be inspected with **Zoom**. In **Merge** mode, all selected images share one viewer with **Previous**, **Next**, **+**, **−**, **Fit**, and **Reset**. In **Split** mode, each selected image opens in its own viewer with **+**, **−**, **Fit**, and **Reset**. **Fit** shows the whole image in the window; **Reset** returns it to 100% pixel size.
+Selected X-ray, CT, and EKG records can be inspected with **Zoom**. In **Merge** mode, all selected images share one viewer with **Previous**, **Next**, **+**, **−**, **Fit**, and **Reset**. In **Split** mode, each selected image opens in its own viewer with **+**, **−**, **Fit**, and **Reset**. **Fit** shows the whole image in the window; **Reset** returns it to 100% pixel size.
 
 ## Components
 
@@ -21,6 +22,7 @@ Selected X-ray and EKG records can be inspected with **Zoom**. In **Merge** mode
 | `python/client_medgemma_patients_mcp.py` | GUI, navigation, galleries, selection, Ollama inference, report lifecycle, voice, and cleanup |
 | `python/mcp_client.py` | `MCPRecords`, local stdio server lifecycle, calls, and cleanup |
 | `python/mcp_xray_server.py` | Read-only X-ray MCP server |
+| `python/mcp_ct_scan_server.py` | Read-only CT-scan MCP server |
 | `python/mcp_ekg_server.py` | Read-only EKG MCP server |
 | `python/mcp_blood_server.py` | Read-only blood-test MCP server |
 
@@ -28,11 +30,11 @@ MCP servers run automatically as local child processes. No MCP TCP ports or manu
 
 ## Records and configuration
 
-Keep `.env` beside the GUI. Relevant settings include `OLLAMA_URL`, `MEDGEMMA_MODEL`, `PATIENT_RECORDS_DIR`, `GENERATION_TIMEOUT`, `NUM_PREDICT`, `XRAY_WIDTH`, `XRAY_HEIGHT`, `EKG_WIDTH`, and `EKG_HEIGHT`. The local MCP server IDs are `XRAY_SERVER_ID=xrays`, `EKG_SERVER_ID=ekgs`, and `BLOODTEST_SERVER_ID=blood_tests`; leave them at these defaults unless the local server configuration changes. Relative patient paths resolve beside the GUI; OS environment values override `.env`.
+Keep `.env` beside the GUI. Relevant settings include `OLLAMA_URL`, `MEDGEMMA_MODEL`, `PATIENT_RECORDS_DIR`, `GENERATION_TIMEOUT`, `NUM_PREDICT`, `XRAY_WIDTH`, `XRAY_HEIGHT`, `CT_SCAN_WIDTH`, `CT_SCAN_HEIGHT`, `EKG_WIDTH`, and `EKG_HEIGHT`. The local MCP server IDs are `XRAY_SERVER_ID=xrays`, `CT_SCAN_SERVER_ID=ct_scan`, `EKG_SERVER_ID=ekgs`, and `BLOODTEST_SERVER_ID=blood_tests`; leave them at these defaults unless the local server configuration changes. Relative patient paths resolve beside the GUI; OS environment values override `.env`.
 
-Records use patient folders with `xrays`, `ekgs`, and `blood_tests` modality directories. Images may be PNG, JPG/JPEG, BMP, GIF, TIF/TIFF, or WebP; blood tests are JSON. `sources.csv` and unsupported files are never displayable or submittable evidence.
+Records use patient folders with `xrays`, `ct_scan`, `ekgs`, and `blood_tests` modality directories. A missing `ct_scan` folder is allowed. Images may be PNG, JPG/JPEG, BMP, GIF, TIF/TIFF, or WebP; blood tests are JSON. `sources.csv` and unsupported files are never displayable or submittable evidence.
 
-Only explicitly selected original records are sent to MedGemma. Selected X-rays precede EKGs. Thumbnails are display copies only. Generated content requires clinician review; this application is not an authentication system or a medical decision maker.
+Only explicitly selected original records are sent to MedGemma. Selected X-rays precede CT scans, which precede EKGs. Thumbnails are display copies only. Generated content requires clinician review; this application is not an authentication system or a medical decision maker.
 
 ## Run
 
