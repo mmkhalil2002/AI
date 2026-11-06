@@ -7,18 +7,23 @@ echo "=== MedGemma Ubuntu INIT ==="
 echo "Project: $ROOT"
 trap 'echo "[ERROR] Initialization failed at line $LINENO." >&2' ERR
 command -v apt-get >/dev/null || { echo '[ERROR] Ubuntu/Debian apt-get required.' >&2; exit 1; }
-sudo apt-get update
-sudo apt-get install -y python3 python3-pip curl ca-certificates
+APT=(apt-get)
+if (( EUID != 0 )); then
+  command -v sudo >/dev/null || { echo "[ERROR] sudo required for non-root user." >&2; exit 1; }
+  APT=(sudo apt-get)
+fi
+"${APT[@]}" update
+"${APT[@]}" install -y python3 python3-pip curl ca-certificates zstd python3-cairo python3-testresources
 node_major=0
 if command -v node >/dev/null 2>&1; then
   node_major="$(node -p 'process.versions.node.split(".")[0]')"
 fi
 if ! command -v npm >/dev/null 2>&1 || (( node_major < 20 )); then
   echo '[INFO] Installing Node.js 22 from NodeSource...'
-  sudo apt-get install -y gnupg
+  "${APT[@]}" install -y gnupg
   curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/medgemma_nodesource_setup.sh
-  sudo -E bash /tmp/medgemma_nodesource_setup.sh
-  sudo apt-get install -y nodejs
+  if (( EUID == 0 )); then bash /tmp/medgemma_nodesource_setup.sh; else sudo -E bash /tmp/medgemma_nodesource_setup.sh; fi
+  "${APT[@]}" install -y nodejs
 fi
 node --version
 npm --version
@@ -44,7 +49,10 @@ if [[ -d "$ROOT/.venv" ]]; then
   rm -rf -- "$ROOT/.venv"
 fi
 VPY="$(command -v python3)"
-PIP_ARGS=(--user --break-system-packages)
+PIP_ARGS=(--user)
+if "$VPY" -m pip install --help | grep -q -- --break-system-packages; then
+  PIP_ARGS+=(--break-system-packages)
+fi
 if [[ ! -f "$ROOT/requirements.txt" ]]; then
   if [[ ! -d "$ROOT/python" ]] || ! find "$ROOT/python" -type f -name '*.py' -print -quit | grep -q .; then
     echo '[ERROR] Need requirements.txt or Python sources in python/.' >&2
@@ -59,37 +67,58 @@ if [[ ! -f "$ROOT/requirements.txt" ]]; then
 fi
 echo '[INFO] Installing application dependencies in user Python packages...'
 "$VPY" -m pip install "${PIP_ARGS[@]}" -r "$ROOT/requirements.txt"
-"$VPY" -m pip check
+if ! "$VPY" -m pip check; then
+  echo "[WARNING] pip check found dependency conflicts; review the output above."
+fi
 
-# Local Ollama installation is optional. Service startup is separate.
+# Install or repair Ollama binaries without launching the server.
+# Manual archive extraction avoids installer-managed service startup.
 printf '\n'
-read -r -p 'Configure Ollama and AI models on THIS computer? [y/N] ' configure
+read -r -p 'Install/repair Ollama locally (without starting it)? [y/N] ' configure
 if [[ "$configure" =~ ^[Yy]$ ]]; then
+  ARCH="$(uname -m)"
+  case "$ARCH" in
+    x86_64) OLLAMA_ARCH=amd64 ;;
+    aarch64) OLLAMA_ARCH=arm64 ;;
+    *) echo "[ERROR] Unsupported architecture: $ARCH" >&2; exit 1 ;;
+  esac
+  "${APT[@]}" install -y tar zstd
+  echo '[INFO] Checking Ollama installation...'
+  REPAIR=0
   if ! command -v ollama >/dev/null 2>&1; then
-    read -r -p 'Install Ollama locally? [y/N] ' install_ollama
-    if [[ "$install_ollama" =~ ^[Yy]$ ]]; then
-      echo '[INFO] Downloading official Ollama installer...'
-      curl -fsSL https://ollama.com/install.sh -o /tmp/medgemma_ollama_install.sh
-      echo '[INFO] Review /tmp/medgemma_ollama_install.sh if desired before running.'
-      sh /tmp/medgemma_ollama_install.sh
+    REPAIR=1
+  elif [[ ! -x /usr/local/lib/ollama/llama-server ]]; then
+    # This exact missing executable caused the user's observed 500 error.
+    # Some newer builds may use a different layout; user can decline repair.
+    echo '[WARNING] Expected llama-server is missing; this system previously failed inference.'
+    REPAIR=1
+  fi
+  if (( REPAIR )); then
+    read -r -p 'Download and reinstall the complete official Ollama archive? [y/N] ' confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+      if curl -fsS --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+        echo '[ERROR] Ollama is running. Stop it using ./unrun_ollama.sh, then rerun init.sh.' >&2
+        exit 1
+      fi
+      ARCHIVE="$(mktemp /tmp/ollama-linux-XXXXXX.tar.zst)"
+      trap 'rm -f "$ARCHIVE"' EXIT
+      curl -fL --retry 3 "https://ollama.com/download/ollama-linux-${OLLAMA_ARCH}.tar.zst" -o "$ARCHIVE"
+      echo '[INFO] Extracting Ollama archive to /usr/local ...'
+      if (( EUID == 0 )); then
+        tar --zstd -xf "$ARCHIVE" -C /usr/local
+      else
+        sudo tar --zstd -xf "$ARCHIVE" -C /usr/local
+      fi
+      rm -f "$ARCHIVE"
+      trap - EXIT
     fi
+  else
+    echo '[INFO] Ollama binary is already present; no reinstall needed.'
   fi
   if command -v ollama >/dev/null 2>&1; then
     ollama --version || true
-    if ollama list >/dev/null 2>&1; then
-      read -r -p 'Download MedGemma 1.5? [y/N] ' med
-      if [[ "$med" =~ ^[Yy]$ ]]; then
-        ollama pull medgemma1.5 || echo '[WARNING] MedGemma download failed.'
-      fi
-      read -r -p 'Download Qwen3:8B? [y/N] ' qwen
-      if [[ "$qwen" =~ ^[Yy]$ ]]; then
-        ollama pull qwen3:8b || echo '[WARNING] Qwen3 download failed.'
-      fi
-    else
-      echo '[ACTION] Start the Ollama service separately and rerun init.sh to download models.'
-    fi
-  else
-    echo '[INFO] Ollama not installed; skipping models.'
+    echo '[INFO] Ollama was NOT started by this script.'
+    echo '[NEXT] Run ./run_ollama.sh --local or --all-ips to start and test it.'
   fi
 fi
 echo '[SUCCESS] INIT finished. No application or server was launched.'
@@ -99,3 +128,4 @@ echo '[ACTION] For THIS terminal, run:'
 echo '    export PATH="$HOME/.local/npm/bin:$PATH"'
 echo '[ACTION] Or open a NEW terminal, then run: codex --version'
 echo "[FALLBACK] Direct launcher: $NPM_PREFIX/bin/codex --version"
+
