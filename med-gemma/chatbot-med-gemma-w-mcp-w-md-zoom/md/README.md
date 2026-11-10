@@ -4,7 +4,7 @@ This Tkinter desktop application reviews selected patient X-rays, CT scans, EKGs
 
 ## Interface
 
-The window has an unlabeled patient-search control bar above a responsive two-column workspace. The left side contains the red/orange **AI Clinical Assistant Center** heading, **Your Question** input, **Ask AI**, **Voice: OFF**, **Close**, status, and scrollable **AI Response**. The right side has four simultaneous panels:
+The window has an unlabeled patient-search control bar above a responsive two-column workspace. The left side contains the red/orange **AI Clinical Assistant Center** heading, **Your Question** input, **Ask AI**, **Voice: OFF**, **Close**, status, and scrollable **AI Response**. The right side supports four panels, all visible by default:
 
 - **XRAY** — framed, selectable image tiles with horizontal and vertical scrollbars.
 - **CT SCAN** — framed, selectable CT image tiles with the same supported image formats as X-rays.
@@ -29,6 +29,17 @@ Selected X-ray, CT, and EKG records can be inspected with **Zoom**. In **Merge**
 MCP servers run automatically as local child processes. No MCP TCP ports or manual server terminals are needed. They return root-relative `paths`, image `base64`, or blood `record` JSON.
 
 ## Records and configuration
+
+Set initial panel visibility in `python/.env`:
+
+```dotenv
+XRAY_ON=TRUE
+CTSCAN_ON=TRUE
+EKG_ON=TRUE
+BLOOD_TEST_ON=TRUE
+```
+
+Each option defaults to `TRUE` when omitted or invalid. `FALSE` applies the same action as switching the corresponding panel's ON/OFF button to OFF at startup: the panel is hidden and the remaining panels resize. ON buttons are highlighted green; OFF buttons are muted gray with dark text. Buttons remain usable after startup. OS environment values override these `.env` settings.
 
 Keep `.env` beside the GUI. Relevant settings include `OLLAMA_URL`, `MEDGEMMA_MODEL`, `PATIENT_RECORDS_DIR`, `GENERATION_TIMEOUT`, `NUM_PREDICT`, `XRAY_WIDTH`, `XRAY_HEIGHT`, `CT_SCAN_WIDTH`, `CT_SCAN_HEIGHT`, `EKG_WIDTH`, and `EKG_HEIGHT`. The local MCP server IDs are `XRAY_SERVER_ID=xrays`, `CT_SCAN_SERVER_ID=ct_scan`, `EKG_SERVER_ID=ekgs`, and `BLOODTEST_SERVER_ID=blood_tests`; leave them at these defaults unless the local server configuration changes. Relative patient paths resolve beside the GUI; OS environment values override `.env`.
 

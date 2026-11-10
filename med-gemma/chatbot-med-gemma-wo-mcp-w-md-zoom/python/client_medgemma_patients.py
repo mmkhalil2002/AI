@@ -107,6 +107,7 @@ def load_settings():
                 "WINDOW_WIDTH", "WINDOW_HEIGHT", "NUM_PREDICT", "THINK",
                 "GENERATION_TIMEOUT", "TEMPERATURE", "REPEAT_PENALTY",
                 "REPEAT_LAST_N", "DISK", "PATIENT_RECORDS_DIR",
+                "XRAY_ON", "CTSCAN_ON", "EKG_ON", "BLOOD_TEST_ON",
             ):
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                     value = value[1:-1]
@@ -3807,8 +3808,8 @@ def main():
     )
     ui_style.map(
         "DisplayToggle.TCheckbutton",
-        background=[("selected", "#28734f"), ("active", "#a66e53")],
-        foreground=[("selected", "white"), ("!selected", "white")],
+        background=[("disabled", "#d1d5db"), ("selected", "#28734f"), ("active", "#a66e53")],
+        foreground=[("disabled", "#6b7280"), ("selected", "white"), ("!selected", "white")],
     )
     ui_style.configure(
         "VoiceOn.TButton",
@@ -4427,7 +4428,10 @@ def main():
     )
 
     record_panels = [galleries[i]["title"] for i in (0, 2, 1)] + [blood_test_panel]
-    record_panel_visibility = [tk.BooleanVar(value=True) for _ in record_panels]
+    record_panel_visibility = [
+        tk.BooleanVar(value=boolean_setting(name, True))
+        for name in ("XRAY_ON", "CTSCAN_ON", "EKG_ON", "BLOOD_TEST_ON")
+    ]
 
     def equalize_record_panels(event=None):
         """Give every currently displayed record panel the same grid share."""
@@ -4464,6 +4468,9 @@ def main():
         button = ttk.Checkbutton(display_controls, variable=visible,
                                  command=update_record_panel_visibility,
                                  style="DisplayToggle.TCheckbutton")
+        # Configuration-disabled panels cannot be enabled through the GUI.
+        if not visible.get():
+            button.state(["disabled"])
         button.pack(side=tk.LEFT, padx=(4, 2), pady=3)
         def refresh(*_args, target=button, name=label, variable=visible):
             target.config(text=f"{name}: {'ON' if variable.get() else 'OFF'}")

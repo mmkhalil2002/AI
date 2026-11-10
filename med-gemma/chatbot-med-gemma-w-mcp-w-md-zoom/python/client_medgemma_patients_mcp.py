@@ -141,6 +141,7 @@ def load_settings():
                 "GENERATION_TIMEOUT", "TEMPERATURE", "REPEAT_PENALTY",
                 "REPEAT_LAST_N", "DISK", "PATIENT_RECORDS_DIR",
                 "XRAY_SERVER_ID", "CT_SCAN_SERVER_ID", "EKG_SERVER_ID", "BLOODTEST_SERVER_ID",
+                "XRAY_ON", "CTSCAN_ON", "EKG_ON", "BLOOD_TEST_ON",
             ):
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                     value = value[1:-1]
@@ -5354,7 +5355,7 @@ def main():
     )
     ui_style.map("ToggleOff.TButton", background=[("active", "#90a4ae")])
     # Keep the three related toggle groups visually distinct.  The last group
-    # starts enabled, so its green state represents ON and orange represents OFF.
+    # uses green for ON and a muted gray for OFF.
     ui_style.configure(
         "SelectionToggle.TCheckbutton", background="#8b5a2b", foreground="white",
         padding=(8, 5), font=("Segoe UI", 9, "bold"),
@@ -5391,9 +5392,9 @@ def main():
     )
     ui_style.map(
         "ModalityDisplay.TCheckbutton",
-        background=[("selected", "#2e7d32"), ("!selected", "#ef6c00")],
-        foreground=[("selected", "white"), ("!selected", "white")],
-        indicatorcolor=[("selected", "#2e7d32"), ("!selected", "#ef6c00")],
+        background=[("selected", "#2e7d32"), ("!selected", "#b0bec5")],
+        foreground=[("selected", "white"), ("!selected", "#263238")],
+        indicatorcolor=[("selected", "#2e7d32"), ("!selected", "#b0bec5")],
     )
     ui_style.configure(
         "VoiceOn.TButton",
@@ -6009,6 +6010,12 @@ def main():
         yscrollcommand=blood_test_scroll.set,
         xscrollcommand=blood_test_hscroll.set,
     )
+
+    # Apply startup display settings through the same actions as the panel buttons.
+    # Missing or invalid settings retain the default ON state.
+    for modality, setting in enumerate(("XRAY_ON", "CTSCAN_ON", "EKG_ON", "BLOOD_TEST_ON")):
+        if not boolean_setting(setting, True):
+            modality_window_buttons[modality].invoke()
 
     # Explicit initial sash positions prevent the large blood-test text widget
     # from squeezing the X-ray and EKG previews into a narrow horizontal strip.

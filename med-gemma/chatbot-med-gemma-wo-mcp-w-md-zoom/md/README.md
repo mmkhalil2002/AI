@@ -37,11 +37,30 @@ patient_records/
 
 The legacy `<patient>/data/{xrays,ct_scan,ekgs,blood_tests}/` layout is also supported. Images support PNG, JPEG, BMP, GIF, WebP, and TIFF. Blood tests support structured results lists and mapping-style results, with either a title or panel name. Blood tests currently load JSON records, not scanned lab images.
 
+Set `XRAY_ON`, `CTSCAN_ON`, `EKG_ON`, and `BLOOD_TEST_ON` in `python/.env` to control the initial state of the matching Display buttons. Each defaults to `TRUE` when omitted; `FALSE` hides its panel and disables the matching Display button, which appears gray and cannot be clicked or activated with the keyboard. Buttons configured TRUE remain usable after startup. Values are case-insensitive and also accept yes/no, on/off, and 1/0; invalid values fall back to TRUE. Environment variables take precedence over `.env`. Restart the app to apply changes.
+
+
+```env
+XRAY_ON=TRUE
+CTSCAN_ON=TRUE
+EKG_ON=TRUE
+BLOOD_TEST_ON=TRUE
+```
+
+| Setting | Matching Display button | Default if missing |
+|---|---|---|
+| `XRAY_ON` | X-ray | `TRUE` |
+| `CTSCAN_ON` | CT Scan | `TRUE` |
+| `EKG_ON` | EKG/ECG | `TRUE` |
+| `BLOOD_TEST_ON` | Blood Test | `TRUE` |
+
+For example, `CTSCAN_ON=FALSE` starts with CT Scan OFF, grays out and disables its Display button, and reflows the remaining panels. Set `CTSCAN_ON=TRUE` and restart the app to make that button usable again. These settings control panel visibility; they do not open the separate Zoom viewers or change record selections.
+
 ## Patient and display controls
 
 1. Enter First name, Last name, and an eight-digit DOB (`MMDDYYYY`), then select **Search**. The newest snapshot loads; **Date & Time** immediately after Search lets you choose one other snapshot. Do not merge records across different times. The search area has no Patient Date and Time heading.
 2. The **left** side retains the AI Clinical Assistant Center, blank question input, Ask AI, Voice, Close GUI, and one AI Response panel. The left question and response column initially occupies **25%** of the workspace width; the **right medical-record display occupies 75%**. The divider remains draggable.
-3. Nine independent toggle buttons appear beneath the Search row, with extra spacing between the Selection, modality-Zoom, and Display clusters but without group labels. **Zoom Select Out/In** and Merge/Split appear together; the other four Zoom toggles appear next; then the four Display toggles (**X-ray**, **CT Scan**, **EKG/ECG**, and **Blood Test**). The Zoom Select and modality controls initially read **Out**; after activation, they read **In**. Zoom Select and default Merge are orange initially and dark blue when active. The modality controls use yellow while inactive and purple while active. The four Display toggles are initially ON, show **ON** in green, and show **OFF** in brown. With all panels on, the record display uses a **2-by-2 grid**: **X-ray | CT Scan** in the top row and **EKG/ECG | Blood Test** in the bottom row. When a panel is switched off, the remaining visible panels stack vertically and divide the complete records area equally: three panels each use one-third of the height, two each use one-half of the height, and one uses the full area. Hiding a panel preserves its loaded data and selections. Zero enabled shows an empty records area.
+3. Nine independent toggle buttons appear beneath the Search row, with extra spacing between the Selection, modality-Zoom, and Display clusters but without group labels. **Zoom Select Out/In** and Merge/Split appear together; the other four Zoom toggles appear next; then the four Display toggles (**X-ray**, **CT Scan**, **EKG/ECG**, and **Blood Test**). The Zoom Select and modality controls initially read **Out**; after activation, they read **In**. Zoom Select and default Merge are orange initially and dark blue when active. The modality controls use yellow while inactive and purple while active. The four Display toggles default to ON (configurable with the four `_ON` settings), show **ON** in green, and show **OFF** in brown when manually switched off. A Display button disabled by a FALSE configuration setting shows **OFF** in gray and cannot be used. With all panels on, the record display uses a **2-by-2 grid**: **X-ray | CT Scan** in the top row and **EKG/ECG | Blood Test** in the bottom row. When a panel is switched off, the remaining visible panels stack vertically and divide the complete records area equally: three panels each use one-third of the height, two each use one-half of the height, and one uses the full area. Hiding a panel preserves its loaded data and selections. Zero enabled shows an empty records area.
 4. Each panel scrolls independently, supports selecting/deselecting individual items, and shows the active snapshot date and time. The active patient uses a teal heading and purple details. Blood-test table rows remain aligned in fixed-width columns.
    X-ray and CT Scan galleries show two images per row with all four panels visible, and four images per row when one to three panels are visible. EKG remains one image per row.
 5. The five **Zoom** toggles report ON/OFF state. **Merge/Split applies only to Selection Zoom** and defaults to Merge.
@@ -86,4 +105,4 @@ See `md/VERIFICATION.md` for current checks and historical results. Syntax and m
 
 ## Implementation status and Codex handoff
 
-The current Python source includes CT support, a responsive record grid, Display and Zoom menus, and the initial 25%/75% workspace split. Synthetic GUI checks passed for earlier Display combinations and independent modality viewers. User-reported crashes remain unresolved; startup checks did not reproduce them. Full visual review and live record generation remain unverified. See the new verification entry separately from historical results. Update the single Python application in place, preserve existing behavior, do not modify patient data or `.env`, and record new tests honestly. The accompanying `AGENTS.md` is the consolidated implementation specification.
+The current Python source includes CT support, a responsive record grid, Display and Zoom menus, and the initial 25%/75% workspace split. Synthetic GUI checks passed for earlier Display combinations and independent modality viewers. User-reported crashes remain unresolved; startup checks did not reproduce them. Full visual review and live record generation remain unverified. See the new verification entry separately from historical results. Update the single Python application in place, preserve existing behavior, do not modify patient data; preserve `.env` except for explicitly requested configuration changes, and record new tests honestly. The accompanying `AGENTS.md` is the consolidated implementation specification.

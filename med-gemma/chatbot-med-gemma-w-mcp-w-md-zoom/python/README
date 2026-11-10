@@ -6,6 +6,8 @@ The application provides a two-column **AI Clinical Assistant Center**: patient/
 
 ## Run
 
+Set `XRAY_ON`, `CTSCAN_ON`, `EKG_ON`, and `BLOOD_TEST_ON` in `python/.env` to `TRUE` or `FALSE` to choose each record panel's startup visibility. Each defaults to `TRUE` when omitted. These settings apply the same action as the matching ON/OFF buttons; the buttons remain usable afterward.
+
 From the project root:
 
 ```bat

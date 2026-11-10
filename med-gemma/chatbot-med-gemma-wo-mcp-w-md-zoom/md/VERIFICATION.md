@@ -120,3 +120,19 @@ This entry describes the current changes separately from historical results abov
 - The width adjustment passed a Python syntax check. The updated application launched and stayed running without a startup error in the captured output.
 - User-reported crashes remain unresolved. Full screenshot-based visual review, every viewer navigation/zoom combination, live generation, and clinical accuracy remain unverified. Selection Merge continues to use separate formatted windows for blood records.
 - Markdown files were edited directly; no `.diff` files were created.
+
+## 2026-11-09: Initial Display settings
+
+Added XRAY_ON, CTSCAN_ON, EKG_ON, and BLOOD_TEST_ON to the settings loader and existing Display BooleanVar initialization, each with a TRUE fallback. Reviewed the setting order against the panel order (X-ray, CT Scan, EKG, Blood Test); existing button callbacks and startup layout refresh remain in use. Runtime, syntax compilation, and GUI checks were unavailable because no accessible Python interpreter was found in this session. No live Ollama request was made.
+
+## 2026-11-09: Display settings documentation follow-up
+
+README.md now includes the four-setting .env example, explicit setting-to-button mapping, defaults, and a FALSE example. AGENTS.md now specifies configurable initial Display states instead of unconditional ON states. Reviewed documentation against the settings loader, boolean parser, and panel initialization. This was a documentation-only update; no additional runtime or GUI checks were performed.
+
+## 2026-11-09: Disable configuration-OFF Display buttons
+
+FALSE now hides the corresponding panel and sets its Display checkbutton to the ttk disabled state at construction. The style prioritizes disabled gray background/text over selected/active colors. TRUE and missing settings keep buttons usable; manual toggling OFF does not disable an enabled button. Updated README.md, AGENTS.md, and .env comments. Source review and git diff --check passed; runtime and visual GUI checks were not performed (Python unavailable in this session).
+
+## 2026-11-09: Disabled-button documentation consistency
+
+Clarified README.md and AGENTS.md: configuration FALSE means hidden panel and disabled gray OFF button; manually toggling an enabled panel OFF leaves a usable brown OFF button. Re-enabling a configuration-disabled button requires TRUE and an application restart. Documentation formatting checked with git diff --check; no application code changed or runtime tests were run in this follow-up.
