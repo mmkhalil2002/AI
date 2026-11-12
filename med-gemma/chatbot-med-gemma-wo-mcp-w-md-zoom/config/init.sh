@@ -74,7 +74,8 @@ fi
 # Install or repair Ollama binaries without launching the server.
 # Manual archive extraction avoids installer-managed service startup.
 printf '\n'
-read -r -p 'Install/repair Ollama locally (without starting it)? [y/N] ' configure
+echo '[INFO] Ensuring Ollama and required models are installed...'
+configure=y
 if [[ "$configure" =~ ^[Yy]$ ]]; then
   ARCH="$(uname -m)"
   case "$ARCH" in
@@ -94,7 +95,7 @@ if [[ "$configure" =~ ^[Yy]$ ]]; then
     REPAIR=1
   fi
   if (( REPAIR )); then
-    read -r -p 'Download and reinstall the complete official Ollama archive? [y/N] ' confirm
+    confirm=y
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
       if curl -fsS --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
         echo '[ERROR] Ollama is running. Stop it using ./unrun_ollama.sh, then rerun init.sh.' >&2
@@ -121,7 +122,59 @@ if [[ "$configure" =~ ^[Yy]$ ]]; then
     echo '[NEXT] Run ./run_ollama.sh --local or --all-ips to start and test it.'
   fi
 fi
-echo '[SUCCESS] INIT finished. No application or server was launched.'
+# Verify both required AI models; pull any that are missing.
+# A temporary loopback-only Ollama process is used if no API is running.
+REQUIRED_MODELS=("medgemma1.5:latest" "qwen3:8b")
+OLLAMA_INIT_PID=""
+cleanup_ollama_init() {
+  if [[ -n "$OLLAMA_INIT_PID" ]]; then
+    echo '[INFO] Stopping temporary Ollama server...'
+    kill "$OLLAMA_INIT_PID" 2>/dev/null || true
+    wait "$OLLAMA_INIT_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup_ollama_init EXIT
+if ! command -v ollama >/dev/null 2>&1; then
+  echo '[ERROR] Ollama is not installed; required models cannot be downloaded.' >&2
+  exit 1
+fi
+if ! curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+  echo '[INFO] Starting temporary local-only Ollama server for model downloads...'
+  OLLAMA_HOST=127.0.0.1:11434 ollama serve > /tmp/medgemma-init-ollama.log 2>&1 &
+  OLLAMA_INIT_PID=$!
+  ready=0
+  for ((attempt=1; attempt<=45; attempt++)); do
+    if curl -fsS --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 2
+  done
+  if (( ! ready )); then
+    echo '[ERROR] Ollama server did not become ready. See /tmp/medgemma-init-ollama.log' >&2
+    exit 1
+  fi
+fi
+for model in "${REQUIRED_MODELS[@]}"; do
+  echo "[INFO] Checking model: $model"
+  if ollama list | awk 'NR>1 {print $1}' | grep -Fxq "$model"; then
+    echo "[OK] Already installed: $model"
+  else
+    echo "[INFO] Downloading required model: $model"
+    if ! ollama pull "$model"; then
+      echo "[ERROR] Download failed: $model" >&2
+      exit 1
+    fi
+  fi
+  if ! ollama list | awk 'NR>1 {print $1}' | grep -Fxq "$model"; then
+    echo "[ERROR] Model missing after download: $model" >&2
+    exit 1
+  fi
+  echo "[OK] Verified: $model"
+done
+cleanup_ollama_init
+OLLAMA_INIT_PID=""
+echo '[SUCCESS] INIT finished. Both required models verified; no GUI or Codex launched.'
 echo "Python for GUI: $VPY"
 echo '[IMPORTANT] The installer cannot change the PATH of the terminal that launched it.'
 echo '[ACTION] For THIS terminal, run:'

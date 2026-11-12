@@ -2,7 +2,7 @@
 
 Configuration is read from .env beside this file. Optional setting:
 PATIENT_RECORDS_DIR=patient_records (relative to this script, or absolute).
-OLLAMA_URL and MEDGEMMA_MODEL retain the existing .env values.
+The server address is entered in the connection window; MEDGEMMA_MODEL uses .env.
 Select a patient, select records, type a question, and press Send.
 Original image bytes are uploaded; thumbnails remain local.
 AI-generated output requires clinician review.
@@ -102,12 +102,12 @@ def load_settings():
             key, value = line.split("=", 1)
             key, value = key.strip(), value.strip()
             if key in (
-                "OLLAMA_URL", "MEDGEMMA_MODEL", "IMAGE_DIR", "BLOOD_TEST_DIR",
+                "MEDGEMMA_MODEL", "IMAGE_DIR", "BLOOD_TEST_DIR",
                 "XRAY_WIDTH", "XRAY_HEIGHT", "EKG_WIDTH", "EKG_HEIGHT",
                 "WINDOW_WIDTH", "WINDOW_HEIGHT", "NUM_PREDICT", "THINK",
                 "GENERATION_TIMEOUT", "TEMPERATURE", "REPEAT_PENALTY",
                 "REPEAT_LAST_N", "DISK", "PATIENT_RECORDS_DIR",
-                "XRAY_ON", "CTSCAN_ON", "EKG_ON", "BLOOD_TEST_ON",
+                "WINDOW_DEFINTIONS",
             ):
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                     value = value[1:-1]
@@ -116,6 +116,38 @@ def load_settings():
 
 
 settings_from_file = load_settings()
+
+RECORD_SECTION_KEYS = ("xrays", "ct_scan", "ekgs", "blood_tests")
+
+
+def parse_window_definitions(value):
+    """Assign a plain sequence of folder names to the four existing slots."""
+    result = {}
+    entries = value.split(",")
+    if len(entries) > len(RECORD_SECTION_KEYS):
+        raise ValueError("WINDOW_DEFINTIONS supports up to four section names.")
+    for key, entry in zip(RECORD_SECTION_KEYS, entries):
+        folder = entry.strip()
+        if not folder:
+            continue
+        if (folder.startswith(".") or any(c in folder for c in '/\\:=')
+                or folder in result.values()):
+            raise ValueError(f"Invalid WINDOW_DEFINTIONS entry: {entry!r}. "
+                             "Use unique folder names separated by commas.")
+        result[key] = folder
+    return result
+
+
+WINDOW_DEFINITIONS = parse_window_definitions(os.environ.get(
+    "WINDOW_DEFINTIONS", settings_from_file.get("WINDOW_DEFINTIONS", ",".join(RECORD_SECTION_KEYS))))
+
+
+def section_label(key):
+    return WINDOW_DEFINITIONS.get(key, key)
+
+
+def path_section_label(path):
+    return next((folder for folder in WINDOW_DEFINITIONS.values() if folder in Path(path).parts), "Image")
 
 
 def runtime_diagnostics():
@@ -328,10 +360,12 @@ def patient_files(modality, extensions):
     """
     if active_patient is None:
         return [], "Select a patient to load records."
+    if modality not in WINDOW_DEFINITIONS:
+        return [], "Section is not configured."
     # ``ct_scan`` is the documented directory name.  Earlier bundled record
     # sets used the plural spelling, so accept it as a read-only compatibility
     # alias rather than making a valid CT snapshot appear to have no data.
-    folder_names = ("ct_scan", "ct_scans") if modality == "ct_scan" else (modality,)
+    folder_names = (WINDOW_DEFINITIONS[modality],)
     if selected_snapshot_dir is None and patient_snapshots(active_patient):
         return [], "Choose a date and time to load this patient's data."
     if selected_snapshot_dir is not None:
@@ -399,6 +433,8 @@ xray_zoom_mode = "merge"
 xray_zoom_mode_var = None
 xray_zoom_viewers = {}
 ui_callbacks = queue.Queue()
+server_connected = False
+connected_server_url = ""
 # Thumbnail work is streamed through bounded queues. The decoder keeps only one
 # source image open; Tk PhotoImage instances are created and cached on the UI thread.
 THUMBNAIL_CACHE_LIMIT = 32
@@ -584,7 +620,7 @@ def patient_snapshots(patient):
                 if not time_dir.is_dir() or time_dir.name.startswith("."):
                     continue
                 safe_path(time_dir, patient)
-                if any((time_dir / modality).is_dir() for modality in ("xrays", "ekgs", "ct_scan", "ct_scans", "blood_tests")):
+                if any((time_dir / folder).is_dir() for folder in WINDOW_DEFINITIONS.values()):
                     snapshots.append((date_dir.name, time_dir.name, time_dir.resolve()))
     except (OSError, ValueError):
         return []
@@ -1658,9 +1694,7 @@ def lab_view_rows(record):
     ]
 
 
-DEFAULT_SERVER_URL = os.environ.get(
-    "OLLAMA_URL", settings_from_file.get("OLLAMA_URL", "http://127.0.0.1:11434")
-)
+DEFAULT_SERVER_URL = "http://127.0.0.1:11434"
 DEFAULT_MODEL = os.environ.get(
     "MEDGEMMA_MODEL", settings_from_file.get("MEDGEMMA_MODEL", "medgemma1.5:4b")
 )
@@ -1680,7 +1714,7 @@ SOFT_TEAL = "#d8f5ef"
 SOFT_CORAL = "#ffe2dd"
 TILE_BACKGROUND = "#f5f9fc"
 DATASET_COLORS = ((PRIMARY_BLUE, SOFT_BLUE), (TEAL, SOFT_TEAL), (CORAL, SOFT_CORAL))
-GALLERY_NAMES = ("X-RAY", "EKG/ECG", "CT SCAN")
+GALLERY_NAMES = tuple(section_label(key) for key in ("xrays", "ekgs", "ct_scan"))
 REPORT_PRESETS = {
     "Draft report": (
         "Draft a concise report from only the records explicitly selected below. "
@@ -1921,7 +1955,7 @@ def encode_image(path):
 def load_blood_tests():
     """Load original selectable lab records and render their normalized rows."""
     set_snapshot_heading(blood_test_panel.heading_name, blood_test_panel.heading_date,
-                         blood_test_panel.heading_time, "BLOOD TEST")
+                         blood_test_panel.heading_time, section_label("blood_tests"))
     blood_test_view.config(state=tk.NORMAL)
     blood_test_view.delete("1.0", tk.END)
     blood_test_records.clear()
@@ -2247,7 +2281,7 @@ def current_viewer_records():
     records = []
     for modality in ("xrays", "ekgs", "ct_scan"):
         paths, _ = patient_files(modality, IMAGE_EXTENSIONS)
-        records.extend((modality, path) for path in paths)
+        records.extend((section_label(modality), path) for path in paths)
     return records
 
 
@@ -2334,7 +2368,7 @@ def open_xray_zoom_viewer(path):
     path = Path(path)
     if active_patient is None or path in xray_zoom_viewers:
         return
-    modality = "EKG" if "ekgs" in path.parts else "Blood Test" if "blood_tests" in path.parts else "CT Scan" if {"ct_scan", "ct_scans"}.intersection(path.parts) else "X-ray"
+    modality = path_section_label(path)
     if path.suffix.lower() == ".json":
         try:
             safe_path(path, active_patient)
@@ -2343,9 +2377,9 @@ def open_xray_zoom_viewer(path):
             show_status("Could not open selected blood-test record.")
             return
         viewer = tk.Toplevel(window)
-        viewer.title(f"Blood Test - {path.stem}")
+        viewer.title(f"{modality} - {path.stem}")
         viewer.geometry("800x650")
-        tk.Label(viewer, text=f"Blood Test: {path.stem}", font=("Segoe UI", 18, "bold"),
+        tk.Label(viewer, text=f"{modality}: {path.stem}", font=("Segoe UI", 18, "bold"),
                  foreground="white", background="#164e63", padx=12, pady=10).pack(fill=tk.X)
         diagnosis_panel, diagnosis = create_image_diagnosis_panel(viewer)
         diagnosis_panel.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=8)
@@ -2589,7 +2623,7 @@ def show_viewer_record(state, index):
         state["source"] = None
         state["photo"] = None
         state["canvas"].delete("all")
-        state["title"].config(text=f"{modality.upper()} — {path.name} (unavailable)")
+        state["title"].config(text=f"{modality} — {path.name} (unavailable)")
         state["status"].config(text=f"Could not open image for inspection ({type(error).__name__}).")
         return
     state["source"] = source
@@ -2597,7 +2631,7 @@ def show_viewer_record(state, index):
     fit = viewer_fit_scale(source.size, (max(1, canvas.winfo_width()), max(1, canvas.winfo_height())))
     state["zoom"] = 1.0 / max(fit, 0.0001)
     state["window"].title(f"{modality} - {path.stem} - {source.width}x{source.height}")
-    state["title"].config(text=f"{modality.upper()} — {path.name}")
+    state["title"].config(text=f"{modality} — {path.name}")
     render_viewer_image(state)
 
 
@@ -2850,6 +2884,8 @@ def base_url(value):
     parsed = urlsplit(value)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ValueError("Enter a full HTTP or HTTPS server URL including its port.")
+    if parsed.port == 0:
+        raise ValueError("Enter a port between 1 and 65535.")
     if parsed.path or parsed.query or parsed.fragment or parsed.username or parsed.password:
         raise ValueError("Enter only the server address and port, without a path or key.")
     return value
@@ -3494,6 +3530,9 @@ def send_question():
     global current_request
     if current_request is not None:
         return
+    if not server_connected:
+        show_status("Use the Connection window to connect to Ollama first.")
+        return
     patient = active_patient
     if patient is None:
         show_status("Select a patient first.")
@@ -3556,7 +3595,7 @@ def send_question():
     ekg_count = len(selected_images[1])
     model = model_name.get().strip()
     try:
-        url = base_url(server_url.get())
+        url = connected_server_url
         if not user_question or not model:
             raise ValueError("Enter a question and a model name.")
     except ValueError as error:
@@ -3617,14 +3656,47 @@ def retry_request():
     send_question()
 
 
+def connection_url(address):
+    """Build the Ollama endpoint from an IP, using HTTP port 11434 by default."""
+    address = address.strip() or DEFAULT_SERVER_URL
+    if "://" not in address:
+        if address.count(":") > 1 and not address.startswith("["):
+            address = f"[{address}]"
+        parsed = urlsplit(f"http://{address}")
+        if parsed.port is None:
+            address += ":11434"
+        address = f"http://{address}"
+    return base_url(address)
+
+
 def refresh_models():
     """Read the model list from the selected local or remote Ollama server."""
+    global server_connected, connected_server_url
+    if server_connected:
+        # Ollama uses individual HTTP requests, not a persistent login/session.
+        # Cancel local work and forget the selected endpoint to disconnect.
+        cancel_request()
+        server_connected = False
+        connected_server_url = ""
+        server_entry.config(state=tk.NORMAL)
+        server_url.set("")
+        refresh_button.config(state=tk.NORMAL, text="Connect", bg="#facc15", fg=TEXT_COLOR,
+                              activebackground="#fde047", activeforeground=TEXT_COLOR)
+        model_picker.configure(values=DEFAULT_MODELS)
+        connection_message.set("Disconnected. Enter an IP address or click Connect to use the default.")
+        set_readiness("DISCONNECTED", "NOT CHECKED")
+        show_status("Disconnected from Ollama.")
+        return
     try:
-        url = base_url(server_url.get())
+        url = connection_url(server_url.get())
     except ValueError as error:
+        refresh_button.config(text="Fail", bg="#c62828", fg="white")
+        connection_message.set(str(error))
         show_status(str(error))
         return
-    refresh_button.config(state=tk.DISABLED)
+    refresh_button.config(state=tk.DISABLED, text="Connecting...", bg="#facc15", fg="#17324d")
+    server_entry.config(state=tk.DISABLED)
+    connection_message.set(f"Connecting to {url}...")
     set_readiness("CHECKING", "CHECKING")
     show_status("Checking Ollama...")
 
@@ -3632,7 +3704,14 @@ def refresh_models():
         try:
             models = list_models(url)
             def complete():
-                refresh_button.config(state=tk.NORMAL)
+                global server_connected, connected_server_url
+                server_connected = True
+                connected_server_url = url
+                server_url.set(urlsplit(url).hostname)
+                refresh_button.config(state=tk.NORMAL, text="Disconnect", bg="#15803d", fg="white",
+                                      activebackground="#166534", activeforeground="white")
+                server_entry.config(state="readonly")
+                connection_message.set("Connected to Ollama.")
                 model_picker.configure(values=models or DEFAULT_MODELS)
                 selected_model = model_name.get().strip()
                 installed = selected_model in models or f"{selected_model}:latest" in models
@@ -3648,9 +3727,11 @@ def refresh_models():
         except Exception as error:
             message = str(error) if isinstance(error, RuntimeError) else server_error_category(error)
             def failed():
-                refresh_button.config(state=tk.NORMAL)
+                refresh_button.config(state=tk.NORMAL, text="Fail", bg="#c62828", fg="white")
+                server_entry.config(state=tk.NORMAL)
+                connection_message.set(f"Connection failed: {message}. Check the address and retry.")
                 set_readiness("OFFLINE", "UNKNOWN (server check failed)")
-                show_status(f"Server check failed ({message}). Records remain available; use Check Connection to retry.")
+                show_status(f"Server check failed ({message}). Records remain available; use Connect to retry.")
             post_ui(failed)
 
     threading.Thread(target=worker, daemon=True).start()
@@ -3866,57 +3947,58 @@ def main():
     # per-gallery viewport instead of requesting nearly the entire data area.
     gallery_viewport_width = max(220, round((visible_width - 45) * 0.58))
 
-    settings = ttk.LabelFrame(
-        window, text="Connection & Model", style="Settings.TLabelframe"
+    global connection_message
+    patient_bar = ttk.Frame(window, style="App.TFrame")
+    patient_bar.pack(fill=tk.X, padx=14, pady=5)
+    patient_bar.columnconfigure(8, weight=1)
+    connection_message = tk.StringVar(
+        value="Enter the server IP address; HTTP and port 11434 are added automatically. Leave blank for localhost."
     )
-    settings.pack(fill=tk.X, padx=14, pady=(10, 5))
-    settings.columnconfigure(1, weight=1 if compact_layout else 0)
-    settings.columnconfigure(3, weight=1 if compact_layout else 0)
-    server_url = tk.StringVar(value=DEFAULT_SERVER_URL)
+    settings = ttk.Frame(patient_bar, style="App.TFrame")
+    settings.grid(row=0, column=8, padx=(4, 0), pady=3, sticky="ew")
+    settings.columnconfigure(1, weight=0)
+    server_url = tk.StringVar(value="")
     model_name = tk.StringVar(value=DEFAULT_MODEL)
-    ttk.Label(settings, text="Server URL", style="Field.TLabel").grid(row=0, column=0, padx=(10, 5), pady=7, sticky="w")
+    ttk.Label(settings, text="IP address", style="Field.TLabel").grid(row=0, column=0, padx=(10, 5), pady=7, sticky="w")
     server_entry = ttk.Entry(
         settings,
         textvariable=server_url,
-        width=max(24, min(42, len(DEFAULT_SERVER_URL) + 2)),
+        width=15,
     )
-    server_entry.grid(row=0, column=1, padx=4, pady=3, sticky="ew" if compact_layout else "w")
-    model_field_label = ttk.Label(settings, text="Model", style="Field.TLabel")
-    model_field_label.grid(row=0, column=2, padx=(14, 5), pady=7, sticky="w")
+    server_entry.grid(row=0, column=1, padx=4, pady=3, sticky="w")
+    # Retain the configured model and model-list updates without crowding the header.
     model_picker = ttk.Combobox(
         settings,
         textvariable=model_name,
         values=DEFAULT_MODELS,
         width=max(16, min(28, len(DEFAULT_MODEL) + 2)),
     )
-    model_picker.grid(row=1 if compact_layout else 0, column=1 if compact_layout else 3,
-                      padx=4, pady=3, sticky="ew" if compact_layout else "w")
-    if compact_layout:
-        model_field_label.grid_forget()
-        model_field_label.grid(row=1, column=0, padx=(10, 5), pady=7, sticky="w")
-        # Move the model label and server/model inputs to a two-row layout so
-        # 125–150% scaling does not push the connection check off-screen.
-    refresh_button = ttk.Button(
+    refresh_button = tk.Button(
         settings,
-        text="Check Connection",
+        text="Connect",
         command=refresh_models,
-        style="Secondary.TButton",
+        bg="#facc15", fg=TEXT_COLOR,
+        activebackground="#fde047", activeforeground=TEXT_COLOR,
+        disabledforeground=TEXT_COLOR, font=("Segoe UI", 10, "bold"),
+        width=13, padx=10, pady=5,
     )
-    refresh_button.grid(row=1 if compact_layout else 0, column=2 if compact_layout else 4,
+    refresh_button.grid(row=0, column=2,
                         padx=(10, 8), pady=3, sticky="w")
 
     readiness_label = ttk.Label(
         settings,
-        text=f"Records: {records_readiness}   |   Server: CHECKING   |   Model: CHECKING   |   Generation: NOT READY",
+        text=f"Records: {records_readiness}   |   Server: NOT CONNECTED   |   Model: NOT CHECKED   |   Generation: NOT READY",
         style="Status.TLabel",
     )
-    readiness_label.grid(row=2 if compact_layout else 1, column=0,
-                         columnspan=3 if compact_layout else 5,
-                         padx=10, pady=(1, 5), sticky="w")
-    settings.pack_forget()
+    ttk.Label(patient_bar, textvariable=connection_message, style="Status.TLabel",
+              wraplength=max(600, visible_width - 60)).grid(
+                  row=2, column=0, columnspan=11, padx=10, pady=(0, 3), sticky="w")
+    def address_changed(*_args):
+        if str(server_entry.cget("state")) != "disabled":
+            refresh_button.config(text="Connect", bg="#facc15", fg=TEXT_COLOR)
+            connection_message.set("Click Connect to check this address.")
+    server_url.trace_add("write", address_changed)
 
-    patient_bar = ttk.Frame(window, style="App.TFrame")
-    patient_bar.pack(fill=tk.X, padx=14, pady=5)
     patient_name = tk.StringVar()
     first_name_var = tk.StringVar()
     last_name_var = tk.StringVar()
@@ -3947,13 +4029,7 @@ def main():
     global zoom_vars
     zoom_vars = {key: tk.BooleanVar(value=False) for key in
                  ("selection", "xrays", "ct_scan", "ekgs", "blood_tests")}
-    zoom_labels = {
-        "selection": "Zoom",
-        "xrays": "X-ray",
-        "ct_scan": "CT Scan",
-        "ekgs": "EKG/ECG",
-        "blood_tests": "Blood Test",
-    }
+    zoom_labels = {"selection": "Zoom", **WINDOW_DEFINITIONS}
     zoom_buttons = {}
     def add_zoom_button(key, parent):
         style = "SelectionToggle.TCheckbutton" if key == "selection" else "ModalityZoom.TCheckbutton"
@@ -3971,7 +4047,8 @@ def main():
         return button
     xray_zoom_button = add_zoom_button("selection", selection_controls)
     for key in ("xrays", "ct_scan", "ekgs", "blood_tests"):
-        add_zoom_button(key, modality_zoom_controls)
+        if key in WINDOW_DEFINITIONS:
+            add_zoom_button(key, modality_zoom_controls)
     xray_zoom_mode_var = tk.BooleanVar(value=False)
     xray_zoom_mode_button = ttk.Checkbutton(
         selection_controls, variable=xray_zoom_mode_var, command=toggle_xray_zoom_mode,
@@ -4357,7 +4434,7 @@ def main():
 
     # Keep the selectable Blood Test Data list below the image galleries.
     blood_heading = tk.Frame(data_panes, background=APP_BACKGROUND)
-    blood_heading_name = tk.Label(blood_heading, text="BLOOD TEST", background=APP_BACKGROUND,
+    blood_heading_name = tk.Label(blood_heading, text=section_label("blood_tests"), background=APP_BACKGROUND,
                                   foreground=TEAL, font=("Segoe UI", 12, "bold"))
     blood_heading_date = tk.Label(blood_heading, text="", background=APP_BACKGROUND,
                                   foreground=TEAL, font=("Segoe UI", 12, "bold"))
@@ -4429,8 +4506,8 @@ def main():
 
     record_panels = [galleries[i]["title"] for i in (0, 2, 1)] + [blood_test_panel]
     record_panel_visibility = [
-        tk.BooleanVar(value=boolean_setting(name, True))
-        for name in ("XRAY_ON", "CTSCAN_ON", "EKG_ON", "BLOOD_TEST_ON")
+        tk.BooleanVar(value=key in WINDOW_DEFINITIONS)
+        for key in RECORD_SECTION_KEYS
     ]
 
     def equalize_record_panels(event=None):
@@ -4463,14 +4540,13 @@ def main():
         reflow_image_galleries()
         window.after_idle(equalize_record_panels)
 
-    panel_labels = ("X-ray", "CT Scan", "EKG/ECG", "Blood Test")
-    for label, visible in zip(panel_labels, record_panel_visibility):
+    for key, visible in zip(RECORD_SECTION_KEYS, record_panel_visibility):
+        if key not in WINDOW_DEFINITIONS:
+            continue
+        label = section_label(key)
         button = ttk.Checkbutton(display_controls, variable=visible,
                                  command=update_record_panel_visibility,
                                  style="DisplayToggle.TCheckbutton")
-        # Configuration-disabled panels cannot be enabled through the GUI.
-        if not visible.get():
-            button.state(["disabled"])
         button.pack(side=tk.LEFT, padx=(4, 2), pady=3)
         def refresh(*_args, target=button, name=label, variable=visible):
             target.config(text=f"{name}: {'ON' if variable.get() else 'OFF'}")
@@ -4493,10 +4569,9 @@ def main():
     window.after(180, establish_workspace_proportions)
 
     # Wait for an explicit identity search before reading any patient data.
-    # Load callbacks and check the server after the complete window is assembled.
+    # Process background callbacks after the complete window is assembled.
     window.after(50, drain_ui)
-    window.after(250, refresh_models)
-    # The startup check reads /api/tags only; it never generates or sends records.
+    # Connection checks begin only when the user presses Connect.
 
     window.mainloop()
 
@@ -4623,7 +4698,7 @@ def open_modality_viewer(key):
     def show(delta=0):
         if not paths:
             heading.configure(text="No records loaded for this modality")
-            viewer.title(key.replace("_", " "))
+            viewer.title(section_label(key))
             return
         state["index"] = (state["index"] + delta) % len(paths)
         path = Path(paths[state["index"]])
@@ -4633,7 +4708,7 @@ def open_modality_viewer(key):
         generation = state["generation"]
         heading.configure(text=path.stem)
         refresh_image_diagnosis(state, path)
-        viewer.title(f"{key} - {path.stem}")
+        viewer.title(f"{section_label(key)} - {path.stem}")
         if key == "blood_tests":
             body.configure(state=tk.NORMAL)
             body.delete("1.0", tk.END)
@@ -4664,7 +4739,7 @@ def open_modality_viewer(key):
                 def publish():
                     if current() and state["generation"] == generation:
                         state["source"] = source
-                        viewer.title(f"{key} - {path.stem} - {source.width}x{source.height}")
+                        viewer.title(f"{section_label(key)} - {path.stem} - {source.width}x{source.height}")
                         draw()
                 post_ui(publish)
             except (OSError, ValueError) as error:

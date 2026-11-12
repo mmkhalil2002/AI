@@ -13,7 +13,10 @@ import os
 import sys
 import threading
 from contextlib import AsyncExitStack
+from concurrent.futures import Future
 from pathlib import Path
+
+from record_config import load_window_server_map, section_names
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -25,39 +28,51 @@ class MCPRecords:
     Example: ``MCPRecords(root).read_record_bytes('P0001/xrays/chest.png')``.
     """
     def __init__(self, records_root: Path, python_dir: Path | None = None,
-                 server_ids: dict[str, str] | None = None):
+                 server_ids: dict[str, str] | None = None,
+                 section_map: dict[str, tuple[str, str]] | None = None):
         self.root = Path(records_root).resolve()
         self.python_dir = Path(python_dir or Path(__file__).parent).resolve()
+        self.section_map = section_map or load_window_server_map()
+        self.server_ids = self._server_ids(server_ids or {key: value[1] for key, value in self.section_map.items()})
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self.thread.start()
         self.sessions: dict[str, ClientSession] = {}
-        self.server_ids = self._server_ids(server_ids)
         self.stack: AsyncExitStack | None = None
         self.lock = threading.Lock()
-        self._call(self._start())
+        self._ready = Future()
+        self._lifetime_future = asyncio.run_coroutine_threadsafe(self._lifetime(), self.loop)
+        try:
+            self._ready.result(timeout=60)
+        except BaseException:
+            self._lifetime_future.cancel()
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(timeout=5)
+            raise
+
+    async def _lifetime(self):
+        """Enter and exit MCP cancel scopes within the same asyncio task."""
+        self._stop = asyncio.Event()
+        try:
+            await self._start()
+            self._ready.set_result(None)
+            await self._stop.wait()
+        except BaseException as error:
+            if not self._ready.done():
+                self._ready.set_exception(error)
+            raise
+        finally:
+            if self.stack is not None:
+                await self.stack.aclose()
+                self.stack = None
 
     @staticmethod
     def _server_ids(overrides: dict[str, str] | None = None) -> dict[str, str]:
         """Return configured local-server identifiers, with safe defaults."""
-        defaults = {
-            "xrays": "xrays",
-            "ct_scan": "ct_scan",
-            "ekgs": "ekgs",
-            "blood_tests": "blood_tests",
+        values = dict(overrides) if overrides is not None else {
+            key: value[1] for key, value in load_window_server_map().items()
         }
-        keys = {
-            "xrays": "XRAY_SERVER_ID",
-            "ct_scan": "CT_SCAN_SERVER_ID",
-            "ekgs": "EKG_SERVER_ID",
-            "blood_tests": "BLOODTEST_SERVER_ID",
-        }
-        overrides = overrides or {}
-        values = {
-            modality: str(overrides.get(modality, os.environ.get(key, defaults[modality]))).strip()
-            for modality, key in keys.items()
-        }
-        if not all(values.values()) or len(set(values.values())) != len(values):
+        if not values or not all(values.values()) or len({v.casefold() for v in values.values()}) != len(values):
             raise ValueError("MCP server IDs must be non-empty and unique")
         return values
 
@@ -67,20 +82,24 @@ class MCPRecords:
     async def _start(self):
         self.stack = AsyncExitStack()
         scripts = {"xrays": "mcp_xray_server.py", "ct_scan": "mcp_ct_scan_server.py", "ekgs": "mcp_ekg_server.py", "blood_tests": "mcp_blood_server.py"}
-        for modality, script in scripts.items():
+        for modality in self.section_map:
+            script = scripts[modality]
             params = StdioServerParameters(command=sys.executable, args=[str(self.python_dir / script)],
-                                          env={**os.environ, "PATIENT_RECORDS_DIR": str(self.root)})
+                                          env={**os.environ, "PATIENT_RECORDS_DIR": str(self.root),
+                                               "MCP_SERVER_ID": self.server_ids[modality],
+                                               "MCP_SECTION_NAMES": json.dumps(section_names(modality, self.section_map))})
             read, write = await self.stack.enter_async_context(stdio_client(params))
             session = await self.stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
+            initialized = await session.initialize()
+            if initialized.serverInfo.name != self.server_ids[modality]:
+                raise RuntimeError(f"Unexpected MCP server identity for {modality}")
             self.sessions[self.server_ids[modality]] = session
 
-    @staticmethod
-    def record_location(path: str | Path) -> tuple[str, str]:
+    def record_location(self, path: str | Path) -> tuple[str, str]:
         """Return the modality and normalized root-relative record path."""
         parts = Path(path).as_posix().split("/")
-        for modality in ("xrays", "ct_scan", "ekgs", "blood_tests"):
-            if modality in parts:
+        for modality in self.section_map:
+            if any(name in parts for name in section_names(modality, self.section_map)):
                 return modality, "/".join(parts)
         raise ValueError("Record path has no recognized modality")
 
@@ -95,6 +114,9 @@ class MCPRecords:
         The full GUI uses this for safe record listing, while the typed read
         helpers below retain their narrower image/blood return contracts.
         """
+        if modality not in self.server_ids:
+            modality = next((key for key in self.server_ids if modality == self.server_ids[key]
+                             or modality in section_names(key, self.section_map)), modality)
         if modality not in self.server_ids:
             raise ValueError(f"Unknown record modality: {modality}")
         with self.lock:
@@ -121,10 +143,11 @@ class MCPRecords:
             return self._call(self._tool(modality, "read_record", {"relative_path": relative_path}))["record"]
 
     def close(self):
-        if self.stack:
-            try:
-                self._call(self.stack.aclose())
-            finally:
-                self.stack = None
-        self.loop.call_soon_threadsafe(self.loop.stop)
-        self.thread.join(timeout=2)
+        if not self.thread.is_alive():
+            return
+        self.loop.call_soon_threadsafe(self._stop.set)
+        try:
+            self._lifetime_future.result(timeout=60)
+        finally:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(timeout=5)

@@ -4,7 +4,7 @@
 
 `python/client_medgemma_patients_mcp.py` is the working GUI and must be repaired in place. It is a full Tkinter application, not a prototype. Do not replace it with a short script, a generic dashboard, a filename list, or Text-widget image rendering.
 
-The approved interface is a full-width unlabeled patient-search bar above a responsive two-column workspace: approximately 35% left for the assistant controls and response, 65% right for patient records. The right side shows framed X-ray, CT scan, and EKG galleries plus selectable blood-test records. CT uses the exact `ct_scan` folder name and the same supported raster formats as X-rays; a missing CT folder is allowed. The `python/README` describes the same behavior.
+The approved interface is a full-width unlabeled patient-search bar above a responsive two-column workspace: approximately 35% left for the assistant controls and response, 65% right for patient records. The right side shows framed X-ray, CT scan, and EKG galleries plus selectable blood-test records. CT uses its configured record-section folder name and the same supported raster formats as X-rays; an omitted CT window is allowed. The `python/README` describes the same behavior.
 
 ## Required functions and boundaries
 
@@ -14,9 +14,15 @@ Keep `mcp_client.py` separate and imported through `from mcp_client import MCPRe
 
 ## Layout and behavior
 
+- `WINDOW_SERVER_MAP` at the start of python/.env maps the configured window/record section names to independent unique MCP server IDs. Propagate IDs to server identity and route sections through this table. Window names are arbitrary valid folder names. Resolve record handlers by server ID using SERVER_HANDLERS, never by window names or table order.
+
+- Match the configured window names to the actual patient-record section folders. The current dataset uses `WINDOW_SERVER_MAP=xrays:ID001,ct_scan:ID002,ekgs:ID003,blood_tests:ID004` and `SERVER_HANDLERS=ID001:xrays,ID002:ct_scan,ID003:ekgs,ID004:blood_tests`. Removing a window entry removes its panel, Zoom control, ON/OFF control and MCP connection. Do not substitute example folder names for the dataset's existing names.
+
+- Beside Date & time, show a narrow IP field and yellow Connect button. Pressing Connect with a blank IP fills the field with localhost; build http://<IP>:11434 without OLLAMA_URL configuration. Check connectivity asynchronously; success shows green Disconnect, failure shows red Fail and allows retry. Clicking Disconnect cancels any current local request, closes its established HTTP response, clears the active server and IP field, marks the server offline and restores yellow Connect without checking a server. Block new inference until Connect succeeds again; a blank IP uses localhost only after an explicit Connect. Editing IP resets yellow Connect.
+
 - Top bar: First name, last name, and DOB (`MMDDYYYY`) fields plus `Search`; a successful search loads the newest patient snapshot, while an invalid or missing patient shows an error dialog. Existing patient folders use two-digit years, so search maps the entered four-digit year to the matching `YY` folder suffix. `Date & time` follows the search controls. At the far-right edge, a two-line block displays `Active patient` in teal above the selected name and DOB in coral.
 - Left: red/orange `AI Clinical Assistant Center` title; `Your Question`; multiline prompt; `Ask AI`, `Voice: OFF`, and `Close`; concise status; large scrollable `AI Response` output.
-- Right: visible `XRAY`, `CT SCAN`, `EKG/ECG`, and `BLOOD TEST` panels with actual snapshot date/time headings. Use pale borders/light surfaces, teal headings and date, purple time.
+- Right: only configured panels, labeled with their arbitrary window names, with actual snapshot date/time headings. Use pale borders/light surfaces, teal headings and date, purple time.
 - Retain horizontal and vertical gallery scrollbars, framed selectable X-ray tiles, wide readable EKGs, and Tk image references/caches. Zoom starts in its `Zoom out` state. `Merge` shares one selected-image viewer with Previous, Next, +, −, Fit, and Reset; `Split` opens a separate viewer for each selected X-ray/EKG image with +, −, Fit, and Reset only. Fit shows the whole image; Reset restores original 100% pixel size.
 - Exclude `sources.csv` and unsupported files before tile construction. Never show loose metadata text in place of gallery tiles.
 - Blood tests require red titles and explicit selection markers, then aligned Test, Value, Unit, Reference range, and Flag results. Preserve existing normalization and flag rules.
@@ -24,7 +30,7 @@ Keep `mcp_client.py` separate and imported through `from mcp_client import MCPRe
 
 ## Safety, paths, and requests
 
-Support `XRAY_ON`, `CTSCAN_ON`, `EKG_ON`, and `BLOOD_TEST_ON` in `python/.env`, with OS environment precedence. Each defaults to `TRUE` when missing or invalid. Apply `FALSE` through the matching panel ON/OFF button action after all panels exist, preserving panel hiding and layout resizing. Keep ON buttons green and OFF buttons muted gray (`#b0bec5`) with dark text (`#263238`); users can still toggle them after startup.
+Only entries in `WINDOW_SERVER_MAP` produce panels, Zoom and ON/OFF controls. All configured panels start ON. No per-panel startup ON/OFF settings are read from .env. Keep interactive ON buttons green and OFF buttons muted gray (`#b0bec5`) with dark text (`#263238`); toggles remain usable.
 
 Resolve `.env` and relative `PATIENT_RECORDS_DIR` beside the GUI. Honor OS environment precedence. Support direct modality folders, legacy `data/<modality>`, and dated snapshots. Pass the absolute root to child processes.
 
@@ -36,14 +42,14 @@ Servers must preserve path confinement, hidden/link checks, modality checks, all
 
 Compile changed Python. With de-identified records, exercise at least two patients, snapshot switching, gallery selection, blood selection/details, image viewer, Voice fallback, Send error/success, stale callbacks, and Close cleanup. Confirm sources.csv is excluded and a populated window preserves the two-column gallery layout. Do not run installers, uninstallers, remote inference, or use real patient records solely for validation.
 
+Use `py config/verify_window_mapping.py` for synthetic record routing, MCP identity/cleanup, section confinement and 1–4 window control checks. Use `py config/verify_connection_controls.py` for simulated connection transitions, active-response cancellation, disconnected-request blocking and reconnect/failure checks. Keep the canonical Python source blocks below synchronized with the application files.
+
 <!-- GENERATED-PYTHON-SOURCES: START -->
 
 ## Canonical generated Python sources
 
 ### `python/client_medgemma_patients_mcp.py`
 ```python
-# GENERATED FROM md/AGENTS.md. DO NOT EDIT THIS FILE DIRECTLY.
-
 # Preserved implementation template: client_medgemma_patients_mcp.py.old
 # Regenerate with: py config\generate_system_from_agents.py
 
@@ -185,7 +191,7 @@ def load_settings():
                 "GENERATION_TIMEOUT", "TEMPERATURE", "REPEAT_PENALTY",
                 "REPEAT_LAST_N", "DISK", "PATIENT_RECORDS_DIR",
                 "XRAY_SERVER_ID", "CT_SCAN_SERVER_ID", "EKG_SERVER_ID", "BLOODTEST_SERVER_ID",
-                "XRAY_ON", "CTSCAN_ON", "EKG_ON", "BLOOD_TEST_ON",
+                "WINDOW_SERVER_MAP", "SERVER_HANDLERS",
             ):
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                     value = value[1:-1]
@@ -200,6 +206,11 @@ settings_from_file = load_settings()
 
 # The GUI delegates MCP transport and record access to mcp_client.py.
 from mcp_client import MCPRecords
+from record_config import load_window_server_map, section_folder, section_names
+
+WINDOW_SERVER_MAP = load_window_server_map()
+RECORD_TYPES = ("xrays", "ct_scan", "ekgs", "blood_tests")
+CONFIGURED_INDICES = tuple(RECORD_TYPES.index(key) for key in WINDOW_SERVER_MAP)
 
 _mcp_records = None
 _mcp_start_lock = threading.Lock()
@@ -225,21 +236,8 @@ def record_client():
             _mcp_records = MCPRecords(
                 patient_records_root(),
                 PYTHON_DIR,
-                server_ids={
-                    "xrays": os.environ.get(
-                        "XRAY_SERVER_ID", settings_from_file.get("XRAY_SERVER_ID", "xrays")
-                    ),
-                    "ct_scan": os.environ.get(
-                        "CT_SCAN_SERVER_ID", settings_from_file.get("CT_SCAN_SERVER_ID", "ct_scan")
-                    ),
-                    "ekgs": os.environ.get(
-                        "EKG_SERVER_ID", settings_from_file.get("EKG_SERVER_ID", "ekgs")
-                    ),
-                    "blood_tests": os.environ.get(
-                        "BLOODTEST_SERVER_ID",
-                        settings_from_file.get("BLOODTEST_SERVER_ID", "blood_tests"),
-                    ),
-                },
+                server_ids={key: value[1] for key, value in WINDOW_SERVER_MAP.items()},
+                section_map=WINDOW_SERVER_MAP,
             )
     return _mcp_records
 
@@ -639,6 +637,9 @@ def patient_files(modality, extensions):
     when the documented folder is absent.  This keeps discovery patient-scoped
     and never broadens it to another patient's files.
     """
+    if modality not in WINDOW_SERVER_MAP:
+        return [], "Record section is not configured."
+
     if active_patient is None:
         return [], "Select a patient to load records."
     if selected_snapshot_dir is None and patient_snapshots(active_patient):
@@ -647,7 +648,7 @@ def patient_files(modality, extensions):
         try:
             # Validate record containment and links before using a patient path.
             safe_path(selected_snapshot_dir, active_patient)
-            folder = selected_snapshot_dir / modality
+            folder = section_folder(selected_snapshot_dir, modality, WINDOW_SERVER_MAP)
             # Validate record containment and links before using a patient path.
             safe_path(folder, active_patient)
         except (OSError, ValueError, RuntimeError):
@@ -658,8 +659,8 @@ def patient_files(modality, extensions):
         # A selected snapshot is deliberately confined to one date/time folder.
         pass
     else:
-        preferred_folder = active_patient / "data" / modality
-        legacy_folder = active_patient / modality
+        preferred_folder = section_folder(active_patient / "data", modality, WINDOW_SERVER_MAP)
+        legacy_folder = section_folder(active_patient, modality, WINDOW_SERVER_MAP)
         folder = preferred_folder if preferred_folder.is_dir() else legacy_folder
     try:
         # Do not merge layouts: if a patient has the documented folder it is
@@ -710,10 +711,10 @@ split_image_viewers = {}
 zoom_view_mode = "merge"
 item_reports = {}
 # Visibility state for the X-ray, CT, EKG, and blood-test workspace panels.
-modality_window_enabled = [True, True, True, True]
+modality_window_enabled = [key in WINDOW_SERVER_MAP for key in RECORD_TYPES]
 modality_windows = [{}, {}, {}, {}]
 modality_zoom_active = [False, False, False, False]
-MODALITY_LABELS = ("X-ray", "CT Scan", "EKG", "Blood Test")
+MODALITY_LABELS = tuple(WINDOW_SERVER_MAP.get(key, ("", ""))[0] for key in RECORD_TYPES)
 ui_callbacks = queue.Queue()
 # Thumbnail work is streamed through bounded queues. The decoder keeps only one
 # source image open; Tk PhotoImage instances are created and cached on the UI thread.
@@ -972,7 +973,7 @@ def patient_snapshots(patient):
                     continue
                 # Validate record containment and links before using a patient path.
                 safe_path(time_dir, patient)
-                if any((time_dir / modality).is_dir() for modality in ("xrays", "ct_scan", "ekgs", "blood_tests")):
+                if any(section_folder(time_dir, modality, WINDOW_SERVER_MAP).is_dir() for modality in WINDOW_SERVER_MAP):
                     snapshots.append((date_dir.name, time_dir.name, time_dir.resolve()))
     except (OSError, ValueError, RuntimeError):
         return []
@@ -2451,9 +2452,7 @@ def lab_view_rows(record):
     ]
 
 
-DEFAULT_SERVER_URL = os.environ.get(
-    "OLLAMA_URL", settings_from_file.get("OLLAMA_URL", "http://127.0.0.1:11434")
-)
+DEFAULT_SERVER_URL = "http://localhost:11434"
 DEFAULT_MODEL = os.environ.get(
     "MEDGEMMA_MODEL", settings_from_file.get("MEDGEMMA_MODEL", "medgemma1.5:4b")
 )
@@ -2473,7 +2472,7 @@ SOFT_TEAL = "#d8f5ef"
 SOFT_CORAL = "#ffe2dd"
 TILE_BACKGROUND = "#f5f9fc"
 DATASET_COLORS = ((PRIMARY_BLUE, SOFT_BLUE), ("#6a1b9a", "#eee0ff"), (TEAL, SOFT_TEAL))
-GALLERY_NAMES = ("XRAY", "CT SCAN", "EKG/ECG")
+GALLERY_NAMES = MODALITY_LABELS[:3]
 REPORT_PRESETS = {
     "Draft report": (
         "Draft a concise report from only the records explicitly selected below. "
@@ -2839,7 +2838,7 @@ def encode_image(path):
 def load_blood_tests():
     """Load original selectable lab records and render their normalized rows."""
     set_snapshot_heading(blood_test_panel.heading_name, blood_test_panel.heading_date,
-                         blood_test_panel.heading_time, "BLOOD TEST")
+                         blood_test_panel.heading_time, MODALITY_LABELS[3])
     blood_test_view.config(state=tk.NORMAL)
     blood_test_view.delete("1.0", tk.END)
     blood_test_records.clear()
@@ -3389,7 +3388,7 @@ def close_image_viewer():
     modality = state.get("modality_zoom") if state is not None else None
     if modality is not None:
         modality_zoom_active[modality] = False
-        if "modality_zoom_buttons" in globals():
+        if "modality_zoom_buttons" in globals() and modality_zoom_buttons[modality] is not None:
             modality_zoom_buttons[modality].configure(
                 text=f"Zoom {MODALITY_LABELS[modality]} out",
             )
@@ -3410,7 +3409,7 @@ def close_modality_zoom_viewer(modality):
     """Close only one modality's independent all-records zoom viewer."""
     state = modality_zoom_viewers.pop(modality, None)
     modality_zoom_active[modality] = False
-    if "modality_zoom_buttons" in globals():
+    if "modality_zoom_buttons" in globals() and modality_zoom_buttons[modality] is not None:
         modality_zoom_buttons[modality].configure(text=f"Zoom {MODALITY_LABELS[modality]} out")
         modality_zoom_vars[modality].set(False)
     if state is not None:
@@ -3528,11 +3527,18 @@ def sync_modality_windows(modality=None):
 
 def toggle_modality_windows(modality):
     """Show or hide one clinical-record panel using the shared grid layout."""
+    if modality not in CONFIGURED_INDICES:
+        return
     modality_window_enabled[modality] = not modality_window_enabled[modality]
     labels = MODALITY_LABELS
     button = modality_window_buttons[modality]
     is_on = modality_window_enabled[modality]
     button.config(text=f"{labels[modality]}: {'ON' if is_on else 'OFF'}")
+    layout_record_panels()
+
+
+def layout_record_panels():
+    """Lay out exactly the configured and currently enabled panels."""
     panels = (galleries[0]["title"], galleries[1]["title"], galleries[2]["title"], blood_test_panel)
     # Clear every slot that a prior three-panel layout could have occupied;
     # otherwise row 2 retains one-third of the height after switching to two.
@@ -3540,7 +3546,7 @@ def toggle_modality_windows(modality):
         image_panel.rowconfigure(row, weight=0, minsize=0, uniform="")
     for column in range(4):
         image_panel.columnconfigure(column, weight=0, minsize=0, uniform="")
-    visible = [index for index, enabled in enumerate(modality_window_enabled) if enabled]
+    visible = [index for index in CONFIGURED_INDICES if modality_window_enabled[index]]
     visible_count = len(visible)
     for panel_index, panel in enumerate(panels):
         if panel_index not in visible:
@@ -3548,7 +3554,7 @@ def toggle_modality_windows(modality):
             continue
         if visible_count == 4:
             # All four modalities retain their fixed 2-by-2 positions.
-            row, column = divmod(panel_index, 2)
+            row, column = divmod(visible.index(panel_index), 2)
         else:
             # With one, two, or three displayed panels, use one full-width
             # column. Equal row weights give 1/3 height for three panels and
@@ -3980,7 +3986,7 @@ def open_image_viewer(path, split=False, records_override=None, modality_zoom=No
 
 def toggle_modality_zoom(modality):
     """Open or close a viewer for all loaded records of one modality."""
-    labels = ("X-ray", "CT Scan", "EKG", "Blood Test")
+    labels = MODALITY_LABELS
     if modality_zoom_active[modality]:
         close_modality_zoom_viewer(modality)
         return
@@ -4998,6 +5004,9 @@ def run_request(state):
 def send_question():
     """Validate GUI values and send one question to the selected model."""
     global current_request, item_reports
+    if active_server_url is None:
+        show_status("Connect to an Ollama server before asking AI.")
+        return
     if current_request is not None:
         return
     patient = active_patient
@@ -5093,7 +5102,7 @@ def send_question():
     ekg_count = len(selected_images[2])
     model = model_name.get().strip()
     try:
-        url = base_url(server_url.get())
+        url = active_server_url
         if not user_question or not model:
             raise ValueError("Enter a question and a model name.")
     except ValueError as error:
@@ -5172,14 +5181,45 @@ def retry_request():
 #   Press Check Connection; refresh_models() starts a background model-list check and
 #   updates readiness when it completes.
 # -------------------------------------------------------------------------
+active_server_url = None
+
+
+def update_connection_address(*_):
+    """Build a candidate address; only a successful Connect activates it."""
+    global active_server_url
+    active_server_url = None
+    host = server_ip.get().strip() or "localhost"
+    # Brackets allow literal IPv6 addresses on the fixed Ollama port.
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    server_url.set(f"http://{host}:11434")
+    refresh_button.config(text="Connect", bg="#fdd835", activebackground="#fbc02d", fg="#263238")
+    set_readiness("UNCHECKED", "UNKNOWN")
+
+
 def refresh_models():
     """Read the model list from the selected local or remote Ollama server."""
+    global active_server_url
+    if active_server_url is not None:
+        active_server_url = None
+        cancel_request()
+        server_entry.config(state=tk.NORMAL)
+        server_ip.set("")
+        update_connection_address()
+        server_url.set("")
+        set_readiness("OFFLINE", "UNKNOWN")
+        show_status("Disconnected. IP address cleared; enter an IP and press Connect.")
+        return
+    if not server_ip.get().strip():
+        server_ip.set("localhost")
+    update_connection_address()
     try:
         url = base_url(server_url.get())
     except ValueError as error:
         show_status(str(error))
         return
-    refresh_button.config(state=tk.DISABLED)
+    refresh_button.config(state=tk.DISABLED, text="Connecting...", bg="#fdd835")
+    server_entry.config(state=tk.DISABLED)
     set_readiness("CHECKING", "CHECKING")
     show_status("Checking Ollama...")
 
@@ -5208,7 +5248,10 @@ def refresh_models():
             #   GUI examples require the running application and existing widgets/state.
             # -------------------------------------------------------------------------
             def complete():
-                refresh_button.config(state=tk.NORMAL)
+                global active_server_url
+                active_server_url = url
+                refresh_button.config(state=tk.NORMAL, text="Disconnect", bg="#2e7d32", activebackground="#256b29", fg="white")
+                server_entry.config(state=tk.NORMAL)
                 model_picker.configure(values=DEFAULT_MODELS)
                 selected_model = model_name.get().strip()
                 installed = selected_model in models or f"{selected_model}:latest" in models
@@ -5237,9 +5280,10 @@ def refresh_models():
             #   GUI examples require the running application and existing widgets/state.
             # -------------------------------------------------------------------------
             def failed():
-                refresh_button.config(state=tk.NORMAL)
+                refresh_button.config(state=tk.NORMAL, text="Fail", bg="#c62828", activebackground="#b71c1c", fg="white")
+                server_entry.config(state=tk.NORMAL)
                 set_readiness("OFFLINE", "UNKNOWN (server check failed)")
-                show_status(f"Server check failed ({message}). Records remain available; use Check Connection to retry.")
+                show_status(f"Server check failed ({message}). Records remain available; use Fail to retry.")
             # Queue this result for the Tk main thread instead of touching widgets here.
             post_ui(failed)
 
@@ -5274,7 +5318,7 @@ def refresh_models():
 # -------------------------------------------------------------------------
 def main():
     """Validate startup data, then construct the preserved Tkinter interface."""
-    global PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_first_name, patient_last_name, patient_dob, patient_first_entry, patient_last_entry, patient_dob_entry, patient_search_button, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, image_panel, data_panes, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label, modality_window_buttons, modality_display_vars, modality_zoom_buttons, modality_zoom_vars, selection_zoom_var, zoom_button, zoom_mode_button, zoom_mode_var
+    global server_ip, PATIENT_RECORDS_DIR, patients, window, ui_style, server_url, model_name, server_entry, model_picker, refresh_button, patient_name, patient_first_name, patient_last_name, patient_dob, patient_first_entry, patient_last_entry, patient_dob_entry, patient_search_button, active_label, demo_data, demo_status, counts_label, tray_list, tray_items, preset_name, prompt_box, context_label, send_button, cancel_button, retry_button, elapsed_label, voice_toggle_button, status_label, answer_box, original_box, report_notebook, report_meta_label, report_provenance_label, report_version_label, report_review_var, review_button, restore_original_button, export_report_button, save_quick_button, saved_report_list, history_folder_label, history_status_label, selected_images, default_button_color, galleries, gallery_count_labels, image_panel, data_panes, blood_test_panel, blood_count_label, blood_test_records, blood_test_paths, selected_blood_test_indices, blood_test_view, blood_record_header_lines, blood_line_record_indices, blood_focus_record_index, gallery_viewport_width, actions_placeholder, readiness_label, diagnostics_label, records_readiness, streamlined_layout, snapshot_selection_label, modality_window_buttons, modality_display_vars, modality_zoom_buttons, modality_zoom_vars, selection_zoom_var, zoom_button, zoom_mode_button, zoom_mode_var
     # Fatal data-root validation precedes construction of any Tk widget.
     try:
         PATIENT_RECORDS_DIR = patient_records_root()
@@ -5570,6 +5614,20 @@ def main():
     patient_dob_entry.bind("<Return>", search_patient)
     ttk.Button(patient_bar, text="Date & time", width=12, command=choose_snapshot,
                style="Secondary.TButton").grid(row=0, column=7, padx=(0, 8), pady=5, sticky="w")
+    connection_controls = ttk.Frame(patient_bar, style="App.TFrame")
+    connection_controls.grid(row=0, column=8, padx=(0, 8), pady=5, sticky="w")
+    ttk.Label(connection_controls, text="IP", style="Field.TLabel").pack(side=tk.LEFT, padx=(0, 4))
+    server_ip = tk.StringVar(value="")
+    server_entry = ttk.Entry(connection_controls, textvariable=server_ip, width=15)
+    server_entry.pack(side=tk.LEFT, padx=(0, 4))
+    refresh_button = tk.Button(
+        connection_controls, text="Connect", command=refresh_models,
+        bg="#fdd835", activebackground="#fbc02d", fg="#263238",
+        width=11, font=("Segoe UI", 9, "bold"),
+    )
+    refresh_button.pack(side=tk.LEFT)
+    server_ip.trace_add("write", update_connection_address)
+    server_entry.bind("<Return>", lambda event: refresh_models() if str(refresh_button['state']) != 'disabled' else None)
     toggle_bar = ttk.Frame(patient_bar, style="App.TFrame")
     toggle_bar.grid(row=1, column=0, columnspan=14, padx=10, pady=(0, 5), sticky="w")
     selection_toggle_group = ttk.Frame(toggle_bar, style="App.TFrame")
@@ -5589,9 +5647,10 @@ def main():
         command=lambda: set_zoom_view_mode("merge"), style="SelectionToggle.TRadiobutton"
     )
     zoom_mode_button.pack(side=tk.LEFT)
-    modality_zoom_buttons = []
-    modality_zoom_vars = []
-    for modality, label in enumerate(("X-ray", "CT Scan", "EKG", "Blood Test")):
+    modality_zoom_buttons = [None] * 4
+    modality_zoom_vars = [None] * 4
+    for modality in CONFIGURED_INDICES:
+        label = MODALITY_LABELS[modality]
         toggle_var = tk.BooleanVar(value=False)
         button = ttk.Checkbutton(
             modality_zoom_group, text=f"Zoom {label} out",
@@ -5599,11 +5658,12 @@ def main():
             style="ModalityZoom.TCheckbutton",
         )
         button.pack(side=tk.LEFT, padx=(0, 3))
-        modality_zoom_buttons.append(button)
-        modality_zoom_vars.append(toggle_var)
-    modality_window_buttons = []
-    modality_display_vars = []
-    for modality, label in enumerate(("X-ray", "CT Scan", "EKG", "Blood Test")):
+        modality_zoom_buttons[modality] = button
+        modality_zoom_vars[modality] = toggle_var
+    modality_window_buttons = [None] * 4
+    modality_display_vars = [None] * 4
+    for modality in CONFIGURED_INDICES:
+        label = MODALITY_LABELS[modality]
         toggle_var = tk.BooleanVar(value=True)
         button = ttk.Checkbutton(
             modality_display_group, text=f"{label}: ON",
@@ -5612,8 +5672,8 @@ def main():
         )
         # Display controls follow the complete zoom cluster on the one toggle row.
         button.pack(side=tk.LEFT, padx=(0, 3))
-        modality_window_buttons.append(button)
-        modality_display_vars.append(toggle_var)
+        modality_window_buttons[modality] = button
+        modality_display_vars[modality] = toggle_var
     active_patient_block = ttk.Frame(patient_bar, style="ActivePatient.TFrame")
     active_patient_block.grid(row=0, column=14, padx=(0, 10), pady=4, sticky="e")
     ttk.Label(active_patient_block, text="Active patient", style="ActivePatientHeader.TLabel").pack(anchor="e")
@@ -5985,7 +6045,7 @@ def main():
     # Blood Test shares the same grid parent as X-ray and EKG so all three
     # panels use identical ON/OFF collapse and equal-space behavior.
     blood_heading = tk.Frame(image_panel, background=APP_BACKGROUND)
-    blood_heading_name = tk.Label(blood_heading, text="BLOOD TEST", background=APP_BACKGROUND,
+    blood_heading_name = tk.Label(blood_heading, text=MODALITY_LABELS[3], background=APP_BACKGROUND,
                                   foreground=TEAL, font=("Segoe UI", 12, "bold"))
     blood_heading_date = tk.Label(blood_heading, text="", background=APP_BACKGROUND,
                                   foreground=TEAL, font=("Segoe UI", 12, "bold"))
@@ -6055,11 +6115,8 @@ def main():
         xscrollcommand=blood_test_hscroll.set,
     )
 
-    # Apply startup display settings through the same actions as the panel buttons.
-    # Missing or invalid settings retain the default ON state.
-    for modality, setting in enumerate(("XRAY_ON", "CTSCAN_ON", "EKG_ON", "BLOOD_TEST_ON")):
-        if not boolean_setting(setting, True):
-            modality_window_buttons[modality].invoke()
+    # Every configured window starts ON; omitted windows have no controls.
+    layout_record_panels()
 
     # Explicit initial sash positions prevent the large blood-test text widget
     # from squeezing the X-ray and EKG previews into a narrow horizontal strip.
@@ -6097,7 +6154,8 @@ def main():
     window.after(50, drain_ui)
     # Schedule later execution in the Tk event loop; this is not a blocking sleep.
     # Schedule later execution in the Tk event loop; this is not a blocking sleep.
-    window.after(250, refresh_models)
+    # Wait for the user to press Connect before checking the server.
+    set_readiness("UNCHECKED", "UNKNOWN")
     # The startup check reads /api/tags only; it never generates or sends records.
 
     # Hand control to Tk: user actions and scheduled callbacks drive execution from here.
@@ -6123,7 +6181,10 @@ import os
 import sys
 import threading
 from contextlib import AsyncExitStack
+from concurrent.futures import Future
 from pathlib import Path
+
+from record_config import load_window_server_map, section_names
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -6135,39 +6196,51 @@ class MCPRecords:
     Example: ``MCPRecords(root).read_record_bytes('P0001/xrays/chest.png')``.
     """
     def __init__(self, records_root: Path, python_dir: Path | None = None,
-                 server_ids: dict[str, str] | None = None):
+                 server_ids: dict[str, str] | None = None,
+                 section_map: dict[str, tuple[str, str]] | None = None):
         self.root = Path(records_root).resolve()
         self.python_dir = Path(python_dir or Path(__file__).parent).resolve()
+        self.section_map = section_map or load_window_server_map()
+        self.server_ids = self._server_ids(server_ids or {key: value[1] for key, value in self.section_map.items()})
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self.thread.start()
         self.sessions: dict[str, ClientSession] = {}
-        self.server_ids = self._server_ids(server_ids)
         self.stack: AsyncExitStack | None = None
         self.lock = threading.Lock()
-        self._call(self._start())
+        self._ready = Future()
+        self._lifetime_future = asyncio.run_coroutine_threadsafe(self._lifetime(), self.loop)
+        try:
+            self._ready.result(timeout=60)
+        except BaseException:
+            self._lifetime_future.cancel()
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(timeout=5)
+            raise
+
+    async def _lifetime(self):
+        """Enter and exit MCP cancel scopes within the same asyncio task."""
+        self._stop = asyncio.Event()
+        try:
+            await self._start()
+            self._ready.set_result(None)
+            await self._stop.wait()
+        except BaseException as error:
+            if not self._ready.done():
+                self._ready.set_exception(error)
+            raise
+        finally:
+            if self.stack is not None:
+                await self.stack.aclose()
+                self.stack = None
 
     @staticmethod
     def _server_ids(overrides: dict[str, str] | None = None) -> dict[str, str]:
         """Return configured local-server identifiers, with safe defaults."""
-        defaults = {
-            "xrays": "xrays",
-            "ct_scan": "ct_scan",
-            "ekgs": "ekgs",
-            "blood_tests": "blood_tests",
+        values = dict(overrides) if overrides is not None else {
+            key: value[1] for key, value in load_window_server_map().items()
         }
-        keys = {
-            "xrays": "XRAY_SERVER_ID",
-            "ct_scan": "CT_SCAN_SERVER_ID",
-            "ekgs": "EKG_SERVER_ID",
-            "blood_tests": "BLOODTEST_SERVER_ID",
-        }
-        overrides = overrides or {}
-        values = {
-            modality: str(overrides.get(modality, os.environ.get(key, defaults[modality]))).strip()
-            for modality, key in keys.items()
-        }
-        if not all(values.values()) or len(set(values.values())) != len(values):
+        if not values or not all(values.values()) or len({v.casefold() for v in values.values()}) != len(values):
             raise ValueError("MCP server IDs must be non-empty and unique")
         return values
 
@@ -6177,20 +6250,24 @@ class MCPRecords:
     async def _start(self):
         self.stack = AsyncExitStack()
         scripts = {"xrays": "mcp_xray_server.py", "ct_scan": "mcp_ct_scan_server.py", "ekgs": "mcp_ekg_server.py", "blood_tests": "mcp_blood_server.py"}
-        for modality, script in scripts.items():
+        for modality in self.section_map:
+            script = scripts[modality]
             params = StdioServerParameters(command=sys.executable, args=[str(self.python_dir / script)],
-                                          env={**os.environ, "PATIENT_RECORDS_DIR": str(self.root)})
+                                          env={**os.environ, "PATIENT_RECORDS_DIR": str(self.root),
+                                               "MCP_SERVER_ID": self.server_ids[modality],
+                                               "MCP_SECTION_NAMES": json.dumps(section_names(modality, self.section_map))})
             read, write = await self.stack.enter_async_context(stdio_client(params))
             session = await self.stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
+            initialized = await session.initialize()
+            if initialized.serverInfo.name != self.server_ids[modality]:
+                raise RuntimeError(f"Unexpected MCP server identity for {modality}")
             self.sessions[self.server_ids[modality]] = session
 
-    @staticmethod
-    def record_location(path: str | Path) -> tuple[str, str]:
+    def record_location(self, path: str | Path) -> tuple[str, str]:
         """Return the modality and normalized root-relative record path."""
         parts = Path(path).as_posix().split("/")
-        for modality in ("xrays", "ct_scan", "ekgs", "blood_tests"):
-            if modality in parts:
+        for modality in self.section_map:
+            if any(name in parts for name in section_names(modality, self.section_map)):
                 return modality, "/".join(parts)
         raise ValueError("Record path has no recognized modality")
 
@@ -6205,6 +6282,9 @@ class MCPRecords:
         The full GUI uses this for safe record listing, while the typed read
         helpers below retain their narrower image/blood return contracts.
         """
+        if modality not in self.server_ids:
+            modality = next((key for key in self.server_ids if modality == self.server_ids[key]
+                             or modality in section_names(key, self.section_map)), modality)
         if modality not in self.server_ids:
             raise ValueError(f"Unknown record modality: {modality}")
         with self.lock:
@@ -6231,13 +6311,14 @@ class MCPRecords:
             return self._call(self._tool(modality, "read_record", {"relative_path": relative_path}))["record"]
 
     def close(self):
-        if self.stack:
-            try:
-                self._call(self.stack.aclose())
-            finally:
-                self.stack = None
-        self.loop.call_soon_threadsafe(self.loop.stop)
-        self.thread.join(timeout=2)
+        if not self.thread.is_alive():
+            return
+        self.loop.call_soon_threadsafe(self._stop.set)
+        try:
+            self._lifetime_future.result(timeout=60)
+        finally:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(timeout=5)
 ```
 
 ### `python/mcp_record_server.py`
@@ -6255,6 +6336,7 @@ import os
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from record_config import load_window_server_map, section_names
 
 MAX_BYTES = 64 * 1024 * 1024
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp"}
@@ -6263,7 +6345,12 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".
 def make_server(modality: str) -> FastMCP:
     """Create a server constrained to paths containing exactly *modality*."""
     root = Path(os.environ["PATIENT_RECORDS_DIR"]).resolve()
-    mcp = FastMCP(f"medgemma-{modality}")
+    mapping = load_window_server_map()
+    server_id = os.environ.get("MCP_SERVER_ID", mapping[modality][1])
+    names = tuple(json.loads(os.environ["MCP_SECTION_NAMES"])) if "MCP_SECTION_NAMES" in os.environ else section_names(modality, mapping)
+    if not names or any(name not in section_names(modality, mapping) for name in names):
+        raise ValueError("Invalid MCP record section configuration")
+    mcp = FastMCP(server_id)
 
     def checked(relative: str) -> Path:
         candidate = (root / relative).resolve(strict=True)
@@ -6273,7 +6360,7 @@ def make_server(modality: str) -> FastMCP:
             raise ValueError("Path is outside the patient records directory") from exc
         if any(part.startswith(".") for part in Path(relative).parts):
             raise ValueError("Hidden paths are not available")
-        if modality not in candidate.relative_to(root).parts:
+        if not any(name in candidate.relative_to(root).parts for name in names):
             raise ValueError(f"Path does not belong to {modality}")
         if candidate.is_symlink():
             raise ValueError("Linked records are not available")
@@ -6349,6 +6436,83 @@ from mcp_record_server import make_server
 
 if __name__ == "__main__":
     make_server("blood_tests").run()
+```
+
+### `python/record_config.py`
+```python
+"""Configure arbitrary record-section/window names independently of MCP identities."""
+from pathlib import Path
+import os
+import re
+
+MODALITIES = ("xrays", "ct_scan", "ekgs", "blood_tests")
+DEFAULT_MAP = "xray:ID001,cscan:ID002,ekg:ID003,blood_test:ID004"
+DEFAULT_HANDLERS = "ID001:xrays,ID002:ct_scan,ID003:ekgs,ID004:blood_tests"
+
+
+def load_window_server_map():
+    """Read the two tables beside the app; OS variables take precedence."""
+    values = {"WINDOW_SERVER_MAP": DEFAULT_MAP, "SERVER_HANDLERS": DEFAULT_HANDLERS}
+    path = Path(__file__).resolve().parent / ".env"
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
+            key, sep, content = line.strip().partition("=")
+            if sep and key.strip() in values:
+                values[key.strip()] = content.strip().strip("\"'")
+    return parse_window_server_map(
+        os.environ.get("WINDOW_SERVER_MAP", values["WINDOW_SERVER_MAP"]),
+        os.environ.get("SERVER_HANDLERS", values["SERVER_HANDLERS"]),
+    )
+
+
+def _pairs(value, table):
+    pairs = []
+    for entry in value.split(","):
+        left, sep, right = entry.strip().partition(":")
+        left, right = left.strip(), right.strip()
+        if not sep or not left or not right or ":" in right:
+            raise ValueError(f"Invalid {table} entry: {entry!r}")
+        pairs.append((left, right))
+    return pairs
+
+
+def parse_window_server_map(value, handlers=DEFAULT_HANDLERS):
+    """Resolve any safe folder/window name by server ID, never by its name/order."""
+    servers = {}
+    for server_id, modality in _pairs(handlers, "SERVER_HANDLERS"):
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", server_id) or modality not in MODALITIES:
+            raise ValueError("SERVER_HANDLERS requires a valid ID and a supported record handler")
+        if server_id.casefold() in {key.casefold() for key in servers} or modality in servers.values():
+            raise ValueError("SERVER_HANDLERS requires unique IDs and handlers")
+        servers[server_id] = modality
+    if set(servers.values()) != set(MODALITIES):
+        raise ValueError("SERVER_HANDLERS must define all four record handlers")
+    result = {}
+    names = set()
+    for name, server_id in _pairs(value, "WINDOW_SERVER_MAP"):
+        # A section is a single Windows folder component, including spaces/Unicode.
+        if (name.startswith(".") or name.endswith((".", " "))
+                or any(ord(char) < 32 or char in '<>:"/\\|?*' for char in name)
+                or name.split(".")[0].upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}):
+            raise ValueError(f"Window name must be a valid folder name: {name!r}")
+        if server_id not in servers:
+            raise ValueError(f"Unknown server ID {server_id!r}; define it in SERVER_HANDLERS")
+        modality = servers[server_id]
+        if name.casefold() in names or modality in result:
+            raise ValueError("WINDOW_SERVER_MAP requires unique window names and server IDs")
+        result[modality] = (name, server_id)
+        names.add(name.casefold())
+    if not result:
+        raise ValueError("WINDOW_SERVER_MAP must define at least one window")
+    return result
+
+
+def section_names(modality, mapping):
+    return (mapping[modality][0],)
+
+
+def section_folder(parent, modality, mapping):
+    return Path(parent) / mapping[modality][0]
 ```
 
 <!-- GENERATED-PYTHON-SOURCES: END -->

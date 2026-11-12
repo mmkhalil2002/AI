@@ -6,7 +6,14 @@ The application provides a two-column **AI Clinical Assistant Center**: patient/
 
 ## Run
 
-Set `XRAY_ON`, `CTSCAN_ON`, `EKG_ON`, and `BLOOD_TEST_ON` in `python/.env` to `TRUE` or `FALSE` to choose each record panel's startup visibility. Each defaults to `TRUE` when omitted. These settings apply the same action as the matching ON/OFF buttons; the buttons remain usable afterward.
+Define windows at the beginning of `python/.env`:
+
+```dotenv
+WINDOW_SERVER_MAP=xrays:ID001,ct_scan:ID002,ekgs:ID003,blood_tests:ID004
+SERVER_HANDLERS=ID001:xrays,ID002:ct_scan,ID003:ekgs,ID004:blood_tests
+```
+
+Window names are arbitrary valid folder names and must match the patient-record section folders. Server IDs are independent of window names; `SERVER_HANDLERS` selects the existing record handler for each ID. Each configured window gets one panel, one Zoom control and one ON/OFF control. Three window definitions produce three of each. All configured panels start ON; startup ON/OFF options have been removed from `.env`. Omitted windows are not loaded and their servers are not started. Restart after changing the tables.
 
 From the project root:
 
@@ -15,7 +22,9 @@ py -m pip install -r python\requirements.txt
 py python\client_medgemma_patients_mcp.py
 ```
 
-Keep `.env` and `patient_records` beside this directory. Configure `OLLAMA_URL`, `MEDGEMMA_MODEL`, `PATIENT_RECORDS_DIR`, and optional display dimensions there. The local MCP server IDs default to `XRAY_SERVER_ID=xrays`, `CT_SCAN_SERVER_ID=ct_scan`, `EKG_SERVER_ID=ekgs`, and `BLOODTEST_SERVER_ID=blood_tests`. Patient folders support `xrays`, `ct_scan`, `ekgs`, and `blood_tests`, including dated snapshots and legacy `data/<modality>` folders.
+Keep `.env` beside the GUI. Configure `MEDGEMMA_MODEL`, `PATIENT_RECORDS_DIR`, and optional display dimensions there. Relative patient-record paths resolve beside the GUI, and OS environment variables override `.env`. The current record section names are `xrays`, `ct_scan`, `ekgs`, and `blood_tests`, including dated snapshots and legacy `data/<section>` folders. The mapping tables replace the individual `*_SERVER_ID` settings.
+
+Enter the Ollama IP beside **Date & time** and press yellow **Connect**. When the IP field is blank, pressing Connect fills it with `localhost` and connects to `http://localhost:11434`; `OLLAMA_URL` does not configure this address. Success shows green **Disconnect**; failure shows red **Fail**, which can be clicked to retry. Disconnect cancels the active local request, closes its established HTTP response, clears the active server and IP field, and restores yellow Connect. New AI requests are blocked until Connect succeeds again. Disconnect does not stop the Ollama service or guarantee that remote computation stops.
 
 Search in the app with the patient's first name, last name, and eight-digit DOB (`MMDDYYYY`). Search validates the full date and maps the four-digit year to the existing two-digit patient-folder suffix. A successful search loads the newest snapshot; a missing patient displays an error. The far-right active-patient block shows `Active patient` in teal, with the selected name and DOB below in coral. Use the in-app **Date & time** picker to load another snapshot for that patient. The **Ask AI** button submits the selected evidence and question. Only explicit selections are sent; X-rays, CT scans, and EKGs retain that order. Generated reports require clinician review.
 

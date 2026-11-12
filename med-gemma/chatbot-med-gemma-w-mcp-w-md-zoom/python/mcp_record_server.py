@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from record_config import load_window_server_map, section_names
 
 MAX_BYTES = 64 * 1024 * 1024
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp"}
@@ -21,7 +22,12 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".
 def make_server(modality: str) -> FastMCP:
     """Create a server constrained to paths containing exactly *modality*."""
     root = Path(os.environ["PATIENT_RECORDS_DIR"]).resolve()
-    mcp = FastMCP(f"medgemma-{modality}")
+    mapping = load_window_server_map()
+    server_id = os.environ.get("MCP_SERVER_ID", mapping[modality][1])
+    names = tuple(json.loads(os.environ["MCP_SECTION_NAMES"])) if "MCP_SECTION_NAMES" in os.environ else section_names(modality, mapping)
+    if not names or any(name not in section_names(modality, mapping) for name in names):
+        raise ValueError("Invalid MCP record section configuration")
+    mcp = FastMCP(server_id)
 
     def checked(relative: str) -> Path:
         candidate = (root / relative).resolve(strict=True)
@@ -31,7 +37,7 @@ def make_server(modality: str) -> FastMCP:
             raise ValueError("Path is outside the patient records directory") from exc
         if any(part.startswith(".") for part in Path(relative).parts):
             raise ValueError("Hidden paths are not available")
-        if modality not in candidate.relative_to(root).parts:
+        if not any(name in candidate.relative_to(root).parts for name in names):
             raise ValueError(f"Path does not belong to {modality}")
         if candidate.is_symlink():
             raise ValueError("Linked records are not available")

@@ -120,49 +120,36 @@ if errorlevel 1 goto failed
 "%VPY%" -m pip check
 if errorlevel 1 goto failed
 
-rem Ollama is OPTIONAL and installed only on this machine.
-rem Running the Ollama service is intentionally handled separately.
-echo.
-choice /C YN /N /M "Configure Ollama and AI models on THIS computer? [Y/N] "
-if errorlevel 2 goto done
+rem Ollama and both required models are mandatory for a successful INIT.
+rem Only a temporary Ollama server is started if necessary.
+echo [INFO] Ensuring Ollama and required AI models are installed...
 if exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" set "PATH=%LOCALAPPDATA%\Programs\Ollama;%PATH%"
 where ollama.exe >nul 2>&1
 if errorlevel 1 (
-  choice /C YN /N /M "Install Ollama locally? [Y/N] "
-  if errorlevel 2 goto done
   where winget.exe >nul 2>&1
   if errorlevel 1 (
-    echo [ERROR] winget unavailable. Install Ollama manually from https://ollama.com/download/windows
-    goto done
+    echo [ERROR] winget unavailable. Install Ollama from https://ollama.com/download/windows
+    goto failed
   )
   winget install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements
-  if errorlevel 1 (
-    echo [WARNING] Ollama installation failed.
-    goto done
-  )
+  if errorlevel 1 goto failed
   set "PATH=%LOCALAPPDATA%\Programs\Ollama;%PATH%"
 )
 where ollama.exe >nul 2>&1
 if errorlevel 1 (
-  echo [WARNING] Ollama not on PATH yet. Open a new CMD and rerun init.bat.
-  goto done
+  echo [ERROR] Ollama not found on PATH. Open a new CMD and rerun init.bat.
+  goto failed
 )
 ollama --version
-echo [INFO] Ollama is installed. Model downloads require a running Ollama service.
-ollama list >nul 2>&1
-if errorlevel 1 (
-  echo [ACTION] Start Ollama separately, then rerun init.bat to download models.
-  goto done
-)
-choice /C YN /N /M "Download MedGemma 1.5? [Y/N] "
-if errorlevel 2 goto ask_qwen
-ollama pull medgemma1.5
-if errorlevel 1 echo [WARNING] MedGemma model download failed.
-:ask_qwen
-choice /C YN /N /M "Download Qwen3:8B? [Y/N] "
-if errorlevel 2 goto done
-ollama pull qwen3:8b
-if errorlevel 1 echo [WARNING] Qwen3 model download failed.
+rem Use PowerShell to manage a temporary local-only server and check every model.
+rem The PowerShell script stops only the process it starts, never an existing server.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference='Stop'; $models=@('medgemma1.5:latest','qwen3:8b'); $server=$null; try {" ^
+  "  try { Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 3 | Out-Null; $ready=$true } catch { $ready=$false };" ^
+  "  if (-not $ready) { Write-Host '[INFO] Starting temporary Ollama server...'; $exe=(Get-Command ollama.exe).Source; $server=Start-Process -FilePath $exe -ArgumentList 'serve' -PassThru -WindowStyle Hidden; for($i=0;$i -lt 45;$i++){ Start-Sleep -Seconds 2; try { Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 2 | Out-Null; $ready=$true; break } catch {} }; if(-not $ready){ throw 'Ollama API did not become ready' } };" ^
+  "  foreach($model in $models){ Write-Host ('[INFO] Checking '+$model); $installed=@(ollama list | Select-Object -Skip 1 | ForEach-Object { ($_ -split '\s+')[0] }); if($installed -notcontains $model){ Write-Host ('[INFO] Downloading '+$model); & ollama pull $model; if($LASTEXITCODE -ne 0){ throw ('Download failed: '+$model) } }; $installed=@(ollama list | Select-Object -Skip 1 | ForEach-Object { ($_ -split '\s+')[0] }); if($installed -notcontains $model){ throw ('Verification failed: '+$model) }; Write-Host ('[OK] Verified: '+$model) };" ^
+  "} catch { Write-Host ('[ERROR] '+$_.Exception.Message); exit 1 } finally { if($null -ne $server -and -not $server.HasExited){ Write-Host '[INFO] Stopping temporary Ollama server...'; Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue } }"
+if errorlevel 1 goto failed
 :done
 echo.
 echo [SUCCESS] INIT finished. No servers or GUI were started.
