@@ -6,64 +6,56 @@ import os
 import re
 
 MODALITIES = ("xrays", "ct_scan", "ekgs", "blood_tests")
-DEFAULT_MAP = "xray:ID001,cscan:ID002,ekg:ID003,blood_test:ID004"
-DEFAULT_HANDLERS = "ID001:xrays,ID002:ct_scan,ID003:ekgs,ID004:blood_tests"
+DEFAULT_MAP = "xrays:ID001,ct_scan:ID002,ekgs:ID003,blood_tests:ID004"
 
 
 def load_window_server_map():
-    """Read the two tables beside the app; OS variables take precedence."""
-    values = {"WINDOW_SERVER_MAP": DEFAULT_MAP, "SERVER_HANDLERS": DEFAULT_HANDLERS}
+    """Read the single window table beside the app; the OS variable wins."""
+    value = DEFAULT_MAP
     path = Path(__file__).resolve().parent / ".env"
     if path.is_file():
         for line in path.read_text(encoding="utf-8-sig").splitlines():
             key, sep, content = line.strip().partition("=")
-            if sep and key.strip() in values:
-                values[key.strip()] = content.strip().strip("\"'")
-    return parse_window_server_map(
-        os.environ.get("WINDOW_SERVER_MAP", values["WINDOW_SERVER_MAP"]),
-        os.environ.get("SERVER_HANDLERS", values["SERVER_HANDLERS"]),
-    )
+            if sep and key.strip() == "WINDOW_SERVER_MAP":
+                value = content.strip().strip("\"'")
+    return parse_window_server_map(os.environ.get("WINDOW_SERVER_MAP", value))
 
 
-def _pairs(value, table):
-    pairs = []
-    for entry in value.split(","):
-        left, sep, right = entry.strip().partition(":")
-        left, right = left.strip(), right.strip()
-        if not sep or not left or not right or ":" in right:
-            raise ValueError(f"Invalid {table} entry: {entry!r}")
-        pairs.append((left, right))
-    return pairs
-
-
-def parse_window_server_map(value, handlers=DEFAULT_HANDLERS):
-    """Resolve any safe folder/window name by server ID, never by its name/order."""
-    servers = {}
-    for server_id, modality in _pairs(handlers, "SERVER_HANDLERS"):
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", server_id) or modality not in MODALITIES:
-            raise ValueError("SERVER_HANDLERS requires a valid ID and a supported record handler")
-        if server_id.casefold() in {key.casefold() for key in servers} or modality in servers.values():
-            raise ValueError("SERVER_HANDLERS requires unique IDs and handlers")
-        servers[server_id] = modality
-    if set(servers.values()) != set(MODALITIES):
-        raise ValueError("SERVER_HANDLERS must define all four record handlers")
+def parse_window_server_map(value):
+    """Resolve arbitrary names and IDs using the fixed handler order of the table."""
     result = {}
     names = set()
-    for name, server_id in _pairs(value, "WINDOW_SERVER_MAP"):
+    ids = set()
+    entries = value.split(",")
+    if not 1 <= len(entries) <= len(MODALITIES):
+        raise ValueError("WINDOW_SERVER_MAP requires one to four windows")
+    active_entries = []
+    for entry in entries:
+        fields = [field.strip() for field in entry.split(":")]
+        if len(fields) not in (2, 3) or not all(fields):
+            raise ValueError("WINDOW_SERVER_MAP entries must be window-name:server-ID or window-name:ON/OFF:server-ID")
+        if len(fields) == 3:
+            name, state, server_id = fields
+            if state.upper() not in ("ON", "OFF"):
+                raise ValueError("WINDOW_SERVER_MAP state must be ON or OFF")
+            if state.upper() == "OFF":
+                continue
+        else:
+            name, server_id = fields
+        active_entries.append((name, server_id))
+    for modality, (name, server_id) in zip(MODALITIES, active_entries):
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", server_id):
+            raise ValueError(f"Invalid MCP server ID: {server_id!r}")
         # A section is a single Windows folder component, including spaces/Unicode.
         if (name.startswith(".") or name.endswith((".", " "))
                 or any(ord(char) < 32 or char in '<>:"/\\|?*' for char in name)
                 or name.split(".")[0].upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}):
             raise ValueError(f"Window name must be a valid folder name: {name!r}")
-        if server_id not in servers:
-            raise ValueError(f"Unknown server ID {server_id!r}; define it in SERVER_HANDLERS")
-        modality = servers[server_id]
-        if name.casefold() in names or modality in result:
-            raise ValueError("WINDOW_SERVER_MAP requires unique window names and server IDs")
+        if name.casefold() in names or server_id.casefold() in ids or modality in result:
+            raise ValueError("WINDOW_SERVER_MAP requires unique window names, server IDs and record types")
         result[modality] = (name, server_id)
         names.add(name.casefold())
-    if not result:
-        raise ValueError("WINDOW_SERVER_MAP must define at least one window")
+        ids.add(server_id.casefold())
     return result
 
 

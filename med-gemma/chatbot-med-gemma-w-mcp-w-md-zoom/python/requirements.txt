@@ -1,3 +1,6 @@
+# Python dependencies for the GUI and local MCP record servers.
+# Tkinter is supplied by Python / the OS, not pip.
 mcp>=1.20,<2
 Pillow>=10
+# Optional text-to-speech support.
 pyttsx3>=2.90

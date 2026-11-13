@@ -10,10 +10,9 @@ Define windows at the beginning of `python/.env`:
 
 ```dotenv
 WINDOW_SERVER_MAP=xrays:ID001,ct_scan:ID002,ekgs:ID003,blood_tests:ID004
-SERVER_HANDLERS=ID001:xrays,ID002:ct_scan,ID003:ekgs,ID004:blood_tests
 ```
 
-Window names are arbitrary valid folder names and must match the patient-record section folders. Server IDs are independent of window names; `SERVER_HANDLERS` selects the existing record handler for each ID. Each configured window gets one panel, one Zoom control and one ON/OFF control. Three window definitions produce three of each. All configured panels start ON; startup ON/OFF options have been removed from `.env`. Omitted windows are not loaded and their servers are not started. Restart after changing the tables.
+Window names are arbitrary valid folder names and must match the patient-record section folders. Both window names and server IDs are freely editable in this single table. Entry position selects the handler: X-ray, CT, EKG, then blood-test JSON. Keep this order; omit trailing entries to reduce the count. Blood tests require the fourth entry. Each configured window gets one panel, one Zoom control and one ON/OFF control. Three window definitions produce three of each. All configured panels start ON; Entries also accept window-name:ON/OFF:server-ID (case-insensitive). The two-field format means ON. OFF entries are removed before assigning handler positions, exactly as if absent: later entries shift forward. OFF entries have no panel, buttons, records or MCP connection. All OFF is allowed and shows no record panels. Enabled panels start ON. Omitted windows are not loaded and their servers are not started. Restart after changing the table.
 
 From the project root:
 
@@ -22,7 +21,7 @@ py -m pip install -r python\requirements.txt
 py python\client_medgemma_patients_mcp.py
 ```
 
-Keep `.env` beside the GUI. Configure `MEDGEMMA_MODEL`, `PATIENT_RECORDS_DIR`, and optional display dimensions there. Relative patient-record paths resolve beside the GUI, and OS environment variables override `.env`. The current record section names are `xrays`, `ct_scan`, `ekgs`, and `blood_tests`, including dated snapshots and legacy `data/<section>` folders. The mapping tables replace the individual `*_SERVER_ID` settings.
+Keep `.env` beside the GUI. Configure `MEDGEMMA_MODEL`, `PATIENT_RECORDS_DIR`, and optional display dimensions there. Relative patient-record paths resolve beside the GUI, and OS environment variables override `.env`. The current record section names are `xrays`, `ct_scan`, `ekgs`, and `blood_tests`, including dated snapshots and legacy `data/<section>` folders. The single mapping table replaces the individual `*_SERVER_ID` settings.
 
 Enter the Ollama IP beside **Date & time** and press yellow **Connect**. When the IP field is blank, pressing Connect fills it with `localhost` and connects to `http://localhost:11434`; `OLLAMA_URL` does not configure this address. Success shows green **Disconnect**; failure shows red **Fail**, which can be clicked to retry. Disconnect cancels the active local request, closes its established HTTP response, clears the active server and IP field, and restores yellow Connect. New AI requests are blocked until Connect succeeds again. Disconnect does not stop the Ollama service or guarantee that remote computation stops.
 

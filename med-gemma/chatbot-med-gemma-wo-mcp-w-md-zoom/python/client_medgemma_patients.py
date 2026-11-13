@@ -108,6 +108,7 @@ def load_settings():
                 "GENERATION_TIMEOUT", "TEMPERATURE", "REPEAT_PENALTY",
                 "REPEAT_LAST_N", "DISK", "PATIENT_RECORDS_DIR",
                 "WINDOW_DEFINTIONS",
+                "FIRST_NAME_LABEL", "LAST_NAME_LABEL", "DOD_LABEL",
             ):
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                     value = value[1:-1]
@@ -116,6 +117,11 @@ def load_settings():
 
 
 settings_from_file = load_settings()
+
+
+def search_field_label(key, default):
+    """Resolve a display label, falling back when missing or blank."""
+    return os.environ.get(key, settings_from_file.get(key, default)).strip() or default
 
 RECORD_SECTION_KEYS = ("xrays", "ct_scan", "ekgs", "blood_tests")
 
@@ -501,6 +507,10 @@ class RequestState:
     stage: str = "Checking server"
     completion: dict = field(default_factory=dict)
     image_bytes: dict = field(default_factory=dict)
+    # Ollama sends response fragments, which are not guaranteed to be one token each.
+    # Count fragments live and replace their estimate with Ollama eval_count on completion.
+    received_tokens: int = 0
+    token_count_exact: bool = False
 
 
 @dataclass(frozen=True)
@@ -747,32 +757,75 @@ def select_patient(event=None):
     update_selection_workspace()
 
 
-def search_patient():
-    """Find a patient folder from the three identity fields and load its newest data.
+def matching_patient_names(names, first_name="", last_name="", dob=""):
+    """Match all supplied identity fields exactly; blank fields are unrestricted."""
+    first_name, last_name, dob = (value.strip() for value in (first_name, last_name, dob))
+    if not any((first_name, last_name, dob)):
+        raise ValueError("Enter at least one field: first name, last name, or DOB (MMDDYYYY).")
+    if dob:
+        parse_dob_input(dob)
+    pattern = re.compile(
+        rf"{re.escape(first_name) if first_name else '.+'}-"
+        rf"{re.escape(last_name) if last_name else '.+'}-"
+        rf"{re.escape(dob) if dob else '[0-9]{8}'}", re.IGNORECASE,
+    )
+    return sorted((name for name in names if pattern.fullmatch(name)), key=str.casefold)
 
-    Patient folders use the supplied ``first-last-MMDDYYYY`` convention.  The
-    comparison is case-insensitive so entry capitalization does not matter,
-    but all three fields are required to avoid loading the wrong patient's
-    records.
-    """
+
+def choose_patient_match(matches):
+    """Require an explicit choice when the supplied identity fields are ambiguous."""
+    picker = tk.Toplevel(window)
+    picker.title("Choose patient")
+    picker.transient(window)
+    ttk.Label(picker, text="Multiple patients match. Select the patient to load.").pack(padx=12, pady=10)
+    choices = tk.Listbox(picker, width=60, height=min(12, len(matches)), exportselection=False)
+    choices.pack(fill=tk.BOTH, expand=True, padx=12, pady=5)
+    for name in matches:
+        choices.insert(tk.END, name)
+
+    def load_choice(_event=None):
+        selection = choices.curselection()
+        if not selection or current_request is not None:
+            return
+        name = matches[selection[0]]
+        if name not in patients:
+            return
+        picker.destroy()
+        patient_name.set(name)
+        select_patient()
+
+    controls = ttk.Frame(picker)
+    controls.pack(fill=tk.X, padx=12, pady=10)
+    ttk.Button(controls, text="Load selected patient", command=load_choice).pack(side=tk.LEFT)
+    ttk.Button(controls, text="Cancel", command=picker.destroy).pack(side=tk.RIGHT)
+    choices.bind("<Double-Button-1>", load_choice)
+    choices.bind("<Return>", load_choice)
+    picker.grab_set()
+    choices.focus_set()
+
+
+def search_patient():
+    """Search using any nonempty combination of first name, last name and DOB."""
+    if current_request is not None:
+        show_status("Wait for the current request to finish before searching for a patient.")
+        return
     first_name = first_name_var.get().strip()
     last_name = last_name_var.get().strip()
     dob = dob_var.get().strip()
-    if not first_name or not last_name or not dob:
-        messagebox.showerror("Patient search", "Enter first name, last name, and DOB (MMDDYYYY).", parent=window)
-        return
     try:
-        parse_dob_input(dob)
+        matches = matching_patient_names(patients, first_name, last_name, dob)
     except ValueError as error:
         messagebox.showerror("Patient search", str(error), parent=window)
         return
-    folder_name = f"{first_name}-{last_name}-{dob}".casefold()
-    matched_name = next((name for name in patients if name.casefold() == folder_name), None)
-    if matched_name is None:
-        show_status("No patient records match the entered first name, last name, and DOB.")
+    if not matches:
+        show_status("No patient records match the supplied search fields.")
         messagebox.showinfo("Patient search", "No matching patient records were found.", parent=window)
         return
-    patient_name.set(matched_name)
+    if len(matches) > 1:
+        show_status(f"{len(matches)} patients match. Choose a patient to load.")
+        choose_patient_match(matches)
+        return
+    patient_name.set(matches[0])
     select_patient()
 
 
@@ -2971,8 +3024,13 @@ def final_only_answer(response_text):
     return answer
 
 
-def parse_stream_events(lines):
-    """Parse synthetic or live Ollama NDJSON events into response and metadata."""
+def parse_stream_events(lines, on_fragment=None):
+    """Parse Ollama NDJSON and notify the caller as output fragments arrive.
+
+    Ollama response fragments are not guaranteed to correspond one-to-one with
+    tokenizer tokens. The live counter is an estimate; the final eval_count is
+    authoritative when supplied by Ollama. Never count the thinking field.
+    """
     response_parts = []
     metadata = {}
     done = False
@@ -2999,6 +3057,8 @@ def parse_stream_events(lines):
             if not isinstance(part, str):
                 raise RuntimeError("Malformed response event (response text was not a string).")
             response_parts.append(part)
+            if part and on_fragment is not None:
+                on_fragment(part)
         # Do not retain, log, or display `thinking`; only its existence is ignored.
         if event.get("done") is True:
             done = True
@@ -3099,6 +3159,7 @@ def generate(url, model, question, image_paths=(), request_state=None, stream=Tr
     # json.dumps turns the dictionary into JSON text. UTF-8 then converts that
     # text into bytes for HTTP. Example: {"prompt": "My question", "images":
     # ["<base64 image 1>", "<base64 image 2>"], ...}.
+    call_start_tokens = request_state.received_tokens if request_state is not None else 0
     try:
         set_request_stage(request_state, "Waiting for model")
         try:
@@ -3114,9 +3175,19 @@ def generate(url, model, question, image_paths=(), request_state=None, stream=Tr
             else:
                 raise
         try:
-            set_request_stage(request_state, "Receiving report")
+            # A successful HTTP connection does not mean any report tokens arrived.
+            # Keep "Waiting for model" until a nonempty output fragment is received.
             if stream:
-                response_text, metadata = parse_stream_events(response)
+                def on_report_fragment(_part):
+                    if request_state is None or request_state.cancel_event.is_set():
+                        return
+                    if request_state.stage != "Receiving report":
+                        set_request_stage(request_state, "Receiving report")
+                    # One Ollama NDJSON fragment is typically a token-sized piece,
+                    # but it is not guaranteed to equal exactly one model token.
+                    request_state.received_tokens += 1
+                    request_state.token_count_exact = False
+                response_text, metadata = parse_stream_events(response, on_report_fragment)
             else:
                 try:
                     data = json.load(response)
@@ -3126,12 +3197,26 @@ def generate(url, model, question, image_paths=(), request_state=None, stream=Tr
                     raise RuntimeError("Malformed nonstreaming response (expected a JSON object).")
                 response_text = data.get("response", "")
                 metadata = completion_metadata(data)
+                if request_state is not None and response_text:
+                    set_request_stage(request_state, "Receiving report")
                 if data.get("done") is False:
                     raise RuntimeError("Truncated response: Ollama marked the response incomplete. Retry the request.")
                 if metadata.get("done_reason") == "length":
                     raise RuntimeError("Truncated response: Ollama reached its output limit. Retry with a larger limit.")
                 if not isinstance(response_text, str):
                     raise RuntimeError("Malformed nonstreaming response (response text was not a string).")
+            # Ollama provides an exact generated-token count in the final event.
+            # Multiple images may be processed in separate calls, so add each
+            # completed call to the running request total.
+            if request_state is not None:
+                exact = metadata.get("eval_count")
+                if isinstance(exact, int) and exact >= 0:
+                    # Streaming fragments were already counted as an estimate.
+                    # Replace only this call's estimate with its exact count.
+                    request_state.received_tokens = call_start_tokens + exact
+                    request_state.token_count_exact = True
+                else:
+                    request_state.token_count_exact = False
         finally:
             if request_state is not None:
                 with request_state.connection_lock:
@@ -3278,7 +3363,7 @@ def finish_request(request_id, answer=None, metadata=None, error=None, cancelled
     send_button.config(state=tk.NORMAL)
     cancel_button.config(state=tk.DISABLED)
     retry_button.config(state=tk.NORMAL if error is not None and not cancelled else tk.DISABLED)
-    elapsed_label.config(text=f"Elapsed: {int(time.monotonic() - state.started_at)}s")
+    elapsed_label.config(text=format_request_progress(state))
     if cancelled:
         show_status("Request cancelled. The server may continue processing.")
     else:
@@ -3352,11 +3437,22 @@ def completion_summary(metadata):
     return " · ".join(parts)
 
 
+def format_request_progress(state):
+    """Display elapsed time and generated output progress for the active request.
+
+    A tilde marks an estimate based on streamed output fragments. Ollama's
+    final eval_count replaces that estimate after each completed model call.
+    """
+    elapsed = int(time.monotonic() - state.started_at)
+    minutes, seconds = divmod(elapsed, 60)
+    prefix = "" if state.token_count_exact else "~"
+    return f"Elapsed: {minutes:02d}:{seconds:02d} | Tokens received: {prefix}{state.received_tokens:,}"
+
+
 def update_elapsed(request_id):
-    """Refresh elapsed time while the same request remains active."""
+    """Refresh elapsed time and token progress without blocking the Tk GUI."""
     if request_is_current(request_id):
-        elapsed = int(time.monotonic() - current_request.started_at)
-        elapsed_label.config(text=f"Elapsed: {elapsed}s")
+        elapsed_label.config(text=format_request_progress(current_request))
         window.after(250, lambda rid=request_id: update_elapsed(rid))
 
 
@@ -3643,7 +3739,7 @@ def send_question():
     )
     # Pass the question and image snapshot together to the background worker.
     # run_request calls generate(), which builds and sends one HTTP POST.
-    elapsed_label.config(text="Elapsed: 0s")
+    elapsed_label.config(text="Elapsed: 00:00 | Tokens received: 0")
     window.after(250, lambda rid=snapshot.request_id: update_elapsed(rid))
     threading.Thread(target=run_request, args=(state,), daemon=True).start()
 
@@ -4003,13 +4099,13 @@ def main():
     first_name_var = tk.StringVar()
     last_name_var = tk.StringVar()
     dob_var = tk.StringVar()
-    ttk.Label(patient_bar, text="First name", style="Field.TLabel").grid(row=0, column=0, padx=(10, 4), pady=5)
+    ttk.Label(patient_bar, text=search_field_label("FIRST_NAME_LABEL", "First name"), style="Field.TLabel").grid(row=0, column=0, padx=(10, 4), pady=5)
     first_name_entry = ttk.Entry(patient_bar, textvariable=first_name_var, width=16)
     first_name_entry.grid(row=0, column=1, padx=(0, 6), pady=5, sticky="w")
-    ttk.Label(patient_bar, text="Last name", style="Field.TLabel").grid(row=0, column=2, padx=(2, 4), pady=5)
+    ttk.Label(patient_bar, text=search_field_label("LAST_NAME_LABEL", "Last name"), style="Field.TLabel").grid(row=0, column=2, padx=(2, 4), pady=5)
     last_name_entry = ttk.Entry(patient_bar, textvariable=last_name_var, width=16)
     last_name_entry.grid(row=0, column=3, padx=(0, 6), pady=5, sticky="w")
-    ttk.Label(patient_bar, text="DOB (MMDDYYYY)", style="Field.TLabel").grid(row=0, column=4, padx=(2, 4), pady=5)
+    ttk.Label(patient_bar, text=search_field_label("DOD_LABEL", "DOD (MMDDYYYY)"), style="Field.TLabel").grid(row=0, column=4, padx=(2, 4), pady=5)
     dob_entry = ttk.Entry(patient_bar, textvariable=dob_var, width=12)
     dob_entry.grid(row=0, column=5, padx=(0, 6), pady=5, sticky="w")
     search_button = ttk.Button(patient_bar, text="Search", command=search_patient, style="Secondary.TButton")

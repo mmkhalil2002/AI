@@ -29,15 +29,34 @@ node --version
 npm --version
 
 # Writable npm prefix and persistent bash PATH.
-NPM_PREFIX="$HOME/.local/npm"
+# Use the project owner's npm prefix even if installer is launched via sudo/root.
+PROJECT_USER="$(stat -c %U "$ROOT")"
+PROJECT_HOME="$(getent passwd "$PROJECT_USER" | cut -d: -f6)"
+if [[ -z "$PROJECT_HOME" || "$PROJECT_USER" == "UNKNOWN" ]]; then
+  echo '[ERROR] Cannot determine project owner/home.' >&2; exit 1
+fi
+NPM_PREFIX="$PROJECT_HOME/.local/npm"
 mkdir -p "$NPM_PREFIX/bin"
-npm config set prefix "$NPM_PREFIX" --location=user
+# Install Codex as the project owner, not root, so the CLI is usable over SSH.
+run_as_project_user() {
+  if [[ "$(id -un)" == "$PROJECT_USER" ]]; then "$@";
+  else sudo -H -u "$PROJECT_USER" "$@"; fi
+}
+run_as_project_user npm config set prefix "$NPM_PREFIX" --location=user
 export PATH="$NPM_PREFIX/bin:$PATH"
 path_line='export PATH="$HOME/.local/npm/bin:$PATH"'
-touch "$HOME/.bashrc"
-grep -Fqx "$path_line" "$HOME/.bashrc" || printf '\n# npm user executables\n%s\n' "$path_line" >> "$HOME/.bashrc"
+touch "$PROJECT_HOME/.bashrc"
+grep -Fqx "$path_line" "$PROJECT_HOME/.bashrc" || printf '\n# npm user executables\n%s\n' "$path_line" >> "$PROJECT_HOME/.bashrc"
+if (( EUID == 0 )); then chown "$PROJECT_USER" "$PROJECT_HOME/.bashrc"; fi
+# A system-wide launcher makes codex available immediately in other terminals,
+# without relying on bashrc loading or changing the parent shell's PATH.
+if (( EUID == 0 )); then
+  ln -sfn "$NPM_PREFIX/bin/codex" /usr/local/bin/codex
+else
+  sudo ln -sfn "$NPM_PREFIX/bin/codex" /usr/local/bin/codex
+fi
 echo '[INFO] Installing/updating Codex CLI...'
-npm install -g @openai/codex
+run_as_project_user env PATH="$PATH" npm install -g @openai/codex
 command -v codex >/dev/null || { echo '[ERROR] Codex not found on PATH.' >&2; exit 1; }
 codex --version
 
@@ -101,17 +120,19 @@ if [[ "$configure" =~ ^[Yy]$ ]]; then
         echo '[ERROR] Ollama is running. Stop it using ./unrun_ollama.sh, then rerun init.sh.' >&2
         exit 1
       fi
-      ARCHIVE="$(mktemp /tmp/ollama-linux-XXXXXX.tar.zst)"
-      trap 'rm -f "$ARCHIVE"' EXIT
-      curl -fL --retry 3 "https://ollama.com/download/ollama-linux-${OLLAMA_ARCH}.tar.zst" -o "$ARCHIVE"
+      CACHE_DIR="$PROJECT_HOME/.cache/medgemma-installer"
+      mkdir -p "$CACHE_DIR"
+      ARCHIVE="$CACHE_DIR/ollama-linux-${OLLAMA_ARCH}.tar.zst"
+      echo "[INFO] Downloading/resuming Ollama archive: $ARCHIVE"
+      curl -fL -C - --retry 10 --retry-delay 5 --connect-timeout 30 \
+        "https://ollama.com/download/ollama-linux-${OLLAMA_ARCH}.tar.zst" -o "$ARCHIVE"
       echo '[INFO] Extracting Ollama archive to /usr/local ...'
       if (( EUID == 0 )); then
         tar --zstd -xf "$ARCHIVE" -C /usr/local
       else
         sudo tar --zstd -xf "$ARCHIVE" -C /usr/local
       fi
-      rm -f "$ARCHIVE"
-      trap - EXIT
+      rm -f "$ARCHIVE" # only after successful extraction
     fi
   else
     echo '[INFO] Ollama binary is already present; no reinstall needed.'
@@ -177,8 +198,8 @@ OLLAMA_INIT_PID=""
 echo '[SUCCESS] INIT finished. Both required models verified; no GUI or Codex launched.'
 echo "Python for GUI: $VPY"
 echo '[IMPORTANT] The installer cannot change the PATH of the terminal that launched it.'
-echo '[ACTION] For THIS terminal, run:'
-echo '    export PATH="$HOME/.local/npm/bin:$PATH"'
-echo '[ACTION] Or open a NEW terminal, then run: codex --version'
+echo '[INFO] Codex launcher linked at /usr/local/bin/codex.'
+echo '[ACTION] If codex is not found in your existing terminal, run: hash -r'
+echo '[ACTION] Then run: codex --version' 
 echo "[FALLBACK] Direct launcher: $NPM_PREFIX/bin/codex --version"
 

@@ -62,9 +62,21 @@ A shorter list omits trailing panels and their corresponding buttons. Empty comm
 
 All included panels start ON. Their Display buttons remain interactive, showing green ON or brown OFF. The old `XRAY_ON`, `CTSCAN_ON`, `EKG_ON`, and `BLOOD_TEST_ON` settings were removed from `.env` and are ignored. Restart after configuration changes.
 
+### Patient search labels
+
+Immediately after `WINDOW_DEFINTIONS` in `python/.env`, configure the search labels:
+
+```env
+FIRST_NAME_LABEL=First name
+LAST_NAME_LABEL=Last name
+DOD_LABEL=DOD (MMDDYYYY)
+```
+
+These settings change the three field captions only. Missing or blank values use the defaults shown above. Environment variables take precedence. Restart to apply changes. The date field continues to search the date component of the patient folder using a valid `MMDDYYYY` date; changing its caption does not change matching or validation.
+
 ## Patient and display controls
 
-1. Enter First name, Last name, and an eight-digit DOB (`MMDDYYYY`), then select **Search**. The newest snapshot loads; **Date & Time** immediately after Search lets you choose one other snapshot. Do not merge records across different times. The search area has no Patient Date and Time heading.
+1. Enter any combination of First name, Last name, and DOB, then select **Search**. At least one field is required; blank fields are ignored. Supplied names match exactly, case-insensitively, with surrounding spaces trimmed. If DOB is supplied, it must be a valid eight-digit `MMDDYYYY` date. One match loads directly; multiple matches open a patient chooser requiring an explicit selection (Load selected patient, Enter, or double-click). Cancel keeps the current patient. No match or invalid input leaves the current patient unchanged. Searching is blocked during active analysis. The newest snapshot of the selected patient loads; **Date & Time** immediately after Search lets you choose one other snapshot. Do not merge records across different times. The search area has no Patient Date and Time heading.
 2. The **left** side retains the AI Clinical Assistant Center, blank question input, Ask AI, Voice, Close GUI, and one AI Response panel. The left question and response column initially occupies **25%** of the workspace width; the **right medical-record display occupies 75%**. The divider remains draggable.
 3. With all four sections defined, nine independent toggle buttons appear beneath the Search row, with extra spacing between the Selection, modality-Zoom, and Display clusters but without group labels. **Zoom Select Out/In** and Merge/Split appear together; the other four Zoom toggles appear next; then the four Display toggles (**X-ray**, **CT Scan**, **EKG/ECG**, and **Blood Test**). The Zoom Select and modality controls initially read **Out**; after activation, they read **In**. Zoom Select and default Merge are orange initially and dark blue when active. The modality controls use yellow while inactive and purple while active. Only sections included in `WINDOW_DEFINTIONS` have Display and Zoom buttons; labels match the configured folder names. Included Display toggles start ON, show **ON** in green, and show **OFF** in brown when manually switched off. With all panels on, the record display uses a **2-by-2 grid**: **X-ray | CT Scan** in the top row and **EKG/ECG | Blood Test** in the bottom row. When a panel is switched off, the remaining visible panels stack vertically and divide the complete records area equally: three panels each use one-third of the height, two each use one-half of the height, and one uses the full area. Hiding a panel preserves its loaded data and selections. Zero enabled shows an empty records area.
 4. Each panel scrolls independently, supports selecting/deselecting individual items, and shows the active snapshot date and time. The active patient uses a teal heading and purple details. Blood-test table rows remain aligned in fixed-width columns.

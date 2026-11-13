@@ -139,7 +139,8 @@ def load_settings():
                 "GENERATION_TIMEOUT", "TEMPERATURE", "REPEAT_PENALTY",
                 "REPEAT_LAST_N", "DISK", "PATIENT_RECORDS_DIR",
                 "XRAY_SERVER_ID", "CT_SCAN_SERVER_ID", "EKG_SERVER_ID", "BLOODTEST_SERVER_ID",
-                "WINDOW_SERVER_MAP", "SERVER_HANDLERS",
+                "WINDOW_SERVER_MAP",
+                "FIRST_NAME_LABEL", "LAST_NAME_LABEL", "DOD_LABEL",
             ):
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                     value = value[1:-1]
@@ -149,6 +150,11 @@ def load_settings():
 
 # Read supported .env values once; setting helpers apply environment overrides later.
 settings_from_file = load_settings()
+
+
+def patient_field_label(name, default):
+    """Resolve a search caption, using the default for missing or blank values."""
+    return os.environ.get(name, settings_from_file.get(name, default)).strip() or default
 
 
 
@@ -1095,39 +1101,58 @@ def select_patient(event=None):
     update_selection_workspace()
 
 
+def matching_patient_names(names, first_name="", last_name="", dob=""):
+    """Match every supplied field exactly, ignoring case and outer whitespace."""
+    first_name, last_name, dob = (value.strip() for value in (first_name, last_name, dob))
+    if not any((first_name, last_name, dob)):
+        raise ValueError("Enter at least one of first name, last name, or date of birth.")
+    for value in (first_name, last_name):
+        if value and not re.fullmatch(r"[A-Za-z][A-Za-z '-]{0,39}", value):
+            raise ValueError("Enter a valid first or last name.")
+    if dob:
+        if not re.fullmatch(r"\d{8}", dob):
+            raise ValueError("Enter date of birth as MMDDYYYY, for example 04251986.")
+        try:
+            datetime.strptime(dob, "%m%d%Y")
+        except ValueError:
+            raise ValueError("Enter a valid date of birth as MMDDYYYY.") from None
+    matches = []
+    for name in names:
+        try:
+            folder_names, folder_dob = name.rsplit("-", 1)
+        except ValueError:
+            continue
+        if dob and folder_dob not in (dob, dob[:4] + dob[-2:]):
+            continue
+        # Try each separator so hyphenated first and last names remain searchable.
+        pairs = [(folder_names[:i], folder_names[i + 1:])
+                 for i, char in enumerate(folder_names) if char == "-"]
+        if any((not first_name or first.casefold() == first_name.casefold())
+               and (not last_name or last.casefold() == last_name.casefold())
+               for first, last in pairs):
+            matches.append(name)
+    return matches
+
+
 def search_patient(_event=None):
-    """Search patient records by first name, last name, and DOB (MMDDYYYY)."""
+    """Search using any nonempty combination of name and DOB fields."""
     if current_request is not None:
         return
-    first_name = patient_first_name.get().strip()
-    last_name = patient_last_name.get().strip()
-    dob = patient_dob.get().strip()
-    name_pattern = r"[A-Za-z][A-Za-z '-]{0,39}"
-    if (not re.fullmatch(name_pattern, first_name)
-            or not re.fullmatch(name_pattern, last_name)):
-        messagebox.showerror("Patient search", "Enter a valid first name and last name.", parent=window)
-        return
     try:
-        if not re.fullmatch(r"\d{8}", dob):
-            raise ValueError
-        datetime.strptime(dob, "%m%d%Y")
-    except ValueError:
-        messagebox.showerror("Patient search", "Enter date of birth as MMDDYYYY, for example 04251986.", parent=window)
+        matches = matching_patient_names(
+            patients, patient_first_name.get(), patient_last_name.get(), patient_dob.get())
+    except ValueError as error:
+        messagebox.showerror("Patient search", str(error), parent=window)
         return
-    # Patient folders may retain MMDDYY or include the full MMDDYYYY birth date.
-    requested_ids = {
-        f"{first_name}-{last_name}-{dob}".casefold(),
-        f"{first_name}-{last_name}-{dob[:4]}{dob[-2:]}".casefold(),
-    }
-    matched_id = next((name for name in patients if name.casefold() in requested_ids), None)
-    if matched_id is None:
-        messagebox.showerror(
-            "Patient not found",
-            "No patient record matches the supplied first name, last name, and date of birth.",
-            parent=window,
-        )
+    if not matches:
+        messagebox.showerror("Patient not found", "No patient record matches the supplied fields.", parent=window)
         return
-    patient_name.set(matched_id)
+    if len(matches) > 1:
+        messagebox.showerror("Multiple patients found",
+                             f"{len(matches)} patients match. Add more search fields to select one patient.",
+                             parent=window)
+        return
+    patient_name.set(matches[0])
     select_patient()
 
 
@@ -2049,8 +2074,7 @@ def update_selection_workspace():
             len(blood_test_records),
         )
         active_label.config(
-            text=(f"{patient_first_name.get().strip()} {patient_last_name.get().strip()}"
-                  f"  |  DOB {patient_dob.get().strip()}")
+            text=patient_name.get()
         )
     counts = (
         f"X-ray {len(selected_images[0])}/{totals[0]} selected",
@@ -4640,7 +4664,8 @@ def finish_request(request_id, answer=None, metadata=None, error=None, cancelled
     send_button.config(state=tk.NORMAL)
     cancel_button.config(state=tk.DISABLED)
     retry_button.config(state=tk.NORMAL if error is not None and not cancelled else tk.DISABLED)
-    elapsed_label.config(text=f"Elapsed: {int(time.monotonic() - state.started_at)}s")
+    elapsed_label.config(text=request_metrics(time.monotonic() - state.started_at,
+                                                   (metadata or {}).get("eval_count", "unavailable")))
     if cancelled:
         show_status("Request cancelled. The server may continue processing.")
     else:
@@ -4736,11 +4761,18 @@ def completion_summary(metadata):
 #   update_elapsed(active_id) refreshes elapsed time and reschedules itself only while
 #   that request remains active.
 # -------------------------------------------------------------------------
+def request_metrics(seconds, received_tokens=None):
+    """Display elapsed minutes/seconds and actual server-reported output tokens."""
+    minutes, seconds = divmod(max(0, int(seconds)), 60)
+    tokens = str(received_tokens) if isinstance(received_tokens, int) and received_tokens >= 0 else ("unavailable" if received_tokens == "unavailable" else "pending")
+    return f"Elapsed: {minutes:02d}:{seconds:02d}  |  Tokens received: {tokens}"
+
+
 def update_elapsed(request_id):
     """Refresh elapsed time while the same request remains active."""
     if request_is_current(request_id):
         elapsed = int(time.monotonic() - current_request.started_at)
-        elapsed_label.config(text=f"Elapsed: {elapsed}s")
+        elapsed_label.config(text=request_metrics(elapsed))
         # Schedule later execution in the Tk event loop; this is not a blocking sleep.
         window.after(250, lambda rid=request_id: update_elapsed(rid))
 
@@ -4902,6 +4934,7 @@ def run_request(state):
         if snapshot.separate_items:
             reports = []
             metadata = {"separate_reports": len(snapshot.separate_items)}
+            token_counts = []
             for number, (label, question, image_paths, report_key) in enumerate(snapshot.separate_items, start=1):
                 if state.cancel_event.is_set():
                     return
@@ -4911,6 +4944,9 @@ def run_request(state):
                 )
                 post_ui(lambda rid=request_id, key=report_key, answer=result.answer: register_item_report(rid, key, answer))
                 reports.append(format_record_response(label, result.answer))
+                token_counts.append(result.metadata.get("eval_count"))
+            if all(isinstance(count, int) and count >= 0 for count in token_counts):
+                metadata["eval_count"] = sum(token_counts)
             result = GenerationResult(answer="\n\n".join(reports), metadata=metadata)
         else:
             result = generate(
@@ -5095,7 +5131,7 @@ def send_question():
     )
     # Pass the question and image snapshot together to the background worker.
     # run_request calls generate(), which builds and sends one HTTP POST.
-    elapsed_label.config(text="Elapsed: 0s")
+    elapsed_label.config(text=request_metrics(0))
     # Schedule later execution in the Tk event loop; this is not a blocking sleep.
     window.after(250, lambda rid=snapshot.request_id: update_elapsed(rid))
     # Start background work; Tk widget changes must return through post_ui.
@@ -5548,18 +5584,19 @@ def main():
     patient_first_name = tk.StringVar()
     patient_last_name = tk.StringVar()
     patient_dob = tk.StringVar()
-    ttk.Label(patient_bar, text="First name", style="Field.TLabel").grid(row=0, column=0, padx=(10, 4), pady=5)
+    ttk.Label(patient_bar, text=patient_field_label("FIRST_NAME_LABEL", "first name"), style="Field.TLabel").grid(row=0, column=0, padx=(10, 4), pady=5)
     patient_first_entry = ttk.Entry(patient_bar, textvariable=patient_first_name, width=16)
     patient_first_entry.grid(row=0, column=1, padx=(0, 8), pady=5, sticky="w")
-    ttk.Label(patient_bar, text="Last name", style="Field.TLabel").grid(row=0, column=2, padx=(0, 4), pady=5)
+    ttk.Label(patient_bar, text=patient_field_label("LAST_NAME_LABEL", "last name"), style="Field.TLabel").grid(row=0, column=2, padx=(0, 4), pady=5)
     patient_last_entry = ttk.Entry(patient_bar, textvariable=patient_last_name, width=16)
     patient_last_entry.grid(row=0, column=3, padx=(0, 8), pady=5, sticky="w")
-    ttk.Label(patient_bar, text="DOB (MMDDYYYY)", style="Field.TLabel").grid(row=0, column=4, padx=(0, 4), pady=5)
+    ttk.Label(patient_bar, text=patient_field_label("DOD_LABEL", "DOD (MMDDYYYY)"), style="Field.TLabel").grid(row=0, column=4, padx=(0, 4), pady=5)
     patient_dob_entry = ttk.Entry(patient_bar, textvariable=patient_dob, width=10)
     patient_dob_entry.grid(row=0, column=5, padx=(0, 8), pady=5, sticky="w")
     patient_search_button = ttk.Button(patient_bar, text="Search", width=8, command=search_patient, style="Secondary.TButton")
     patient_search_button.grid(row=0, column=6, padx=(0, 8), pady=5, sticky="w")
-    patient_dob_entry.bind("<Return>", search_patient)
+    for entry in (patient_first_entry, patient_last_entry, patient_dob_entry):
+        entry.bind("<Return>", search_patient)
     ttk.Button(patient_bar, text="Date & time", width=12, command=choose_snapshot,
                style="Secondary.TButton").grid(row=0, column=7, padx=(0, 8), pady=5, sticky="w")
     connection_controls = ttk.Frame(patient_bar, style="App.TFrame")
@@ -5785,7 +5822,7 @@ def main():
         style="Status.TLabel",
     )
     status_label.pack(anchor="w")
-    elapsed_label = ttk.Label(qa_panel, text="", style="Status.TLabel")
+    elapsed_label = ttk.Label(qa_panel, text="Elapsed: 00:00  |  Tokens received: 0", style="Status.TLabel")
     elapsed_label.pack(anchor="w")
     diagnostics_label = ttk.Label(
         qa_panel,

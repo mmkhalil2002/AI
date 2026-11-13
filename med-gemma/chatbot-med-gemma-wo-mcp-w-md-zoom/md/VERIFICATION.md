@@ -2,6 +2,15 @@
 
 The current behavior is documented in README.md and AGENTS.md. The records and checks below the historical heading describe earlier versions and do not establish verification of the current layout or per-image request behavior.
 
+## Configurable search labels: 2026-11-13
+
+- Added FIRST_NAME_LABEL, LAST_NAME_LABEL, and DOD_LABEL immediately after WINDOW_DEFINTIONS in .env. Defaults are First name, Last name, and DOD (MMDDYYYY). Captions support environment-over-file precedence and default fallback for missing or blank values. Search matching and date validation are unchanged. Live visual verification remains outstanding.
+
+## Flexible patient search: 2026-11-12
+
+- Search accepts any nonempty combination of first name, last name and DOB. Blank fields are ignored; supplied names match exactly and case-insensitively after trimming. Supplied DOB must be a valid eight-digit MMDDYYYY date. A unique match loads directly, while multiple matches require explicit selection in a patient chooser. No matches, invalid input or Cancel preserve the current patient. Searching is blocked during analysis.
+- Python syntax and isolated synthetic search checks passed for all seven field combinations, ambiguous-result counts, case/whitespace handling, exact name matching, hyphenated names, no matches, all-blank input and invalid DOB values. No live patient data or server was used. The chooser has not been visually verified.
+
 ## Connection window update: 2026-11-11
 
 - WINDOW_DEFINTIONS follow-up: the first `.env` setting now defines a plain sequence of exact folder/display names with explanatory comments. Up to four existing slots are supported; omitted trailing or empty middle slots have no visible panel, Display button, or Zoom button and are excluded from loading. Included slots start ON. Old per-panel `_ON` settings were removed from `.env` and the configuration loader. Names propagate to panel headings and selection/modality Zoom titles; folder and snapshot discovery use the configured names.

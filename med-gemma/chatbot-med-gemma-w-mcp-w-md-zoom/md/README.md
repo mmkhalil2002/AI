@@ -1,4 +1,4 @@
-# AI Clinical Assistant Center with MCP patient records
+﻿# AI Clinical Assistant Center with MCP patient records
 
 This Tkinter desktop application reviews selected patient X-rays, CT scans, EKGs, and blood-test JSON records, then submits only that selected evidence and a clinician question to MedGemma through Ollama. Its main implementation is `python/client_medgemma_patients_mcp.py`; preserve the full GUI rather than replacing it with a simplified prototype. Qwen is excluded.
 
@@ -6,14 +6,14 @@ This Tkinter desktop application reviews selected patient X-rays, CT scans, EKGs
 
 The window has an unlabeled patient-search control bar above a responsive two-column workspace. The left side contains the red/orange **AI Clinical Assistant Center** heading, **Your Question** input, **Ask AI**, **Voice: OFF**, **Close**, status, and scrollable **AI Response**. The right side supports these four record handlers; only configured windows are displayed:
 
-- **XRAY** — framed, selectable image tiles with horizontal and vertical scrollbars.
-- **CT SCAN** — framed, selectable CT image tiles with the same supported image formats as X-rays.
-- **EKG/ECG** — wide, readable selectable images with scrolling.
-- **BLOOD TEST** — selectable records with red title/marker and Test, Value, Unit, Reference range, and Flag columns.
+- **XRAY** â€” framed, selectable image tiles with horizontal and vertical scrollbars.
+- **CT SCAN** â€” framed, selectable CT image tiles with the same supported image formats as X-rays.
+- **EKG/ECG** â€” wide, readable selectable images with scrolling.
+- **BLOOD TEST** â€” selectable records with red title/marker and Test, Value, Unit, Reference range, and Flag columns.
 
 The top bar searches patients by **First name**, **Last name**, and **DOB (MMDDYYYY)**. **Search** validates the values, maps the four-digit year to the existing two-digit patient-folder suffix, loads the newest snapshot for a matching patient, and shows an error dialog when no match exists. **Date & time** then selects a different snapshot for that active patient. At the far right, a two-line active-patient block shows `Active patient` in teal and the selected name plus DOB in coral. Snapshot selection supports direct folders, dated snapshots, and legacy `data/<modality>` layouts.
 
-Selected X-ray, CT, and EKG records can be inspected with **Zoom**. In **Merge** mode, all selected images share one viewer with **Previous**, **Next**, **+**, **−**, **Fit**, and **Reset**. In **Split** mode, each selected image opens in its own viewer with **+**, **−**, **Fit**, and **Reset**. **Fit** shows the whole image in the window; **Reset** returns it to 100% pixel size.
+Selected X-ray, CT, and EKG records can be inspected with **Zoom**. In **Merge** mode, all selected images share one viewer with **Previous**, **Next**, **+**, **âˆ’**, **Fit**, and **Reset**. In **Split** mode, each selected image opens in its own viewer with **+**, **âˆ’**, **Fit**, and **Reset**. **Fit** shows the whole image in the window; **Reset** returns it to 100% pixel size.
 
 ## Components
 
@@ -30,7 +30,17 @@ MCP servers run automatically as local child processes. No MCP TCP ports or manu
 
 ## Records and configuration
 
-`WINDOW_SERVER_MAP` controls which record windows exist. Three entries create three Zoom buttons, three ON/OFF buttons and three panels. All configured panels start ON. Use the buttons to hide/show them during the session; there are no startup ON/OFF flags in `.env`. Omitted sections are not loaded and their servers are not started.
+Immediately after `WINDOW_SERVER_MAP` in `python/.env`, configure the search-field labels:
+
+```dotenv
+FIRST_NAME_LABEL=first name
+LAST_NAME_LABEL=last name
+DOD_LABEL=DOD (MMDDYYYY)
+```
+
+These are also the defaults when a value is missing or blank. OS environment variables override file values. Restart to apply changes. The captions are editable; the third field still matches date of birth in MMDDYYYY format.
+
+`WINDOW_SERVER_MAP` controls which record windows exist. Use `window_name:ON/OFF:ServerID`; the state is case-insensitive, and the older `window_name:ServerID` format means ON. OFF entries are treated as absent: they create no panel, Zoom button, visibility button or MCP connection. All-OFF is allowed. Enabled panels start ON and can be hidden or shown with their visibility buttons.
 
 Keep `.env` beside the GUI. Relevant settings include `MEDGEMMA_MODEL`, `PATIENT_RECORDS_DIR`, `GENERATION_TIMEOUT`, `NUM_PREDICT`, `XRAY_WIDTH`, `XRAY_HEIGHT`, `CT_SCAN_WIDTH`, `CT_SCAN_HEIGHT`, `EKG_WIDTH`, and `EKG_HEIGHT`. The window/record section names and independent MCP server IDs are configured by `WINDOW_SERVER_MAP` at the beginning of `.env`. Relative patient paths resolve beside the GUI; OS environment values override `.env`.
 
@@ -40,10 +50,10 @@ Only explicitly selected original records are sent to MedGemma. Selected X-rays 
 
 ## Run
 
-Use Python 3.10+ with Tkinter and the requirements in `python/requirements.txt`:
+Use Python 3.10+ with Tkinter. The root `requirements.txt` is the dependency file used by the setup scripts; it includes MCP, Pillow for images, and pyttsx3 for voice. Tkinter comes from Python or the operating system rather than pip.
 
 ```bat
-py -m pip install -r python\requirements.txt
+py -m pip install -r requirements.txt
 py python\client_medgemma_patients_mcp.py
 ```
 
@@ -53,28 +63,36 @@ Enter the Ollama IP beside **Date & time**, then press yellow **Connect**. When 
 
 ## Window names and MCP server IDs
 
-At the beginning of `python/.env`:
+At the beginning of `python/.env`, use this single table:
 
 ```dotenv
-WINDOW_SERVER_MAP=xrays:ID001,ct_scan:ID002,ekgs:ID003,blood_tests:ID004
-SERVER_HANDLERS=ID001:xrays,ID002:ct_scan,ID003:ekgs,ID004:blood_tests
+WINDOW_SERVER_MAP=xrays:ON:ID001,ct_scan:ON:ID002,ekgs:ON:ID003,blood_tests:ON:ID004
 ```
 
-| Window / patient-record section | MCP server identity |
-|---|---|
-| xrays | ID001 |
-| ct_scan | ID002 |
-| ekgs | ID003 |
-| blood_tests | ID004 |
+Both the window name and server ID in each pair can be changed. Window names are arbitrary valid folder names, including spaces and Unicode, and must match the patient's record-section folders. Changing the table does not rename any folders. Server IDs are independent, unique values containing letters, digits, underscores or hyphens; change an ID in this table only. The client verifies the advertised server identity when connecting.
 
-For example, `patient_records/<patient>/<date>/<time>/xrays/chest.png` routes to server `ID001`. Direct patient sections and `data/<section>` also work. Window names are arbitrary valid folder names, including spaces and Unicode; they must match the section folder names. To keep existing folders, use their current names in the table. Configured names appear in gallery headings; server IDs are independent of window names and folders, and are verified during MCP initialization. IDs must be unique and contain only letters, digits, underscores or hyphens. Define between one and four windows using any subset of the configured servers. Names are not predefined and table order does not affect routing. The separate `SERVER_HANDLERS=ID001:xrays,ID002:ct_scan,ID003:ekgs,ID004:blood_tests` table assigns each ID to the existing image/JSON record handler; change this too when changing IDs. The four record handlers remain fixed; this does not add new record types. The OS `WINDOW_SERVER_MAP` variable overrides `.env`. Restart the app after changing the table. Old individual `*_SERVER_ID` settings have been replaced by this table.
+Entry position after removing OFF entries selects the existing record handler:
 
-Three-window example (three Zoom controls and three ON/OFF controls):
+| Position | Handler | Default folder/name | Default server ID |
+|---|---|---|---|
+| 1 | X-ray images | xrays | ID001 |
+| 2 | CT images | ct_scan | ID002 |
+| 3 | EKG/ECG images | ekgs | ID003 |
+| 4 | Blood-test JSON | blood_tests | ID004 |
+
+Define one to four entries. OFF entries are removed before assigning handlers, so later entries shift forward exactly as if the OFF entries had been deleted. Blood-test JSON requires a fourth enabled entry. For example, setting xrays to OFF in the four-entry definition makes ct_scan use the X-ray handler, ekgs use CT, and blood_tests use the EKG image handler.
+
+Four visible panels use a 2-by-2 grid in entry order. One, two or three visible panels stack vertically across the record area with equal height. Hiding a panel with its session ON/OFF button redistributes the space without changing handler assignments. Configuration changes require restarting the application.
+
+For example, `patient_records/<patient>/<date>/<time>/xrays/chest.png` routes to `ID001`. Direct `<patient>/<section>` and legacy `<patient>/data/<section>` layouts also work.
+
+Example changing the first window name and ID (requires a matching `Chest Images` folder):
 
 ```dotenv
-WINDOW_SERVER_MAP=xrays:ID001,ekgs:ID003,blood_tests:ID004
+WINDOW_SERVER_MAP=Chest Images:ON:IMAGES_A,ct_scan:ON:ID002,ekgs:ON:ID003,blood_tests:ON:ID004
 ```
 
-Run `py config/verify_window_mapping.py` to check arbitrary-name routing, local MCP identities/cleanup, section confinement and 1–4 window controls with synthetic records and hidden Tk windows.
+Restart after editing. The OS `WINDOW_SERVER_MAP` variable overrides the file. Individual `*_SERVER_ID` settings and a separate handler table are not used.
 
-Run `py config/verify_connection_controls.py` to check Connect, Disconnect, response cancellation, blocked requests while disconnected, explicit reconnection and failed connections without network requests or patient data.
+Run `py config/verify_window_mapping.py` for synthetic routing, renamed server identities, cleanup, confinement and 1-4 window control checks. Run `py config/verify_connection_controls.py` for simulated Connect/Disconnect and cancellation checks without network or patient data.
+

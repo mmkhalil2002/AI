@@ -157,7 +157,9 @@ echo Python for GUI: "%PYEXE%"
 echo Codex: "%NPM_PREFIX%\codex.cmd"
 echo.
 echo [IMPORTANT] This batch cannot change PATH in the CMD window that called it.
-echo [ACTION] For this CURRENT CMD window, run:
+echo [INFO] User PATH has been configured for future CMD terminals.
+echo [ACTION] Existing CMD windows cannot inherit PATH changes automatically.
+echo [ACTION] In this CURRENT CMD window, run:
 echo     set "PATH=%NPM_PREFIX%;%%PATH%%"
 echo [ACTION] Or CLOSE this CMD window and OPEN a NEW one.
 echo [ACTION] Then run: codex --version
