@@ -4,7 +4,7 @@
 
 This project is designed to stream **live video from 1–4 USB cameras** connected to a server running **Ubuntu 24.04 or Windows 11**. A separate **Windows 11 GUI client** displays the video over a trusted local network.
 
-The GUI always contains four video positions in a **2 × 2 layout**, labeled **FRONT**, **BACK**, **LEFT SIDE**, and **RIGHT SIDE**, followed by a **reserved control area**. Controls will be specified later.
+The GUI has a blank left sidebar reserved for future controls. To its right are the connection row and four video positions in a **2 × 2 layout**, labeled **FRONT**, **BACK**, **LEFT SIDE**, and **RIGHT SIDE**. No startup instruction text is shown.
 
 **Current scope: live streaming only.** No recording, snapshots, or `captures/` directory. The control port is reserved and is not an active service.
 
@@ -41,16 +41,13 @@ The two environment files belong in `python/`, **not** `config/`. Scripts must l
 ### GUI layout
 
 ```text
-+----------------------------+----------------------------+
-| FRONT                      | BACK                       |
-|        Live video          |        Live video          |
-+----------------------------+----------------------------+
-| LEFT SIDE                  | RIGHT SIDE                 |
-|        Live video          |        Live video          |
-+----------------------------+----------------------------+
-| RESERVED CONTROL AREA                                   |
-| Controls to be defined later                            |
-+---------------------------------------------------------+
++----------+----------------------------+----------------------------+
+|          | FRONT                      | BACK                       |
+|          |        Live video          |        Live video          |
+|          +----------------------------+----------------------------+
+|          | LEFT SIDE                  | RIGHT SIDE                 |
+|          |        Live video          |        Live video          |
++----------+----------------------------+----------------------------+
 ```
 
 The first `CAMERA_COUNT` positions are enabled in this order: FRONT, BACK, LEFT SIDE, RIGHT SIDE. Unused positions display **Not configured**. A disconnected camera displays **Camera offline**. The GUI must remain responsive if the server or network is unavailable.
@@ -99,10 +96,14 @@ SERVER_URL=http://192.168.12.133:14095
 GUI_TITLE=Four USB Camera Monitor
 GUI_WIDTH=1400
 GUI_HEIGHT=900
-CONTROL_PANEL_HEIGHT=200
+CONTROL_PANEL_WIDTH=200
 ```
 
 The URL above is **only an example**. Replace it with the server's actual reachable IP address and configured port. Keep server-only settings in `server.env` and client-only settings in `client.env`.
+
+The client opens with a **Server IP / URL** field prefilled from `client.env` and a **Connect** button. Enter an IP address (optionally with a port, such as `192.168.1.100:14095`) or a complete HTTP URL, then click **Connect** or press Enter. A bare IP uses the port configured in `SERVER_URL`, or 14095 by default. The button shows **Connecting...**, then green **Connected** when the server responds or red **Failed** if connection fails. You can edit the address and click again to retry. Changes in this field apply to the current session. A connected server can still report individual cameras offline.
+
+The address field sizes itself to fit the address. The default **Connect** button is yellow. Click the green **Connected** button to disconnect and clear the address and camera panels. The button returns to yellow **Connect**. Clicking **Connect** with an empty address uses the default `SERVER_URL` from `client.env` (or `http://127.0.0.1:14095` if absent) and displays that address in the field.
 
 ## Initialization
 

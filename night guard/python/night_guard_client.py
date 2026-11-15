@@ -8,7 +8,8 @@ import requests
 from dotenv import dotenv_values
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QWidget, QGridLayout, QVBoxLayout
+from PySide6.QtWidgets import (QApplication, QLabel, QMainWindow, QWidget, QGridLayout,
+                               QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton)
 
 NAMES = ('front', 'back', 'left', 'right')
 TITLES = ('FRONT', 'BACK', 'LEFT SIDE', 'RIGHT SIDE')
@@ -23,6 +24,7 @@ class Network:
         self.frames = {}
         self.states = {name: 'Server unavailable' for name in NAMES}
         self.connection = 'Connecting to server…'
+        self.connection_state = 'connecting'
         self.threads = [threading.Thread(target=self.status_loop, daemon=True)]
         self.threads += [threading.Thread(target=self.stream_loop, args=(name,), daemon=True) for name in NAMES]
         for thread in self.threads:
@@ -40,9 +42,11 @@ class Network:
                     with self.lock:
                         self.states = states
                         self.connection = 'Connected to ' + self.url
+                        self.connection_state = 'connected'
                 except (requests.RequestException, ValueError, KeyError, TypeError):
                     with self.lock:
                         self.connection = 'Server unavailable — reconnecting'
+                        self.connection_state = 'failed'
                         self.states = {name: 'Server unavailable' for name in NAMES}
                 self.stop.wait(1)
 
@@ -109,11 +113,36 @@ class Window(QMainWindow):
         self.setWindowTitle(settings.get('GUI_TITLE') or 'Four USB Camera Monitor')
         width = positive(settings, 'GUI_WIDTH', 1400)
         height = positive(settings, 'GUI_HEIGHT', 900)
-        control_height = positive(settings, 'CONTROL_PANEL_HEIGHT', 200)
+        control_width = positive(settings, 'CONTROL_PANEL_WIDTH', 200)
         self.resize(width, height)
         root = QWidget()
-        layout = QVBoxLayout(root)
-        self.status = QLabel('Connecting…')
+        outer_layout = QHBoxLayout(root)
+        self.control_area = QWidget()
+        self.control_area.setFixedWidth(control_width)
+        self.control_area.setStyleSheet('background: #e5e7eb;')
+        outer_layout.addWidget(self.control_area)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.addWidget(content, 1)
+        connection_bar = QHBoxLayout()
+        connection_bar.addWidget(QLabel('Server IP / URL:'))
+        self.default_url = (settings.get('SERVER_URL') or '').strip() or 'http://127.0.0.1:14095'
+        self.server_address = QLineEdit(self.default_url)
+        self.server_address.setPlaceholderText('192.168.1.100:14095')
+        self.server_address.setAccessibleName('Server IP or URL')
+        self.server_address.textChanged.connect(self.fit_address_field)
+        self.fit_address_field()
+        connection_bar.addWidget(self.server_address)
+        self.connect_button = QPushButton('Connect')
+        self.connect_button.setMinimumWidth(120)
+        self.set_connection_button('idle')
+        self.connect_button.clicked.connect(self.toggle_connection)
+        self.server_address.returnPressed.connect(self.connect_server)
+        connection_bar.addWidget(self.connect_button)
+        connection_bar.addStretch(1)
+        layout.addLayout(connection_bar)
+        self.status = QLabel('')
         layout.addWidget(self.status)
         grid = QGridLayout()
         self.panels = {}
@@ -128,28 +157,102 @@ class Window(QMainWindow):
             grid.setRowStretch(index, 1)
             grid.setColumnStretch(index, 1)
         layout.addLayout(grid, 1)
-        reserved = QLabel('RESERVED CONTROL AREA\nControls will be defined later')
-        reserved.setMinimumHeight(control_height)
-        reserved.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        reserved.setStyleSheet('background: #e5e7eb; color: #374151;')
-        layout.addWidget(reserved)
         self.setCentralWidget(root)
-        url = (settings.get('SERVER_URL') or 'http://127.0.0.1:14095').rstrip('/')
-        parsed = urlparse(url)
-        if parsed.scheme not in ('http', 'https') or not parsed.hostname:
-            raise ValueError('SERVER_URL must be an http:// or https:// server URL')
-        self.network = Network(url)
+        self.network = None
+        self.retired_networks = []
+        try:
+            self.default_port = urlparse(settings.get('SERVER_URL') or '').port or 14095
+        except ValueError:
+            self.default_port = 14095
+        for panel in self.panels.values():
+            panel.setText('Not connected')
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(50)
 
+    def fit_address_field(self):
+        """Keep the address input compact while fitting its current text."""
+        text = self.server_address.text() or self.server_address.placeholderText()
+        self.server_address.setFixedWidth(self.server_address.fontMetrics().horizontalAdvance(text) + 28)
+
+    def set_connection_button(self, state):
+        text, color = {'idle': ('Connect', '#facc15'), 'connecting': ('Connecting...', '#a16207'),
+                       'connected': ('Connected', '#15803d'),
+                       'failed': ('Failed', '#b91c1c')}[state]
+        self.connect_button.setText(text)
+        self.connect_button.setToolTip('Click to disconnect and clear the display' if state == 'connected'
+                                       else 'Click to connect to the server')
+        foreground = '#111827' if state == 'idle' else 'white'
+        self.connect_button.setStyleSheet(
+            f'QPushButton {{ background-color: {color}; color: {foreground}; padding: 8px; }}')
+
+    def toggle_connection(self):
+        """Click the green Connected button to disconnect; otherwise connect."""
+        if self.connect_button.text() == 'Connected':
+            self.disconnect_server()
+        else:
+            self.connect_server()
+
+    def disconnect_server(self):
+        """Stop readers and immediately clear the address and displayed frames."""
+        if self.network is not None:
+            self.network.stop.set()
+            self.retired_networks.append(self.network)
+            self.network = None
+        self.server_address.clear()
+        for panel in self.panels.values():
+            panel.source = QPixmap()
+            panel.clear()
+        self.status.setText('Disconnected')
+        self.set_connection_button('idle')
+
+    def connect_server(self):
+        """Connect asynchronously; a bare IP uses the configured/default video port."""
+        # Stop old readers without blocking the GUI while their requests time out.
+        if self.network is not None:
+            self.network.stop.set()
+            self.retired_networks.append(self.network)
+            self.network = None
+        for panel in self.panels.values():
+            panel.source = QPixmap()
+            panel.setText('Not connected')
+        try:
+            address = self.server_address.text().strip() or self.default_url
+            explicit_scheme = '://' in address
+            parsed = urlparse(address if explicit_scheme else 'http://' + address)
+            if (parsed.scheme not in ('http', 'https') or not parsed.hostname
+                    or parsed.username or parsed.password or parsed.path not in ('', '/')
+                    or parsed.query or parsed.fragment or any(c.isspace() for c in address)):
+                raise ValueError('Enter a server IP or HTTP URL, for example 192.168.1.100:14095')
+            port = parsed.port
+            if port is not None and not 1 <= port <= 65535:
+                raise ValueError('Server port must be from 1 to 65535')
+            host = f'[{parsed.hostname}]' if ':' in parsed.hostname else parsed.hostname
+            if not explicit_scheme and port is None:
+                port = self.default_port
+            url = f'{parsed.scheme}://{host}' + (f':{port}' if port is not None else '')
+        except ValueError as exc:
+            self.status.setText(str(exc))
+            self.set_connection_button('failed')
+            return
+        self.server_address.setText(url)
+        self.status.setText('Connecting to ' + url)
+        self.set_connection_button('connecting')
+        self.network = Network(url)
+
     def refresh(self):
+        self.retired_networks = [network for network in self.retired_networks
+                                 if any(thread.is_alive() for thread in network.threads)]
+        if self.network is None:
+            return
         with self.network.lock:
             frames = self.network.frames.copy()
             self.network.frames.clear()
             states = self.network.states.copy()
             connection = self.network.connection
+            connection_state = self.network.connection_state
         self.status.setText(connection)
+        self.set_connection_button(connection_state)
         for name, panel in self.panels.items():
             if states[name]:
                 panel.source = QPixmap()
@@ -159,7 +262,11 @@ class Window(QMainWindow):
 
     def closeEvent(self, event):
         self.timer.stop()
-        self.network.close()
+        networks = self.retired_networks + ([self.network] if self.network else [])
+        for network in networks:
+            network.stop.set()
+        for network in networks:
+            network.close()
         event.accept()
 
 

@@ -143,7 +143,7 @@ if not exist "%PYTHON_DIR%\client.env" (
   >>"%PYTHON_DIR%\client.env" echo GUI_TITLE=Night Guard
   >>"%PYTHON_DIR%\client.env" echo GUI_WIDTH=1400
   >>"%PYTHON_DIR%\client.env" echo GUI_HEIGHT=900
-  >>"%PYTHON_DIR%\client.env" echo CONTROL_PANEL_HEIGHT=200
+  >>"%PYTHON_DIR%\client.env" echo CONTROL_PANEL_WIDTH=200
 )
 rem Ollama and both required models are mandatory for a successful INIT.
 rem Only a temporary Ollama server is started if necessary.

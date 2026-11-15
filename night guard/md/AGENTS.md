@@ -46,7 +46,7 @@ SERVER_URL=http://192.168.12.133:14095
 GUI_TITLE=Four USB Camera Monitor
 GUI_WIDTH=1400
 GUI_HEIGHT=900
-CONTROL_PANEL_HEIGHT=200
+CONTROL_PANEL_WIDTH=200
 ```
 `SERVER_URL` is an example LAN address, **not** a known current address. The user must configure it to the reachable server IP. For remote LAN use, change `SERVER_HOST` to the server's LAN interface or `0.0.0.0` and restrict firewall access to trusted devices. Do not expose streams to the public internet.
 
@@ -60,20 +60,21 @@ CONTROL_PANEL_HEIGHT=200
 7. Read only `python/server.env`, with meaningful validation and error messages. Default to localhost binding for safety.
 
 ## Windows GUI: python/night_guard_client.py
+- Reserve a blank sidebar on the left for future controls, with width set by `CONTROL_PANEL_WIDTH` (default 200 pixels). Put the connection row and four camera panels to its right. Do not show the startup instruction `Enter the server IP address and press Connect.` or a bottom control placeholder.
+- Size the server address field to fit its displayed address rather than stretching across the window. The default `Connect` button is yellow with dark text, including after disconnecting.
+- Clicking the green `Connected` button disconnects and clears the address and camera images immediately, returning the button to `Connect`. Connecting with an empty address uses `SERVER_URL` from `client.env` (or `http://127.0.0.1:14095` if absent) and displays the resolved address in the field.
+- Provide an editable server IP / URL field above the camera panels, prefilled from `client.env`. Start with a `Connect` button; connect when clicked or Enter is pressed. Show `Connecting...` during the request, green `Connected` after a successful server status response, and red `Failed` on connection failure. Allow changing the address and retrying without blocking the GUI. A bare IP uses the configured video port, or 14095 by default.
 - Runs on Windows 11, connects via `SERVER_URL` from `python/client.env`, and **never opens local USB cameras**.
 - Use PySide6 or another maintained desktop GUI toolkit. Perform network stream reading and reconnection off the GUI thread.
 - Always display the same four panels in a 2 × 2 layout:
 ```text
-+--------------------------+--------------------------+
-| FRONT                    | BACK                     |
-|       Live video         |       Live video         |
-+--------------------------+--------------------------+
-| LEFT SIDE                | RIGHT SIDE               |
-|       Live video         |       Live video         |
-+--------------------------+--------------------------+
-| RESERVED CONTROL AREA                               |
-| Controls will be defined later                       |
-+-----------------------------------------------------+
++----------+--------------------------+--------------------------+
+|          | FRONT                    | BACK                     |
+|          |       Live video         |       Live video         |
+|          +--------------------------+--------------------------+
+|          | LEFT SIDE                | RIGHT SIDE               |
+|          |       Live video         |       Live video         |
++----------+--------------------------+--------------------------+
 ```
 - Preserve aspect ratio when resizing. Disabled positions display `Not configured`; offline cameras display `Camera offline`; unavailable server displays a clear connection status. Never freeze the UI during network failure.
 - The reserved control area is a visible, empty placeholder. **Do not invent buttons or functionality.** Stop worker threads and network requests on GUI exit.

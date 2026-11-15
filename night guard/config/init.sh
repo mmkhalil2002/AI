@@ -36,7 +36,7 @@ SERVER_URL=http://127.0.0.1:14095
 GUI_TITLE=Night Guard
 GUI_WIDTH=1400
 GUI_HEIGHT=900
-CONTROL_PANEL_HEIGHT=200
+CONTROL_PANEL_WIDTH=200
 ENV
   echo '[INFO] Created python/client.env; set server LAN IP on Windows client.'
 fi

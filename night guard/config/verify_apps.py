@@ -108,18 +108,61 @@ def main():
             app = QApplication.instance() or QApplication([])
             window = client.Window({'SERVER_URL': url})
             window.show()
+            assert window.connect_button.text() == 'Connect'
+            assert window.network is None
+            assert window.status.text() == ''
+            assert window.control_area.width() == 200
+            assert not window.control_area.children()
+            assert window.control_area.geometry().right() < window.server_address.parentWidget().x()
+            window.server_address.setText('not a valid address')
+            window.connect_button.click()
+            assert window.connect_button.text() == 'Failed'
+            assert window.network is None
+            window.server_address.setText(url.removeprefix('http://'))
+            window.connect_button.click()
             def received():
                 app.processEvents()
                 return not window.panels['front'].source.isNull()
             eventually(received)
+            assert window.connect_button.text() == 'Connected'
+            assert '#15803d' in window.connect_button.styleSheet()
             assert len(window.panels) == 4
             assert window.panels['back'].text() == 'Not configured'
+            previous = window.network
+            started = time.monotonic()
+            window.connect_button.click()
+            assert time.monotonic() - started < 1
+            assert previous.stop.is_set()
+            assert window.network is None
+            assert window.server_address.text() == ''
+            assert window.connect_button.text() == 'Connect'
+            assert window.status.text() == 'Disconnected'
+            # A late frame from retired readers cannot repopulate the display.
+            for _ in range(5):
+                app.processEvents()
+                window.refresh()
+            assert all(panel.source.isNull() and not panel.text() for panel in window.panels.values())
+            window.connect_button.click()
+            assert window.server_address.text() == url
+            assert window.network.url == url
+            eventually(received)
+            assert window.connect_button.text() == 'Connected'
             http.shutdown()
             http.server_close()
             def unavailable():
                 app.processEvents()
                 return 'unavailable' in window.status.text()
             eventually(unavailable, 8)
+            assert window.connect_button.text() == 'Failed'
+            assert '#b91c1c' in window.connect_button.styleSheet()
+            # A failed connection can be changed and retried without blocking the GUI.
+            previous = window.network
+            window.server_address.setText('127.0.0.1:1')
+            started = time.monotonic()
+            window.connect_button.click()
+            assert time.monotonic() - started < 1
+            assert previous.stop.is_set()
+            eventually(lambda: (app.processEvents() or window.connect_button.text() == 'Failed'), 8)
             window.close()
             assert all(not thread.is_alive() for thread in window.network.threads)
             window = None
@@ -132,7 +175,7 @@ def main():
             http.server_close()
             service.join(3)
             cameras['front'].thread.join(3)
-    print('PASS: camera counts 1–4, disabled devices, MJPEG/status/404, camera reconnect, GUI frames/states, server failure, worker shutdown')
+    print('PASS: camera counts 1–4, MJPEG/status, reconnect, GUI frames, connection button, disconnect clears display, empty address uses default, retries, worker shutdown')
 
 
 if __name__ == '__main__':
