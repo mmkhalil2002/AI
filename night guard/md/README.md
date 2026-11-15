@@ -8,7 +8,7 @@ The GUI always contains four video positions in a **2 × 2 layout**, labeled **F
 
 **Current scope: live streaming only.** No recording, snapshots, or `captures/` directory. The control port is reserved and is not an active service.
 
-> **Implementation status:** This README documents the intended project architecture and usage defined in `md/AGENTS.md`. It does not confirm that the Python applications or initialization scripts have been implemented or tested.
+> **Implementation status:** The Python server, PySide6 client, separate configuration files, dependencies, and initialization scripts are implemented. Hardware-free integration checks passed on Windows, including offscreen GUI startup. Physical USB camera operation, Ubuntu startup, and initialization scripts still require verification on their target systems.
 
 ## Project layout
 
@@ -154,7 +154,7 @@ The command-line options preserve the earlier server invocation style: `-v` sets
 | `GET /stream/right` | Live RIGHT SIDE MJPEG stream |
 | `GET /status` | Camera enabled/connected/offline status |
 
-These are **implementation requirements**, not verified existing endpoints. The server should retain only the latest frame in memory, discard stale frames, reconnect failed cameras, and avoid writing media to disk.
+These endpoints are implemented. Hardware-free checks verified MJPEG streaming, status responses, and disabled-camera responses. The server retains only the latest frame in memory and reconnects failed cameras without writing media to disk.
 
 ## Troubleshooting
 
@@ -165,6 +165,14 @@ These are **implementation requirements**, not verified existing endpoints. The 
 - **Slow video:** Reduce `WIDTH`, `HEIGHT`, `FPS`, or `JPEG_QUALITY`; verify available USB bandwidth and LAN performance.
 
 ## Implementation and verification
+
+Run the hardware-free checks from the project root after installing dependencies:
+
+```bash
+python config/verify_apps.py
+```
+
+This checks simulated camera counts 1–4, disabled devices, MJPEG and status endpoints, camera reconnection, offscreen GUI frames and status messages, server failure, and worker shutdown. It does not access physical cameras. Example configurations default to Windows camera indices and localhost; customize the camera paths for Ubuntu and the bind address and client URL for LAN use.
 
 Use `md/AGENTS.md` as the authoritative implementation specification. After implementation, verify server startup on Ubuntu and Windows, GUI startup on Windows, all 1–4 camera configurations, live streaming, camera/network reconnection, and the reserved control area. Physical USB camera operation requires testing on real hardware.
 
