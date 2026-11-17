@@ -20,8 +20,8 @@ FRONT_CAMERA=/dev/video0
 BACK_CAMERA=/dev/video2
 LEFT_CAMERA=/dev/video4
 RIGHT_CAMERA=/dev/video6
-WIDTH=640
-HEIGHT=480
+WIDTH=0
+HEIGHT=0
 FPS=15
 JPEG_QUALITY=80
 SERVER_HOST=127.0.0.1
@@ -34,8 +34,10 @@ if [[ ! -f "$PYDIR/client.env" ]]; then
   cat > "$PYDIR/client.env" <<'ENV'
 SERVER_URL=http://127.0.0.1:14095
 GUI_TITLE=Night Guard
-GUI_WIDTH=1400
-GUI_HEIGHT=900
+GUI_WIDTH=880
+GUI_HEIGHT=620
+WIDTH=480
+HEIGHT=320
 CONTROL_PANEL_WIDTH=200
 ENV
   echo '[INFO] Created python/client.env; set server LAN IP on Windows client.'

@@ -96,3 +96,7 @@ Restart after editing. The OS `WINDOW_SERVER_MAP` variable overrides the file. I
 
 Run `py config/verify_window_mapping.py` for synthetic routing, renamed server identities, cleanup, confinement and 1-4 window control checks. Run `py config/verify_connection_controls.py` for simulated Connect/Disconnect and cancellation checks without network or patient data.
 
+
+## Compact zoom toolbar (2026-11-16)
+
+All image/detail zoom windows use the same compact black rounded-looking 25-pixel icon toolbar in this order: Previous, Next, Pan Up, Pan Down, Fit, Actual Size (100%), Zoom In, Zoom Out, Save, Copy, Print. The toolbar is created by `add_compact_zoom_toolbar` inside the shared `open_image_viewer` path and therefore applies to X-ray, CT scan, EKG/ECG, blood-test detail, merged selection, and split selection windows. Previous/Next are disabled in Split windows. Save, Copy, and Print are deliberately disabled to avoid new patient-data export paths. Every enabled button operates on its own viewer state. Existing record-selection, MCP, inference, and patient-isolation logic is retained.

@@ -3790,7 +3790,7 @@ def navigate_viewer(delta, state=None):
 def zoom_viewer(multiplier, state=None):
     """Zoom relative to fit while keeping the current image available to pan."""
     state = state or image_viewer
-    if state is None:
+    if state is None or state.get("source") is None:
         return
     state["original_size"] = False
     state["zoom_status"] = "Zoom in" if multiplier > 1 else "Zoom out"
@@ -3805,7 +3805,7 @@ def zoom_viewer(multiplier, state=None):
 def fit_viewer(state=None):
     """Fit the complete image in the viewport and center it."""
     state = state or image_viewer
-    if state is not None:
+    if state is not None and state.get("source") is not None:
         state["original_size"] = False
         state["zoom"] = 1.0
         state["zoom_status"] = "Fit"
@@ -3819,6 +3819,113 @@ def reset_viewer(state=None):
         state["original_size"] = True
         state["zoom_status"] = "Original size (100%)"
         render_viewer_image(state)
+
+
+# -------------------------------------------------------------------------
+# FUNCTION: add_compact_zoom_toolbar
+# Purpose: Create the same small black icon toolbar in every zoom viewer.
+# Example: add_compact_zoom_toolbar(toolbar, state) wires all buttons to that
+# viewer's own state, avoiding accidental navigation of another zoom window.
+# Save, Copy and Print remain visibly disabled to avoid new patient exports.
+# -------------------------------------------------------------------------
+def add_hover_tooltip(widget, text):
+    """Show a short description beside a symbol after a brief hover."""
+    pending = None
+    popup = None
+
+    def hide(_event=None):
+        nonlocal pending, popup
+        if pending is not None:
+            widget.after_cancel(pending)
+            pending = None
+        if popup is not None:
+            popup.destroy()
+            popup = None
+
+    def show():
+        nonlocal pending, popup
+        pending = None
+        popup = tk.Toplevel(widget)
+        popup.wm_overrideredirect(True)
+        popup.wm_attributes("-topmost", True)
+        tk.Label(popup, text=text, background="#fff9d6", foreground="#111111",
+                 relief=tk.SOLID, borderwidth=1, padx=6, pady=3).pack()
+        popup.update_idletasks()
+        x = min(widget.winfo_rootx(),
+                widget.winfo_screenwidth() - popup.winfo_reqwidth() - 4)
+        y = widget.winfo_rooty() + widget.winfo_height() + 5
+        if y + popup.winfo_reqheight() > widget.winfo_screenheight():
+            y = widget.winfo_rooty() - popup.winfo_reqheight() - 5
+        popup.wm_geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def schedule(_event=None):
+        nonlocal pending
+        hide()
+        pending = widget.after(400, show)
+
+    widget.bind("<Enter>", schedule, add="+")
+    for event in ("<Leave>", "<ButtonPress>", "<Destroy>", "<FocusOut>"):
+        widget.bind(event, hide, add="+")
+
+
+def add_compact_zoom_toolbar(toolbar, state):
+    """Build compact, black, icon-only navigation and image controls."""
+    # All drawing uses Tk Canvas primitives; no new image/icon dependencies.
+    specs = (
+        ("previous", "Previous record", lambda: navigate_viewer(-1, state)),
+        ("next", "Next record", lambda: navigate_viewer(1, state)),
+        ("up", "Pan up", lambda: state["canvas"].yview_scroll(-3, "units")),
+        ("down", "Pan down", lambda: state["canvas"].yview_scroll(3, "units")),
+        ("fit", "Fit image", lambda: fit_viewer(state)),
+        ("actual", "Actual size (100%)", lambda: reset_viewer(state)),
+        ("plus", "Zoom in", lambda: zoom_viewer(1.25, state)),
+        ("minus", "Zoom out", lambda: zoom_viewer(1 / 1.25, state)),
+        ("save", "Save (disabled)", None),
+        ("copy", "Copy (disabled)", None),
+        ("print", "Print (disabled)", None),
+    )
+    for kind, tip, callback in specs:
+        disabled = callback is None or (state.get("split") and kind in ("previous", "next"))
+        fg = "#858585" if disabled else "#ffffff"
+        bg = "#424242" if disabled else "#050505"
+        icon = tk.Canvas(toolbar, width=25, height=25, bg=bg, highlightthickness=0,
+                         bd=0, cursor="arrow" if disabled else "hand2", takefocus=not disabled)
+        icon.pack(side=tk.LEFT, padx=2, pady=1)
+        icon.create_rectangle(1, 1, 24, 24, outline=bg, width=1)
+        if kind in ("previous", "next", "up", "down"):
+            coords = {"previous": (18, 12, 7, 12), "next": (7, 12, 18, 12),
+                      "up": (12, 18, 12, 7), "down": (12, 7, 12, 18)}[kind]
+            icon.create_line(*coords, fill=fg, width=2, arrow=tk.LAST, arrowshape=(6, 7, 3))
+        elif kind in ("plus", "minus"):
+            icon.create_oval(5, 4, 17, 16, outline=fg, width=1.6)
+            icon.create_line(16, 16, 21, 21, fill=fg, width=2)
+            icon.create_line(8, 10, 14, 10, fill=fg, width=1.5)
+            if kind == "plus":
+                icon.create_line(11, 7, 11, 13, fill=fg, width=1.5)
+        elif kind in ("fit", "actual"):
+            icon.create_rectangle(4, 5, 21, 20, outline=fg, width=1.5)
+            if kind == "fit":
+                icon.create_line(6, 17, 10, 13, 13, 15, 17, 10, 20, 13, fill=fg, width=1.3)
+            else:
+                icon.create_rectangle(8, 9, 17, 16, outline=fg, width=1)
+                icon.create_oval(10, 11, 12, 13, fill=fg, outline=fg)
+        elif kind == "save":
+            icon.create_rectangle(5, 4, 20, 21, outline=fg, width=1.5)
+            icon.create_rectangle(8, 5, 17, 11, outline=fg)
+            icon.create_rectangle(9, 15, 16, 20, outline=fg)
+        elif kind == "copy":
+            icon.create_rectangle(7, 7, 20, 21, outline=fg, width=1.5)
+            icon.create_line(5, 17, 5, 4, 17, 4, fill=fg, width=1.5)
+        elif kind == "print":
+            icon.create_rectangle(6, 9, 19, 18, outline=fg, width=1.5)
+            icon.create_rectangle(8, 4, 17, 10, outline=fg)
+            icon.create_rectangle(8, 15, 17, 22, outline=fg)
+        if callback is not None and not disabled:
+            icon.bind("<Button-1>", lambda _event, action=callback: action())
+            icon.bind("<Return>", lambda _event, action=callback: action())
+        add_hover_tooltip(icon, tip)
+        icon.bind("<Enter>", lambda _event, msg=tip: state["status"].config(text=msg), add="+")
+        icon.bind("<Leave>", lambda _event, st=state: st["status"].config(text=""), add="+")
 
 
 # -------------------------------------------------------------------------
@@ -3865,14 +3972,9 @@ def open_image_viewer(path, split=False, records_override=None, modality_zoom=No
     viewer.protocol("WM_DELETE_WINDOW", lambda: None)
     toolbar = ttk.Frame(viewer)
     toolbar.pack(fill=tk.X, padx=8, pady=6)
+    # Keep the title label for show_viewer_record; icons follow it.
     title = ttk.Label(toolbar, text="", style="Field.TLabel")
     title.pack(side=tk.LEFT, padx=(0, 12))
-    ttk.Button(toolbar, text="Previous  ‹", command=lambda: navigate_viewer(-1)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(toolbar, text="Next  ›", command=lambda: navigate_viewer(1)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(toolbar, text="Fit", command=fit_viewer).pack(side=tk.LEFT, padx=(10, 2))
-    ttk.Button(toolbar, text="−", command=lambda: zoom_viewer(1 / 1.25)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(toolbar, text="+", command=lambda: zoom_viewer(1.25)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(toolbar, text="Reset", command=reset_viewer).pack(side=tk.LEFT, padx=2)
     status = ttk.Label(viewer, text="", anchor="w")
     status.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 6))
     ttk.Label(viewer, text="AI response for selected record", style="Field.TLabel").pack(
@@ -3904,38 +4006,24 @@ def open_image_viewer(path, split=False, records_override=None, modality_zoom=No
     state["split"] = split
     if split:
         split_image_viewers[Path(path)] = state
-        # A Split window deliberately exposes only its own zoom controls.
-        controls = toolbar.winfo_children()
-        for control in controls[1:3]:
-            control.pack_forget()
-        controls[3].configure(command=lambda s=state: fit_viewer(s))
-        controls[4].configure(command=lambda s=state: zoom_viewer(1 / 1.25, s))
-        controls[5].configure(command=lambda s=state: zoom_viewer(1.25, s))
-        controls[6].configure(command=lambda s=state: reset_viewer(s))
     elif modality_zoom is not None:
         modality_zoom_viewers[modality_zoom] = state
-        controls = toolbar.winfo_children()
-        controls[1].configure(command=lambda s=state: navigate_viewer(-1, s))
-        controls[2].configure(command=lambda s=state: navigate_viewer(1, s))
-        controls[3].configure(command=lambda s=state: fit_viewer(s))
-        controls[4].configure(command=lambda s=state: zoom_viewer(1 / 1.25, s))
-        controls[5].configure(command=lambda s=state: zoom_viewer(1.25, s))
-        controls[6].configure(command=lambda s=state: reset_viewer(s))
     else:
         image_viewer = state
+    add_compact_zoom_toolbar(toolbar, state)
     zoom_button.configure(text="Zoom in", style="SelectionToggle.TCheckbutton")
     show_viewer_record(state, match)
     canvas.bind("<Configure>", lambda _event: render_viewer_image(state), add="+")
     canvas.bind("<ButtonPress-1>", lambda event: canvas.scan_mark(event.x, event.y))
     canvas.bind("<B1-Motion>", lambda event: canvas.scan_dragto(event.x, event.y, gain=1))
-    viewer.bind("<Left>", lambda _event: navigate_viewer(-1))
-    viewer.bind("<Right>", lambda _event: navigate_viewer(1))
-    viewer.bind("<Prior>", lambda _event: navigate_viewer(-1))
-    viewer.bind("<Next>", lambda _event: navigate_viewer(1))
-    viewer.bind("<plus>", lambda _event: zoom_viewer(1.25))
-    viewer.bind("<equal>", lambda _event: zoom_viewer(1.25))
-    viewer.bind("<minus>", lambda _event: zoom_viewer(1 / 1.25))
-    viewer.bind("<0>", lambda _event: reset_viewer())
+    viewer.bind("<Left>", lambda _event, st=state: navigate_viewer(-1, st))
+    viewer.bind("<Right>", lambda _event, st=state: navigate_viewer(1, st))
+    viewer.bind("<Prior>", lambda _event, st=state: navigate_viewer(-1, st))
+    viewer.bind("<Next>", lambda _event, st=state: navigate_viewer(1, st))
+    viewer.bind("<plus>", lambda _event, st=state: zoom_viewer(1.25, st))
+    viewer.bind("<equal>", lambda _event, st=state: zoom_viewer(1.25, st))
+    viewer.bind("<minus>", lambda _event, st=state: zoom_viewer(1 / 1.25, st))
+    viewer.bind("<0>", lambda _event, st=state: reset_viewer(st))
     viewer.bind("<Escape>", lambda _event: close_image_viewer())
     if split:
         viewer.bind("<plus>", lambda _event, s=state: zoom_viewer(1.25, s))

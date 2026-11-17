@@ -1,5 +1,6 @@
 import cv2
 import time
+from camera_resolutions import display_resolutions
 
 cameras = {
     'FRONT': '/dev/video0',
@@ -10,6 +11,7 @@ cameras = {
 
 opened = {}
 for name, device in cameras.items():
+    display_resolutions(device, name)
     cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
     if not cap.isOpened():
         print(f'{name}: FAILED to open {device}')

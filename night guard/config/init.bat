@@ -130,8 +130,8 @@ if not exist "%PYTHON_DIR%\server.env" (
   >>"%PYTHON_DIR%\server.env" echo BACK_CAMERA=1
   >>"%PYTHON_DIR%\server.env" echo LEFT_CAMERA=2
   >>"%PYTHON_DIR%\server.env" echo RIGHT_CAMERA=3
-  >>"%PYTHON_DIR%\server.env" echo WIDTH=640
-  >>"%PYTHON_DIR%\server.env" echo HEIGHT=480
+  >>"%PYTHON_DIR%\server.env" echo WIDTH=0
+  >>"%PYTHON_DIR%\server.env" echo HEIGHT=0
   >>"%PYTHON_DIR%\server.env" echo FPS=15
   >>"%PYTHON_DIR%\server.env" echo JPEG_QUALITY=80
   >>"%PYTHON_DIR%\server.env" echo SERVER_HOST=127.0.0.1
@@ -141,8 +141,10 @@ if not exist "%PYTHON_DIR%\server.env" (
 if not exist "%PYTHON_DIR%\client.env" (
   >"%PYTHON_DIR%\client.env" echo SERVER_URL=http://127.0.0.1:14095
   >>"%PYTHON_DIR%\client.env" echo GUI_TITLE=Night Guard
-  >>"%PYTHON_DIR%\client.env" echo GUI_WIDTH=1400
-  >>"%PYTHON_DIR%\client.env" echo GUI_HEIGHT=900
+  >>"%PYTHON_DIR%\client.env" echo GUI_WIDTH=880
+  >>"%PYTHON_DIR%\client.env" echo GUI_HEIGHT=620
+  >>"%PYTHON_DIR%\client.env" echo WIDTH=480
+  >>"%PYTHON_DIR%\client.env" echo HEIGHT=320
   >>"%PYTHON_DIR%\client.env" echo CONTROL_PANEL_WIDTH=200
 )
 rem Ollama and both required models are mandatory for a successful INIT.

@@ -1,5 +1,18 @@
 ﻿# Current implementation verification: 2026-11-01
 
+## 2026-11-16 — Compact zoom toolbar update
+
+### Hover tooltip update
+
+- Added hover explanations to all 11 shared toolbar buttons, including disabled controls; dismiss on exit, click, hiding, or destruction.
+- Python AST syntax check passed. Live hover behavior remains unverified; the isolated Tk check could not access Python in the sandbox.
+
+- Updated the single-file Tkinter client with a shared 11-icon black toolbar in image detail, split image, split blood-test, and all four independent modality viewers.
+- Reused existing navigation, fit, actual-size/reset, zoom and scrolling callbacks. Save, Copy, Print remain visible and disabled; Previous/Next are disabled for single-item split viewers.
+- Python AST parsing and bytecode compilation passed. ZIP structure and Markdown contents checked.
+- Not verified: actual Windows 11 Tkinter appearance, icon glyph availability on every system, live patient records, image scaling interaction, and Ollama requests. No clinical validation performed.
+
+
 The current behavior is documented in README.md and AGENTS.md. The records and checks below the historical heading describe earlier versions and do not establish verification of the current layout or per-image request behavior.
 
 ## Configurable search labels: 2026-11-13

@@ -11,6 +11,7 @@ import json
 
 import cv2
 from dotenv import dotenv_values
+from camera_modes import configure_resolution
 
 POSITIONS = (('front', 'FRONT_CAMERA'), ('back', 'BACK_CAMERA'),
              ('left', 'LEFT_CAMERA'), ('right', 'RIGHT_CAMERA'))
@@ -36,6 +37,7 @@ class Camera:
         self.sequence = 0
         self.connected = False
         self.thread = None
+        self.pixel_format = None
 
     def start(self):
         if self.enabled:
@@ -52,15 +54,22 @@ class Camera:
                 cap = cv2.VideoCapture(self.device, backend)
                 if not cap.isOpened():
                     raise RuntimeError('unable to open device; check mapping and permissions')
-                for prop, value in ((cv2.CAP_PROP_FRAME_WIDTH, width),
-                                    (cv2.CAP_PROP_FRAME_HEIGHT, height),
-                                    (cv2.CAP_PROP_FPS, fps), (cv2.CAP_PROP_BUFFERSIZE, 1)):
+                if self.pixel_format:
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.pixel_format))
+                # Auto selection resolves zero dimensions before workers start.
+                if width and height:
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                for prop, value in ((cv2.CAP_PROP_FPS, fps), (cv2.CAP_PROP_BUFFERSIZE, 1)):
                     cap.set(prop, value)
                 while not self.stop.is_set():
                     started = time.monotonic()
                     ok, frame = cap.read()
                     if not ok:
                         raise RuntimeError('camera read failed; reconnecting')
+                    if width and height and frame.shape[:2] != (height, width):
+                        raise RuntimeError(f'camera delivered {frame.shape[1]}x{frame.shape[0]}, '
+                                           f'expected {width}x{height}; check supported modes')
                     ok, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
                     if not ok:
                         raise RuntimeError('JPEG encoding failed')
@@ -141,8 +150,10 @@ def main():
     try:
         count = integer(settings, 'CAMERA_COUNT', 4, 1, 4)
         capture = tuple(integer(settings, key, default, low, high) for key, default, low, high in
-                        [('WIDTH', 640, 1, 7680), ('HEIGHT', 480, 1, 4320),
+                        [('WIDTH', 0, 0, 7680), ('HEIGHT', 0, 0, 4320),
                          ('FPS', 15, 1, 120), ('JPEG_QUALITY', 80, 1, 100)])
+        if bool(capture[0]) != bool(capture[1]):
+            raise ValueError('WIDTH and HEIGHT must both be 0 for automatic selection, or both positive')
         port = integer({'PORT': args.p if args.p is not None else settings.get('SERVER_PORT', 14095)}, 'PORT', 14095, 1, 65535)
         control = integer({'CONTROL_PORT': args.c if args.c is not None else settings.get('CONTROL_PORT', 14098)}, 'CONTROL_PORT', 14098, 1, 65535)
         stop = threading.Event()
@@ -154,6 +165,9 @@ def main():
             elif platform.system() == 'Windows' and index < count:
                 raise ValueError(f'{key} must be a nonnegative Windows camera index')
             cameras[name] = Camera(name, device, index < count, capture, stop)
+        width, height = configure_resolution(cameras, capture)
+        logging.info('Capture resolution for all enabled cameras: %sx%s (%s)', width, height,
+                     'lowest common supported mode' if capture[0] == 0 else 'configured')
         server = ThreadingHTTPServer((settings.get('SERVER_HOST') or '127.0.0.1', port), handler_for(cameras, stop))
         server.daemon_threads = True
     except (ValueError, OSError) as exc:

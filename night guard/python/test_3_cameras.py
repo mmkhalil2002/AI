@@ -5,6 +5,7 @@
 
 import cv2
 import time
+from camera_resolutions import display_resolutions
 
 # Camera configuration
 CAMERA_DEVICES = {
@@ -21,6 +22,7 @@ cameras = {}
 
 # Open all three cameras
 for name, device in CAMERA_DEVICES.items():
+    display_resolutions(device, name)
     print(f"Opening {name}: /dev/video{device}", flush=True)
 
     cap = cv2.VideoCapture(device, cv2.CAP_V4L2)

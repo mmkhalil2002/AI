@@ -124,3 +124,9 @@ See `md/VERIFICATION.md` for current checks and historical results. Syntax and m
 ## Implementation status and Codex handoff
 
 The current Python source includes CT support, a responsive record grid, Display and Zoom menus, and the initial 25%/75% workspace split. Synthetic GUI checks passed for earlier Display combinations and independent modality viewers. User-reported crashes remain unresolved; startup checks did not reproduce them. Full visual review and live record generation remain unverified. See the new verification entry separately from historical results. Update the single Python application in place, preserve existing behavior, do not modify patient data; preserve `.env` except for explicitly requested configuration changes, and record new tests honestly. The accompanying `AGENTS.md` is the consolidated implementation specification.
+
+### Compact zoom-window toolbar (2026-11-16)
+
+Hover over a small toolbar button to see its meaning, such as “Next record” for the right arrow. Disabled buttons also show explanations.
+
+All image and blood-test zoom viewers use the same 11 compact black icon buttons: **← Previous**, **→ Next**, **↑ Scroll up**, **↓ Scroll down**, **▧ Fit**, **▣ Actual Size/Reset**, **⊕ Zoom in**, **⊖ Zoom out**, followed by **Save**, **Copy**, and **Print** icons. The last three are deliberately disabled to avoid exporting or modifying patient records. In a single-image Split viewer, Previous and Next are disabled. Blood-test viewers use text scaling rather than image scaling. Existing zoom toggles control window closing.

@@ -2378,6 +2378,103 @@ def disable_zoom_window_close(viewer):
     viewer.protocol("WM_DELETE_WINDOW", lambda: None)
 
 
+
+
+def add_button_tooltip(button, description):
+    """Show a short explanation on hover, including for disabled controls."""
+    pending = None
+    popup = None
+
+    def hide(_event=None):
+        nonlocal pending, popup
+        if pending is not None:
+            button.after_cancel(pending)
+            pending = None
+        if popup is not None:
+            popup.destroy()
+            popup = None
+
+    def show():
+        nonlocal pending, popup
+        pending = None
+        if not button.winfo_exists():
+            return
+        popup = tk.Toplevel(button)
+        popup.wm_overrideredirect(True)
+        popup.wm_attributes("-topmost", True)
+        label = tk.Label(popup, text=description, background="#fff8d6",
+                         foreground="#17222d", relief=tk.SOLID, borderwidth=1,
+                         font=("Segoe UI", 10), padx=7, pady=4)
+        label.pack()
+        popup.update_idletasks()
+        x = min(button.winfo_rootx(),
+                button.winfo_screenwidth() - popup.winfo_reqwidth() - 5)
+        y = button.winfo_rooty() + button.winfo_height() + 5
+        if y + popup.winfo_reqheight() > button.winfo_screenheight():
+            y = button.winfo_rooty() - popup.winfo_reqheight() - 5
+        popup.wm_geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def schedule(_event=None):
+        nonlocal pending
+        hide()
+        pending = button.after(400, show)
+
+    button.bind("<Enter>", schedule, add="+")
+    for event in ("<Leave>", "<ButtonPress>", "<Unmap>", "<Destroy>"):
+        button.bind(event, hide, add="+")
+
+
+def add_compact_zoom_toolbar(parent, *, previous=None, next_item=None, up=None, down=None,
+                             fit=None, actual=None, zoom_in=None, zoom_out=None):
+    """Build the reference-style 11-icon black zoom toolbar in an existing Tk frame.
+
+    Icons follow: previous, next, up, down, fit, actual pixels, zoom in,
+    zoom out, save, copy, print. The last three are intentionally disabled:
+    clinical records must not gain new export/copy/print behavior accidentally.
+    Unsupported navigation is also disabled (e.g. a single split image).
+    Example: add_compact_zoom_toolbar(frame, fit=fit_viewer, actual=reset_viewer).
+    """
+    controls = (
+        ("←", "Previous record", previous),
+        ("→", "Next record", next_item),
+        ("↑", "Scroll up", up),
+        ("↓", "Scroll down", down),
+        ("▧", "Fit image or text", fit),
+        ("▣", "Actual size / reset", actual),
+        ("⊕", "Zoom in", zoom_in),
+        ("⊖", "Zoom out", zoom_out),
+        ("▣", "Save (disabled)", None),
+        ("▤", "Copy (disabled)", None),
+        ("▥", "Print (disabled)", None),
+    )
+    buttons = []
+    for glyph, description, callback in controls:
+        button = tk.Button(
+            parent, text=glyph, command=callback, width=2, height=1,
+            font=("Segoe UI Symbol", 13, "bold"),
+            background="#050505", foreground="#ffffff",
+            activebackground="#303030", activeforeground="#ffffff",
+            disabledforeground="#9ca3af", relief=tk.FLAT,
+            borderwidth=0, padx=1, pady=0, cursor="hand2" if callback else "arrow",
+            takefocus=bool(callback),
+        )
+        if callback is None:
+            button.configure(state=tk.DISABLED, background="#555555")
+        button.pack(side=tk.LEFT, padx=2, pady=2)
+        add_button_tooltip(button, description)
+        buttons.append(button)
+    return buttons
+
+
+def scroll_zoom_canvas(canvas, direction):
+    """Move the displayed record vertically without changing its zoom level."""
+    canvas.yview_scroll(direction, "units")
+
+
+def scroll_zoom_text(text_widget, direction):
+    """Scroll formatted blood-test content without editing the record."""
+    text_widget.yview_scroll(direction, "units")
+
 def create_image_diagnosis_panel(parent):
     panel = ttk.Frame(parent)
     text = scrolledtext.ScrolledText(
@@ -2442,6 +2539,25 @@ def open_xray_zoom_viewer(path):
             spacing1=3, spacing3=5,
         )
         record_view.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        # Split blood records have no adjacent-item navigation; retain a matching
+        # toolbar with Previous/Next disabled and text zoom available.
+        blood_toolbar = ttk.Frame(viewer)
+        blood_toolbar.pack(before=record_view, fill=tk.X, padx=8, pady=2)
+        blood_scale = [1.0]
+        def change_blood_scale(factor):
+            blood_scale[0] = max(0.4, min(8.0, blood_scale[0] * factor))
+            record_view.configure(font=("Segoe UI", max(7, round(15 * blood_scale[0]))))
+            for tag, size in (("record_heading", 18), ("test_heading", 16), ("abnormal", 15)):
+                record_view.tag_configure(tag, font=("Segoe UI", max(7, round(size * blood_scale[0])), "bold"))
+        add_compact_zoom_toolbar(
+            blood_toolbar,
+            up=lambda: scroll_zoom_text(record_view, -3),
+            down=lambda: scroll_zoom_text(record_view, 3),
+            fit=lambda: change_blood_scale(max(0.7, min(1.3, record_view.winfo_width() / 850)) / blood_scale[0]),
+            actual=lambda: change_blood_scale(1.0 / blood_scale[0]),
+            zoom_in=lambda: change_blood_scale(1.25),
+            zoom_out=lambda: change_blood_scale(0.8),
+        )
         record_view.tag_configure("record_heading", font=("Segoe UI", 18, "bold"), foreground="#164e63")
         record_view.tag_configure("test_heading", font=("Segoe UI", 16, "bold"), foreground="#164e63")
         record_view.tag_configure("abnormal", foreground="#b91c1c", font=("Segoe UI", 15, "bold"))
@@ -2509,10 +2625,15 @@ def open_xray_zoom_viewer(path):
         "window": viewer, "photo": photo, "source": source,
         "diagnosis": diagnosis, "canvas": canvas, "zoom": 1.0,
     }
-    ttk.Button(toolbar, text="Fit", command=lambda s=state: fit_split_viewer(s)).pack(side=tk.LEFT, padx=(0, 2))
-    ttk.Button(toolbar, text="−", command=lambda s=state: zoom_split_viewer(s, 1 / 1.25)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(toolbar, text="+", command=lambda s=state: zoom_split_viewer(s, 1.25)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(toolbar, text="Actual Size", command=lambda s=state: reset_split_viewer(s)).pack(side=tk.LEFT, padx=2)
+    add_compact_zoom_toolbar(
+        toolbar,
+        up=lambda: scroll_zoom_canvas(canvas, -3),
+        down=lambda: scroll_zoom_canvas(canvas, 3),
+        fit=lambda s=state: fit_split_viewer(s),
+        actual=lambda s=state: reset_split_viewer(s),
+        zoom_in=lambda s=state: zoom_split_viewer(s, 1.25),
+        zoom_out=lambda s=state: zoom_split_viewer(s, 1 / 1.25),
+    )
     refresh_image_diagnosis(state, path)
     disable_zoom_window_close(viewer)
 
@@ -2750,12 +2871,17 @@ def open_image_viewer(path, records=None, zoom_managed=False):
     toolbar.pack(fill=tk.X, padx=8, pady=6)
     title = ttk.Label(toolbar, text="", style="Field.TLabel")
     title.pack(side=tk.LEFT, padx=(0, 12))
-    ttk.Button(toolbar, text="Previous  ‹", command=lambda: navigate_viewer(-1)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(toolbar, text="Next  ›", command=lambda: navigate_viewer(1)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(toolbar, text="Fit", command=fit_viewer).pack(side=tk.LEFT, padx=(10, 2))
-    ttk.Button(toolbar, text="−", command=lambda: zoom_viewer(1 / 1.25)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(toolbar, text="+", command=lambda: zoom_viewer(1.25)).pack(side=tk.LEFT, padx=2)
-    ttk.Button(toolbar, text="Actual Size", command=reset_viewer).pack(side=tk.LEFT, padx=2)
+    # The toolbar is shared with modality and split zoom windows.
+    # Navigation callbacks use the existing viewer state and preserve response matching.
+    add_compact_zoom_toolbar(
+        toolbar,
+        previous=lambda: navigate_viewer(-1), next_item=lambda: navigate_viewer(1),
+        up=lambda: scroll_zoom_canvas(image_viewer["canvas"], -3) if image_viewer else None,
+        down=lambda: scroll_zoom_canvas(image_viewer["canvas"], 3) if image_viewer else None,
+        fit=fit_viewer, actual=reset_viewer,
+        zoom_in=lambda: zoom_viewer(1.25),
+        zoom_out=lambda: zoom_viewer(1 / 1.25),
+    )
     status = ttk.Label(viewer, text="", anchor="w", font=("Segoe UI", 16, "bold"),
                        foreground="#ffffff", background="#164e63", padding=(10, 8))
     status.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 6))
@@ -4861,11 +4987,16 @@ def open_modality_viewer(key):
         state["scale"] = 1.0
         draw()
 
-    reset_label = "Reset" if key == "blood_tests" else "Actual Size"
-    for label, command in (("Previous", lambda: show(-1)), ("Next", lambda: show(1)),
-                           ("+", lambda: scale_by(1.25)), ("-", lambda: scale_by(0.8)),
-                           ("Fit", fit), (reset_label, reset)):
-        ttk.Button(toolbar, text=label, command=command).pack(side=tk.LEFT, padx=3, pady=4)
+    # Identical 11-button toolbar for all modality viewers, including blood tests.
+    scroll_target = body if key == "blood_tests" else canvas
+    scroll_fn = scroll_zoom_text if key == "blood_tests" else scroll_zoom_canvas
+    add_compact_zoom_toolbar(
+        toolbar, previous=lambda: show(-1), next_item=lambda: show(1),
+        up=lambda: scroll_fn(scroll_target, -3),
+        down=lambda: scroll_fn(scroll_target, 3),
+        fit=fit, actual=reset,
+        zoom_in=lambda: scale_by(1.25), zoom_out=lambda: scale_by(0.8),
+    )
     disable_zoom_window_close(viewer)
     show()
 

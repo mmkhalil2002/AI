@@ -123,3 +123,7 @@ Use `py config/verify_window_mapping.py` for synthetic record routing, MCP ident
 - Do not run installation, uninstallation, model downloads, remote inference, or real patient-record tests solely to validate a code edit.
 - After a requested change, run applicable syntax checks and targeted tests with synthetic or de-identified records. Review patient isolation, section mapping, image selection, blood-test formatting, connection state, cancellation, stale callbacks, and shutdown.
 - Keep this file free of Python code, generated source blocks, generator instructions, package dependencies, and duplicate instructions in other Markdown files.
+
+## Compact zoom toolbar (2026-11-16)
+
+All image/detail zoom windows use the same compact black rounded-looking 25-pixel icon toolbar in this order: Previous, Next, Pan Up, Pan Down, Fit, Actual Size (100%), Zoom In, Zoom Out, Save, Copy, Print. The toolbar is created by `add_compact_zoom_toolbar` inside the shared `open_image_viewer` path and therefore applies to X-ray, CT scan, EKG/ECG, blood-test detail, merged selection, and split selection windows. Previous/Next are disabled in Split windows. Save, Copy, and Print are deliberately disabled to avoid new patient-data export paths. Every enabled button operates on its own viewer state. Existing record-selection, MCP, inference, and patient-isolation logic is retained.

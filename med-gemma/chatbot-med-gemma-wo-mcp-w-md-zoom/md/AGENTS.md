@@ -61,3 +61,7 @@ Run from the project root with `python python/client_medgemma_patients.py` on Wi
 ## Implementation status
 
 This document specifies the requested **target behavior**; it does not claim these changes are already implemented or tested. Historical VERIFICATION.md results must not be presented as tests of the new CT/display/zoom design.
+
+## Zoom toolbar — reference-style compact icon controls (2026-11-16)
+
+All image detail, Selection Zoom Split, and independent modality zoom viewers (including blood tests) use one consistent row of 11 compact, black, square icon-only buttons, ordered: Previous (←), Next (→), Up (↑), Down (↓), Fit (▧), Actual Size/Reset (▣), Zoom In (⊕), Zoom Out (⊖), Save, Copy, Print. Keep white glyphs on black rounded-looking flat buttons and narrow spacing, visually matching the supplied reference. Previous/Next are disabled for single-item Split viewers. Up/Down scroll vertically, Fit fits image or legible text, Actual restores native image pixels or default text size, and zoom scales the current record. Save/Copy/Print must be visible but disabled: do not add record export, clipboard or printing side effects. Do not change title-bar Close disabling, record selection, patient isolation, AI requests, zoom toggle lifecycle, or record source files. No external icon files or extra modules are required.
