@@ -1,4 +1,4 @@
-﻿# Night Guard — Real-Time Camera Server and Windows Client — Codex Instructions
+# Night Guard — Real-Time Camera Server and Windows Client — Codex Instructions
 
 ## Objective
 Implement a cross-platform Python server (Ubuntu 24.04 or Windows 11) that streams live video from **1–4 USB cameras** to a separate Windows 11 Python GUI over a local network. The GUI displays four fixed panels in two columns and two rows, with a reserved control area. **Do not record videos, save snapshots, or create a captures directory.** This file is a specification, not executable code.
@@ -10,8 +10,14 @@ project_root/
 ├── md/
 │   └── AGENTS.md
 ├── config/
-│   ├── init.sh                 # Ubuntu 24.04 setup
-│   ├── init.bat                # Windows setup
+│   ├── init-client-ubuntu.sh
+│   ├── init-server-ubuntu.sh
+│   ├── init-client-windows.ps1
+│   ├── init-server-windows.ps1
+│   ├── run-client-ubuntu.sh
+│   ├── run-server-ubuntu.sh
+│   ├── run-client-windows.bat
+│   └── run-server-windows.bat
 └── python/
     ├── night_guard_server.py        # Cross-platform server
     ├── night_guard_client.py           # Windows GUI client
@@ -90,21 +96,29 @@ When `WIDTH=0` and `HEIGHT=0` (also the defaults when omitted), query all enable
 - Leave the sidebar empty for future controls. Stop worker threads and network requests on GUI exit.
 
 ## Initialization and dependencies
-- `requirements.txt` is at **project root**, not under `config/`. Include Python dependencies needed for the server and GUI. Clearly document platform-specific system packages such as `v4l-utils` on Ubuntu.
-- `config/init.sh` runs on Ubuntu 24.04 and installs required system/Python dependencies without creating a virtual environment. `config/init.bat` runs on Windows 11. Both must locate `../requirements.txt` relative to their own directory. Both programs must locate their own `.env`-format configuration beside the Python script, regardless of current working directory.
-- Preserve any existing useful initialization functionality (including Python/Node/Codex/Ollama setup) when updating previously supplied init scripts; do not silently remove it. Never start the server or GUI automatically during initialization.
+
+- Keep Python dependencies in the root `requirements.txt`. Each installer installs the dependencies for its own role and platform. Ubuntu setup uses the user Python environment and installs `v4l-utils` for the server and Qt runtime libraries for the desktop client.
+- Use `config/init-client-ubuntu.sh`, `config/init-server-ubuntu.sh`, `config/init-client-windows.ps1`, or `config/init-server-windows.ps1`.
+- Configure inbound TCP for the server video port and outbound TCP for the client's configured destination port. Keep the control port reserved.
+- Preserve existing environment files. Setup installs only application dependencies and firewall tools. Start the server or client separately.
 
 ## Run commands (from project root)
+
+Use the matching commands for each machine. Configure camera settings or the client URL before starting the app. Run Windows setup from an elevated prompt. The Ubuntu server launcher enables the system service at boot. Both client launchers and the Windows server launcher start the application on demand.
+
 ```bash
-bash config/init.sh
-python3 python/night_guard_server.py -v 2 -p 14095 -c 14098
+bash config/init-server-ubuntu.sh
+bash config/run-server-ubuntu.sh
+bash config/init-client-ubuntu.sh
+bash config/run-client-ubuntu.sh
 ```
+
 ```bat
-config\init.bat
-python python\night_guard_server.py -v 2 -p 14095 -c 14098
-python python\night_guard_client.py
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\config\init-server-windows.ps1
+config\run-server-windows.bat
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\config\init-client-windows.ps1
+config\run-client-windows.bat
 ```
-Run the GUI on Windows; the server can run on either OS. Ensure the client is configured to connect to the correct LAN address and port.
 
 ## Acceptance criteria
 - [ ] Supports 1, 2, 3, or 4 USB cameras with OS-appropriate identifiers in `server.env`.
@@ -115,7 +129,7 @@ Run the GUI on Windows; the server can run on either OS. Ensure the client is co
 - [ ] `requirements.txt` is at project root; init scripts remain under `config/`.
 - [ ] Reconnects after camera/network interruptions; disabled cameras do not cause errors.
 - [ ] No `captures/` directory and no recording/snapshot functionality.
-- [ ] Existing init setup behavior is preserved, with changes documented.
+- [ ] The four setup entry points install role-specific dependencies and configure the video firewall rule.
 - [ ] Cross-platform server and Windows GUI are tested for syntax/startup; real USB camera operation must be verified on actual hardware.
 
 ## Coding guidance
