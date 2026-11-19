@@ -4,7 +4,8 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 sudo apt-get update
 sudo apt-get install -y python3 python3-pip ufw v4l-utils libgl1 libglib2.0-0t64
-python3 -m pip install --user --break-system-packages -c "$root/requirements.txt" opencv-python python-dotenv
+python3 "$root/config/generate_requirements.py" server
+python3 -m pip install --user --break-system-packages -r "$root/requirements-server.txt"
 
 port="$(python3 - "$root/python/server.env" <<'PYTHON'
 import sys
@@ -14,13 +15,18 @@ from dotenv import dotenv_values
 
 path = Path(sys.argv[1])
 defaults = """CAMERA_COUNT=4
-FRONT_CAMERA=/dev/video0
-BACK_CAMERA=/dev/video2
-LEFT_CAMERA=/dev/video4
-RIGHT_CAMERA=/dev/video6
-WIDTH=0
-HEIGHT=0
-FPS=15
+FRONT_CAMERA=auto
+BACK_CAMERA=auto
+LEFT_CAMERA=auto
+RIGHT_CAMERA=auto
+# Use positive dimensions supported by all enabled cameras, e.g. 640x480 or 1280x720.
+# Ubuntu only: set WIDTH=0 and HEIGHT=0 together to select the lowest common resolution.
+WIDTH=640
+HEIGHT=480
+# Requested frame rate: 1-120 FPS. Choose a rate supported by your cameras, e.g. 10, 15, or 30.
+FPS=10
+# MJPEG (or MJPG) requests compressed capture. AUTO uses automatic format selection.
+VIDEO_FORMAT=MJPEG
 JPEG_QUALITY=80
 SERVER_HOST=127.0.0.1
 SERVER_PORT=14095

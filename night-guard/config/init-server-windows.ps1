@@ -1,9 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw 'Run this setup in PowerShell as Administrator to configure Windows Firewall.'
-}
+$isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 function Find-Python {
     $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
@@ -41,8 +39,10 @@ if (!$pythonExe) {
 }
 
 $root = Split-Path $PSScriptRoot -Parent
-$requirements = Join-Path $root 'requirements.txt'
-& $pythonExe -m pip install --user -c $requirements opencv-python python-dotenv
+$requirements = Join-Path $root 'requirements-server.txt'
+& $pythonExe (Join-Path $PSScriptRoot 'generate_requirements.py') server
+if ($LASTEXITCODE -ne 0) { throw 'Requirements generation failed.' }
+& $pythonExe -m pip install --user -r $requirements
 if ($LASTEXITCODE -ne 0) { throw 'Python package installation failed.' }
 
 $envFile = Join-Path $root 'python/server.env'
@@ -54,13 +54,18 @@ from dotenv import dotenv_values
 
 path = Path(sys.argv[1])
 defaults = """CAMERA_COUNT=4
-FRONT_CAMERA=0
-BACK_CAMERA=1
-LEFT_CAMERA=2
-RIGHT_CAMERA=3
+FRONT_CAMERA=auto
+BACK_CAMERA=auto
+LEFT_CAMERA=auto
+RIGHT_CAMERA=auto
+# Use positive dimensions supported by all enabled cameras, e.g. 640x480 or 1280x720.
+# Ubuntu only: set WIDTH=0 and HEIGHT=0 together to select the lowest common resolution.
 WIDTH=640
 HEIGHT=480
-FPS=15
+# Requested frame rate: 1-120 FPS. Choose a rate supported by your cameras, e.g. 10, 15, or 30.
+FPS=10
+# MJPEG (or MJPG) requests compressed capture. AUTO uses automatic format selection.
+VIDEO_FORMAT=MJPEG
 JPEG_QUALITY=80
 SERVER_HOST=127.0.0.1
 SERVER_PORT=14095
@@ -93,7 +98,9 @@ $rule = @{
     RemoteAddress = 'LocalSubnet'
     Profile = @('Domain', 'Private')
 }
-if (Get-NetFirewallRule -Name $rule.Name -ErrorAction SilentlyContinue) {
+if (!$isAdministrator) {
+    Write-Host 'Server setup is running without Administrator privileges. Run setup as Administrator to add the inbound firewall rule for LAN clients.'
+} elseif (Get-NetFirewallRule -Name $rule.Name -ErrorAction SilentlyContinue) {
     Set-NetFirewallRule @rule | Out-Null
 } else {
     New-NetFirewallRule @rule -DisplayName 'Night Guard server (TCP)' | Out-Null

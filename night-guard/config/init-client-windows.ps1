@@ -1,9 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw 'Run this setup in PowerShell as Administrator to configure Windows Firewall.'
-}
+$isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 function Find-Python {
     $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
@@ -41,8 +39,10 @@ if (!$pythonExe) {
 }
 
 $root = Split-Path $PSScriptRoot -Parent
-$requirements = Join-Path $root 'requirements.txt'
-& $pythonExe -m pip install --user -c $requirements requests PySide6 python-dotenv
+$requirements = Join-Path $root 'requirements-client.txt'
+& $pythonExe (Join-Path $PSScriptRoot 'generate_requirements.py') client
+if ($LASTEXITCODE -ne 0) { throw 'Requirements generation failed.' }
+& $pythonExe -m pip install --user -r $requirements
 if ($LASTEXITCODE -ne 0) { throw 'Python package installation failed.' }
 
 $envFile = Join-Path $root 'python/client.env'
@@ -95,7 +95,9 @@ $rule = @{
     RemotePort = $port
     Profile = 'Any'
 }
-if (Get-NetFirewallRule -Name $rule.Name -ErrorAction SilentlyContinue) {
+if (!$isAdministrator) {
+    Write-Host 'Client setup is running without Administrator privileges. Run setup as Administrator if your network requires an explicit outbound firewall rule.'
+} elseif (Get-NetFirewallRule -Name $rule.Name -ErrorAction SilentlyContinue) {
     Set-NetFirewallRule @rule | Out-Null
 } else {
     New-NetFirewallRule @rule -DisplayName 'Night Guard client (TCP)' | Out-Null

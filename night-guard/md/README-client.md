@@ -4,7 +4,7 @@ The desktop client displays live video from the [Night Guard server](README-serv
 
 ## Setup and startup
 
-From the project root in an elevated Windows Command Prompt:
+From the project root in a Windows Command Prompt:
 
 ```bat
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\config\init-client-windows.ps1
@@ -18,7 +18,7 @@ bash config/init-client-ubuntu.sh
 bash config/run-client-ubuntu.sh
 ```
 
-The initializer installs the shared dependencies from the root `requirements.txt`, preserves existing configuration, and leaves application startup to you. The client reads `client.env` from beside its Python script.
+The initializer regenerates `requirements-client.txt` at the project root and installs the client dependencies from it. Run setup as Administrator if you need it to add the outbound firewall rule. It preserves existing configuration and leaves application startup to you. The client reads `client.env` from beside its Python script.
 
 ## Client configuration
 
@@ -34,9 +34,9 @@ CONTROL_PANEL_WIDTH=200
 
 The URL above is **only an example**. Replace it with the server's actual reachable IP address and configured port. See the [server guide](README-server.md) for LAN setup.
 
-The client opens with a **Server IP / URL** field prefilled from `client.env` and a **Connect** button. Enter an IP address (optionally with a port, such as `192.168.1.100:14095`) or a complete HTTP URL, then click **Connect** or press Enter. A bare IP uses the port configured in `SERVER_URL`, or 14095 by default. The button shows **Connecting...**, then green **Connected** when the server responds or red **Failed** if connection fails. You can edit the address and click again to retry. Changes in this field apply to the current session. A connected server can still report individual cameras offline.
+The client opens with a **Server IP / URL** field prefilled from `client.env` and a **Connect** button. Enter an IP address (optionally with a port, such as `192.168.1.100:14095`) or a complete HTTP URL, then click **Connect** or press Enter. A bare IP uses the port configured in `SERVER_URL`, or 14095 by default. The button shows **Connecting...**, then green **Disconnect** when the server responds or red **Failed** if connection fails. You can edit the address and click again to retry. Changes in this field apply to the current session. A connected server can still report individual cameras offline.
 
-The address field sizes itself to fit the address. The default **Connect** button is yellow. Click the green **Connected** button to disconnect and clear the address and camera panels. The button returns to yellow **Connect**. Clicking **Connect** with an empty address uses the default `SERVER_URL` from `client.env` (or `http://127.0.0.1:14095` if absent) and displays that address in the field.
+The address field sizes itself to fit the address. The default **Connect** button is yellow. Click the green **Disconnect** button to disconnect and clear the address and camera panels. The button returns to yellow **Connect**. Clicking **Connect** with an empty address uses the default `SERVER_URL` from `client.env` (or `http://127.0.0.1:14095` if absent) and displays that address in the field.
 
 ## GUI layout
 

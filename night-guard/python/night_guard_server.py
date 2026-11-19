@@ -11,6 +11,7 @@ import json
 
 import cv2
 from dotenv import dotenv_values
+from camera_devices import assign_cameras, camera_source
 from camera_modes import configure_resolution
 
 POSITIONS = (('front', 'FRONT_CAMERA'), ('back', 'BACK_CAMERA'),
@@ -40,7 +41,7 @@ class Camera:
         self.pixel_format = None
 
     def start(self):
-        if self.enabled:
+        if self.enabled and self.device is not None:
             self.thread = threading.Thread(target=self.capture, name=self.name, daemon=True)
             self.thread.start()
 
@@ -51,7 +52,7 @@ class Camera:
         while not self.stop.is_set():
             cap = None
             try:
-                cap = cv2.VideoCapture(self.device, backend)
+                cap = cv2.VideoCapture(camera_source(self.device), backend)
                 if not cap.isOpened():
                     raise RuntimeError('unable to open device; check mapping and permissions')
                 if self.pixel_format:
@@ -62,6 +63,14 @@ class Camera:
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
                 for prop, value in ((cv2.CAP_PROP_FPS, fps), (cv2.CAP_PROP_BUFFERSIZE, 1)):
                     cap.set(prop, value)
+                if self.pixel_format:
+                    actual = int(cap.get(cv2.CAP_PROP_FOURCC))
+                    expected = cv2.VideoWriter_fourcc(*self.pixel_format)
+                    if actual != expected:
+                        reported = ''.join(chr((actual >> (8 * offset)) & 255)
+                                           for offset in range(4)) if actual else 'unknown'
+                        logging.warning('%s: requested capture format %s, driver reports %r',
+                                        self.name, self.pixel_format, reported)
                 while not self.stop.is_set():
                     started = time.monotonic()
                     ok, frame = cap.read()
@@ -150,21 +159,28 @@ def main():
     try:
         count = integer(settings, 'CAMERA_COUNT', 4, 1, 4)
         capture = tuple(integer(settings, key, default, low, high) for key, default, low, high in
-                        [('WIDTH', 0, 0, 7680), ('HEIGHT', 0, 0, 4320),
-                         ('FPS', 15, 1, 120), ('JPEG_QUALITY', 80, 1, 100)])
+                        [('WIDTH', 640, 0, 7680), ('HEIGHT', 480, 0, 4320),
+                         ('FPS', 10, 1, 120), ('JPEG_QUALITY', 80, 1, 100)])
         if bool(capture[0]) != bool(capture[1]):
             raise ValueError('WIDTH and HEIGHT must both be 0 for automatic selection, or both positive')
+        video_format = (settings.get('VIDEO_FORMAT') or '').strip().upper() or 'MJPEG'
+        if video_format not in ('AUTO', 'MJPEG', 'MJPG'):
+            raise ValueError('VIDEO_FORMAT must be AUTO or MJPEG')
         port = integer({'PORT': args.p if args.p is not None else settings.get('SERVER_PORT', 14095)}, 'PORT', 14095, 1, 65535)
         control = integer({'CONTROL_PORT': args.c if args.c is not None else settings.get('CONTROL_PORT', 14098)}, 'CONTROL_PORT', 14098, 1, 65535)
         stop = threading.Event()
         cameras = {}
-        for index, (name, key) in enumerate(POSITIONS):
-            device = str(settings.get(key) or (index if platform.system() == 'Windows' else f'/dev/video{index * 2}'))
-            if device.isdecimal():
-                device = int(device)
-            elif platform.system() == 'Windows' and index < count:
-                raise ValueError(f'{key} must be a nonnegative Windows camera index')
+        devices = assign_cameras([settings.get(key) for _, key in POSITIONS[:count]])
+        for index, (name, _) in enumerate(POSITIONS):
+            device = devices[index] if index < count else None
             cameras[name] = Camera(name, device, index < count, capture, stop)
+            if video_format != 'AUTO':
+                cameras[name].pixel_format = 'MJPG'
+            if index < count:
+                if device is None:
+                    logging.warning('%s: no camera detected for this position', name)
+                else:
+                    logging.info('%s: camera %s', name, device)
         width, height = configure_resolution(cameras, capture)
         logging.info('Capture resolution for all enabled cameras: %sx%s (%s)', width, height,
                      'lowest common supported mode' if capture[0] == 0 else 'configured')

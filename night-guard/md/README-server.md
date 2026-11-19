@@ -11,7 +11,7 @@ The server captures live video from one to four USB cameras on Ubuntu 24.04 or W
 
 ## Setup and startup
 
-From the project root, run the initializer for your server OS. Before running the launcher, configure the camera mapping and resolution in `python/server.env` as described below. On Windows, use positive dimensions supported by your cameras. Run Windows setup as Administrator.
+From the project root, run the initializer for your server OS. Before running the launcher, configure the camera mapping and resolution in `python/server.env` as described below. On Windows, use positive dimensions supported by your cameras. Run Windows setup as Administrator to add the inbound firewall rule for LAN clients.
 
 **Ubuntu 24.04**
 
@@ -22,6 +22,13 @@ bash config/init-server-ubuntu.sh
 bash config/run-server-ubuntu.sh
 ```
 
+On Ubuntu, run `bash config/restart-server-ubuntu.sh` to stop the existing
+service and any manually launched server from this checkout, then start the
+service again.
+
+Run `bash config/stop-server-ubuntu.sh` to stop both forms of the server while
+keeping the service enabled for the next boot.
+
 **Windows 11 (Command Prompt)**
 
 ```bat
@@ -29,22 +36,23 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\config\init-server-win
 config\run-server-windows.bat
 ```
 
-The initializers use the root `requirements.txt`, preserve existing configuration, and leave application startup to you. Ubuntu setup uses the system Python environment. The server reads `server.env` from beside its Python script. `-v` sets logging verbosity (0 for errors, 1 for info, 2 for debug), `-p` overrides the HTTP port, and `-c` sets the reserved control port value.
+The initializers regenerate `requirements-server.txt` at the project root and install the server dependencies from it. They preserve existing configuration and leave application startup to you. Ubuntu setup uses the system Python environment. The server reads `server.env` from beside its Python script. `-v` sets logging verbosity (0 for errors, 1 for info, 2 for debug), `-p` overrides the HTTP port, and `-c` sets the reserved control port value.
 
 ## Server configuration
 
-Example for **Ubuntu** (verify the actual `/dev/video*` assignments):
+Example for **Ubuntu** with automatic camera discovery:
 
 ```ini
 CAMERA_COUNT=4
-FRONT_CAMERA=/dev/video0
-BACK_CAMERA=/dev/video2
-LEFT_CAMERA=/dev/video4
-RIGHT_CAMERA=/dev/video6
+FRONT_CAMERA=auto
+BACK_CAMERA=auto
+LEFT_CAMERA=auto
+RIGHT_CAMERA=auto
 
-WIDTH=0
-HEIGHT=0
-FPS=15
+WIDTH=640
+HEIGHT=480
+FPS=10
+VIDEO_FORMAT=MJPEG
 JPEG_QUALITY=80
 
 SERVER_HOST=127.0.0.1
@@ -52,7 +60,11 @@ SERVER_PORT=14095
 CONTROL_PORT=14098
 ```
 
-For a **Windows server**, use OpenCV camera indices, such as `FRONT_CAMERA=0`, `BACK_CAMERA=1`, `LEFT_CAMERA=2`, and `RIGHT_CAMERA=3`. Camera indices are machine-specific. Also set `WIDTH` and `HEIGHT` to positive values supported by your cameras.
+Both platforms accept `auto` and prefer external USB cameras when detected. Discovery assigns available cameras in device identifier order. To pin a physical camera to a panel, run a preview script with `--list-cameras`, then use the Windows `dshow:` identifier or Ubuntu `/dev/v4l/by-id/` or `/dev/v4l/by-path/` link in that panel's setting. Explicit Windows indices and Ubuntu `/dev/video*` paths are also supported. Restart the server to assign cameras to positions that had no detected device at startup.
+
+For a **Windows server**, set `WIDTH` and `HEIGHT` to positive values supported by your cameras.
+
+The server defaults to 640×480 at 10 FPS and requests MJPEG. Set `VIDEO_FORMAT=AUTO` to use automatic format selection. If the driver reports a different format than requested, the server logs a warning and continues streaming available frames.
 
 `SERVER_HOST=127.0.0.1` allows connections only from the server machine. For a GUI on a different computer, bind the server to a suitable LAN interface or set `SERVER_HOST=0.0.0.0`, then restrict firewall access to trusted LAN clients. Do not expose the stream publicly.
 

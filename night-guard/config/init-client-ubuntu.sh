@@ -6,7 +6,8 @@ sudo apt-get update
 sudo apt-get install -y python3 python3-pip ufw libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 \
     libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
     libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libdbus-1-3 libfontconfig1
-python3 -m pip install --user --break-system-packages -c "$root/requirements.txt" requests PySide6 python-dotenv
+python3 "$root/config/generate_requirements.py" client
+python3 -m pip install --user --break-system-packages -r "$root/requirements-client.txt"
 
 port="$(python3 - "$root/python/client.env" <<'PYTHON'
 import sys

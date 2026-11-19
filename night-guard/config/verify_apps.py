@@ -39,13 +39,18 @@ class Capture:
     def __init__(self, device, backend):
         self.opened.append(device)
         self.released = False
+        self.capture_properties = {}
 
     def isOpened(self):
         return self.online
 
-    def set(self, *args):
-        self.properties.append(args)
+    def set(self, prop, value):
+        self.properties.append((prop, value))
+        self.capture_properties[prop] = value
         return True
+
+    def get(self, prop):
+        return self.capture_properties.get(prop, 0)
 
     def read(self):
         return self.online, np.zeros((48, 64, 3), dtype=np.uint8)
@@ -151,7 +156,7 @@ def main():
                 app.processEvents()
                 return not window.panels['front'].source.isNull()
             eventually(received)
-            assert window.connect_button.text() == 'Connected'
+            assert window.connect_button.text() == 'Disconnect'
             assert '#15803d' in window.connect_button.styleSheet()
             assert len(window.panels) == 4
             assert all((panel.width(), panel.height()) == (480, 320) for panel in window.panels.values())
@@ -285,7 +290,7 @@ def main():
             assert window.server_address.text() == url
             assert window.network.url == url
             eventually(received)
-            assert window.connect_button.text() == 'Connected'
+            assert window.connect_button.text() == 'Disconnect'
             http.shutdown()
             http.server_close()
             def unavailable():

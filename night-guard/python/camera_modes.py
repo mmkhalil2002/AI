@@ -103,9 +103,16 @@ def configure_resolution(cameras, capture):
     width, height, fps, quality = capture
     if bool(width) != bool(height):
         raise ValueError('WIDTH and HEIGHT must both be 0 for automatic selection, or both positive')
-    enabled = [camera for camera in cameras.values() if camera.enabled]
+    enabled = [camera for camera in cameras.values() if camera.enabled and camera.device is not None]
     if width == height == 0:
-        mode_sets = [read_modes(camera.device) for camera in enabled]
+        mode_sets = []
+        for camera in enabled:
+            modes = read_modes(camera.device)
+            if camera.pixel_format:
+                modes = {mode for mode in modes if mode.fourcc == camera.pixel_format}
+                if not modes:
+                    raise ValueError(f'Camera {camera.device} does not advertise {camera.pixel_format} capture')
+            mode_sets.append(modes)
         width, height = lowest_common_resolution(mode_sets)
         for camera, modes in zip(enabled, mode_sets):
             formats = {mode.fourcc for mode in modes if mode.supports(width, height)}

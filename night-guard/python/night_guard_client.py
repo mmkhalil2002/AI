@@ -306,6 +306,7 @@ class Window(QMainWindow):
         self.server_address = QLineEdit(self.default_url)
         self.server_address.setPlaceholderText('192.168.1.100:14095')
         self.server_address.setAccessibleName('Server IP or URL')
+        self.server_address.setToolTip('Enter a server address, then press Enter to connect.')
         self.server_address.textChanged.connect(self.fit_address_field)
         self.fit_address_field()
         connection_bar.addWidget(self.server_address)
@@ -356,11 +357,16 @@ class Window(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(50)
+        self.server_address.setFocus()
+        self.server_address.selectAll()
 
     def fit_address_field(self):
         """Keep the address input compact while fitting its current text."""
-        text = self.server_address.text() or self.server_address.placeholderText()
-        self.server_address.setFixedWidth(self.server_address.fontMetrics().horizontalAdvance(text) + 28)
+        metrics = self.server_address.fontMetrics()
+        self.server_address.setFixedWidth(max(
+            metrics.horizontalAdvance(self.server_address.text()),
+            metrics.horizontalAdvance(self.server_address.placeholderText()),
+        ) + 28)
 
     def toggle_zoom(self):
         """Open all four live zoom views, or close the existing zoom window."""
@@ -446,19 +452,22 @@ class Window(QMainWindow):
                     target.fit()
 
     def set_connection_button(self, state):
+        self.connection_button_state = state
         text, color = {'idle': ('Connect', '#facc15'), 'connecting': ('Connecting...', '#a16207'),
-                       'connected': ('Connected', '#15803d'),
+                       'connected': ('Disconnect', '#15803d'),
                        'failed': ('Failed', '#b91c1c')}[state]
         self.connect_button.setText(text)
-        self.connect_button.setToolTip('Click to disconnect and clear the display' if state == 'connected'
+        self.connect_button.setToolTip('Click to disconnect, or edit the address to switch servers' if state == 'connected'
                                        else 'Click to connect to the server')
         foreground = '#111827' if state == 'idle' else 'white'
         self.connect_button.setStyleSheet(
             f'QPushButton {{ background-color: {color}; color: {foreground}; padding: 8px; }}')
 
     def toggle_connection(self):
-        """Click the green Connected button to disconnect; otherwise connect."""
-        if self.connect_button.text() == 'Connected':
+        """Disconnect an unchanged connection, or connect to the edited address."""
+        address = self.server_address.text().strip()
+        if (self.connection_button_state == 'connected' and self.network is not None
+                and (not address or address == self.network.url)):
             self.disconnect_server()
         else:
             self.connect_server()
