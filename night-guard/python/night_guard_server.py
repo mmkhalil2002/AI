@@ -157,7 +157,7 @@ def main():
                         format='%(asctime)s %(levelname)s %(message)s')
     settings = dotenv_values(Path(__file__).with_name('server.env'))
     try:
-        count = integer(settings, 'CAMERA_COUNT', 4, 1, 4)
+        count = integer(settings, 'CAMERA_COUNT', 2, 1, 4)
         capture = tuple(integer(settings, key, default, low, high) for key, default, low, high in
                         [('WIDTH', 640, 0, 7680), ('HEIGHT', 480, 0, 4320),
                          ('FPS', 10, 1, 120), ('JPEG_QUALITY', 80, 1, 100)])

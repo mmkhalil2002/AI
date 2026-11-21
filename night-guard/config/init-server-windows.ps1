@@ -53,7 +53,7 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 path = Path(sys.argv[1])
-defaults = """CAMERA_COUNT=4
+defaults = """CAMERA_COUNT=2
 FRONT_CAMERA=auto
 BACK_CAMERA=auto
 LEFT_CAMERA=auto

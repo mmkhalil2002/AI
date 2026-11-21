@@ -1,0 +1,10 @@
+This archive contains only 4GLTE.md (the master implementation specification)
+and this short instruction file. No .sh scripts are included intentionally.
+
+In Codex, open the folder containing 4GLTE.md and ask:
+
+  Read 4GLTE.md and generate all specified Bash scripts and README.md.
+  Run bash -n on each script and report any hardware tests not performed.
+
+Codex will generate the scripts from the specification. The generated code
+may not be byte-for-byte identical to previously supplied scripts.

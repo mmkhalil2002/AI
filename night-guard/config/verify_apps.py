@@ -124,6 +124,7 @@ def main():
             import night_guard_client as client
             app = QApplication.instance() or QApplication([])
             custom = client.Window({'WIDTH': '400', 'HEIGHT': '300'})
+            assert tuple(custom.panels) == ('front', 'back')
             assert all((panel.width(), panel.height()) == (400, 300) for panel in custom.panels.values())
             custom.close()
             for invalid in ('0', '-1', 'abc'):
@@ -133,7 +134,7 @@ def main():
                     pass
                 else:
                     raise AssertionError('Invalid client panel width accepted')
-            window = client.Window({'SERVER_URL': url})
+            window = client.Window({'SERVER_URL': url, 'CAMERA_COUNT': '4'})
             window.show()
             assert window.connect_button.text() == 'Connect'
             assert window.network is None

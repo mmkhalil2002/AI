@@ -1,4 +1,4 @@
-"""Four-panel network camera monitor. No local camera access."""
+"""Network camera monitor. No local camera access."""
 import sys
 import threading
 from pathlib import Path
@@ -19,16 +19,17 @@ TITLES = ('FRONT', 'BACK', 'LEFT SIDE', 'RIGHT SIDE')
 
 class Network:
     """Keep bounded latest-frame mailboxes; GUI polls instead of queuing signals."""
-    def __init__(self, url):
+    def __init__(self, url, camera_names):
         self.url = url
+        self.camera_names = camera_names
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.frames = {}
-        self.states = {name: 'Server unavailable' for name in NAMES}
+        self.states = {name: 'Server unavailable' for name in camera_names}
         self.connection = 'Connecting to server…'
         self.connection_state = 'connecting'
         self.threads = [threading.Thread(target=self.status_loop, daemon=True)]
-        self.threads += [threading.Thread(target=self.stream_loop, args=(name,), daemon=True) for name in NAMES]
+        self.threads += [threading.Thread(target=self.stream_loop, args=(name,), daemon=True) for name in camera_names]
         for thread in self.threads:
             thread.start()
 
@@ -40,7 +41,7 @@ class Network:
                         response.raise_for_status()
                         status = response.json()
                     states = {name: ('Not configured' if not status[name]['enabled'] else
-                                     ('' if status[name]['connected'] else 'Camera offline')) for name in NAMES}
+                                     ('' if status[name]['connected'] else 'Camera offline')) for name in self.camera_names}
                     with self.lock:
                         self.states = states
                         self.connection = 'Connected to ' + self.url
@@ -49,7 +50,7 @@ class Network:
                     with self.lock:
                         self.connection = 'Server unavailable — reconnecting'
                         self.connection_state = 'failed'
-                        self.states = {name: 'Server unavailable' for name in NAMES}
+                        self.states = {name: 'Server unavailable' for name in self.camera_names}
                 self.stop.wait(1)
 
     def stream_loop(self, name):
@@ -168,7 +169,7 @@ def toolbar_icon(key):
 class ZoomWindow(QDialog):
     def __init__(self, parent, camera_name=None):
         super().__init__(parent)
-        self.camera_names = (camera_name,) if camera_name else NAMES
+        self.camera_names = (camera_name,) if camera_name else parent.camera_names
         self.setWindowTitle('Night Guard — Camera Zoom')
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.resize(1280, 960)
@@ -213,6 +214,8 @@ class ZoomWindow(QDialog):
         for key, tip, action in items:
             if camera_name and key in ('left', 'right', 'up', 'down'):
                 continue
+            if len(self.camera_names) == 1 and key in ('left', 'right'):
+                continue
             button = QPushButton()
             button.setIcon(toolbar_icon(key))
             button.setIconSize(QSize(20, 20))
@@ -234,7 +237,7 @@ class ZoomWindow(QDialog):
             self.controls[key] = button
         controls.addStretch(1)
         layout.insertLayout(1, controls)
-        for key, direction in (() if camera_name else (('Left', -1), ('Right', 1))):
+        for key, direction in ((('Left', -1), ('Right', 1)) if len(self.camera_names) > 1 else ()):
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.activated.connect(lambda step=direction: self.change_camera(step))
         self.change_camera(0)
@@ -269,7 +272,7 @@ class ZoomWindow(QDialog):
         index = (self.stack.currentIndex() + step) % len(self.camera_names)
         self.stack.setCurrentIndex(index)
         title = TITLES[NAMES.index(self.camera_names[index])]
-        self.camera_title.setText(f'{title} ({index + 1}/{len(NAMES)})' if len(self.camera_names) > 1 else title)
+        self.camera_title.setText(f'{title} ({index + 1}/{len(self.camera_names)})' if len(self.camera_names) > 1 else title)
         self.setWindowTitle('Night Guard — Camera Zoom — ' + title)
         self.current_panel().fit()
 
@@ -278,6 +281,7 @@ class Window(QMainWindow):
     def __init__(self, settings):
         super().__init__()
         self.setWindowTitle(settings.get('GUI_TITLE') or 'Four USB Camera Monitor')
+        self.camera_names = NAMES[:positive(settings, 'CAMERA_COUNT', 2, maximum=len(NAMES))]
         width = positive(settings, 'GUI_WIDTH', 880)
         height = positive(settings, 'GUI_HEIGHT', 620)
         panel_width = positive(settings, 'WIDTH', 480)
@@ -333,7 +337,7 @@ class Window(QMainWindow):
         grid = QGridLayout()
         grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.panels = {}
-        for index, (name, title) in enumerate(zip(NAMES, TITLES)):
+        for index, (name, title) in enumerate(zip(self.camera_names, TITLES)):
             box = QVBoxLayout()
             box.addWidget(QLabel(title))
             panel = VideoPanel()
@@ -369,7 +373,7 @@ class Window(QMainWindow):
         ) + 28)
 
     def toggle_zoom(self):
-        """Open all four live zoom views, or close the existing zoom window."""
+        """Open the configured live zoom views, or close the existing zoom window."""
         if self.zoom_window is not None:
             self.zoom_window.reject()
             return
@@ -411,7 +415,7 @@ class Window(QMainWindow):
             self.zoom_window.reject()
 
     def toggle_split(self):
-        """Split all four live cameras into windows, or restore the merged viewer."""
+        """Split the configured cameras into windows, or restore the merged viewer."""
         if self.split_windows:
             self.changing_zoom = True
             for name, window in list(self.split_windows.items()):
@@ -427,7 +431,7 @@ class Window(QMainWindow):
         if self.zoom_window is None:
             self.toggle_zoom()
         self.zoom_window.hide()
-        for name in NAMES:
+        for name in self.camera_names:
             window = ZoomWindow(self, name)
             window.panels[name].magnification = self.zoom_window.panels[name].magnification
             window.finished.connect(lambda result, n=name, w=window: self.split_view_closed(n, w))
@@ -519,7 +523,7 @@ class Window(QMainWindow):
         self.server_address.setText(url)
         self.status.setText('Connecting to ' + url)
         self.set_connection_button('connecting')
-        self.network = Network(url)
+        self.network = Network(url, self.camera_names)
 
     def refresh(self):
         self.retired_networks = [network for network in self.retired_networks
@@ -554,15 +558,15 @@ class Window(QMainWindow):
         event.accept()
 
 
-def positive(settings, key, default):
+def positive(settings, key, default, *, maximum=16384):
     """Validate positive GUI dimensions, e.g. positive({}, 'GUI_WIDTH', 1400)."""
     try:
         value = int(settings.get(key, default))
-        if not 1 <= value <= 16384:
+        if not 1 <= value <= maximum:
             raise ValueError()
         return value
     except (ValueError, TypeError):
-        raise ValueError(f'{key} must be an integer from 1 to 16384') from None
+        raise ValueError(f'{key} must be an integer from 1 to {maximum}') from None
 
 
 def main():

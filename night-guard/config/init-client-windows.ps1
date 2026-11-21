@@ -55,6 +55,8 @@ from dotenv import dotenv_values
 
 path = Path(sys.argv[1])
 defaults = """SERVER_URL=http://127.0.0.1:14095
+# Show 1-4 cameras in order: Front, Back, Left Side, Right Side.
+CAMERA_COUNT=2
 GUI_TITLE=Night Guard
 GUI_WIDTH=880
 GUI_HEIGHT=620

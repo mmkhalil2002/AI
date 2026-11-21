@@ -43,7 +43,7 @@ The initializers regenerate `requirements-server.txt` at the project root and in
 Example for **Ubuntu** with automatic camera discovery:
 
 ```ini
-CAMERA_COUNT=4
+CAMERA_COUNT=2
 FRONT_CAMERA=auto
 BACK_CAMERA=auto
 LEFT_CAMERA=auto

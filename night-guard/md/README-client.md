@@ -24,7 +24,8 @@ The initializer regenerates `requirements-client.txt` at the project root and in
 
 ```ini
 SERVER_URL=http://192.168.12.133:14095
-GUI_TITLE=Four USB Camera Monitor
+CAMERA_COUNT=2
+GUI_TITLE=Night Guard Camera Monitor
 GUI_WIDTH=880
 GUI_HEIGHT=620
 WIDTH=480
@@ -50,7 +51,7 @@ The address field sizes itself to fit the address. The default **Connect** butto
 +----------+----------------------------+----------------------------+
 ```
 
-The first `CAMERA_COUNT` positions are enabled in this order: FRONT, BACK, LEFT SIDE, RIGHT SIDE. Unused positions display **Not configured**. A disconnected camera displays **Camera offline**. The GUI must remain responsive if the server or network is unavailable.
+Set `CAMERA_COUNT` to 1–4 in both `client.env` and `server.env`. The client displays the first positions in order: FRONT, BACK, LEFT SIDE, RIGHT SIDE. With `CAMERA_COUNT=2`, the main view and zoom controls show only Front and Back. If the client displays a position the server has disabled, it shows **Not configured**. A disconnected camera displays **Camera offline**.
 
 ## Camera zoom
 
